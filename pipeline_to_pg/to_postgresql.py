@@ -1,8 +1,4 @@
-import requests
 import itertools
-import numpy as np
-from functools import reduce
-from operator import add
 import pandas as pd
 import argparse
 from functions import *
