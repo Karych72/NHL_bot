@@ -8,64 +8,39 @@ def get_game(game_id: int):
     return requests.get(request).json()['liveData']
 
 
-def column_by_create(string: str) -> set:
-    all_rows = string.split('\n')
-    result = []
-    for row in all_rows:
-        words = row.split(' ')
-        for word in words:
-            if word != '':
-                result.append(word)
-                break
-    return set(result)
-
-
 def get_time_goal(period: int, time: str) -> str:
+    """Get row of time"""
     if period == 1:
         return time
     else:
-        minuet = (period - 1) * 20
+        minute = (period - 1) * 20
         time_period_min = int(time[0:2])
-        return str(minuet + time_period_min) + time[2:5]
+        return str(minute + time_period_min) + time[2:5]
 
 
-def print_scores(game: dict) -> None:
-    for event in game['plays']['allPlays']:
-        if event['result']['event'] == 'Goal':
-            print(game_goals(event))
-
-
-def goal_stat(event: dict, game_id=0, is_print=False) -> dict:
-    # global bad_en, good_en
+def goal_stat(event: dict, game_id=0) -> dict:
+    """stat of goal: scorer, assist and other"""
     scorer = 'Scorer'
     assist = 'Assist'
-    s = ''
+
     res_dict = {}
     num_assists = 0
     for player in event['players']:
         if player['playerType'] == scorer:
-            s = s + player['player']['fullName'].split(' ')[-1] + '(' + str(player['seasonTotal']) + ') - '
             res_dict['goal_player_id'] = player['player']['id']
             res_dict['total_goals'] = player['seasonTotal']
         if player['playerType'] == assist:
             num_assists += 1
-            s = s + player['player']['fullName'].split(' ')[-1] + '(' + str(player['seasonTotal']) + '), '
             res_dict['assist_player' + str(num_assists) + '_id'] = int(player['player']['id'])
             res_dict['assist_total' + '_' + str(num_assists)] = int(player['seasonTotal'])
-    s = s + get_time_goal(event['about']['period'], event['about']['periodTime']) + ', '
-    s = s + str(event['about']['goals']['away']) + ':' + str(event['about']['goals']['home']) + ' '
     try:
         if event['result']['emptyNet']:
-            s = s + 'EN '
             res_dict['empty_net'] = True
         else:
             res_dict['empty_net'] = False
-        # good_en += 1
     except KeyError:
         res_dict['empty_net'] = False
-        # bad_en += 1
     if event['result']['gameWinningGoal']:
-        s = s + 'GWG '
         res_dict['winner_goal'] = True
     else:
         res_dict['winner_goal'] = False
@@ -73,20 +48,21 @@ def goal_stat(event: dict, game_id=0, is_print=False) -> dict:
     res_dict['is_shg'] = event['result']['strength']['code'] == 'SHG'
     res_dict['team_id'] = event['team']['id']
     res_dict['game_id'] = game_id
-    if is_print:
-        print(s)
+
     return res_dict
 
 
 def game_goals(game: dict, game_id=0) -> list:
+    """all goals in the game"""
     all_goals = []
     for event in game['plays']['allPlays']:
         if event['result']['event'] == 'Goal':
-            all_goals.append(goal_stat(event, game_id, is_print=False))
+            all_goals.append(goal_stat(event, game_id))
     return all_goals
 
 
 def team_stats(game: dict, is_home: bool, game_id=0) -> dict:
+    """get team statistic on the game"""
     if is_home:
         field = 'home'
     else:
@@ -102,12 +78,11 @@ def team_stats(game: dict, is_home: bool, game_id=0) -> dict:
 
 
 def game_stats(game: dict, game_id=0) -> dict:
+    """get game statistic"""
     away_id = game['boxscore']['teams']['away']['team']['id']
     home_id = game['boxscore']['teams']['home']['team']['id']
     is_overtime = game['linescore']['currentPeriod'] > 3
 
-    periods = [[period['home']['goals'], period['away']['goals']]
-               for period in game['linescore']['periods']]
     day = str(game['plays']['allPlays'][0]['about']['dateTime'])[0:10]
 
     return {
@@ -122,13 +97,10 @@ def game_stats(game: dict, game_id=0) -> dict:
         'season': '19/20'}
 
 
-def player_stats(game: dict, is_home: str, game_id=0) -> dict:
+def player_stats(game: dict, field: str, game_id=0) -> dict:
+    """get player statistic on the game"""
     goalie = []
     players = []
-    if is_home:
-        field = 'home'
-    else:
-        field = 'away'
     for player in game['boxscore']['teams'][field]['players']:
         boxcore_player = game['boxscore']['teams'][field]['players'][player]
         players_stat = {
