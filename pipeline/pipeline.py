@@ -1,9 +1,12 @@
 import itertools
+import os
 import pandas as pd
 import argparse
 from functions import *
 from columns import *
-import psycopg2 as ps
+
+
+DATA_DIR = '../all_data/myself_analyses'
 
 
 def to_int_column(df: pd.DataFrame, columns: list, nans_replace: list) -> pd.DataFrame:
@@ -31,6 +34,7 @@ if __name__ == "__main__":
     games_dict = get_games_df(start_date=args.start_date, end_date=args.end_date)
 
     listmerge = lambda lst: list(itertools.chain(*lst))
+
     all_goals = pd.DataFrame(listmerge([games_dict[now_id]['all_goals'] for now_id in games_dict.keys()]))
     game_team_stats_home = pd.DataFrame(
         listmerge([[games_dict[now_id]['game_team_stats_home']] for now_id in games_dict.keys()]))
@@ -65,47 +69,12 @@ if __name__ == "__main__":
     game_goalie_stats.decision = game_goalie_stats.apply(lambda row: True if row['decision'] == 'W' else False, axis=1)
     game_goalie_stats = game_goalie_stats[game_goalie_stats_columns]
 
-    all_goals.to_csv('all_goals.csv', sep=',', index=False)
-    game_team_stats.to_csv('game_team_stats.csv', sep=',', index=False)
-    game_player_stats.to_csv('game_player_stats.csv', sep=',', index=False)
-    game_goalie_stats.to_csv('game_goalie_stats.csv', sep=',', index=False)
-    game_stats.to_csv('games.csv', sep=',', index=False)
+    suffix = str(args.start_date) + '_' + str(args.end_date)
 
-    conn = ps.connect("""
-        host=host
-        port=port
-        dbname=nhl
-        user=user
-        password=password
-        target_session_attrs=read-write
-        sslmode=verify-full
-    """)
+    all_goals.to_csv(f'{DATA_DIR}/all_goals_{suffix}.csv', sep=',', index=False)
+    game_team_stats.to_csv(f'{DATA_DIR}/game_team_stats_{suffix}.csv', sep=',', index=False)
+    game_player_stats.to_csv(f'{DATA_DIR}/game_player_stats_{suffix}.csv', sep=',', index=False)
+    game_goalie_stats.to_csv(f'{DATA_DIR}/game_goalie_stats_{suffix}.csv', sep=',', index=False)
+    game_stats.to_csv(f'{DATA_DIR}/games_{suffix}.csv', sep=',', index=False)
 
-    cur = conn.cursor()
-    table_name = 'all_goals'
-    with open(table_name + '.csv', 'r') as f:
-        next(f)
-        cur.copy_from(f, table_name, sep=',')
 
-    table_name = 'game_team_stats'
-    with open(table_name + '.csv', 'r') as f:
-        next(f)
-        cur.copy_from(f, table_name, sep=',')
-
-    table_name = 'game_player_stats'
-    with open(table_name + '.csv', 'r') as f:
-        next(f)
-        cur.copy_from(f, table_name, sep=',')
-
-    table_name = 'game_goalie_stats'
-    with open(table_name + '.csv', 'r') as f:
-        next(f)
-        cur.copy_from(f, table_name, sep=',')
-
-    table_name = 'games'
-    with open(table_name + '.csv', 'r') as f:
-        next(f)
-        cur.copy_from(f, table_name, sep=',')
-
-    cur.close()
-    conn.commit()
