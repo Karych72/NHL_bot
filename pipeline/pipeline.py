@@ -55,16 +55,16 @@ if __name__ == "__main__":
     game_team_stats = pd.concat([game_team_stats_away, game_team_stats_home])
     game_team_stats = game_team_stats[game_team_stats_columns]
 
-    all_goals = to_int_column(pd.DataFrame(all_goals), all_goals_potentional_change_columns, all_goals_nan_values)
+    all_goals = to_int_column(pd.DataFrame(all_goals), all_goals_potential_change_columns, all_goals_nan_values)
     all_goals = all_goals[all_goals_columns]
 
     game_player_stats = pd.concat([game_player_stats_home, game_player_stats_away])
-    game_player_stats = to_double_column(game_player_stats, all_players_potentional_change_columns,
+    game_player_stats = to_double_column(game_player_stats, all_players_potential_change_columns,
                                          all_players_nan_values)
     game_player_stats = game_player_stats[game_player_stats_columns]
 
     game_goalie_stats = pd.concat([game_goalie_stats_home, game_goalie_stats_away])
-    game_goalie_stats = to_double_column(game_goalie_stats, all_goalies_potentional_change_columns,
+    game_goalie_stats = to_double_column(game_goalie_stats, all_goalies_potential_change_columns,
                                          all_goalies_nan_values)
     game_goalie_stats.decision = game_goalie_stats.apply(lambda row: True if row['decision'] == 'W' else False, axis=1)
     game_goalie_stats = game_goalie_stats[game_goalie_stats_columns]
