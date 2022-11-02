@@ -2,10 +2,16 @@ import requests
 from functools import reduce
 from operator import add
 
+SEASON = '22/23'
+
 
 def get_game(game_id: int):
     request = 'https://statsapi.web.nhl.com/api/v1/game/{}/feed/live'.format(game_id)
+    print(game_id)
     return requests.get(request).json()['liveData']
+
+
+# print(get_game(2022020081))
 
 
 def get_time_goal(period: int, time: str) -> str:
@@ -65,12 +71,15 @@ def team_stats(game: dict, is_home: bool, game_id=0) -> dict:
     """get team statistic on the game"""
     if is_home:
         field = 'home'
+        other_field = 'away'
     else:
         field = 'away'
+        other_field = 'away'
     result = game['boxscore']['teams'][field]['teamStats']['teamSkaterStats']
     periods = [period[field]['goals'] for period in game['linescore']['periods']]
     result.update({'game_id': game_id,
                    'team_id': game['boxscore']['teams'][field]['team']['id'],
+                   'goals_missed': game['boxscore']['teams'][other_field]['teamStats']['teamSkaterStats']['goals'],
                    'fst_period_goals': periods[0],
                    'snd_period_goals': periods[0],
                    'trd_period_goals': periods[0]})
@@ -94,7 +103,7 @@ def game_stats(game: dict, game_id=0) -> dict:
         'lose_team_id': away_id if game['boxscore']['teams']['home']['teamStats']['teamSkaterStats']['goals'] > game['boxscore']['teams']['home']['teamStats']['teamSkaterStats']['goals'] else home_id,
         'is_overtime': is_overtime,
         'is_shootouts': False,
-        'season': '19/20'}
+        'season': SEASON}
 
 
 def player_stats(game: dict, field: str, game_id=0) -> dict:
