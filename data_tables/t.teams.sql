@@ -1,11 +1,11 @@
 CREATE TABLE teams(
-    team_id           bigint,
-    name              varchar(30),
-    tricode           varchar(5),
-    division_id       int,
-    division_name     varchar(30),
-    conference_id     int,
-    conference_name   varchar(30),
-    short_name        varchar(30),
-    active            boolean
+    team_id             bigint,
+    name                varchar(30),
+    division_name       varchar(30),
+    arena               varchar(30),
+    conference_name     varchar(30),
+    abbreviation        varchar(10),
+    first_year_of_play  int,
+    city                varchar(30),
+    active              boolean
 );

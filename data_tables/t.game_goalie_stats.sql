@@ -8,17 +8,17 @@ CREATE TABLE game_goalie_stats(
     pim                                 int,
     shots                               int,
     saves                               int,
-    powerPlaySaves                      int,
-    shortHandedSaves                    int,
-    evenSaves                           int,
-    shortHandedShotsAgainst             int,
-    evenShotsAgainst                    int,
-    powerPlayShotsAgainst               int,
+    power_play_saves                    int,
+    short_handed_saves                  int,
+    even_saves                          int,
+    short_handed_shots_against          int,
+    even_shots_against                  int,
+    power_play_shots_against            int,
     decision                            boolean,
-    savePercentage                      double PRECISION,
-    powerPlaySavePercentage             double PRECISION,
-    shortHandedSavePercentage           double PRECISION,
-    evenStrengthSavePercentage          double PRECISION
+    save_percentage                     double PRECISION,
+    power_play_save_percentage          double PRECISION,
+    short_handed_save_percentage        double PRECISION,
+    even_strength_save_percentage       double PRECISION
 );
 
 ALTER TABLE ONLY game_goalie_stats
