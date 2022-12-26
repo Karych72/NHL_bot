@@ -1,14 +1,17 @@
 import requests
 from functools import reduce
 from operator import add
-
-SEASON = '22/23'
+import pandas as pd
+import json
+import config
 
 
 def get_game(game_id: int):
+    # 2022020441
     request = 'https://statsapi.web.nhl.com/api/v1/game/{}/feed/live'.format(game_id)
     print(game_id)
     return requests.get(request).json()['liveData']
+# https://statsapi.web.nhl.com/api/v1/game/2022020434/feed/live
 
 
 # print(get_game(2022020081))
@@ -50,10 +53,16 @@ def goal_stat(event: dict, game_id=0) -> dict:
         res_dict['winner_goal'] = True
     else:
         res_dict['winner_goal'] = False
-    res_dict['is_ppg'] = event['result']['strength']['code'] == 'PPG'
-    res_dict['is_shg'] = event['result']['strength']['code'] == 'SHG'
-    res_dict['team_id'] = event['team']['id']
-    res_dict['game_id'] = game_id
+
+    res_dict.update({'is_ppg': event['result']['strength']['code'] == 'PPG',
+                     'is_shg': event['result']['strength']['code'] == 'SHG',
+                     'team_id': event['team']['id'],
+                     'game_id': game_id,
+                     'period': event['about']['period'],
+                     'time': event['about']['periodTime'],
+                     'goals_home': event['about']['goals']['home'],
+                     'goals_away': event['about']['goals']['away']}
+                    )
 
     return res_dict
 
@@ -71,28 +80,24 @@ def team_stats(game: dict, is_home: bool, game_id=0) -> dict:
     """get team statistic on the game"""
     if is_home:
         field = 'home'
-        other_field = 'away'
     else:
         field = 'away'
-        other_field = 'away'
     result = game['boxscore']['teams'][field]['teamStats']['teamSkaterStats']
     periods = [period[field]['goals'] for period in game['linescore']['periods']]
     result.update({'game_id': game_id,
                    'team_id': game['boxscore']['teams'][field]['team']['id'],
-                   'goals_missed': game['boxscore']['teams'][other_field]['teamStats']['teamSkaterStats']['goals'],
+                   'field': field,
                    'fst_period_goals': periods[0],
-                   'snd_period_goals': periods[0],
-                   'trd_period_goals': periods[0]})
+                   'snd_period_goals': periods[1],
+                   'trd_period_goals': periods[2]})
     return result
 
 
-def game_stats(game: dict, game_id=0) -> dict:
+def game_stats(game: dict, day: str, game_id=0) -> dict:
     """get game statistic"""
     away_id = game['boxscore']['teams']['away']['team']['id']
     home_id = game['boxscore']['teams']['home']['team']['id']
     is_overtime = game['linescore']['currentPeriod'] > 3
-
-    day = str(game['plays']['allPlays'][0]['about']['dateTime'])[0:10]
 
     return {
         'game_id': game_id,
@@ -103,7 +108,7 @@ def game_stats(game: dict, game_id=0) -> dict:
         'lose_team_id': away_id if game['boxscore']['teams']['home']['teamStats']['teamSkaterStats']['goals'] > game['boxscore']['teams']['home']['teamStats']['teamSkaterStats']['goals'] else home_id,
         'is_overtime': is_overtime,
         'is_shootouts': False,
-        'season': SEASON}
+        'season': config.CURRENT_SEASON}
 
 
 def player_stats(game: dict, field: str, game_id=0) -> dict:
@@ -136,13 +141,49 @@ def get_schedule(start_date, end_date) -> dict:
 
 def get_games_df(start_date, end_date) -> dict:
     schedule = get_schedule(start_date, end_date)['dates']
-    game_ids = reduce(add, [[game['gamePk'] for game in date['games']] for date in schedule], [])
-    all_games = {game_id: get_game(game_id) for game_id in game_ids}
-    return {game_id: {'all_goals': game_goals(all_games[game_id], game_id),
-                      'game_team_stats_home': team_stats(all_games[game_id], True, game_id),
-                      'game_team_stats_away': team_stats(all_games[game_id], False, game_id),
-                      'game_player_stats_home': player_stats(all_games[game_id], 'home', game_id)['players'],
-                      'game_goalie_stats_home': player_stats(all_games[game_id], 'home', game_id)['goalie'],
-                      'game_player_stats_away': player_stats(all_games[game_id], 'away', game_id)['players'],
-                      'game_goalie_stats_away': player_stats(all_games[game_id], 'away', game_id)['goalie'],
-                      'game_stats': game_stats(all_games[game_id], game_id)} for game_id in game_ids}
+    game_ids = reduce(add, [[(game['gamePk'], date['date']) for game in date['games']] for date in schedule], [])
+    all_games = {game_id[0]: get_game(game_id[0]) for game_id in game_ids}
+    return {game_id[0]: {'all_goals': game_goals(all_games[game_id[0]], game_id[0]),
+                         'game_team_stats_home': team_stats(all_games[game_id[0]], True, game_id[0]),
+                         'game_team_stats_away': team_stats(all_games[game_id[0]], False, game_id[0]),
+                         'game_player_stats_home': player_stats(all_games[game_id[0]], 'home', game_id[0])['players'],
+                         'game_goalie_stats_home': player_stats(all_games[game_id[0]], 'home', game_id[0])['goalie'],
+                         'game_player_stats_away': player_stats(all_games[game_id[0]], 'away', game_id[0])['players'],
+                         'game_goalie_stats_away': player_stats(all_games[game_id[0]], 'away', game_id[0])['goalie'],
+                         'game_stats': game_stats(all_games[game_id[0]], game_id[1], game_id[0])}
+            for game_id in game_ids}
+
+
+def player_team_stats_to_json(df: pd.DataFrame, second_key: str) -> json:
+    """
+    Second key for players is "player_id"
+    Second key for team_stats is "field"
+    """
+    to_json = json.loads(df.to_json(orient="index"))
+    result_js = {}
+
+    for key in to_json:
+        now_game_id = to_json[key]['game_id']
+        now_field = to_json[key][second_key]
+        if now_game_id not in result_js.keys():
+            result_js[now_game_id] = {}
+        result_js[now_game_id][now_field] = to_json[key]
+    return result_js
+
+
+def game_and_goals_stats_to_json(df: pd.DataFrame) -> json:
+    df = df.reset_index(drop=True)
+    to_json = json.loads(df.to_json(orient="index"))
+    result_js = {}
+
+    for key in to_json:
+        now_game_id = to_json[key]['game_id']
+        if now_game_id not in result_js.keys():
+            result_js[now_game_id] = []
+        result_js[now_game_id].append(to_json[key])
+    return result_js
+
+
+def write_json(obj, name_file):
+    with open(f"{name_file}.json", "w") as outfile:
+        json.dump(obj, outfile)
