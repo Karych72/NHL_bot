@@ -74,7 +74,7 @@ def get_player_stats(player_id: int):
     # print(player_id)
     request = TEAMS_ROSTER_URL + str(player_id) + f'{REQUEST_SUFFIX}{SEASON}'
 
-    print(request)
+    # print(request)
     # print(requests.get(request).text)
     team_request = requests.get(request).json()
     return team_request
@@ -106,7 +106,6 @@ def get_players_goalies_stats(pl):
 
 
 if __name__ == "__main__":
-    # print(get_players_goalies_stats([[8476292, 'Q']]))
     all_df = []
     players_id = []
     truncate_table('goalies_season_stats')
