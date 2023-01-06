@@ -37,7 +37,7 @@ def insert_pg(table_name, df) -> None:
                                  for row in list(value)) + '), '
         insert_values = insert_values + now_row
 
-    cursor.execute(f'INSERT INTO {table_name} VALUES ' + insert_values[:-2])
+    # print(f'INSERT INTO {table_name} VALUES ' + insert_values[:-2])
     try:
         cursor.execute(f'INSERT INTO {table_name} VALUES ' + insert_values[:-2])
     except:

@@ -43,4 +43,4 @@ on t.team_id = r.current_team_id
 where 1=1'''
 
 
-print(query(generate_query(example_query, where='wins < 15 and shutouts > 0', order_by='wins desc', limit=10), ['lastname', 'wins', 'save_percentage', 'games', 'shutouts']))
+# print(query(generate_query(example_query, where='wins < 15 and shutouts > 0', order_by='wins desc', limit=10), ['lastname', 'wins', 'save_percentage', 'games', 'shutouts']))

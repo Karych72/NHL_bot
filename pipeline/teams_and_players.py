@@ -16,11 +16,33 @@ TEAMS_URL = config.TEAMS_URL
 ROSTERS_DF_DIR = config.ROSTERS_DF_DIR
 TEAMS_DF_DIR = config.TEAMS_DF_DIR
 
+ALL_ID_TEAMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                12, 13, 14, 15, 16, 17, 18, 19, 20,
+                21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+                52, 53, 54, 55]
+
+
+def get_short_name(name: str) -> str:
+    if 'Detroit' in name:
+        return 'Detroit'
+    if 'Rangers' in name:
+        return 'Rangers'
+    if 'Islanders' in name:
+        return 'Islanders'
+    if "Columbus Blue" in name:
+        return 'Columbus'
+    if 'Vegas' in name:
+        return 'Vegas'
+    if 'Toronto' in name:
+        return 'Toronto'
+    return ' '.join(name.split(' ')[:-1])
+
 
 def get_team(team_id: int):
     request = TEAMS_URL + str(team_id)
     team_request = requests.get(request).json()
     team = team_request['teams'][0]
+    short_name = get_short_name(team['name'])
     return {'team_id': team_id,
             'name': team['name'],
             'division_name': team['division']['name'],
@@ -29,7 +51,9 @@ def get_team(team_id: int):
             'abbreviation': team['abbreviation'],
             'firstYearOfPlay': team['firstYearOfPlay'],
             'city': team['locationName'],
-            'active': team['active']}
+            'active': team['active'],
+            'short_name': short_name
+            }
 
 
 def get_player_info(player_id: int):
@@ -65,19 +89,34 @@ def get_roster_team(team_id: int):
         roster_team.append(t)
 
     pd.DataFrame(roster_team).to_csv(f'{ROSTERS_DF_DIR}/{team_id}.csv', index=False)
+
     insert_pg('rosters', pd.DataFrame(roster_team))
     print(f'Save {team_id} roster!')
     return players_id
 
 
 def get_player_stats(player_id: int):
-    # print(player_id)
     request = TEAMS_ROSTER_URL + str(player_id) + f'{REQUEST_SUFFIX}{SEASON}'
-
-    # print(request)
-    # print(requests.get(request).text)
     team_request = requests.get(request).json()
     return team_request
+
+
+def get_team_stats(team_id: int) -> dict:
+    request = TEAMS_URL + str(team_id) + '/stats'
+    team_request = requests.get(request).json()
+    need_key = ['gamesPlayed', 'wins', 'losses', 'ot', 'pts', 'ptPctg', 'goalsPerGame',
+                'goalsAgainstPerGame', 'powerPlayPercentage', 'powerPlayGoals',
+                'powerPlayGoalsAgainst', 'powerPlayOpportunities',
+                'penaltyKillPercentage', 'shotsPerGame', 'shotsAllowed', 'faceOffWinPercentage']
+    # print(team_request)
+    stats = team_request['stats'][0]['splits'][0]['stat']
+    stats['powerPlayGoals'] = int(stats['powerPlayGoals'])
+    stats['powerPlayGoalsAgainst'] = int(stats['powerPlayGoalsAgainst'])
+    stats['powerPlayOpportunities'] = int(stats['powerPlayOpportunities'])
+    team_stats = {'team_id': team_id}
+    team_stats.update({key: stats[key] for key in need_key})
+
+    return team_stats
 
 
 def get_players_goalies_stats(pl):
@@ -108,11 +147,13 @@ def get_players_goalies_stats(pl):
 if __name__ == "__main__":
     all_df = []
     players_id = []
+    teams_stats = []
     truncate_table('goalies_season_stats')
     truncate_table('players_season_stats')
+    truncate_table('teams_stats')
     truncate_table('rosters')
     truncate_table('teams')
-    for i in range(1, 60):
+    for i in ALL_ID_TEAMS:
         try:
             now_team = get_team(i)
             print(now_team['name'], i)
@@ -123,11 +164,19 @@ if __name__ == "__main__":
             players_id.extend(get_roster_team(i))
         except:
             print(f"id: {i} extend_roster_team is wrong")
+        try:
+            teams_stats.append(get_team_stats(i))
+        except:
+            print(f"id: {i} get_team_stats is wrong")
 
     pd.DataFrame(all_df).to_csv(f'{TEAMS_DF_DIR}/teams_main.csv', index=False)
+    print('Loaded Teams')
     insert_pg('teams', pd.DataFrame(all_df))
+    print('Teams are loaded')
     end = time.time()
     print(end - start)
+
+    insert_pg('teams_stats', pd.DataFrame(teams_stats))
 
     players, goalies = get_players_goalies_stats(players_id)
     pd.DataFrame(players).to_csv(f'{PLAYERS_DIR}/players.csv', index=False)
