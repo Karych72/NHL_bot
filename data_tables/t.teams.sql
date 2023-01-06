@@ -7,5 +7,6 @@ CREATE TABLE teams(
     abbreviation        varchar(10),
     first_year_of_play  int,
     city                varchar(30),
-    active              boolean
+    active              boolean,
+    short_name          varchar(30)
 );
