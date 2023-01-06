@@ -1,0 +1,4 @@
+{{ name_stats }}
+Команда/Статистика/Кол-во матчей
+{% for team in teams %}
+{{ team['short_name'] }} {{ team['count'] }} {{ team['games'] }} {% endfor %}

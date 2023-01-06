@@ -1,0 +1,5 @@
+{{ team_home }} {{ team_away }} {{ home_score }}:{{ away_score}} {{ extra }} {% for goal in goals %}
+{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ time }} {% endfor %}
+Броски: {{ home_shots }} - {{ away_shots }}
+Штрафное время: {{ home_penalties }} - {{ away_penalties }}
+Вратари: {{ goalkeepers }}
