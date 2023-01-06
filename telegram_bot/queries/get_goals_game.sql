@@ -2,6 +2,8 @@ CREATE OR REPLACE FUNCTION get_goals_game (now_game_id int)
     RETURNS TABLE(scorer varchar(50), --total_score int,
                   assist_1 varchar(50), --total_assist_1 int,
                   assist_2 varchar(50), --total_assist_2 int,
+                  period int,
+                  goal_time varchar(20),
                   home_score int,
                   away_score int)
 AS $$
@@ -10,6 +12,8 @@ BEGIN
                gs.lastname as scorer,
 	           a1.lastname as assist_1,
 	           a2.lastname as assist_2,
+	           g.period,
+	           g.time as goal_time,
 	           goals_home as home_score,
 	           goals_away as away_score
         from all_goals as g
