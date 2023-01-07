@@ -15,7 +15,7 @@ def bot_team_procent_wins(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -32,7 +32,7 @@ def bot_team_power_play(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -49,6 +49,6 @@ def bot_team_power_kill(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND

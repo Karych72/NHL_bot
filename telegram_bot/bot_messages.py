@@ -15,13 +15,12 @@ def game_message(game_id: int) -> str:
 
     game_stats = query(game_query_stats, ['goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
                                           'is_shootout', 'field', 'team_name'])
-    # print(game_stats)
 
-    game_goals = query(game_query_goals, ['scorer', 'assist_1', 'assist_2', 'period', 'time', 'home_score', 'away_score'])
+    game_goals = query(game_query_goals, ['scorer', 'assist_1', 'assist_2', 'period', 'time',
+                                          'home_score', 'away_score'])
 
     game_goalies = query(game_query_goalies, ['shots', 'saves', 'timeonice', 'lastname',
                                               'save_percentage', 'is_home'])
-    print(game_goalies)
 
     if not game_stats['is_overtime'][0]:
         extra = ''
@@ -73,7 +72,7 @@ def game_message(game_id: int) -> str:
     return output_text('messages/game_message.txt', to_template)
 
 
-# print(game_message(2022020434))
+print(game_message(2022020434))
 
 
 def player_stats(name_stats: str, table_name: str, column_name: str, count=10, condition='') -> str:
@@ -95,7 +94,7 @@ def player_stats(name_stats: str, table_name: str, column_name: str, count=10, c
     to_template = {'name_stats': name_stats}
     players = []
     for i in range(stats['count_rows']):
-        name = '%-12s' % (stats['lastname'][i])
+        name = '%-16s' % (stats['lastname'][i])
         count = '%-4s' % (stats['points'][i])
         team = stats['team'][i]
         players.append({'name': name,
@@ -135,12 +134,38 @@ def team_table():
     return output_text('messages/league_table.txt', to_template)
 
 
-print(team_table())
+# print(team_table())
 
 
-def team_stats():
-    pass
+def team_stats(name_stats: str, column_name: str, condition='') -> str:
+    stats = query(f"""  select short_name, {column_name}, games_played
+                        from teams_stats ts
+                        left join teams t
+                        on ts.team_id = t.team_id
+                        order by {column_name} desc, short_name
+                        """, ['team', 'points', 'games_played']
+                  )
+    # print(stats)
+    to_template = {'name_stats': name_stats}
+    teams = []
+    for i in range(stats['count_rows']):
+        name = '%-14s' % (stats['team'][i])
+        count = '%-5s' % (stats['points'][i])
+        team = stats['games_played'][i]
+        teams.append({'short_name': name,
+                      'count': count,
+                      'games_played': team
+                      })
+    to_template['teams'] = teams
+    return output_text('messages/team_stats.txt', to_template)
 
 
-def gay_digest():
-    pass
+def day_digest(day='2022-12-10') -> str:
+    game_ids = query(f"select distinct game_id from games where day = '{day}'", ['game_id'])
+    message = ''
+    for game_id in game_ids['game_id']:
+        message = message + game_message(game_id)
+        message += '\n\n'
+    return message
+
+

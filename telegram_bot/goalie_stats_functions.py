@@ -15,7 +15,7 @@ def bot_goalie_wins(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -32,7 +32,7 @@ def bot_goalie_percentage(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -49,6 +49,6 @@ def bot_goalie_shootouts(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND

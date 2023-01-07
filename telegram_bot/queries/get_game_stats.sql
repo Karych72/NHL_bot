@@ -12,7 +12,7 @@ CREATE OR REPLACE FUNCTION get_game_stats (now_game_id int)
 AS $$
 BEGIN
     RETURN QUERY SELECT distinct gs.goals, gs.pim, gs.blocked, gs.hits, gs.shots, g.is_overtime,
-                                 g.is_shootouts, gs.field, t.name as team_name
+                                 g.is_shootouts, gs.field, t.short_name as team_name
                  from game_team_stats gs
                  left join games g
                  on gs.game_id = g.game_id

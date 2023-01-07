@@ -15,7 +15,7 @@ def bot_player_points(update, _):
     text = player_stats('Лучшие бомбардиры', 'players_season_stats', 'points')
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -32,7 +32,7 @@ def bot_player_goals(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -49,7 +49,7 @@ def bot_player_assists(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -66,7 +66,7 @@ def bot_player_hits(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -83,7 +83,7 @@ def bot_player_plus_minus(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -100,7 +100,7 @@ def bot_player_penalties(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -117,7 +117,7 @@ def bot_player_blocks(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
 
@@ -134,6 +134,6 @@ def bot_player_ice_time(update, _):
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
         text=text, parse_mode='MARKDOWN',
-        reply_markup=reply_markup
+        # reply_markup=reply_markup
     )
     return SECOND
