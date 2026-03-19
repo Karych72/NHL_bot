@@ -1,20 +1,115 @@
 # NHL_bot
 
+Telegram bot with NHL stats:
+- `pipeline/` loads NHL API data into PostgreSQL and CSV/JSON dumps
+- `telegram_bot/` reads PostgreSQL and shows stats in Telegram menus
 
-### Description
+## Quick start
 
+From project root:
 
-### Pipeline
-Every day we take and update all team statistic.
-The function of it is in pipeline
-It has functions which get Data from API and warehouse it for three paths:
-Players, teams, game stats.
-Game stats is the main path of this.
-It gets any stats of the game, 
-    goals stat (who is scored, assisted, time of it and other), 
-    team stats (shots, blocks, power play, short-handed and other)
-    player and goalie stats in game
-It makes in 3 files, pipeline, which collects all files and get result
-Columns, it is file which shows about structure of DataFrame
-Functions, it has some functions of pipeline
-And pipeline which collect all of it together
+```bash
+cd /Users/petrkarol/Desktop/projects/NHL_bot
+make setup
+make env-example
+```
+
+Then open `.env` and fill at least:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=
+PG_DATABASE=postgres
+DATE_FROM=2026-03-18
+DATE_TO=2026-03-18
+```
+
+If `PG_USER` is empty, Makefile uses your current macOS user automatically.
+
+## Initialize database
+
+```bash
+make db-init
+```
+
+If your local PostgreSQL user is not `postgres`, use:
+
+```bash
+make db-init-local
+```
+
+This applies:
+- table DDL from `data_tables/*.sql`
+- SQL functions from `telegram_bot/queries/*.sql`
+
+## Load NHL data (pipeline)
+
+```bash
+make pipeline
+```
+
+This will:
+- create required data directories
+- fetch data from NHL API
+- insert data into PostgreSQL
+
+## Run Telegram bot
+
+```bash
+make bot
+```
+
+In Telegram send `/stats`.
+
+## One-command flows
+
+Stable local start (setup + bot). Use this when NHL API is unavailable:
+
+```bash
+make run-local
+```
+
+`setup` recreates `.venv` only if Python architecture changed (arm64/x86_64).
+
+Bot run (with setup + env copy helper):
+
+```bash
+make run-bot
+```
+
+Pipeline run only:
+
+```bash
+make run-pipeline
+```
+
+Load full season using modern NHL API (`SEASON_ID`, `DATE_FROM`, `DATE_TO` from `.env`):
+
+```bash
+make season-load
+```
+
+Full local cycle (fresh venv + db-init-local + pipeline + bot):
+
+```bash
+make run-full
+```
+
+## Manual equivalent commands (without Makefile)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+
+mkdir -p all_data/dataframes/rosters all_data/dataframes/players all_data/dataframes/teams all_data/dataframes/myself_analyses
+
+for f in data_tables/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres -f "$f"; done
+for f in telegram_bot/queries/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres -f "$f"; done
+
+cd pipeline && ../.venv/bin/python teams_and_players.py && ../.venv/bin/python pipeline.py
+cd ../telegram_bot && TELEGRAM_BOT_TOKEN=your_bot_token ../.venv/bin/python bot.py
+```
