@@ -31,7 +31,7 @@ def game_message(game_id: int) -> str:
 
     goals = []
     for i in range(game_goals['count_rows']):
-        scorer = game_goals['scorer'][i]
+        scorer = game_goals['scorer'][i] or 'Unknown'
         t_m = str((game_goals['period'][i] - 1) * 20 + int(game_goals['time'][i].split(':')[0]))
         t_all = t_m + ':' + game_goals['time'][i].split(':')[1]
         assists = ''
@@ -70,9 +70,6 @@ def game_message(game_id: int) -> str:
                    'extra': extra
                    }
     return output_text('messages/game_message.txt', to_template)
-
-
-print(game_message(2022020434))
 
 
 def player_stats(name_stats: str, table_name: str, column_name: str, count=10, condition='') -> str:
@@ -160,12 +157,24 @@ def team_stats(name_stats: str, column_name: str, condition='') -> str:
     return output_text('messages/team_stats.txt', to_template)
 
 
-def day_digest(day='2022-12-10') -> str:
+def day_digest(day=None) -> str:
+    if day is None:
+        latest_day = query("select max(day) as day from games", ["day"])
+        day = latest_day["day"][0]
+        if day is None:
+            return "В базе пока нет завершенных матчей."
+        day = str(day)
     game_ids = query(f"select distinct game_id from games where day = '{day}'", ['game_id'])
+    if game_ids['count_rows'] == 0:
+        return f'За {day} завершенных матчей не найдено.'
+
     message = ''
     for game_id in game_ids['game_id']:
         message = message + game_message(game_id)
         message += '\n\n'
+    message = message.strip()
+    if not message:
+        return f'За {day} завершенных матчей не найдено.'
     return message
 
 
