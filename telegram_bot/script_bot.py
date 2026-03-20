@@ -83,7 +83,7 @@ def bot_player_stats(update, _):
     query.answer()
     keyboard = [
             InlineKeyboardButton("Статистика полевых игроков", callback_data=str(PLAYER_FIELD)),
-            InlineKeyboardButton("Статистика вратарей", callback_data=str(PLAYER_GOALS))
+            InlineKeyboardButton("Статистика вратарей", callback_data=str(PLAYER_GOALIE))
         ]
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
