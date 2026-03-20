@@ -434,14 +434,97 @@ graph TD
 
 ## Чеклист задач
 
-- [ ] **Фаза 1.1**: Устранение SQL-инъекций в postgres_nhl.py, sql_query.py, bot_messages.py
-- [ ] **Фаза 1.2**: Вынос секретов в .env, создание единого конфига, удаление хардкоженного токена
-- [ ] **Фаза 1.3**: Исправление логических багов (winner, plus_minus/penalties, goalie callback, template)
-- [ ] **Фаза 2**: requirements.txt, .gitignore, Dockerfile, docker-compose, CI/CD
-- [ ] **Фаза 3**: logging вместо print, явные импорты, удаление мёртвого кода, type hints, устранение дублирования обработчиков
-- [ ] **Фаза 4**: Retry/timeout для HTTP, context managers для БД, rate-limiting для API, динамические даты
-- [ ] **Фаза 5**: Единый конфиг, модуль БД с пулом, NHL API клиент, кэширование, согласование схемы
-- [ ] **Фаза 6**: Unit-тесты, integration-тесты, обновление README и docstrings
-- [ ] **Фаза 7.1-7.2**: Исправить навигацию (reply_markup, кнопка Назад, турнирная таблица в меню, динамическая дата дайджеста)
-- [ ] **Фаза 7.3-7.4**: Обогатить сообщения (тип голов PPG/SHG/EN, позиции игроков, голы по периодам, карточка команды, расширенная стата)
-- [ ] **Фаза 7.5-7.8**: Новые фичи (серии побед, хет-трики, команды /standings /today /team, push-уведомления)
+### Фаза 1: Безопасность и критические баги
+
+- [x] **1.1a**: SQL-инъекции в pipeline — `postgres_nhl.py` заменён на `load_season_modern.py` с `execute_values()`
+- [x] **1.1b**: SQL-инъекции в боте — `bot_messages.py` переведён на `psycopg2.sql` + параметризованные запросы; `sql_query.py` — тонкая обёртка над `database.py`
+- [x] **1.2a**: `.env` + `.env.example` + `config.py` через `os.getenv()` — секреты вынесены
+- [x] **1.2b**: Удалён `buttons.py` с захардкоженным токеном
+- [ ] **1.2c**: Объединить два `config.py` в единый конфиг-модуль (дублирование `_env()` и DB-настроек)
+- [x] **1.3a**: Баг winner (`home > home`) — исправлен в `load_season_modern.py`
+- [ ] **1.3b**: Баг `bot_player_plus_minus` — показывает хиты вместо +/-, `bot_player_penalties` — показывает +/- вместо штрафных минут
+- [ ] **1.3c**: Баг `script_bot.py` строка ~86 — `PLAYER_GOALS` вместо `PLAYER_GOALIE` для кнопки вратарей
+- [ ] **1.3d**: Баг `game_message.txt` — `{{ time }}` вместо `{{ goal['time'] }}`
+
+### Фаза 2: Инфраструктура проекта
+
+- [x] **2.1**: `requirements.txt` создан (без `python-dotenv`)
+- [x] **2.2**: `.gitignore` создан
+- [x] **2.x**: `Makefile` создан (бонус — setup, db-init, pipeline, bot targets)
+- [ ] **2.3**: Dockerfile и docker-compose.yml
+- [ ] **2.4**: GitHub Actions CI (линтинг, тайп-чекинг, тесты)
+
+### Фаза 3: Качество кода
+
+- [ ] **3.1**: `logging` вместо `print()` — logging закомментирован, `print()` остались в `bot.py`, `script_bot.py`, `load_season_modern.py`
+- [ ] **3.2**: Star-импорты — 10 штук в 6 файлах (`bot.py` — 5 star-импортов, `script_bot.py`, `player_stats_functions.py`, `goalie_stats_functions.py`, `team_stats_functions.py`, `day_digest.py`)
+- [x] **3.3a**: `buttons.py` удалён
+- [ ] **3.3b**: Закомментированный код не убран (`reply_markup`, `PG_PASSWORD`, `logging`, `argparse`)
+- [x] **3.4a**: Type hints в pipeline (`load_season_modern.py`) — хорошие аннотации
+- [ ] **3.4b**: Type hints в боте — обработчики без аннотаций
+- [ ] **3.5**: Фабрика обработчиков — 14 copy-paste функций не рефакторены
+
+### Фаза 4: Надёжность
+
+- [x] **4.1**: HTTP retry/timeout в pipeline — 10 попыток, exponential backoff, 429-handling, 30s timeout, `requests.Session()`
+- [x] **4.2a**: Context managers для БД в боте — `database.py` с `SimpleConnectionPool` + `get_connection()` context manager
+- [x] **4.2b**: Обработка ошибок БД в pipeline — `try/except/finally` с `conn.close()` и `conn.rollback()`
+- [x] **4.3**: Rate-limiting в pipeline — обработка `Retry-After` и exponential backoff
+- [x] **4.4**: Динамические даты — `date.today()` вместо хардкода, дайджест использует `max(day) from games`
+
+### Фаза 5: Архитектурные улучшения
+
+- [x] **5.3**: NHL API клиент — класс `ModernNhlLoader` с сессиями, ретраями, пагинацией
+- [ ] **5.1**: Единый конфиг-модуль — два отдельных `config.py` с дублированием
+- [x] **5.2**: Модуль БД с connection pool — `telegram_bot/database.py` с `SimpleConnectionPool(1..5)`, whitelist идентификаторов, `fetch_all()`
+- [ ] **5.4**: Кэширование — нет `lru_cache`, `cachetools` или аналогов
+- [ ] **5.5**: Согласование схемы — частично (`winner_id` ОК, но `is_shootout` vs `is_shootouts` — потенциальный mismatch)
+
+### Фаза 6: Тесты и документация
+
+- [x] **6.2a**: README обновлён — quick start, DB init, pipeline, bot, Makefile targets
+- [ ] **6.1**: Тесты — 0 тестов, нет `tests/`, нет `conftest.py`
+- [ ] **6.2b**: Docstrings — нет ни одного docstring, только русские комментарии
+
+### Фаза 7: UX и контент
+
+- [ ] **7.1**: `reply_markup` закомментирован во ВСЕХ обработчиках — бот в тупике после просмотра статы
+- [ ] **7.2a**: Goalie-обработчики ведут на `TEAM_STATS` вместо `CHOOSE_STATS`
+- [ ] **7.2b**: Турнирная таблица не привязана к кнопке (функция `team_table()` готова)
+- [ ] **7.2c**: Кнопка "Назад" на каждом уровне
+- [ ] **7.2d**: Выбор даты для дайджеста (Вчера / Сегодня / Выбрать дату)
+- [ ] **7.3**: Обогащённые сообщения (PPG/SHG/EN, периоды, звёзды матча, позиции игроков)
+- [ ] **7.4**: Использование неиспользуемых данных (карточка команды, расширенная стата игроков/вратарей)
+- [ ] **7.5**: Вычисляемые фичи (серии побед, хет-трики, сравнения)
+- [ ] **7.6**: Push-уведомления (утренний дайджест, подписка на команду)
+- [ ] **7.7**: HTML-форматирование, моноширинный шрифт для таблиц
+- [ ] **7.8**: Новые команды (`/start`, `/standings`, `/today`, `/team`, `/help`)
+
+---
+
+## Сводка прогресса
+
+| Фаза | Прогресс | Статус |
+|---|---|---|
+| **1. Безопасность и баги** | 5/9 | ~56% — pipeline + бот SQL-инъекции исправлены |
+| **2. Инфраструктура** | 3/5 | ~60% — requirements + gitignore + Makefile, нет Docker/CI |
+| **3. Качество кода** | 3/7 | ~15% — buttons.py удалён, type hints в pipeline, остальное нет |
+| **4. Надёжность** | 5/5 | ~100% — pipeline + бот: пулинг, context managers, ретраи |
+| **5. Архитектура** | 2/5 | ~40% — NHL API клиент + модуль БД с пулом |
+| **6. Тесты и документация** | 1/3 | ~35% — README готов, тесты и docstrings отсутствуют |
+| **7. UX и контент** | 0/10 | ~0% — полностью не тронута |
+
+**Общий прогресс: ~19 из 44 задач выполнено (~43%)**
+
+### Что сделано хорошо
+
+- `load_season_modern.py` — отличная замена старого pipeline (ретраи, типы, сессии, транзакции)
+- Инфраструктура `.env` / `.gitignore` / `Makefile` / `README`
+- Удалён `buttons.py` с захардкоженным токеном
+
+### Критичные незакрытые задачи
+
+1. **3 живых бага** в обработчиках бота (перепутаны plus_minus/penalties, неправильный callback вратарей, `{{ time }}` в шаблоне)
+2. **Закомментированный `reply_markup`** — бот не юзабелен (нет навигации после просмотра статы)
+
+*Последнее обновление: 2026-03-19*

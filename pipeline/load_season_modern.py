@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple
 
 import psycopg2
 import requests
+from psycopg2 import sql as psql
 from psycopg2.extras import execute_values
 
 
@@ -555,10 +556,12 @@ class ModernNhlLoader:
     def execute_insert(self, conn, table: str, columns: List[str], rows: List[tuple], page_size: int = 1000):
         if not rows:
             return
-        cols = ", ".join(columns)
-        sql = f"INSERT INTO {table} ({cols}) VALUES %s"
+        insert_query = psql.SQL("INSERT INTO {table} ({cols}) VALUES %s").format(
+            table=psql.Identifier(table),
+            cols=psql.SQL(", ").join(psql.Identifier(c) for c in columns),
+        )
         with conn.cursor() as cur:
-            execute_values(cur, sql, rows, page_size=page_size)
+            execute_values(cur, insert_query.as_string(conn), rows, page_size=page_size)
 
     def run(self):
         print("Loading team reference...")
