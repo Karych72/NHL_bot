@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ TELEGRAM_BOT_DIR = Path(__file__).resolve().parents[1] / "telegram_bot"
 if str(TELEGRAM_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(TELEGRAM_BOT_DIR))
 import config
+
+logger = logging.getLogger(__name__)
 
 
 def to_int(value, default=0):
@@ -555,7 +558,7 @@ class ModernNhlLoader:
                     )
 
             if idx % 50 == 0 or idx == total:
-                print(f"Processed games: {idx}/{total}")
+                logger.info("Processed games: %d/%d", idx, total)
 
         return games_rows, all_goals_rows, game_team_rows, game_player_rows, game_goalie_rows
 
@@ -570,21 +573,21 @@ class ModernNhlLoader:
             execute_values(cur, insert_query.as_string(conn), rows, page_size=page_size)
 
     def run(self):
-        print("Loading team reference...")
+        logger.info("Loading team reference...")
         self.load_team_reference()
 
-        print("Building teams and season stats...")
+        logger.info("Building teams and season stats...")
         teams_rows, teams_stats_rows = self.build_teams_and_stats()
         roster_rows = self.build_rosters(teams_rows)
         skater_rows = self.build_player_season_stats()
         goalie_rows = self.build_goalie_season_stats()
 
-        print("Fetching finished games...")
+        logger.info("Fetching finished games...")
         games_meta = self.fetch_final_games()
-        print(f"Finished games to load: {len(games_meta)}")
+        logger.info("Finished games to load: %d", len(games_meta))
         games_rows, all_goals_rows, game_team_rows, game_player_rows, game_goalie_rows = self.build_game_rows(games_meta)
 
-        print("Writing to PostgreSQL...")
+        logger.info("Writing to PostgreSQL...")
         conn = psycopg2.connect(
             host=self.pg_host,
             port=self.pg_port,
@@ -867,13 +870,18 @@ class ModernNhlLoader:
         finally:
             conn.close()
 
-        print("Done.")
-        print(
-            f"Loaded: teams={len(teams_rows)}, rosters={len(roster_rows)}, "
-            f"skaters={len(skater_rows)}, goalies={len(goalie_rows)}, games={len(games_rows)}"
+        logger.info("Done.")
+        logger.info(
+            "Loaded: teams=%d, rosters=%d, skaters=%d, goalies=%d, games=%d",
+            len(teams_rows), len(roster_rows), len(skater_rows),
+            len(goalie_rows), len(games_rows),
         )
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
     loader = ModernNhlLoader()
     loader.run()

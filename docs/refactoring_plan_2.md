@@ -18,11 +18,11 @@
 
 ## Фаза 3: Качество кода
 
-- [ ] **3.1**: Перевести `print()` на `logging` (в т.ч. `bot.py`, `script_bot.py`, `load_season_modern.py`).
-- [ ] **3.2**: Убрать star-импорты в 6 файлах (`bot.py`, `script_bot.py`, `player_stats_functions.py`, `goalie_stats_functions.py`, `team_stats_functions.py`, `day_digest.py`).
-- [ ] **3.3b**: Удалить закомментированный код (`reply_markup`, `PG_PASSWORD`, `logging`, `argparse`).
-- [ ] **3.4b**: Добавить type hints в код бота (обработчики и функции).
-- [ ] **3.5**: Убрать copy-paste обработчики через фабрику хендлеров.
+- [x] **3.1**: Перевести `print()` на `logging` (в т.ч. `bot.py`, `script_bot.py`, `load_season_modern.py`).
+- [x] **3.2**: Убрать star-импорты в 6 файлах (`bot.py`, `script_bot.py`, `player_stats_functions.py`, `goalie_stats_functions.py`, `team_stats_functions.py`, `day_digest.py`).
+- [x] **3.3b**: Удалить закомментированный код (`reply_markup`, `PG_PASSWORD`, `logging`, `argparse`).
+- [x] **3.4b**: Добавить type hints в код бота (обработчики и функции).
+- [x] **3.5**: Убрать copy-paste обработчики через фабрику хендлеров.
 
 ## Фаза 5: Архитектурные улучшения
 

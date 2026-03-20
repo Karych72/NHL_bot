@@ -1,35 +1,80 @@
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from telegram.ext import (
     Updater,
     CommandHandler,
     CallbackQueryHandler,
     ConversationHandler,
 )
-from bot_messages import player_stats, team_stats
-from player_stats_functions import *
-from goalie_stats_functions import *
-from team_stats_functions import *
-from day_digest import *
 
 import config
+from dialog_states import (
+    CHOOSE_STATS,
+    DAY_DIGEST,
+    END_CONVERSATION,
+    FIRST,
+    GOALIE_PERCENTAGE,
+    GOALIE_SHOOTOUTS,
+    GOALIE_WINS,
+    PLAYER_ASSISTS,
+    PLAYER_BLOCKS,
+    PLAYER_FIELD,
+    PLAYER_GOALIE,
+    PLAYER_GOALS,
+    PLAYER_HITS,
+    PLAYER_ICE_TIME,
+    PLAYER_PENALTIES,
+    PLAYER_PLUS_MINUS,
+    PLAYER_POINTS,
+    PLAYER_STATS,
+    SECOND,
+    TEAM_POWER_KILL,
+    TEAM_POWER_PLAY,
+    TEAM_PROCENT_WINS,
+    TEAM_STATS,
+)
+from script_bot import (
+    bot_player_field,
+    bot_player_goalie,
+    bot_player_stats,
+    bot_team_stats,
+    end,
+    stats,
+    stats_over,
+)
+from stats_handlers import (
+    bot_day_digest,
+    bot_goalie_percentage,
+    bot_goalie_shootouts,
+    bot_goalie_wins,
+    bot_player_assists,
+    bot_player_blocks,
+    bot_player_goals,
+    bot_player_hits,
+    bot_player_ice_time,
+    bot_player_penalties,
+    bot_player_plus_minus,
+    bot_player_points,
+    bot_team_power_kill,
+    bot_team_power_play,
+    bot_team_procent_wins,
+)
 
-from script_bot import *
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
     updater = Updater(token=config.TOKEN)
     dispatcher = updater.dispatcher
 
-    print('In Bot', DAY_DIGEST, PLAYER_STATS, TEAM_STATS)
-    # Настройка обработчика разговоров с состояниями `FIRST` и `SECOND`
-    # Используем параметр `pattern` для передачи `CallbackQueries` с
-    # определенным шаблоном данных соответствующим обработчикам
-    # ^ - означает "начало строки"
-    # $ - означает "конец строки"
-    # Таким образом, паттерн `^ABC$` будет ловить только 'ABC'
+    logger.info("Starting bot")
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('stats', stats)],
-        states={  # словарь состояний разговора, возвращаемых callback функциями
+        states={
             FIRST: [
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
                 CallbackQueryHandler(bot_player_stats, pattern='^' + str(PLAYER_STATS) + '$'),
@@ -63,8 +108,6 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('stats', stats)],
     )
 
-    # Добавляем `ConversationHandler` в диспетчер, который
-    # будет использоваться для обработки обновлений
     dispatcher.add_handler(conv_handler)
 
     updater.start_polling()
