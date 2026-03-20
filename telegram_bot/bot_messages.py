@@ -8,7 +8,7 @@ def game_message(game_id: int) -> str:
     game_stats = fetch_all(
         "SELECT * FROM get_game_stats(%s)", (game_id,),
         ['goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
-         'is_shootout', 'field', 'team_name'],
+         'is_shootouts', 'field', 'team_name'],
     )
     game_goals = fetch_all(
         "SELECT * FROM get_goals_game(%s)", (game_id,),
@@ -23,7 +23,7 @@ def game_message(game_id: int) -> str:
 
     if not game_stats['is_overtime'][0]:
         extra = ''
-    elif not game_stats['is_shootout'][0]:
+    elif not game_stats['is_shootouts'][0]:
         extra = '(OT)'
     else:
         extra = '(Б)'

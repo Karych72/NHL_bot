@@ -1,13 +1,19 @@
-import os
-import getpass
 import time
 from datetime import date, datetime
+from pathlib import Path
+import sys
 from typing import Dict, List, Tuple
 
 import psycopg2
 import requests
 from psycopg2 import sql as psql
 from psycopg2.extras import execute_values
+
+# Reuse a single shared project config module from telegram_bot/.
+TELEGRAM_BOT_DIR = Path(__file__).resolve().parents[1] / "telegram_bot"
+if str(TELEGRAM_BOT_DIR) not in sys.path:
+    sys.path.insert(0, str(TELEGRAM_BOT_DIR))
+import config
 
 
 def to_int(value, default=0):
@@ -59,15 +65,15 @@ def age_from_birthdate(birth_date: str) -> int:
 
 class ModernNhlLoader:
     def __init__(self):
-        self.pg_host = os.getenv("PG_HOST", "localhost")
-        self.pg_port = os.getenv("PG_PORT", "5432")
-        self.pg_user = os.getenv("PG_USER", "") or getpass.getuser()
-        self.pg_database = os.getenv("PG_DATABASE", "postgres")
+        self.pg_host = config.PG_HOST
+        self.pg_port = config.PG_PORT
+        self.pg_user = config.PG_USER
+        self.pg_database = config.PG_DATABASE
 
-        self.season_id = int(os.getenv("SEASON_ID", "20252026"))
-        self.current_season_label = os.getenv("CURRENT_SEASON", "25/26")
-        self.start_date = os.getenv("DATE_FROM", "2025-10-01")
-        self.end_date = os.getenv("DATE_TO", date.today().isoformat())
+        self.season_id = config.SEASON_ID
+        self.current_season_label = config.CURRENT_SEASON
+        self.start_date = config.DATE_FROM
+        self.end_date = config.DATE_TO
 
         self.session = requests.Session()
         self.session.headers.update(
