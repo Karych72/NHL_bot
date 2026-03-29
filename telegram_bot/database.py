@@ -22,10 +22,14 @@ _pool: Optional[psycopg2.pool.SimpleConnectionPool] = None
 
 # ---------------------------------------------------------------------------
 # Whitelists — only identifiers listed here may be used in dynamic queries.
+# Skater advanced / shot-type column names should match ADVANCED_STATS_COLUMNS /
+# SHOT_TYPES_COLUMNS in bot_messages.py (used for JOIN / secondary sort).
 # ---------------------------------------------------------------------------
 
 ALLOWED_TABLES = frozenset({
     "players_season_stats",
+    "players_advanced_stats",
+    "players_shot_types",
     "goalies_season_stats",
     "teams_stats",
     "teams",
@@ -38,6 +42,7 @@ ALLOWED_TABLES = frozenset({
 })
 
 ALLOWED_COLUMNS = frozenset({
+    "season_id",
     # teams
     "team_id", "name", "division_name", "arena", "conference_name",
     "abbreviation", "first_year_of_play", "city", "active", "short_name",
@@ -57,7 +62,19 @@ ALLOWED_COLUMNS = frozenset({
     "over_time_goals", "short_handed_goals", "short_handed_points",
     "short_handed_time_on_ice", "blocked", "plus_minus", "shifts",
     "time_on_ice_per_game", "even_time_on_ice_per_game",
-    "short_handed_time_on_ice_per_game", "power_play_time_on_ice_per_game",
+    "short_handed_time_on_ice_per_game",     "power_play_time_on_ice_per_game",
+    "oz_faceoff_pct", "dz_faceoff_pct", "nz_faceoff_pct",
+    "shootout_goals", "shootout_shots", "shootout_pct", "shootout_gd_goals",
+    # players_advanced_stats
+    "sat_pct", "usat_pct", "goals_pct", "oz_start_pct", "dz_start_pct",
+    "nz_start_pct", "on_ice_shooting_pct", "ev_goals_for", "ev_goals_against",
+    "ev_goals_for_pct", "pp_goals_for", "pp_goals_against", "sh_goals_for",
+    "sh_goals_against",
+    # players_shot_types
+    "goals_wrist", "shots_wrist", "goals_slap", "shots_slap", "goals_snap",
+    "shots_snap", "goals_backhand", "shots_backhand", "goals_tip_in",
+    "shots_tip_in", "goals_deflected", "shots_deflected", "goals_wrap_around",
+    "shots_wrap_around",
     # goalies_season_stats
     "shutouts", "ties", "saves", "power_play_saves", "short_handed_saves",
     "even_saves", "short_handed_shots", "even_shots", "power_play_shots",

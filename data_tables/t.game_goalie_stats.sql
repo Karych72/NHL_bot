@@ -1,8 +1,8 @@
 CREATE TABLE game_goalie_stats(
-    team_id                             bigint,
-    game_id                             bigint,
-    player_id                           bigint,
-    timeOnIce                           varchar(20),
+    team_id                             bigint NOT NULL,
+    game_id                             bigint NOT NULL,
+    player_id                           bigint NOT NULL,
+    timeonice                           varchar(20),
     assists                             int,
     goals                               int,
     pim                                 int,
@@ -15,11 +15,9 @@ CREATE TABLE game_goalie_stats(
     even_shots_against                  int,
     power_play_shots_against            int,
     decision                            boolean,
-    save_percentage                     double PRECISION,
-    power_play_save_percentage          double PRECISION,
-    short_handed_save_percentage        double PRECISION,
-    even_strength_save_percentage       double PRECISION
+    save_percentage                     double precision,
+    power_play_save_percentage          double precision,
+    short_handed_save_percentage        double precision,
+    even_strength_save_percentage       double precision,
+    UNIQUE (game_id, player_id)
 );
-
-ALTER TABLE ONLY game_goalie_stats
-    ADD CONSTRAINT game_goalie_stats_key UNIQUE (game_id, player_id);

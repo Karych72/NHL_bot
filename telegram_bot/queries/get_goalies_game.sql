@@ -11,10 +11,10 @@ BEGIN
                  r.lastname, ggs.save_percentage,
                  g.home_team_id = ggs.team_id as is_home
                  from game_goalie_stats ggs
-                 left join rosters r
-                 on ggs.player_id = r.player_id
                  left join games g
                  on g.game_id = ggs.game_id
+                 left join rosters r
+                 on ggs.player_id = r.player_id and r.season_id = g.season_id
                  where ggs.game_id = now_game_id
                  order by is_home desc
                  ;

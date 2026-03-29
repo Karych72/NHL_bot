@@ -17,7 +17,7 @@ BEGIN
                  left join games g
                  on gs.game_id = g.game_id
                  left join teams t
-                 on t.team_id = gs.team_id
+                 on t.team_id = gs.team_id and t.season_id = g.season_id
                  where gs.game_id = now_game_id
                  order by field desc;
 END;

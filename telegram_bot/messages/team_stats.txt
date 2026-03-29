@@ -1,7 +1,5 @@
 *{{ name_stats }}*
 
-Команда/Статистика/Кол-во матчей
-
-```{% for team in teams %}
-{{ team['short_name'] }} {{ team['count'] }} {{ team['games_played'] }} {% endfor %}
-```
+{% for team in teams %}
+{{ team.rank }}. {{ team.name }} — {{ team.value }} (игр: {{ team.games }})
+{% endfor %}

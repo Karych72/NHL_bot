@@ -1,5 +1,5 @@
 *{{ name_stats }}*
 
-```{% for player in players %}
-{{ player['name'] }} {{ player['count'] }} {{ player['team'] }} {% endfor %}
-```
+{% for player in players %}
+{{ player.rank }}. {{ player.lastname }} — {{ player.value }} ({{ player.team }})
+{% endfor %}

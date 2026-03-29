@@ -1,9 +1,10 @@
+import argparse
 import logging
 import time
 from datetime import date, datetime
 from pathlib import Path
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import psycopg2
 import requests
@@ -53,6 +54,17 @@ def split_sv(value: str) -> Tuple[int, int]:
         return 0, 0
     left, right = str(value).split("/", 1)
     return to_int(left, 0), to_int(right, 0)
+
+
+def seconds_to_mmss(value, default="00:00") -> str:
+    try:
+        s = float(value) if value is not None else 0
+    except (ValueError, TypeError):
+        return default
+    if s <= 0:
+        return default
+    total_seconds = int(round(s))
+    return f"{total_seconds // 60}:{total_seconds % 60:02d}"
 
 
 def age_from_birthdate(birth_date: str) -> int:
@@ -168,6 +180,7 @@ class ModernNhlLoader:
             teams_rows.append(
                 (
                     team_id,
+                    self.season_id,
                     full_name,
                     division,
                     None,  # arena
@@ -183,6 +196,7 @@ class ModernNhlLoader:
             teams_stats_rows.append(
                 (
                     team_id,
+                    self.season_id,
                     to_int(row.get("gamesPlayed")),
                     to_int(row.get("wins")),
                     to_int(row.get("losses")),
@@ -209,7 +223,7 @@ class ModernNhlLoader:
 
         for team in team_rows:
             team_id = to_int(team[0])
-            tri = team[5]
+            tri = team[6]
             if not tri:
                 continue
             url = f"https://api-web.nhle.com/v1/roster/{tri}/{season_str}"
@@ -223,6 +237,7 @@ class ModernNhlLoader:
                     position = p.get("positionCode")
                     row = (
                         player_id,
+                        self.season_id,
                         full_name,
                         position,
                         to_int(p.get("sweaterNumber"), 0),
@@ -238,27 +253,291 @@ class ModernNhlLoader:
                     rows_by_player[player_id] = row
         return list(rows_by_player.values())
 
-    def build_player_season_stats(self) -> List[tuple]:
+    def _abbrev_to_team_id(self) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for tid, meta in self.team_meta_by_id.items():
+            tri = meta.get("triCode") or meta.get("rawTricode")
+            if tri and tid:
+                out[str(tri).upper()] = tid
+        return out
+
+    def _team_id_from_stats_team_abbrevs(
+        self, team_abbrevs, abbrev_map: Dict[str, int]
+    ) -> Optional[int]:
+        """Map Stats API ``teamAbbrevs`` (e.g. ``SEA`` or ``TOR, BOS``) to ``team_id``."""
+        if not team_abbrevs:
+            return None
+        parts = [p.strip().upper() for p in str(team_abbrevs).split(",") if p.strip()]
+        if not parts:
+            return None
+        abbrev = parts[-1]
+        return abbrev_map.get(abbrev)
+
+    def _roster_tuple_from_landing(self, payload: dict) -> Optional[tuple]:
+        player_id = to_int(payload.get("playerId"))
+        if not player_id:
+            return None
+        first_name = (payload.get("firstName") or {}).get("default", "")
+        last_name = (payload.get("lastName") or {}).get("default", "")
+        full_name = f"{first_name} {last_name}".strip()
+        last_only = last_name or full_name
+        tid = to_int(payload.get("currentTeamId"), 0)
+        team_id = tid if tid > 0 else None
+        pos = payload.get("position") or ""
+        return (
+            player_id,
+            self.season_id,
+            full_name,
+            pos,
+            to_int(payload.get("sweaterNumber"), 0),
+            age_from_birthdate(payload.get("birthDate") or ""),
+            last_only,
+            payload.get("birthCountry"),
+            False,
+            False,
+            False,
+            pos,
+            team_id,
+        )
+
+    def supplement_rosters_from_reports(
+        self,
+        roster_rows: List[tuple],
+        skater_summary_rows: List[dict],
+        goalie_summary_rows: List[dict],
+        extra_player_ids: Optional[Set[int]] = None,
+    ) -> List[tuple]:
+        """Add roster rows for anyone in season stats but missing from team roster endpoints.
+
+        Official ``/v1/roster/{tri}/{season}`` lists the current active roster only; skater and
+        goalie summary reports list everyone with games in the season (call-ups, short stints).
+        Remaining gaps (rare) are filled via the player landing endpoint.
+        """
+        abbrev_map = self._abbrev_to_team_id()
+        rows_by_player: Dict[int, tuple] = {}
+        for row in roster_rows:
+            pid = to_int(row[0])
+            if pid:
+                rows_by_player[pid] = row
+
+        def add_skater(r: dict) -> None:
+            pid = to_int(r.get("playerId"))
+            if not pid or pid in rows_by_player:
+                return
+            team_id = self._team_id_from_stats_team_abbrevs(r.get("teamAbbrevs"), abbrev_map)
+            full_name = (r.get("skaterFullName") or r.get("lastName") or "").strip()
+            last_name = (r.get("lastName") or "").strip()
+            pos = r.get("positionCode") or ""
+            display_name = full_name or last_name
+            rows_by_player[pid] = (
+                pid,
+                self.season_id,
+                display_name,
+                pos,
+                0,
+                0,
+                last_name or display_name,
+                None,
+                False,
+                False,
+                False,
+                pos,
+                team_id,
+            )
+
+        def add_goalie(r: dict) -> None:
+            pid = to_int(r.get("playerId"))
+            if not pid or pid in rows_by_player:
+                return
+            team_id = self._team_id_from_stats_team_abbrevs(r.get("teamAbbrevs"), abbrev_map)
+            full_name = (r.get("goalieFullName") or r.get("lastName") or "").strip()
+            last_name = (r.get("lastName") or "").strip()
+            display_name = full_name or last_name
+            rows_by_player[pid] = (
+                pid,
+                self.season_id,
+                display_name,
+                "G",
+                0,
+                0,
+                last_name or display_name,
+                None,
+                False,
+                False,
+                False,
+                "G",
+                team_id,
+            )
+
+        for r in skater_summary_rows:
+            add_skater(r)
+        for r in goalie_summary_rows:
+            add_goalie(r)
+
+        if extra_player_ids:
+            missing = sorted(p for p in extra_player_ids if p > 0 and p not in rows_by_player)
+            if missing:
+                logger.info(
+                    "Supplementing %d roster row(s) from player landing (not on team roster or summary)",
+                    len(missing),
+                )
+            for pid in missing:
+                url = f"https://api-web.nhle.com/v1/player/{pid}/landing"
+                try:
+                    payload = self.get_json(url)
+                except Exception as exc:
+                    logger.warning("Roster supplement: landing failed for player_id=%s: %s", pid, exc)
+                    continue
+                row = self._roster_tuple_from_landing(payload)
+                if row:
+                    rows_by_player[pid] = row
+
+        return list(rows_by_player.values())
+
+    def build_player_advanced_stats(self) -> List[tuple]:
+        gfa_url = (
+            "https://api.nhle.com/stats/rest/en/skater/goalsForAgainst"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater goalsForAgainst report...")
+        gfa_rows = self.fetch_paginated(gfa_url, page_size=1000)
+        # Duplicate playerId in one page: last row wins (same for other dict-by-player merges).
+        gfa_by_player = {to_int(r.get("playerId")): r for r in gfa_rows}
+
+        pp_url = (
+            "https://api.nhle.com/stats/rest/en/skater/puckPossessions"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater puckPossessions report...")
+        pp_rows = self.fetch_paginated(pp_url, page_size=1000)
+        pp_by_player = {to_int(r.get("playerId")): r for r in pp_rows}
+
+        all_pids = {p for p in (set(gfa_by_player) | set(pp_by_player)) if p > 0}
+        out: List[tuple] = []
+        for pid in sorted(all_pids):
+            gfa = gfa_by_player.get(pid, {})
+            pp = pp_by_player.get(pid, {})
+            out.append(
+                (
+                    pid,
+                    self.season_id,
+                    pct_from_ratio(pp.get("satPct")),
+                    pct_from_ratio(pp.get("usatPct")),
+                    pct_from_ratio(pp.get("goalsPct")),
+                    pct_from_ratio(pp.get("offensiveZoneStartPct")),
+                    pct_from_ratio(pp.get("defensiveZoneStartPct")),
+                    pct_from_ratio(pp.get("neutralZoneStartPct")),
+                    pct_from_ratio(pp.get("onIceShootingPct")),
+                    to_int(gfa.get("evenStrengthGoalsFor")),
+                    to_int(gfa.get("evenStrengthGoalsAgainst")),
+                    pct_from_ratio(gfa.get("evenStrengthGoalsForPct")),
+                    # NHL API field name (typo: Goal not Goals).
+                    to_int(gfa.get("powerPlayGoalFor")),
+                    to_int(gfa.get("powerPlayGoalsAgainst")),
+                    to_int(gfa.get("shortHandedGoalsFor")),
+                    to_int(gfa.get("shortHandedGoalsAgainst")),
+                )
+            )
+        return out
+
+    def build_player_shot_types(self) -> List[tuple]:
+        url = (
+            "https://api.nhle.com/stats/rest/en/skater/shottype"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater shottype report...")
+        rows = self.fetch_paginated(url, page_size=1000)
+        out: List[tuple] = []
+        for r in rows:
+            pid = to_int(r.get("playerId"))
+            if not pid:
+                continue
+            out.append(
+                (
+                    pid,
+                    self.season_id,
+                    to_int(r.get("goalsWrist")),
+                    to_int(r.get("shotsOnNetWrist")),
+                    to_int(r.get("goalsSlap")),
+                    to_int(r.get("shotsOnNetSlap")),
+                    to_int(r.get("goalsSnap")),
+                    to_int(r.get("shotsOnNetSnap")),
+                    to_int(r.get("goalsBackhand")),
+                    to_int(r.get("shotsOnNetBackhand")),
+                    to_int(r.get("goalsTipIn")),
+                    to_int(r.get("shotsOnNetTipIn")),
+                    to_int(r.get("goalsDeflected")),
+                    to_int(r.get("shotsOnNetDeflected")),
+                    to_int(r.get("goalsWrapAround")),
+                    to_int(r.get("shotsOnNetWrapAround")),
+                )
+            )
+        return out
+
+    def build_player_season_stats(self) -> Tuple[List[tuple], List[dict]]:
         url = (
             "https://api.nhle.com/stats/rest/en/skater/summary"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         rows = self.fetch_paginated(url, page_size=1000)
+
+        toi_url = (
+            "https://api.nhle.com/stats/rest/en/skater/timeonice"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater time-on-ice report...")
+        toi_rows = self.fetch_paginated(toi_url, page_size=1000)
+        toi_by_player = {to_int(t.get("playerId")): t for t in toi_rows}
+        if toi_rows:
+            logger.debug("timeonice sample keys: %s", list(toi_rows[0].keys()))
+
+        fop_url = (
+            "https://api.nhle.com/stats/rest/en/skater/faceoffpercentages"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater faceoffpercentages report...")
+        fop_rows = self.fetch_paginated(fop_url, page_size=1000)
+        fop_by_player = {to_int(t.get("playerId")): t for t in fop_rows}
+
+        so_url = (
+            "https://api.nhle.com/stats/rest/en/skater/shootout"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater shootout report...")
+        so_rows = self.fetch_paginated(so_url, page_size=1000)
+        so_by_player = {to_int(t.get("playerId")): t for t in so_rows}
+
+        # summary no longer includes hits / blockedShots (as of 2025–26 API); realtime does
+        rt_url = (
+            "https://api.nhle.com/stats/rest/en/skater/realtime"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching skater realtime report (hits, blocked shots)...")
+        rt_rows = self.fetch_paginated(rt_url, page_size=1000)
+        rt_by_player = {to_int(t.get("playerId")): t for t in rt_rows}
+        if rt_rows:
+            logger.debug("realtime sample keys: %s", list(rt_rows[0].keys()))
+
         out = []
         for r in rows:
+            player_id = to_int(r.get("playerId"))
+            toi = toi_by_player.get(player_id, {})
+            fop = fop_by_player.get(player_id, {})
+            so = so_by_player.get(player_id, {})
+            rt = rt_by_player.get(player_id, {})
             out.append(
                 (
-                    "00:00",  # time_on_ice
+                    seconds_to_mmss(toi.get("timeOnIce")),
                     to_int(r.get("assists")),
                     to_int(r.get("goals")),
                     to_int(r.get("penaltyMinutes")),
                     to_int(r.get("shots")),
                     to_int(r.get("gamesPlayed")),
-                    to_int(r.get("hits")),
+                    to_int(rt.get("hits", r.get("hits"))),
                     to_int(r.get("ppGoals")),
                     to_int(r.get("ppPoints")),
-                    "00:00",  # power_play_time_on_ice
-                    "00:00",  # even_time_on_ice
+                    seconds_to_mmss(toi.get("ppTimeOnIce")),
+                    seconds_to_mmss(toi.get("evTimeOnIce")),
                     to_int(r.get("penaltyMinutes")),
                     pct_from_ratio(r.get("faceoffWinPct")),
                     pct_from_ratio(r.get("shootingPct")),
@@ -266,43 +545,70 @@ class ModernNhlLoader:
                     to_int(r.get("otGoals")),
                     to_int(r.get("shGoals")),
                     to_int(r.get("shPoints")),
-                    "00:00",  # short_handed_time_on_ice
-                    to_int(r.get("blockedShots")),
+                    seconds_to_mmss(toi.get("shTimeOnIce")),
+                    to_int(rt.get("blockedShots", r.get("blockedShots"))),
                     to_int(r.get("plusMinus")),
                     to_int(r.get("points")),
                     to_int(r.get("shifts")),
-                    "00:00",  # time_on_ice_per_game
-                    "00:00",  # even_time_on_ice_per_game
-                    "00:00",  # short_handed_time_on_ice_per_game
-                    "00:00",  # power_play_time_on_ice_per_game
-                    to_int(r.get("playerId")),
+                    seconds_to_mmss(toi.get("timeOnIcePerGame")),
+                    seconds_to_mmss(toi.get("evTimeOnIcePerGame")),
+                    seconds_to_mmss(toi.get("shTimeOnIcePerGame")),
+                    seconds_to_mmss(toi.get("ppTimeOnIcePerGame")),
+                    pct_from_ratio(fop.get("offensiveZoneFaceoffPct")),
+                    pct_from_ratio(fop.get("defensiveZoneFaceoffPct")),
+                    pct_from_ratio(fop.get("neutralZoneFaceoffPct")),
+                    to_int(so.get("shootoutGoals")),
+                    to_int(so.get("shootoutShots")),
+                    to_int(so.get("shootoutGameDecidingGoals")),
+                    pct_from_ratio(so.get("shootoutShootingPct")),
+                    player_id,
+                    self.season_id,
                 )
             )
-        return out
+        return out, rows
 
-    def build_goalie_season_stats(self) -> List[tuple]:
+    def build_goalie_season_stats(self) -> Tuple[List[tuple], List[dict]]:
         url = (
             "https://api.nhle.com/stats/rest/en/goalie/summary"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         rows = self.fetch_paginated(url, page_size=1000)
+
+        sbs_url = (
+            "https://api.nhle.com/stats/rest/en/goalie/savesByStrength"
+            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+        )
+        logger.info("Fetching goalie saves-by-strength report...")
+        sbs_rows = self.fetch_paginated(sbs_url, page_size=1000)
+        sbs_by_player = {to_int(s.get("playerId")): s for s in sbs_rows}
+        if sbs_rows:
+            logger.debug("savesByStrength sample keys: %s", list(sbs_rows[0].keys()))
+
         out = []
         for r in rows:
+            player_id = to_int(r.get("playerId"))
+            sbs = sbs_by_player.get(player_id, {})
+            pp_saves = to_int(sbs.get("ppSaves"))
+            sh_saves = to_int(sbs.get("shSaves"))
+            ev_saves = to_int(sbs.get("evSaves"))
+            pp_shots = to_int(sbs.get("ppShotsAgainst"))
+            sh_shots = to_int(sbs.get("shShotsAgainst"))
+            ev_shots = to_int(sbs.get("evShotsAgainst"))
             out.append(
                 (
-                    "00:00",  # time_on_ice
+                    "00:00",  # time_on_ice — not available in summary/savesByStrength
                     to_int(r.get("otLosses")),
                     to_int(r.get("shutouts")),
                     0,  # ties
                     to_int(r.get("wins")),
                     to_int(r.get("losses")),
                     to_int(r.get("saves")),
-                    0,  # power_play_saves
-                    0,  # short_handed_saves
-                    0,  # even_saves
-                    0,  # short_handed_shots
-                    0,  # even_shots
-                    0,  # power_play_shots
+                    pp_saves,
+                    sh_saves,
+                    ev_saves,
+                    sh_shots,
+                    ev_shots,
+                    pp_shots,
                     pct_from_ratio(r.get("savePct")),
                     to_float(r.get("goalsAgainstAverage")),
                     to_int(r.get("gamesPlayed")),
@@ -310,13 +616,14 @@ class ModernNhlLoader:
                     to_int(r.get("shotsAgainst")),
                     to_int(r.get("goalsAgainst")),
                     "00:00",  # time_on_ice_per_game
-                    0.0,  # power_play_save_percentage
-                    0.0,  # short_handed_save_percentage
-                    0.0,  # even_strength_save_percentage
-                    to_int(r.get("playerId")),
+                    round((pp_saves / pp_shots) * 100, 2) if pp_shots else 0.0,
+                    round((sh_saves / sh_shots) * 100, 2) if sh_shots else 0.0,
+                    round((ev_saves / ev_shots) * 100, 2) if ev_shots else 0.0,
+                    player_id,
+                    self.season_id,
                 )
             )
-        return out
+        return out, rows
 
     def fetch_final_games(self) -> List[dict]:
         cayenne = (
@@ -359,6 +666,7 @@ class ModernNhlLoader:
                     is_ot,
                     is_shootout,
                     self.current_season_label,
+                    self.season_id,
                 )
             )
 
@@ -376,32 +684,75 @@ class ModernNhlLoader:
                 away_id: {1: 0, 2: 0, 3: 0},
             }
 
+            game_goals = []
             for g in goals:
                 d = g.get("details", {})
                 period = to_int((g.get("periodDescriptor") or {}).get("number"), 0)
                 team_id = to_int(d.get("eventOwnerTeamId"))
                 if period in (1, 2, 3) and team_id in team_period_goals:
                     team_period_goals[team_id][period] += 1
-                all_goals_rows.append(
-                    (
+
+                situation = g.get("situationCode") or ""
+                modifier = (d.get("goalModifier") or "").lower()
+
+                empty_net = "empty-net" in modifier
+                if not empty_net and len(situation) == 4:
+                    if team_id == home_id:
+                        empty_net = situation[0] == '0'
+                    else:
+                        empty_net = situation[3] == '0'
+
+                is_ppg = False
+                is_shg = False
+                if len(situation) == 4:
+                    try:
+                        away_goalie = int(situation[0])
+                        away_skaters = int(situation[1])
+                        home_skaters = int(situation[2])
+                        home_goalie = int(situation[3])
+                        eff_away = away_skaters - (1 - away_goalie)
+                        eff_home = home_skaters - (1 - home_goalie)
+                        if team_id == home_id:
+                            is_ppg = eff_home > eff_away
+                            is_shg = eff_home < eff_away
+                        else:
+                            is_ppg = eff_away > eff_home
+                            is_shg = eff_away < eff_home
+                    except (ValueError, IndexError):
+                        pass
+
+                game_goals.append(
+                    [
                         to_int(d.get("scoringPlayerId"), -9999),
                         to_int(d.get("scoringPlayerTotal"), 0),
                         to_int(d.get("assist1PlayerId"), -9999),
                         to_int(d.get("assist1PlayerTotal"), 0),
                         to_int(d.get("assist2PlayerId"), -9999),
                         to_int(d.get("assist2PlayerTotal"), 0),
-                        False,  # empty_net unavailable in this endpoint
-                        False,  # winner_goal unavailable in this endpoint
-                        False,  # is_ppg unavailable in this endpoint
-                        False,  # is_shg unavailable in this endpoint
+                        empty_net,
+                        False,
+                        is_ppg,
+                        is_shg,
                         team_id,
                         game_id,
                         period,
                         g.get("timeInPeriod"),
                         to_int(d.get("awayScore")),
                         to_int(d.get("homeScore")),
-                    )
+                        to_int(g.get("eventId")),
+                    ]
                 )
+
+            losing_score = min(home_score, away_score)
+            winner_goal_count = 0
+            for row in game_goals:
+                if row[10] == winner:
+                    winner_goal_count += 1
+                    if winner_goal_count == losing_score + 1:
+                        row[7] = True
+                        break
+
+            all_goals_rows.extend(tuple(r) for r in game_goals)
 
             pim_by_team = {home_id: 0, away_id: 0}
             for p in penalties:
@@ -449,15 +800,28 @@ class ModernNhlLoader:
             home_sog = to_int((box.get("homeTeam") or {}).get("sog"))
             away_sog = to_int((box.get("awayTeam") or {}).get("sog"))
 
+            pp_opps = {home_id: 0, away_id: 0}
+            for p in penalties:
+                penalized = to_int((p.get("details") or {}).get("eventOwnerTeamId"))
+                if penalized == home_id:
+                    pp_opps[away_id] += 1
+                elif penalized == away_id:
+                    pp_opps[home_id] += 1
+
+            pp_goals_team = {home_id: 0, away_id: 0}
+            for row in game_goals:
+                if row[8]:
+                    pp_goals_team[row[10]] = pp_goals_team.get(row[10], 0) + 1
+
             game_team_rows.append(
                 (
                     home_score,
                     "home",
                     pim_by_team.get(home_id, 0),
                     home_sog,
-                    0.0,  # power_play_percentage
-                    0.0,  # power_play_goals
-                    0.0,  # power_play_opportunities
+                    round((pp_goals_team[home_id] / pp_opps[home_id]) * 100, 2) if pp_opps[home_id] > 0 else 0.0,
+                    float(pp_goals_team[home_id]),
+                    float(pp_opps[home_id]),
                     round((faceoff_wins.get(home_id, 0) / faceoff_taken.get(home_id, 1)) * 100, 2)
                     if faceoff_taken.get(home_id, 0) > 0 else 0.0,
                     blocked_by_team.get(home_id, 0),
@@ -477,9 +841,9 @@ class ModernNhlLoader:
                     "away",
                     pim_by_team.get(away_id, 0),
                     away_sog,
-                    0.0,
-                    0.0,
-                    0.0,
+                    round((pp_goals_team[away_id] / pp_opps[away_id]) * 100, 2) if pp_opps[away_id] > 0 else 0.0,
+                    float(pp_goals_team[away_id]),
+                    float(pp_opps[away_id]),
                     round((faceoff_wins.get(away_id, 0) / faceoff_taken.get(away_id, 1)) * 100, 2)
                     if faceoff_taken.get(away_id, 0) > 0 else 0.0,
                     blocked_by_team.get(away_id, 0),
@@ -494,34 +858,64 @@ class ModernNhlLoader:
                 )
             )
 
+            player_fo_wins = {}
+            player_fo_taken = {}
+            for f in faceoffs:
+                d = f.get("details", {})
+                winner_pid = to_int(d.get("winningPlayerId"), 0)
+                loser_pid = to_int(d.get("losingPlayerId"), 0)
+                if winner_pid:
+                    player_fo_wins[winner_pid] = player_fo_wins.get(winner_pid, 0) + 1
+                    player_fo_taken[winner_pid] = player_fo_taken.get(winner_pid, 0) + 1
+                if loser_pid:
+                    player_fo_taken[loser_pid] = player_fo_taken.get(loser_pid, 0) + 1
+
+            player_pp_assists = {}
+            player_sh_goals = {}
+            player_sh_assists = {}
+            for row in game_goals:
+                scorer_id = row[0]
+                assist1_id = row[2]
+                assist2_id = row[4]
+                if row[8]:
+                    if assist1_id != -9999:
+                        player_pp_assists[assist1_id] = player_pp_assists.get(assist1_id, 0) + 1
+                    if assist2_id != -9999:
+                        player_pp_assists[assist2_id] = player_pp_assists.get(assist2_id, 0) + 1
+                if row[9]:
+                    if scorer_id != -9999:
+                        player_sh_goals[scorer_id] = player_sh_goals.get(scorer_id, 0) + 1
+                    if assist1_id != -9999:
+                        player_sh_assists[assist1_id] = player_sh_assists.get(assist1_id, 0) + 1
+                    if assist2_id != -9999:
+                        player_sh_assists[assist2_id] = player_sh_assists.get(assist2_id, 0) + 1
+
             for side_key, team_id in (("homeTeam", home_id), ("awayTeam", away_id)):
                 side_stats = (box.get("playerByGameStats") or {}).get(side_key, {})
                 skaters = side_stats.get("forwards", []) + side_stats.get("defense", [])
                 for p in skaters:
+                    pid = to_int(p.get("playerId"))
                     game_player_rows.append(
                         (
                             team_id,
                             game_id,
-                            to_int(p.get("playerId")),
+                            pid,
                             p.get("toi") or "00:00",
                             to_int(p.get("assists")),
                             to_int(p.get("goals")),
                             to_int(p.get("sog")),
                             to_int(p.get("hits")),
                             to_int(p.get("powerPlayGoals")),
-                            0,  # power_play_assists
+                            player_pp_assists.get(pid, 0),
                             to_int(p.get("pim")),
-                            0,  # face_off_wins
-                            0,  # face_off_taken
+                            player_fo_wins.get(pid, 0),
+                            player_fo_taken.get(pid, 0),
                             to_int(p.get("takeaways")),
                             to_int(p.get("giveaways")),
-                            0,  # short_handed_goals
-                            0,  # short_handed_assists
+                            player_sh_goals.get(pid, 0),
+                            player_sh_assists.get(pid, 0),
                             to_int(p.get("blockedShots")),
                             to_int(p.get("plusMinus")),
-                            "00:00",  # even_time_on_ice
-                            "00:00",  # power_play_time_on_ice
-                            "00:00",  # short_handed_time_on_ice
                             to_float(p.get("faceoffWinningPctg")),
                         )
                     )
@@ -572,6 +966,45 @@ class ModernNhlLoader:
         with conn.cursor() as cur:
             execute_values(cur, insert_query.as_string(conn), rows, page_size=page_size)
 
+    def execute_upsert(
+        self,
+        conn,
+        table: str,
+        columns: List[str],
+        conflict_columns: List[str],
+        rows: List[tuple],
+        page_size: int = 1000,
+    ):
+        if not rows:
+            return
+        # Paginated NHL stats APIs may repeat the same entity across pages; one INSERT
+        # must not propose duplicate ON CONFLICT keys (Postgres CardinalityViolation).
+        key_idxs = [columns.index(c) for c in conflict_columns]
+        dedup: Dict[tuple, tuple] = {}
+        for row in rows:
+            dedup[tuple(row[i] for i in key_idxs)] = row
+        rows = list(dedup.values())
+        update_cols = [c for c in columns if c not in conflict_columns]
+        insert_query = psql.SQL("INSERT INTO {table} ({cols}) VALUES %s").format(
+            table=psql.Identifier(table),
+            cols=psql.SQL(", ").join(psql.Identifier(c) for c in columns),
+        )
+        conflict_sql = psql.SQL(", ").join(psql.Identifier(c) for c in conflict_columns)
+        if update_cols:
+            set_clause = psql.SQL(", ").join(
+                psql.SQL("{} = EXCLUDED.{}").format(psql.Identifier(c), psql.Identifier(c))
+                for c in update_cols
+            )
+            suffix = psql.SQL(" ON CONFLICT ({conf}) DO UPDATE SET {sets}").format(
+                conf=conflict_sql,
+                sets=set_clause,
+            )
+        else:
+            suffix = psql.SQL(" ON CONFLICT ({conf}) DO NOTHING").format(conf=conflict_sql)
+        full = insert_query + suffix
+        with conn.cursor() as cur:
+            execute_values(cur, full.as_string(conn), rows, page_size=page_size)
+
     def run(self):
         logger.info("Loading team reference...")
         self.load_team_reference()
@@ -579,9 +1012,24 @@ class ModernNhlLoader:
         logger.info("Building teams and season stats...")
         teams_rows, teams_stats_rows = self.build_teams_and_stats()
         roster_rows = self.build_rosters(teams_rows)
-        skater_rows = self.build_player_season_stats()
-        goalie_rows = self.build_goalie_season_stats()
+        skater_rows, skater_summary_rows = self.build_player_season_stats()
+        goalie_rows, goalie_summary_rows = self.build_goalie_season_stats()
+        advanced_rows = self.build_player_advanced_stats()
+        shot_type_rows = self.build_player_shot_types()
+        roster_rows = self.supplement_rosters_from_reports(
+            roster_rows,
+            skater_summary_rows,
+            goalie_summary_rows,
+            {to_int(r[0]) for r in advanced_rows},
+        )
 
+        logger.info(
+            "Date window %s .. %s (season_id=%s, games.season=%s)",
+            self.start_date,
+            self.end_date,
+            self.season_id,
+            self.current_season_label,
+        )
         logger.info("Fetching finished games...")
         games_meta = self.fetch_final_games()
         logger.info("Finished games to load: %d", len(games_meta))
@@ -597,27 +1045,31 @@ class ModernNhlLoader:
         try:
             conn.autocommit = False
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    TRUNCATE TABLE
-                        all_goals,
-                        game_player_stats,
-                        game_team_stats,
-                        game_goalie_stats,
-                        games,
-                        players_season_stats,
-                        goalies_season_stats,
-                        rosters,
-                        teams_stats,
-                        teams
-                    """
-                )
+                game_ids = tuple(r[0] for r in games_rows)
+                if game_ids:
+                    for tbl in (
+                        "all_goals",
+                        "game_player_stats",
+                        "game_team_stats",
+                        "game_goalie_stats",
+                        "games",
+                    ):
+                        cur.execute(
+                            psql.SQL("DELETE FROM {} WHERE game_id = ANY(%s)").format(
+                                psql.Identifier(tbl)
+                            ),
+                            (list(game_ids),),
+                        )
+                    logger.info("Removed prior rows for %d game(s) in window", len(game_ids))
+                else:
+                    logger.info("No finished games in date window; skipping game table deletes")
 
-            self.execute_insert(
+            self.execute_upsert(
                 conn,
                 "teams",
                 [
                     "team_id",
+                    "season_id",
                     "name",
                     "division_name",
                     "arena",
@@ -628,13 +1080,15 @@ class ModernNhlLoader:
                     "active",
                     "short_name",
                 ],
+                ["team_id", "season_id"],
                 teams_rows,
             )
-            self.execute_insert(
+            self.execute_upsert(
                 conn,
                 "teams_stats",
                 [
                     "team_id",
+                    "season_id",
                     "games_played",
                     "wins",
                     "losses",
@@ -652,18 +1106,20 @@ class ModernNhlLoader:
                     "shots_allowed",
                     "face_off_win_percentage",
                 ],
+                ["team_id", "season_id"],
                 teams_stats_rows,
             )
-            self.execute_insert(
+            self.execute_upsert(
                 conn,
                 "rosters",
                 [
                     "player_id",
+                    "season_id",
                     "name",
                     "position",
                     "jersey_number",
-                    "currentAge",
-                    "lastName",
+                    "currentage",
+                    "lastname",
                     "nationality",
                     "captain",
                     "alternate_captain",
@@ -671,9 +1127,10 @@ class ModernNhlLoader:
                     "abbreviation",
                     "current_team_id",
                 ],
+                ["player_id", "season_id"],
                 roster_rows,
             )
-            self.execute_insert(
+            self.execute_upsert(
                 conn,
                 "players_season_stats",
                 [
@@ -704,11 +1161,68 @@ class ModernNhlLoader:
                     "even_time_on_ice_per_game",
                     "short_handed_time_on_ice_per_game",
                     "power_play_time_on_ice_per_game",
+                    "oz_faceoff_pct",
+                    "dz_faceoff_pct",
+                    "nz_faceoff_pct",
+                    "shootout_goals",
+                    "shootout_shots",
+                    "shootout_gd_goals",
+                    "shootout_pct",
                     "player_id",
+                    "season_id",
                 ],
+                ["player_id", "season_id"],
                 skater_rows,
             )
-            self.execute_insert(
+            self.execute_upsert(
+                conn,
+                "players_advanced_stats",
+                [
+                    "player_id",
+                    "season_id",
+                    "sat_pct",
+                    "usat_pct",
+                    "goals_pct",
+                    "oz_start_pct",
+                    "dz_start_pct",
+                    "nz_start_pct",
+                    "on_ice_shooting_pct",
+                    "ev_goals_for",
+                    "ev_goals_against",
+                    "ev_goals_for_pct",
+                    "pp_goals_for",
+                    "pp_goals_against",
+                    "sh_goals_for",
+                    "sh_goals_against",
+                ],
+                ["player_id", "season_id"],
+                advanced_rows,
+            )
+            self.execute_upsert(
+                conn,
+                "players_shot_types",
+                [
+                    "player_id",
+                    "season_id",
+                    "goals_wrist",
+                    "shots_wrist",
+                    "goals_slap",
+                    "shots_slap",
+                    "goals_snap",
+                    "shots_snap",
+                    "goals_backhand",
+                    "shots_backhand",
+                    "goals_tip_in",
+                    "shots_tip_in",
+                    "goals_deflected",
+                    "shots_deflected",
+                    "goals_wrap_around",
+                    "shots_wrap_around",
+                ],
+                ["player_id", "season_id"],
+                shot_type_rows,
+            )
+            self.execute_upsert(
                 conn,
                 "goalies_season_stats",
                 [
@@ -736,7 +1250,9 @@ class ModernNhlLoader:
                     "short_handed_save_percentage",
                     "even_strength_save_percentage",
                     "player_id",
+                    "season_id",
                 ],
+                ["player_id", "season_id"],
                 goalie_rows,
             )
             self.execute_insert(
@@ -751,6 +1267,7 @@ class ModernNhlLoader:
                     "is_overtime",
                     "is_shootouts",
                     "season",
+                    "season_id",
                 ],
                 games_rows,
                 page_size=2000,
@@ -775,6 +1292,7 @@ class ModernNhlLoader:
                     "time",
                     "goals_away",
                     "goals_home",
+                    "event_id",
                 ],
                 all_goals_rows,
                 page_size=5000,
@@ -827,9 +1345,6 @@ class ModernNhlLoader:
                     "short_handed_assists",
                     "blocked",
                     "plus_minus",
-                    "even_time_on_ice",
-                    "power_play_time_on_ice",
-                    "short_handed_time_on_ice",
                     "face_off_pct",
                 ],
                 game_player_rows,
@@ -842,7 +1357,7 @@ class ModernNhlLoader:
                     "team_id",
                     "game_id",
                     "player_id",
-                    "timeOnIce",
+                    "timeonice",
                     "assists",
                     "goals",
                     "pim",
@@ -872,9 +1387,9 @@ class ModernNhlLoader:
 
         logger.info("Done.")
         logger.info(
-            "Loaded: teams=%d, rosters=%d, skaters=%d, goalies=%d, games=%d",
-            len(teams_rows), len(roster_rows), len(skater_rows),
-            len(goalie_rows), len(games_rows),
+            "Loaded: teams=%d, rosters=%d, skaters=%d, advanced=%d, shot_types=%d, goalies=%d, games=%d",
+            len(teams_rows), len(roster_rows), len(skater_rows), len(advanced_rows),
+            len(shot_type_rows), len(goalie_rows), len(games_rows),
         )
 
 
@@ -883,5 +1398,42 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
+    parser = argparse.ArgumentParser(
+        description="Load NHL teams, season aggregates, and finished games into PostgreSQL.",
+    )
+    parser.add_argument(
+        "--date-from",
+        dest="date_from",
+        metavar="YYYY-MM-DD",
+        help="Game window start (overrides env DATE_FROM / config).",
+    )
+    parser.add_argument(
+        "--date-to",
+        dest="date_to",
+        metavar="YYYY-MM-DD",
+        help="Game window end inclusive (overrides env DATE_TO / config).",
+    )
+    parser.add_argument(
+        "--season-id",
+        dest="season_id",
+        type=int,
+        metavar="ID",
+        help="NHL stats seasonId, e.g. 20252026 (overrides SEASON_ID).",
+    )
+    parser.add_argument(
+        "--current-season",
+        dest="current_season",
+        metavar="LABEL",
+        help='Season label stored on games.season, e.g. "25/26" (overrides CURRENT_SEASON).',
+    )
+    args = parser.parse_args()
     loader = ModernNhlLoader()
+    if args.date_from:
+        loader.start_date = args.date_from
+    if args.date_to:
+        loader.end_date = args.date_to
+    if args.season_id is not None:
+        loader.season_id = args.season_id
+    if args.current_season:
+        loader.current_season_label = args.current_season
     loader.run()
