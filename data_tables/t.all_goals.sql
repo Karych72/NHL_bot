@@ -10,9 +10,10 @@ CREATE TABLE all_goals(
     is_ppg                boolean,
     is_shg                boolean,
     team_id               int,
-    game_id               bigint,
+    game_id               bigint NOT NULL,
     period                int,
     time                  varchar(20),
     goals_away            int,
-    goals_home            int
+    goals_home            int,
+    event_id              int
 );

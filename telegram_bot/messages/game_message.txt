@@ -1,7 +1,7 @@
-*{{ team_home }} {{ team_away }} {{ home_score }}:{{ away_score}} {{ extra }}*
-{% for goal in goals %}
-{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ goal['time'] }} {% endfor %}
+*{{ team_home }} {{ team_away }} {{ home_score }}:{{ away_score}} {{ extra }}* {{ period_scores }}
 
+{% for goal in goals %}{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ goal['time'] }}
+{% endfor %}
 *Броски:* {{ home_shots }} - {{ away_shots }}
 *Штрафное время:* {{ home_penalties }} - {{ away_penalties }}
 *Вратари:* {{ goalkeepers }}

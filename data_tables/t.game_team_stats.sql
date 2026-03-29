@@ -3,20 +3,18 @@ CREATE TABLE game_team_stats(
     field                       varchar(20),
     pim                         int,
     shots                       int,
-    power_play_percentage       double PRECISION,
-    power_play_goals            double PRECISION,
-    power_play_opportunities    double PRECISION,
-    face_off_win_percentage     double PRECISION,
+    power_play_percentage       double precision,
+    power_play_goals            double precision,
+    power_play_opportunities    double precision,
+    face_off_win_percentage     double precision,
     blocked                     int,
     takeaways                   int,
     giveaways                   int,
     hits                        int,
-    game_id                     bigint,
-    team_id                     int,
+    game_id                     bigint NOT NULL,
+    team_id                     int NOT NULL,
     fst_period_goals            int,
     snd_period_goals            int,
-    trd_period_goals            int
+    trd_period_goals            int,
+    UNIQUE (game_id, team_id)
 );
-
-ALTER TABLE ONLY game_team_stats
-    ADD CONSTRAINT game_team_stats_key UNIQUE (game_id, team_id);

@@ -1,7 +1,7 @@
 CREATE TABLE game_player_stats(
-    team_id                     bigint,
-    game_id                     bigint,
-    player_id                   bigint,
+    team_id                     bigint NOT NULL,
+    game_id                     bigint NOT NULL,
+    player_id                   bigint NOT NULL,
     time_on_ice                 varchar(10),
     assists                     int,
     goals                       int,
@@ -18,11 +18,6 @@ CREATE TABLE game_player_stats(
     short_handed_assists        int,
     blocked                     int,
     plus_minus                  int,
-    even_time_on_ice            varchar(10),
-    power_play_time_on_ice      varchar(10),
-    short_handed_time_on_ice    varchar(10),
-    face_off_pct                DOUBLE PRECISION
+    face_off_pct                double precision,
+    UNIQUE (game_id, player_id)
 );
-
-ALTER TABLE ONLY game_player_stats
-    ADD CONSTRAINT game_player_stats_key UNIQUE (game_id, player_id);

@@ -1,22 +1,3 @@
-Турнирная таблица NHL:
-Команда/Очки/Игры/Процент набранных очков
+*Турнирная таблица NHL* — сезон {{ season }}, данные на {{ as_of }}
 
-EASTERN CONFERENCE
-
-ATLANTIC DIVISION
-{% for team in Atlantic %}
-{{ team['short_name'] }} {{ team['points'] }} {{ team['games'] }} {{ team['procent_points'] }} {% endfor %}
-
-METROPOLITAN DIVISION
-{% for team in Metropolitan %}
-{{ team['short_name'] }} {{ team['points'] }} {{ team['games'] }} {{ team['procent_points'] }} {% endfor %}
-
-WESTERN CONFERENCE
-
-CENTRAL DIVISION
-{% for team in Central %}
-{{ team['short_name'] }} {{ team['points'] }} {{ team['games'] }} {{ team['procent_points'] }} {% endfor %}
-
-PACIFIC DIVISION
-{% for team in Pacific %}
-{{ team['short_name'] }} {{ team['points'] }} {{ team['games'] }} {{ team['procent_points'] }} {% endfor %}
+{{ table_body }}

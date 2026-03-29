@@ -1,4 +1,4 @@
-create table players_season_stats(
+CREATE TABLE players_season_stats(
     time_on_ice                             varchar(20),
     assists                                 int,
     goals                                   int,
@@ -11,8 +11,8 @@ create table players_season_stats(
     power_play_time_on_ice                  varchar(20),
     even_time_on_ice                        varchar(20),
     penalty_minutes                         int,
-    face_off_pct                            double PRECISION,
-    shot_pct                                double PRECISION,
+    face_off_pct                            double precision,
+    shot_pct                                double precision,
     game_winning_goals                      int,
     over_time_goals                         int,
     short_handed_goals                      int,
@@ -26,5 +26,14 @@ create table players_season_stats(
     even_time_on_ice_per_game               varchar(20),
     short_handed_time_on_ice_per_game       varchar(20),
     power_play_time_on_ice_per_game         varchar(20),
-    player_id                               int
+    oz_faceoff_pct                          double precision,
+    dz_faceoff_pct                          double precision,
+    nz_faceoff_pct                          double precision,
+    shootout_goals                          int,
+    shootout_shots                          int,
+    shootout_gd_goals                       int,
+    shootout_pct                            double precision,
+    player_id                               int NOT NULL,
+    season_id                               bigint NOT NULL,
+    PRIMARY KEY (player_id, season_id)
 );

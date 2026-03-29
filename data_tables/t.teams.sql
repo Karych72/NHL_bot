@@ -1,5 +1,6 @@
 CREATE TABLE teams(
-    team_id             bigint,
+    team_id             bigint NOT NULL,
+    season_id           bigint NOT NULL,
     name                varchar(30),
     division_name       varchar(30),
     arena               varchar(30),
@@ -8,5 +9,6 @@ CREATE TABLE teams(
     first_year_of_play  int,
     city                varchar(30),
     active              boolean,
-    short_name          varchar(30)
+    short_name          varchar(30),
+    PRIMARY KEY (team_id, season_id)
 );
