@@ -1,0 +1,13 @@
+# Выполненные планы (архив)
+
+Здесь лежат планы со статусом **выполнено** или **архив** — они перенесены из [`plan/`](../), чтобы в корне `plan/` оставались только актуальные и незавершённые задачи.
+
+| Файл | Суть |
+|------|------|
+| [`bot_ux_flow_plan.md`](./bot_ux_flow_plan.md) | Продуктовый UX-ориентир |
+| [`bot_ux_implementation_phases.md`](./bot_ux_implementation_phases.md) | Фазы внедрения UX |
+| [`skater_reports_plan.md`](./skater_reports_plan.md) | Ранняя версия ТЗ skater reports |
+| [`skater_reports_plan_v2.md`](./skater_reports_plan_v2.md) | Требования v2 |
+| [`skater_reports_plan_realize.md`](./skater_reports_plan_realize.md) | Пошаговая реализация (выполнена) |
+
+Индекс всех планов и статусы — в [`../README.md`](../README.md).

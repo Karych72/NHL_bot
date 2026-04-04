@@ -63,6 +63,19 @@ make bot
 
 In Telegram send `/stats`.
 
+## Tests
+
+- **`make test-fast`** — `pytest` по всем файлам в `tests/`, кроме `test_db_nhl.py` (без обязательной БД).
+- **`make test-db`** — `unittest` для схемы PostgreSQL; нужен доступ к БД из `.env`, таблицы из `make db-init` / `db-init-local`. Включает `RUN_DB_SCHEMA_TESTS=1` (см. `Makefile`).
+- **`make all-tests`** — сначала `test-fast`, затем `test-db` (полный контур для разработчика с поднятой БД).
+
+Проверки **загруженных данных** (`TestNhlLoadedData`) по умолчанию выключены. После загрузки сезона:
+
+```bash
+export RUN_DB_DATA_TESTS=1
+make test-db
+```
+
 ## One-command flows
 
 Stable local start (setup + bot). Use this when NHL API is unavailable:

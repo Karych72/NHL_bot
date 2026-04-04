@@ -1,5 +1,7 @@
 # Реализация skater reports (v2) — пошаговый план
 
+**Статус:** выполнено (схема БД, pipeline, UI advanced / типы бросков). Детали — [`plan/README.md`](../README.md).
+
 Источник требований: [skater_reports_plan_v2.md](./skater_reports_plan_v2.md).
 
 ---

@@ -28,7 +28,6 @@ from dialog_states import (
     PLAYER_SHOT_SLAP,
     PLAYER_SHOT_SNAP,
     PLAYER_SHOT_TIP_IN,
-    PLAYER_SHOT_TYPES_MENU,
     PLAYER_SHOT_WRAP_AROUND,
     PLAYER_SHOT_WRIST,
     PLAYER_STATS,
@@ -43,11 +42,7 @@ from dialog_states import (
 
 logger = logging.getLogger(__name__)
 
-STATS_MENU_INTRO = (
-    "Что посмотреть? Выберите раздел кнопкой ниже или командами: "
-    "`/today` — матчи дня, `/table` — таблица, `/leaders` — лидеры, "
-    "`/advanced` — SAT/USAT/GF%, `/shottypes` — голы по типам броска, `/help` — все команды."
-)
+STATS_MENU_INTRO = "Меню статистики NHL. Выберите раздел кнопкой ниже. Список команд: `/help`."
 
 
 def stats(update: Update, context: CallbackContext) -> int:
@@ -125,8 +120,7 @@ def bot_player_field(update: Update, context: CallbackContext) -> int:
         InlineKeyboardButton("Лидеры по игровому времени", callback_data=str(PLAYER_ICE_TIME)),
         InlineKeyboardButton("Лидеры по штрафу", callback_data=str(PLAYER_PENALTIES)),
         InlineKeyboardButton("Лидеры по блокам", callback_data=str(PLAYER_BLOCKS)),
-        InlineKeyboardButton("Расширенная статистика (SAT, USAT, GF%…)", callback_data=str(PLAYER_ADVANCED_SUBMENU)),
-        InlineKeyboardButton("Голы по типам броска", callback_data=str(PLAYER_SHOT_TYPES_MENU)),
+        InlineKeyboardButton("Расширенная статистика (SAT, USAT, типы бросков…)", callback_data=str(PLAYER_ADVANCED_SUBMENU)),
     ]
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
@@ -144,18 +138,6 @@ def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
         InlineKeyboardButton("Лидеры по Goals For %", callback_data=str(PLAYER_GOALS_FOR_PCT)),
         InlineKeyboardButton("Лидеры по старту в зоне атаки (OZ Start %)", callback_data=str(PLAYER_OZ_START_PCT)),
         InlineKeyboardButton("Лидеры по реализации буллитов (Shootout %)", callback_data=str(PLAYER_SHOOTOUT_PCT)),
-    ]
-    reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
-    query.edit_message_text(
-        text="Расширенная статистика полевых", reply_markup=reply_markup
-    )
-    return FIRST
-
-
-def bot_player_shot_menu(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    query.answer()
-    keyboard = [
         InlineKeyboardButton("Голы с кистевого", callback_data=str(PLAYER_SHOT_WRIST)),
         InlineKeyboardButton("Голы щелчком", callback_data=str(PLAYER_SHOT_SLAP)),
         InlineKeyboardButton("Голы с полуприёма", callback_data=str(PLAYER_SHOT_SNAP)),
@@ -166,7 +148,7 @@ def bot_player_shot_menu(update: Update, context: CallbackContext) -> int:
     ]
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
     query.edit_message_text(
-        text="Лидеры по голам с разных типов броска", reply_markup=reply_markup
+        text="Расширенная статистика полевых", reply_markup=reply_markup
     )
     return FIRST
 
@@ -187,11 +169,8 @@ def bot_player_goalie(update: Update, context: CallbackContext) -> int:
 
 
 def end(update: Update, context: CallbackContext) -> int:
-    """Завершает разговор."""
+    """Завершает разговор: снимаем inline-кнопки, текст статистики в чате оставляем."""
     query = update.callback_query
     query.answer()
-    query.edit_message_text(
-        text="Готово. Быстрый ввод: /today, /table, /leaders, /game, /advanced, /shottypes, /help.",
-        parse_mode="Markdown",
-    )
+    query.edit_message_reply_markup(reply_markup=None)
     return ConversationHandler.END

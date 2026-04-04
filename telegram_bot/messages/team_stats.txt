@@ -1,5 +1,5 @@
-*{{ name_stats }}*
-
-{% for team in teams %}
+{% if name_stats %}*{{ name_stats }}*
+{% endif -%}
+{% for team in teams -%}
 {{ team.rank }}. {{ team.name }} — {{ team.value }} (игр: {{ team.games }})
 {% endfor %}

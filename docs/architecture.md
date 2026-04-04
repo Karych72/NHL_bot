@@ -33,10 +33,18 @@ NHL_bot/
 │   ├── t.teams.sql
 │   └── t.teams_stats.sql
 │
-├── docs/                               # Документация
+├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
+│   ├── api_data_research.md
+│   ├── data_loading_and_bot.md
+│   └── user_journey_stats.md
+│
+├── plan/                               # Планы (индекс: plan/README.md)
+│   ├── README.md
+│   ├── deprecated_plan/                # Выполненные планы (UX, skater reports)
 │   ├── refactoring_plan.md
-│   └── refactoring_plan_2.md
+│   ├── refactoring_plan_2.md
+│   └── …                               # тесты БД, tonight games и др.
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   └── load_season_modern.py           # Класс ModernNhlLoader

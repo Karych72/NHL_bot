@@ -197,16 +197,26 @@ def game_exists(game_id: int) -> bool:
     return row["count_rows"] > 0
 
 
-def player_stats(
+LEADERBOARD_PAGE_SIZE = 10
+
+LEADERBOARD_KIND_POINTS = "points"
+LEADERBOARD_KIND_ASSISTS = "assists"
+LEADERBOARD_KIND_GOALS = "goals"
+
+
+def player_stats_with_count(
     name_stats: str,
     table_name: str,
     column_name: str,
     count: int = 10,
+    offset: int = 0,
     *,
     secondary_sort: Optional[str] = None,
-) -> str:
+) -> Tuple[str, int]:
     validate_table(table_name)
     validate_column(column_name)
+    if offset < 0:
+        offset = 0
     second_order = _resolve_secondary_sort(table_name, secondary_sort)
     validate_column(second_order)
 
@@ -225,28 +235,125 @@ def player_stats(
         "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = pl.season_id "
         "WHERE pl.season_id = %s "
         "ORDER BY {pl_col} DESC, {second_col} DESC "
-        "LIMIT %s"
+        "LIMIT %s OFFSET %s"
     ).format(
         pl_col=pl_col,
         table=sql.Identifier(table_name),
         join_pss=join_pss,
         second_col=second_col,
     )
-    stats = fetch_all(q, (config.SEASON_ID, count), ['lastname', 'points', 'team'])
+    stats = fetch_all(
+        q, (config.SEASON_ID, count, offset), ['lastname', 'points', 'team']
+    )
 
     to_template = {'name_stats': name_stats}
     players = []
     for i in range(stats['count_rows']):
         lastname = stats['lastname'][i] or "Unknown"
         players.append({
-            'rank': i + 1,
+            'rank': offset + i + 1,
             'lastname': lastname,
             'value': _format_leader_value(stats['points'][i]),
             'team': stats['team'][i] or "—",
         })
 
     to_template['players'] = players
-    return output_text('messages/season_leaders_players.txt', to_template)
+    return output_text('messages/season_leaders_players.txt', to_template), stats[
+        "count_rows"
+    ]
+
+
+def player_stats(
+    name_stats: str,
+    table_name: str,
+    column_name: str,
+    count: int = 10,
+    offset: int = 0,
+    *,
+    secondary_sort: Optional[str] = None,
+) -> str:
+    return player_stats_with_count(
+        name_stats,
+        table_name,
+        column_name,
+        count=count,
+        offset=offset,
+        secondary_sort=secondary_sort,
+    )[0]
+
+
+def _rank_range_label(offset: int, rows: int) -> str:
+    if rows <= 0:
+        return "нет данных"
+    lo = offset + 1
+    hi = offset + rows
+    if lo == hi:
+        return str(lo)
+    return f"{lo}–{hi}"
+
+
+def leaders_menu_intro() -> str:
+    """Текст первого шага /leaders — до выбора категории кнопкой."""
+    return (
+        f"*Лидеры сезона* ({config.CURRENT_SEASON})\n\n"
+        "Выберите категорию:"
+    )
+
+
+def player_stat_leaderboard_page(
+    heading: str,
+    table_name: str,
+    column_name: str,
+    offset: int,
+    *,
+    secondary_sort: Optional[str] = None,
+) -> Tuple[str, bool, bool]:
+    """Произвольная таблица лидеров игроков/вратарей: шапка + пустая строка + список."""
+    if offset < 0:
+        offset = 0
+    body, n = player_stats_with_count(
+        "",
+        table_name,
+        column_name,
+        count=LEADERBOARD_PAGE_SIZE,
+        offset=offset,
+        secondary_sort=secondary_sort,
+    )
+    span = _rank_range_label(offset, n)
+    if n == 0:
+        body = "_Нет данных в этом диапазоне._"
+    text = f"*{heading}* ({config.CURRENT_SEASON}) — _{span}_\n\n{body}"
+    has_prev = offset > 0
+    has_next = n >= LEADERBOARD_PAGE_SIZE
+    return text, has_prev, has_next
+
+
+def single_stat_leaderboard_page(
+    heading: str,
+    column_name: str,
+    offset: int,
+) -> Tuple[str, bool, bool]:
+    """Сезонные статы полевых (players_season_stats)."""
+    return player_stat_leaderboard_page(
+        heading, "players_season_stats", column_name, offset
+    )
+
+
+def stat_leaderboard_for_kind(kind: str, offset: int) -> Tuple[str, bool, bool]:
+    """Топ по очкам, голам или передачам; *kind* — points / goals / assists."""
+    if kind == LEADERBOARD_KIND_POINTS:
+        return player_stat_leaderboard_page(
+            "Топ бомбардиров", "players_season_stats", "points", offset
+        )
+    if kind == LEADERBOARD_KIND_GOALS:
+        return player_stat_leaderboard_page(
+            "Топ снайперов", "players_season_stats", "goals", offset
+        )
+    if kind == LEADERBOARD_KIND_ASSISTS:
+        return player_stat_leaderboard_page(
+            "Топ ассистентов", "players_season_stats", "assists", offset
+        )
+    raise ValueError(f"unknown leaderboard kind: {kind!r}")
 
 
 def _standings_as_of_day() -> str:
@@ -427,48 +534,70 @@ def team_table() -> str:
     return output_text('messages/league_table.txt', to_template)
 
 
-def leaders_compact() -> str:
-    """Топ-5 по очкам и голам в одном сообщении (MARKDOWN)."""
-    pts = player_stats('Очки', 'players_season_stats', 'points', count=5)
-    gls = player_stats('Голы', 'players_season_stats', 'goals', count=5)
-    return (
-        f"*Лидеры сезона* ({config.CURRENT_SEASON})\n\n"
-        f"{pts}\n\n{gls}"
-    )
-
-
-def leaders_top10_messages() -> List[str]:
-    """Два сообщения: топ-10 по очкам и по голам."""
-    return [
-        player_stats('Лучшие бомбардиры', 'players_season_stats', 'points', count=10),
-        player_stats('Лучшие снайперы', 'players_season_stats', 'goals', count=10),
-    ]
-
-
-def team_stats(name_stats: str, column_name: str) -> str:
+def team_stats_with_count(
+    name_stats: str,
+    column_name: str,
+    count: int = 10,
+    offset: int = 0,
+) -> Tuple[str, int]:
     validate_column(column_name)
+    if offset < 0:
+        offset = 0
 
     q = sql.SQL(
         "SELECT short_name, {col}, games_played "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
-        "ORDER BY {col} DESC, short_name"
+        "ORDER BY {col} DESC NULLS LAST, short_name "
+        "LIMIT %s OFFSET %s"
     ).format(col=sql.Identifier(column_name))
-    stats = fetch_all(q, (config.SEASON_ID,), columns=['team', 'points', 'games_played'])
+    stats = fetch_all(
+        q,
+        (config.SEASON_ID, count, offset),
+        columns=['team', 'points', 'games_played'],
+    )
 
     to_template = {'name_stats': name_stats}
     teams = []
     for i in range(stats['count_rows']):
         teams.append({
-            'rank': i + 1,
+            'rank': offset + i + 1,
             'name': (stats['team'][i] or "—").strip(),
             'value': _format_leader_value(stats['points'][i]),
             'games': stats['games_played'][i],
         })
 
     to_template['teams'] = teams
-    return output_text('messages/team_stats.txt', to_template)
+    return output_text('messages/team_stats.txt', to_template), stats["count_rows"]
+
+
+def team_stat_leaderboard_page(
+    heading: str,
+    column_name: str,
+    offset: int,
+) -> Tuple[str, bool, bool]:
+    """Топ команд по одной колонке teams_stats."""
+    body, n = team_stats_with_count(
+        "",
+        column_name,
+        count=LEADERBOARD_PAGE_SIZE,
+        offset=offset,
+    )
+    span = _rank_range_label(offset, n)
+    if n == 0:
+        body = "_Нет данных в этом диапазоне._"
+    text = f"*{heading}* ({config.CURRENT_SEASON}) — _{span}_\n\n{body}"
+    has_prev = offset > 0
+    has_next = n >= LEADERBOARD_PAGE_SIZE
+    return text, has_prev, has_next
+
+
+def team_stats(name_stats: str, column_name: str) -> str:
+    """Совместимость: одна страница (первые 10) с заголовком в шаблоне."""
+    return team_stats_with_count(
+        name_stats, column_name, count=LEADERBOARD_PAGE_SIZE, offset=0
+    )[0]
 
 
 def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]]]]:

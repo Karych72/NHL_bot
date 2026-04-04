@@ -1,5 +1,7 @@
 # Реализация отчётов по полевым игрокам (раздел 2.1) — v2
 
+**Статус:** выполнено по требованиям через [`skater_reports_plan_realize.md`](./skater_reports_plan_realize.md). Детали — [`plan/README.md`](../README.md).
+
 ## Обзор
 
 Цель: добавить в проект высокоприоритетные skater-отчёты из NHL Stats API так, чтобы они естественно встроились в текущую архитектуру `pipeline -> PostgreSQL -> telegram_bot`.

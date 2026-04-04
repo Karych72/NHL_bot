@@ -1,6 +1,5 @@
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackContext,
     CallbackQueryHandler,
@@ -10,8 +9,8 @@ from telegram.ext import (
 )
 
 import config
-from bot_messages import day_digest, leaders_compact, team_table
-from help_text import HELP_MESSAGE, START_MESSAGE
+from bot_messages import day_digest, leaders_menu_intro, team_table
+from help_text import ADVANCED_COMMAND_INTRO, HELP_MESSAGE, START_MESSAGE
 from dialog_states import (
     CHOOSE_STATS,
     DAY_DIGEST,
@@ -39,7 +38,6 @@ from dialog_states import (
     PLAYER_SHOT_SLAP,
     PLAYER_SHOT_SNAP,
     PLAYER_SHOT_TIP_IN,
-    PLAYER_SHOT_TYPES_MENU,
     PLAYER_SHOT_WRAP_AROUND,
     PLAYER_SHOT_WRIST,
     PLAYER_STATS,
@@ -55,7 +53,6 @@ from script_bot import (
     bot_player_advanced_menu,
     bot_player_field,
     bot_player_goalie,
-    bot_player_shot_menu,
     bot_player_stats,
     bot_team_stats,
     end,
@@ -63,7 +60,11 @@ from script_bot import (
     stats_over,
 )
 from stats_handlers import (
-    LEADERS_TOP10_CALLBACK,
+    LEADERS_PICK_CALLBACK_PATTERN,
+    LEADERBOARD_PAGE_CALLBACK_PATTERN,
+    STAT_PAGE_CALLBACK_PATTERN,
+    STANDALONE_SA_CALLBACK_PATTERN,
+    TEAM_PAGE_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
     bot_day_digest,
     bot_goalie_percentage,
@@ -93,13 +94,16 @@ from stats_handlers import (
     bot_team_power_play,
     bot_team_procent_wins,
     callback_expand_digest_game,
-    callback_leaders_top10,
+    callback_leaderboard_page,
+    callback_leaders_pick,
     callback_standalone_adv,
-    callback_standalone_shot,
+    callback_standalone_sa,
+    callback_stats_player_page,
+    callback_stats_team_page,
+    leaders_category_keyboard,
     dispatch_day_digest_messages,
     handle_goal_video,
     send_game_card_message,
-    shottypes_standalone_keyboard,
 )
 
 STANDALONE_GROUP = -1
@@ -122,7 +126,7 @@ def cmd_help(update, context):
     update.message.reply_text(HELP_MESSAGE, parse_mode="MARKDOWN")
 
 
-def cmd_today(update, context):
+def cmd_day_games(update, context):
     day_label, games = day_digest()
     dispatch_day_digest_messages(
         context,
@@ -138,40 +142,33 @@ def cmd_table(update, context):
 
 
 def cmd_leaders(update, context):
-    text = leaders_compact()
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Топ-10 (очки и голы)", callback_data=LEADERS_TOP10_CALLBACK)]]
+    update.message.reply_text(
+        leaders_menu_intro(),
+        parse_mode="MARKDOWN",
+        reply_markup=leaders_category_keyboard(),
     )
-    update.message.reply_text(text, parse_mode="MARKDOWN", reply_markup=markup)
 
 
 def cmd_game(update, context):
     if not context.args:
         update.message.reply_text(
-            "Укажите номер матча (NHL game_id), например: `/game 2025020567`\n"
-            "Deep-link: откройте бота по ссылке `https://t.me/<ваш_бот>?start=game_2025020567`",
+            "Карточку матча проще открыть так: отправьте `/day_games` и нажмите кнопку нужной игры под сводкой.",
             parse_mode="Markdown",
         )
         return
     try:
         game_id = int(context.args[0])
     except ValueError:
-        update.message.reply_text("Номер матча должен быть целым числом.")
+        update.message.reply_text("После `/game` укажите одно целое число.")
         return
     send_game_card_message(context, update.message.chat_id, game_id)
 
 
 def cmd_advanced(update, context):
     update.message.reply_text(
-        "Расширенная статистика сезона:",
+        ADVANCED_COMMAND_INTRO,
+        parse_mode="Markdown",
         reply_markup=advanced_standalone_keyboard(),
-    )
-
-
-def cmd_shottypes(update, context):
-    update.message.reply_text(
-        "Голы по типам броска (сезон):",
-        reply_markup=shottypes_standalone_keyboard(),
     )
 
 
@@ -200,6 +197,12 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('stats', stats)],
         states={
             FIRST: [
+                CallbackQueryHandler(
+                    callback_stats_player_page, pattern=STAT_PAGE_CALLBACK_PATTERN
+                ),
+                CallbackQueryHandler(
+                    callback_stats_team_page, pattern=TEAM_PAGE_CALLBACK_PATTERN
+                ),
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
                 CallbackQueryHandler(bot_player_stats, pattern='^' + str(PLAYER_STATS) + '$'),
                 CallbackQueryHandler(bot_day_digest, pattern='^' + str(DAY_DIGEST) + '$'),
@@ -207,7 +210,6 @@ if __name__ == '__main__':
                 CallbackQueryHandler(bot_player_field, pattern='^' + str(PLAYER_FIELD) + '$'),
                 CallbackQueryHandler(bot_player_goalie, pattern='^' + str(PLAYER_GOALIE) + '$'),
                 CallbackQueryHandler(bot_player_advanced_menu, pattern='^' + str(PLAYER_ADVANCED_SUBMENU) + '$'),
-                CallbackQueryHandler(bot_player_shot_menu, pattern='^' + str(PLAYER_SHOT_TYPES_MENU) + '$'),
 
                 CallbackQueryHandler(bot_player_points, pattern='^' + str(PLAYER_POINTS) + '$'),
                 CallbackQueryHandler(bot_player_goals, pattern='^' + str(PLAYER_GOALS) + '$'),
@@ -241,6 +243,12 @@ if __name__ == '__main__':
                 CallbackQueryHandler(bot_team_power_kill, pattern='^' + str(TEAM_POWER_KILL) + '$'),
             ],
             SECOND: [
+                CallbackQueryHandler(
+                    callback_stats_player_page, pattern=STAT_PAGE_CALLBACK_PATTERN
+                ),
+                CallbackQueryHandler(
+                    callback_stats_team_page, pattern=TEAM_PAGE_CALLBACK_PATTERN
+                ),
                 CallbackQueryHandler(stats_over, pattern='^' + str(CHOOSE_STATS) + '$'),
                 CallbackQueryHandler(end, pattern='^' + str(END_CONVERSATION) + '$'),
             ],
@@ -254,18 +262,19 @@ if __name__ == '__main__':
     standalone = [
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
-        CommandHandler("today", cmd_today),
-        CommandHandler("day", cmd_today),
+        CommandHandler("day_games", cmd_day_games),
         CommandHandler("table", cmd_table),
-        CommandHandler("standings", cmd_table),
         CommandHandler("leaders", cmd_leaders),
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
-        CommandHandler("shottypes", cmd_shottypes),
-        CallbackQueryHandler(callback_leaders_top10, pattern=f"^{LEADERS_TOP10_CALLBACK}$"),
+        CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
+        CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=r"^dg:\d+$"),
-        CallbackQueryHandler(callback_standalone_adv, pattern=r"^adv:(sat|usat|gf|oz|so|close)$"),
-        CallbackQueryHandler(callback_standalone_shot, pattern=r"^shot:(wrist|slap|snap|back|tip|defl|wrap|close)$"),
+        CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),
+        CallbackQueryHandler(
+            callback_standalone_adv,
+            pattern=r"^adv:(sat|usat|gf|oz|so|wrist|slap|snap|back|tip|defl|wrap|close)$",
+        ),
         CallbackQueryHandler(handle_goal_video, pattern="^gv:"),
     ]
     for h in standalone:

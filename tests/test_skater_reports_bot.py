@@ -52,7 +52,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
     def test_help_lists_core_commands(self):
         help_text = _load_help_text()
         for fragment in (
-            "/today",
+            "/day\\_games",  # Markdown escape for Telegram (underscore = italic)
             "/table",
             "/leaders",
             "/stats",
@@ -60,10 +60,15 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/help",
             "/game",
             "/advanced",
-            "/shottypes",
         ):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, help_text.HELP_MESSAGE)
+        self.assertNotIn("/today", help_text.HELP_MESSAGE)
+        self.assertNotIn("/standings", help_text.HELP_MESSAGE)
+        self.assertNotIn("/shottypes", help_text.HELP_MESSAGE)
+        self.assertIn("типам броска", help_text.HELP_MESSAGE)
+        self.assertIn("Corsi", help_text.HELP_MESSAGE)
+        self.assertIn("Fenwick", help_text.HELP_MESSAGE)
 
     def test_team_table_includes_season_and_as_of(self):
         bot_messages = _load_bot_messages()
@@ -96,7 +101,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("*ATLANTIC DIVISION*", text)
         self.assertIn("```", text)
 
-    def test_leaders_compact_combines_points_and_goals(self):
+    def test_stat_leaderboard_for_kind_points(self):
         bot_messages = _load_bot_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
@@ -105,10 +110,13 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "count_rows": 1,
         }
         with patch.object(bot_messages, "fetch_all", return_value=fake_rows):
-            text = bot_messages.leaders_compact()
-        self.assertIn("Очки", text)
-        self.assertIn("Голы", text)
+            text, has_prev, has_next = bot_messages.stat_leaderboard_for_kind(
+                bot_messages.LEADERBOARD_KIND_POINTS, 0
+            )
+        self.assertIn("Топ бомбардиров", text)
         self.assertIn("Ovechkin", text)
+        self.assertFalse(has_prev)
+        self.assertFalse(has_next)
 
 
 def _load_stats_handlers():

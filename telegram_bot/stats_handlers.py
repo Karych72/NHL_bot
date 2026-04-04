@@ -1,19 +1,21 @@
 import logging
 import os
-from functools import partial
-from typing import Callable, Dict, List, Optional, Tuple
+import re
+from typing import Dict, List, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import CallbackContext
 
 from bot_messages import (
+    LEADERBOARD_PAGE_SIZE,
     day_digest,
     day_digest_summary_body,
     game_message,
     game_exists,
-    leaders_top10_messages,
-    player_stats,
-    team_stats,
+    player_stat_leaderboard_page,
+    stat_leaderboard_for_kind,
+    team_stat_leaderboard_page,
     truncate_telegram_text,
 )
 from dialog_states import (
@@ -22,104 +24,318 @@ from dialog_states import (
     SECOND,
     build_menu,
 )
+from leaderboard_specs import (
+    ADV_STANDALONE_TO_STAT,
+    PLAYER_STAT_TITLES,
+    SHOT_STANDALONE_TO_STAT,
+    TEAM_STAT_TITLES,
+)
 from video_replay import download_goal_video
 
 logger = logging.getLogger(__name__)
 
-LEADERS_TOP10_CALLBACK = "lb:10"
+# /leaders: выбор категории, затем pl:<kind>:<offset>
+LEADERS_PICK_CALLBACK_PATTERN = r"^pl:pick:(points|goals|assists)$"
+LEADERBOARD_PAGE_CALLBACK_PATTERN = r"^pl:(points|goals|assists):(\d+)$"
 DIGEST_EXPAND_PREFIX = "dg:"
 
-# Standalone callbacks (вне ConversationHandler): /advanced, /shottypes
+# Пагинация в /stats (игроки / вратари / типы бросков / advanced)
+STAT_PAGE_CALLBACK_PATTERN = r"^st:([\w_]+):([\w_]+):(\d+)$"
+TEAM_PAGE_CALLBACK_PATTERN = r"^tm:([\w_]+):(\d+)$"
+
+# Standalone: /advanced — листание sa:<table>:<col>:<offset>, sa:close
+STANDALONE_SA_CALLBACK_PATTERN = r"^sa:"
+
 ADV_CALLBACK_PREFIX = "adv:"
-SHOT_CALLBACK_PREFIX = "shot:"
 
 
-def _make_stats_handler(
-    data_func: Callable[[], str],
-    back_label: str = "В начало",
-):
-    """Factory: builds a callback handler that fetches stats and shows nav buttons."""
+def _stats_menu_nav_row() -> List[InlineKeyboardButton]:
+    return [
+        InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
+        InlineKeyboardButton("Готово", callback_data=str(END_CONVERSATION)),
+    ]
+
+
+def conversation_player_stat_keyboard(
+    table: str,
+    column: str,
+    offset: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    nav: List[InlineKeyboardButton] = []
+    if has_prev:
+        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
+        nav.append(
+            InlineKeyboardButton(
+                "← prev",
+                callback_data=f"st:{table}:{column}:{prev_off}",
+            )
+        )
+    if has_next:
+        nav.append(
+            InlineKeyboardButton(
+                "next →",
+                callback_data=f"st:{table}:{column}:{offset + LEADERBOARD_PAGE_SIZE}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    rows.append(_stats_menu_nav_row())
+    return InlineKeyboardMarkup(rows)
+
+
+def conversation_team_stat_keyboard(
+    column: str,
+    offset: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    nav: List[InlineKeyboardButton] = []
+    if has_prev:
+        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
+        nav.append(
+            InlineKeyboardButton(
+                "← prev",
+                callback_data=f"tm:{column}:{prev_off}",
+            )
+        )
+    if has_next:
+        nav.append(
+            InlineKeyboardButton(
+                "next →",
+                callback_data=f"tm:{column}:{offset + LEADERBOARD_PAGE_SIZE}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    rows.append(_stats_menu_nav_row())
+    return InlineKeyboardMarkup(rows)
+
+
+def _make_paginated_player_stat_open_handler(table: str, column: str):
+    title = PLAYER_STAT_TITLES[(table, column)]
+
     def handler(update: Update, context: CallbackContext) -> int:
         query = update.callback_query
         query.answer()
-        keyboard = [
-            InlineKeyboardButton(back_label, callback_data=str(CHOOSE_STATS)),
-            InlineKeyboardButton("Готово", callback_data=str(END_CONVERSATION)),
-        ]
-        reply_markup = InlineKeyboardMarkup(build_menu(keyboard, n_cols=1))
-        text = data_func()
-        query.edit_message_text(text=text, parse_mode='MARKDOWN', reply_markup=reply_markup)
+        text, hp, hn = player_stat_leaderboard_page(title, table, column, 0)
+        markup = conversation_player_stat_keyboard(table, column, 0, hp, hn)
+        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
         return SECOND
+
     return handler
+
+
+def _make_paginated_team_stat_open_handler(column: str):
+    title = TEAM_STAT_TITLES[column]
+
+    def handler(update: Update, context: CallbackContext) -> int:
+        query = update.callback_query
+        query.answer()
+        text, hp, hn = team_stat_leaderboard_page(title, column, 0)
+        markup = conversation_team_stat_keyboard(column, 0, hp, hn)
+        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        return SECOND
+
+    return handler
+
+
+def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    if not query or not query.data:
+        return SECOND
+    m = re.match(STAT_PAGE_CALLBACK_PATTERN, query.data)
+    if not m:
+        return SECOND
+    table, col, off_s = m.group(1), m.group(2), m.group(3)
+    key = (table, col)
+    if key not in PLAYER_STAT_TITLES:
+        query.answer()
+        return SECOND
+    title = PLAYER_STAT_TITLES[key]
+    offset = int(off_s)
+    query.answer()
+    text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
+    markup = conversation_player_stat_keyboard(table, col, offset, hp, hn)
+    try:
+        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+    return SECOND
+
+
+def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    if not query or not query.data:
+        return SECOND
+    m = re.match(TEAM_PAGE_CALLBACK_PATTERN, query.data)
+    if not m:
+        return SECOND
+    col, off_s = m.group(1), m.group(2)
+    if col not in TEAM_STAT_TITLES:
+        query.answer()
+        return SECOND
+    title = TEAM_STAT_TITLES[col]
+    offset = int(off_s)
+    query.answer()
+    text, hp, hn = team_stat_leaderboard_page(title, col, offset)
+    markup = conversation_team_stat_keyboard(col, offset, hp, hn)
+    try:
+        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+    return SECOND
+
+
+def standalone_player_stat_keyboard(
+    table: str,
+    column: str,
+    offset: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    nav: List[InlineKeyboardButton] = []
+    if has_prev:
+        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
+        nav.append(
+            InlineKeyboardButton(
+                "← prev",
+                callback_data=f"sa:{table}:{column}:{prev_off}",
+            )
+        )
+    if has_next:
+        nav.append(
+            InlineKeyboardButton(
+                "next →",
+                callback_data=f"sa:{table}:{column}:{offset + LEADERBOARD_PAGE_SIZE}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [InlineKeyboardButton("Готово", callback_data="sa:close")]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if query.data == "sa:close":
+        query.answer()
+        query.edit_message_reply_markup(reply_markup=None)
+        return
+    m = re.match(r"^sa:([\w_]+):([\w_]+):(\d+)$", query.data)
+    if not m:
+        query.answer()
+        return
+    table, col, off_s = m.group(1), m.group(2), m.group(3)
+    key = (table, col)
+    if key not in PLAYER_STAT_TITLES:
+        query.answer()
+        return
+    title = PLAYER_STAT_TITLES[key]
+    offset = int(off_s)
+    query.answer()
+    text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
+    markup = standalone_player_stat_keyboard(table, col, offset, hp, hn)
+    try:
+        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 # --- Player (field) stats ---
 
-bot_player_points = _make_stats_handler(partial(player_stats, 'Лучшие бомбардиры', 'players_season_stats', 'points'))
-bot_player_goals = _make_stats_handler(partial(player_stats, 'Лучшие Снайперы', 'players_season_stats', 'goals'))
-bot_player_assists = _make_stats_handler(partial(player_stats, 'Лучшие Ассистенты', 'players_season_stats', 'assists'))
-bot_player_hits = _make_stats_handler(partial(player_stats, 'Лидеры по хитам', 'players_season_stats', 'hits'))
-bot_player_plus_minus = _make_stats_handler(partial(player_stats, 'Лидеры по показателю +-', 'players_season_stats', 'plus_minus'))
-bot_player_penalties = _make_stats_handler(partial(player_stats, 'Лидеры по штрафным минутам', 'players_season_stats', 'pim'))
-bot_player_blocks = _make_stats_handler(partial(player_stats, 'Лидеры по блокам', 'players_season_stats', 'blocked'))
-bot_player_ice_time = _make_stats_handler(partial(player_stats, 'Лидеры по среднему игровому времени', 'players_season_stats', 'time_on_ice_per_game'))
+bot_player_points = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "points"
+)
+bot_player_goals = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "goals"
+)
+bot_player_assists = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "assists"
+)
+bot_player_hits = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "hits"
+)
+bot_player_plus_minus = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "plus_minus"
+)
+bot_player_penalties = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "pim"
+)
+bot_player_blocks = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "blocked"
+)
+bot_player_ice_time = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "time_on_ice_per_game"
+)
 
-bot_player_sat_pct = _make_stats_handler(
-    partial(player_stats, 'Лидеры по Corsi (SAT %)', 'players_advanced_stats', 'sat_pct'),
+bot_player_sat_pct = _make_paginated_player_stat_open_handler(
+    "players_advanced_stats", "sat_pct"
 )
-bot_player_usat_pct = _make_stats_handler(
-    partial(player_stats, 'Лидеры по Fenwick (USAT %)', 'players_advanced_stats', 'usat_pct'),
+bot_player_usat_pct = _make_paginated_player_stat_open_handler(
+    "players_advanced_stats", "usat_pct"
 )
-bot_player_goals_for_pct = _make_stats_handler(
-    partial(player_stats, 'Лидеры по Goals For %', 'players_advanced_stats', 'goals_pct'),
+bot_player_goals_for_pct = _make_paginated_player_stat_open_handler(
+    "players_advanced_stats", "goals_pct"
 )
-bot_player_oz_start_pct = _make_stats_handler(
-    partial(player_stats, 'Лидеры по старту в зоне атаки (OZ Start %)', 'players_advanced_stats', 'oz_start_pct'),
+bot_player_oz_start_pct = _make_paginated_player_stat_open_handler(
+    "players_advanced_stats", "oz_start_pct"
 )
-bot_player_shootout_pct = _make_stats_handler(
-    partial(player_stats, 'Лидеры по реализации буллитов (Shootout %)', 'players_season_stats', 'shootout_pct'),
+bot_player_shootout_pct = _make_paginated_player_stat_open_handler(
+    "players_season_stats", "shootout_pct"
 )
 
 # --- Goalie stats ---
 
-bot_goalie_wins = _make_stats_handler(
-    partial(player_stats, 'Лидеры по победам', 'goalies_season_stats', 'wins'),
+bot_goalie_wins = _make_paginated_player_stat_open_handler(
+    "goalies_season_stats", "wins"
 )
-bot_goalie_percentage = _make_stats_handler(
-    partial(player_stats, 'Лидеры по проценту отраженных бросков', 'goalies_season_stats', 'save_percentage'),
+bot_goalie_percentage = _make_paginated_player_stat_open_handler(
+    "goalies_season_stats", "save_percentage"
 )
-bot_goalie_shootouts = _make_stats_handler(
-    partial(player_stats, 'Лидеры cухим матчам', 'goalies_season_stats', 'shutouts'),
+bot_goalie_shootouts = _make_paginated_player_stat_open_handler(
+    "goalies_season_stats", "shutouts"
 )
 
 # --- Team stats ---
 
-bot_team_procent_wins = _make_stats_handler(partial(team_stats, 'Статистика процента набранных очков', 'procent_points'))
-bot_team_power_play = _make_stats_handler(partial(team_stats, 'Статистика большинства', 'power_play_percentage'))
-bot_team_power_kill = _make_stats_handler(partial(team_stats, 'Статистика меньшинства', 'penalty_kill_percentage'))
+bot_team_procent_wins = _make_paginated_team_stat_open_handler("procent_points")
+bot_team_power_play = _make_paginated_team_stat_open_handler("power_play_percentage")
+bot_team_power_kill = _make_paginated_team_stat_open_handler("penalty_kill_percentage")
 
 # --- Shot type leaders (players_shot_types) ---
 
-bot_player_shot_wrist = _make_stats_handler(
-    partial(player_stats, 'Голы с кистевого', 'players_shot_types', 'goals_wrist'),
+bot_player_shot_wrist = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_wrist"
 )
-bot_player_shot_slap = _make_stats_handler(
-    partial(player_stats, 'Голы щелчком', 'players_shot_types', 'goals_slap'),
+bot_player_shot_slap = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_slap"
 )
-bot_player_shot_snap = _make_stats_handler(
-    partial(player_stats, 'Голы с полуприёма', 'players_shot_types', 'goals_snap'),
+bot_player_shot_snap = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_snap"
 )
-bot_player_shot_backhand = _make_stats_handler(
-    partial(player_stats, 'Голы с бэкхенда', 'players_shot_types', 'goals_backhand'),
+bot_player_shot_backhand = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_backhand"
 )
-bot_player_shot_tip_in = _make_stats_handler(
-    partial(player_stats, 'Голы направлением', 'players_shot_types', 'goals_tip_in'),
+bot_player_shot_tip_in = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_tip_in"
 )
-bot_player_shot_deflected = _make_stats_handler(
-    partial(player_stats, 'Голы отклонением', 'players_shot_types', 'goals_deflected'),
+bot_player_shot_deflected = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_deflected"
 )
-bot_player_shot_wrap = _make_stats_handler(
-    partial(player_stats, 'Голы с за ворот', 'players_shot_types', 'goals_wrap_around'),
+bot_player_shot_wrap = _make_paginated_player_stat_open_handler(
+    "players_shot_types", "goals_wrap_around"
 )
 
 # --- Day digest: один матч — полная карточка; несколько — сводка + «Матч N» ---
@@ -145,7 +361,7 @@ def send_game_card_message(
     if not game_exists(game_id):
         context.bot.send_message(
             chat_id=chat_id,
-            text=f"Матч `game_id={game_id}` в базе не найден.",
+            text="Такого матча нет в базе бота.",
             parse_mode="Markdown",
         )
         return
@@ -184,7 +400,7 @@ def dispatch_day_digest_messages(
         if not attach_conv_nav_on_last:
             context.bot.send_message(
                 chat_id=chat_id,
-                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — все команды.",
+                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
         return
 
@@ -199,7 +415,7 @@ def dispatch_day_digest_messages(
         if not attach_conv_nav_on_last:
             context.bot.send_message(
                 chat_id=chat_id,
-                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — все команды.",
+                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
         return
 
@@ -228,7 +444,7 @@ def dispatch_day_digest_messages(
     if not attach_conv_nav_on_last:
         context.bot.send_message(
             chat_id=chat_id,
-            text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /game (id), /help — все команды.",
+            text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи, /help — справка.",
         )
 
 
@@ -245,25 +461,6 @@ def callback_expand_digest_game(update: Update, context: CallbackContext) -> Non
     send_game_card_message(context, query.message.chat_id, game_id)
 
 
-_ADV_STANDALONE_FUNCS = {
-    "sat": partial(player_stats, 'Лидеры по Corsi (SAT %)', 'players_advanced_stats', 'sat_pct'),
-    "usat": partial(player_stats, 'Лидеры по Fenwick (USAT %)', 'players_advanced_stats', 'usat_pct'),
-    "gf": partial(player_stats, 'Лидеры по Goals For %', 'players_advanced_stats', 'goals_pct'),
-    "oz": partial(player_stats, 'Лидеры по старту в зоне атаки (OZ Start %)', 'players_advanced_stats', 'oz_start_pct'),
-    "so": partial(player_stats, 'Лидеры по реализации буллитов (Shootout %)', 'players_season_stats', 'shootout_pct'),
-}
-
-_SHOT_STANDALONE_FUNCS = {
-    "wrist": partial(player_stats, 'Голы с кистевого', 'players_shot_types', 'goals_wrist'),
-    "slap": partial(player_stats, 'Голы щелчком', 'players_shot_types', 'goals_slap'),
-    "snap": partial(player_stats, 'Голы с полуприёма', 'players_shot_types', 'goals_snap'),
-    "back": partial(player_stats, 'Голы с бэкхенда', 'players_shot_types', 'goals_backhand'),
-    "tip": partial(player_stats, 'Голы направлением', 'players_shot_types', 'goals_tip_in'),
-    "defl": partial(player_stats, 'Голы отклонением', 'players_shot_types', 'goals_deflected'),
-    "wrap": partial(player_stats, 'Голы с за ворот', 'players_shot_types', 'goals_wrap_around'),
-}
-
-
 def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query:
@@ -271,38 +468,16 @@ def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
     key = query.data.split(":", 1)[1]
     if key == "close":
         query.answer()
-        query.edit_message_text(
-            "Готово. Снова: /advanced. Меню: /stats. Справка: /help.",
-            parse_mode="Markdown",
-        )
+        query.edit_message_reply_markup(reply_markup=None)
         return
+    pair = ADV_STANDALONE_TO_STAT.get(key) or SHOT_STANDALONE_TO_STAT.get(key)
+    if not pair:
+        return
+    table, col = pair
     query.answer()
-    fn = _ADV_STANDALONE_FUNCS.get(key)
-    if not fn:
-        return
-    text = fn()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Готово", callback_data="adv:close")]])
-    query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=kb)
-
-
-def callback_standalone_shot(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    key = query.data.split(":", 1)[1]
-    if key == "close":
-        query.answer()
-        query.edit_message_text(
-            "Готово. Снова: /shottypes. Меню: /stats. Справка: /help.",
-            parse_mode="Markdown",
-        )
-        return
-    query.answer()
-    fn = _SHOT_STANDALONE_FUNCS.get(key)
-    if not fn:
-        return
-    text = fn()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Готово", callback_data="shot:close")]])
+    title = PLAYER_STAT_TITLES[(table, col)]
+    text, hp, hn = player_stat_leaderboard_page(title, table, col, 0)
+    kb = standalone_player_stat_keyboard(table, col, 0, hp, hn)
     query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=kb)
 
 
@@ -317,25 +492,19 @@ def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("OZ Start %", callback_data="adv:oz"),
         ],
         [InlineKeyboardButton("Shootout %", callback_data="adv:so")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
-
-def shottypes_standalone_keyboard() -> InlineKeyboardMarkup:
-    rows = [
         [
-            InlineKeyboardButton("Кистевой", callback_data="shot:wrist"),
-            InlineKeyboardButton("Щелчок", callback_data="shot:slap"),
+            InlineKeyboardButton("Кистевой", callback_data="adv:wrist"),
+            InlineKeyboardButton("Щелчок", callback_data="adv:slap"),
         ],
         [
-            InlineKeyboardButton("С полуприёма", callback_data="shot:snap"),
-            InlineKeyboardButton("Бэкхенд", callback_data="shot:back"),
+            InlineKeyboardButton("С полуприёма", callback_data="adv:snap"),
+            InlineKeyboardButton("Бэкхенд", callback_data="adv:back"),
         ],
         [
-            InlineKeyboardButton("Направление", callback_data="shot:tip"),
-            InlineKeyboardButton("Отклонение", callback_data="shot:defl"),
+            InlineKeyboardButton("Направление", callback_data="adv:tip"),
+            InlineKeyboardButton("Отклонение", callback_data="adv:defl"),
         ],
-        [InlineKeyboardButton("С за ворот", callback_data="shot:wrap")],
+        [InlineKeyboardButton("С за ворот", callback_data="adv:wrap")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -354,13 +523,85 @@ def bot_day_digest(update: Update, context: CallbackContext) -> int:
     return SECOND
 
 
-def callback_leaders_top10(update: Update, context: CallbackContext) -> None:
+def leaderboard_nav_keyboard(
+    kind: str, offset: int, has_prev: bool, has_next: bool
+) -> Optional[InlineKeyboardMarkup]:
+    row: List[InlineKeyboardButton] = []
+    if has_prev:
+        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
+        row.append(
+            InlineKeyboardButton(
+                "← prev",
+                callback_data=f"pl:{kind}:{prev_off}",
+            )
+        )
+    if has_next:
+        row.append(
+            InlineKeyboardButton(
+                "next →",
+                callback_data=f"pl:{kind}:{offset + LEADERBOARD_PAGE_SIZE}",
+            )
+        )
+    if not row:
+        return None
+    return InlineKeyboardMarkup([row])
+
+
+def leaders_category_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Очки", callback_data="pl:pick:points"),
+                InlineKeyboardButton("Голы", callback_data="pl:pick:goals"),
+                InlineKeyboardButton("Передачи", callback_data="pl:pick:assists"),
+            ]
+        ]
+    )
+
+
+def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
-    if query:
-        query.answer()
-        chat_id = query.message.chat_id
-        for text in leaders_top10_messages():
-            context.bot.send_message(chat_id=chat_id, text=text, parse_mode='MARKDOWN')
+    if not query or not query.data:
+        return
+    m = re.match(LEADERS_PICK_CALLBACK_PATTERN, query.data)
+    if not m:
+        return
+    kind = m.group(1)
+    query.answer()
+    text, hp, hn = stat_leaderboard_for_kind(kind, 0)
+    markup = leaderboard_nav_keyboard(kind, 0, hp, hn)
+    try:
+        query.edit_message_text(
+            text=text,
+            parse_mode="MARKDOWN",
+            reply_markup=markup,
+        )
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
+def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    m = re.match(LEADERBOARD_PAGE_CALLBACK_PATTERN, query.data)
+    if not m:
+        return
+    kind, off_s = m.group(1), m.group(2)
+    offset = int(off_s)
+    query.answer()
+    text, hp, hn = stat_leaderboard_for_kind(kind, offset)
+    markup = leaderboard_nav_keyboard(kind, offset, hp, hn)
+    try:
+        query.edit_message_text(
+            text=text,
+            parse_mode="MARKDOWN",
+            reply_markup=markup,
+        )
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 def handle_goal_video(update: Update, context: CallbackContext) -> int:
@@ -374,18 +615,40 @@ def handle_goal_video(update: Update, context: CallbackContext) -> int:
 
     chat_id = query.message.chat_id
 
-    filepath = download_goal_video(game_id, event_id)
-    if filepath is None:
+    delivery = download_goal_video(game_id, event_id)
+    if delivery is None:
         context.bot.send_message(chat_id=chat_id, text="Видео пока недоступно.")
         return SECOND
 
     try:
-        with open(filepath, "rb") as video:
-            context.bot.send_video(chat_id=chat_id, video=video, supports_streaming=True)
+        send_kw = {"supports_streaming": True}
+        if delivery.width is not None:
+            send_kw["width"] = delivery.width
+        if delivery.height is not None:
+            send_kw["height"] = delivery.height
+        if delivery.duration is not None:
+            send_kw["duration"] = delivery.duration
+        with open(delivery.path, "rb") as video_f:
+            if delivery.thumb_path:
+                with open(delivery.thumb_path, "rb") as thumb_f:
+                    send_kw["thumb"] = thumb_f
+                    context.bot.send_video(
+                        chat_id=chat_id, video=video_f, **send_kw
+                    )
+            else:
+                context.bot.send_video(chat_id=chat_id, video=video_f, **send_kw)
     except Exception:
         logger.exception("Failed to send goal video")
         context.bot.send_message(chat_id=chat_id, text="Ошибка при отправке видео.")
     finally:
-        os.unlink(filepath)
+        try:
+            os.unlink(delivery.path)
+        except OSError:
+            pass
+        if delivery.thumb_path:
+            try:
+                os.unlink(delivery.thumb_path)
+            except OSError:
+                pass
 
     return SECOND
