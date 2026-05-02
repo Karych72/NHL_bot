@@ -1,0 +1,41 @@
+{
+  "prevDate": "2026-04-03",
+  "currentDate": "2026-04-04",
+  "nextDate": "2026-04-05",
+  "games": [
+    {
+      "id": 2025021207,
+      "gameDate": "2026-04-04",
+      "startTimeUTC": "2026-04-04T16:30:00Z",
+      "gameState": "LIVE",
+      "gameScheduleState": "OK",
+      "tvBroadcasts": [
+        {"id": 384, "network": "ABC", "sequenceNumber": 1},
+        {"id": 282, "network": "SN", "sequenceNumber": 21}
+      ],
+      "awayTeam": {"abbrev": "DET", "score": 2},
+      "homeTeam": {"abbrev": "NYR", "score": 1}
+    },
+    {
+      "id": 2025021208,
+      "gameDate": "2026-04-04",
+      "startTimeUTC": "2026-04-04T17:00:00Z",
+      "gameState": "PRE",
+      "gameScheduleState": "OK",
+      "tvBroadcasts": [
+        {"id": 294, "network": "TSN5", "sequenceNumber": 135}
+      ],
+      "awayTeam": {"abbrev": "MIN"},
+      "homeTeam": {"abbrev": "OTT"}
+    },
+    {
+      "id": 2099999999,
+      "gameDate": "2026-04-03",
+      "startTimeUTC": "2026-04-03T23:00:00Z",
+      "gameState": "FINAL",
+      "gameScheduleState": "OK",
+      "awayTeam": {"abbrev": "XXX", "score": 1},
+      "homeTeam": {"abbrev": "YYY", "score": 3}
+    }
+  ]
+}

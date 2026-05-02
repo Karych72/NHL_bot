@@ -1,0 +1,38 @@
+{
+  "mode": "predict",
+  "row_count": 0,
+  "checks": [
+    {
+      "name": "non_empty_predict",
+      "status": "ok",
+      "note": "no games for prediction"
+    },
+    {
+      "name": "unique_game_id",
+      "status": "ok"
+    },
+    {
+      "name": "numeric_nan_inf",
+      "status": "ok"
+    },
+    {
+      "name": "fail_fast",
+      "status": "ok"
+    }
+  ],
+  "errors": [],
+  "sample_game_ids": [],
+  "status": "OK",
+  "team_game_facts": {
+    "dropped_games": []
+  },
+  "assemble": {
+    "drops": [],
+    "built_feature_columns": [
+      "home_goals_target",
+      "away_goals_target",
+      "diff_goals_target",
+      "sum_goals_target"
+    ]
+  }
+}

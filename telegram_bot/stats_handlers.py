@@ -11,8 +11,9 @@ from bot_messages import (
     LEADERBOARD_PAGE_SIZE,
     day_digest,
     day_digest_summary_body,
-    game_message,
     game_exists,
+    game_message,
+    matchup_season_preview,
     player_stat_leaderboard_page,
     stat_leaderboard_for_kind,
     team_stat_leaderboard_page,
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 LEADERS_PICK_CALLBACK_PATTERN = r"^pl:pick:(points|goals|assists)$"
 LEADERBOARD_PAGE_CALLBACK_PATTERN = r"^pl:(points|goals|assists):(\d+)$"
 DIGEST_EXPAND_PREFIX = "dg:"
+# /tonight: кнопка матча tn:<game_id>:<away>:<home>
+TONIGHT_GAME_CALLBACK_PATTERN = r"^tn:\d+:[^:]+:[^:]+$"
 
 # Пагинация в /stats (игроки / вратари / типы бросков / advanced)
 STAT_PAGE_CALLBACK_PATTERN = r"^st:([\w_]+):([\w_]+):(\d+)$"
@@ -444,8 +447,40 @@ def dispatch_day_digest_messages(
     if not attach_conv_nav_on_last:
         context.bot.send_message(
             chat_id=chat_id,
-            text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи, /help — справка.",
+            text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи из базы, /tonight — расписание NHL, /help — справка.",
         )
+
+
+def callback_tonight_game(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("tn:"):
+        return
+    query.answer()
+    parts = query.data.split(":", 3)
+    if len(parts) != 4 or parts[0] != "tn":
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Некорректная кнопка.",
+        )
+        return
+    _, gid_s, away_a, home_a = parts
+    try:
+        game_id = int(gid_s)
+    except ValueError:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Некорректная кнопка.",
+        )
+        return
+    chat_id = query.message.chat_id
+    if game_exists(game_id):
+        send_game_card_message(context, chat_id, game_id)
+        return
+    text = truncate_telegram_text(
+        matchup_season_preview(away_a, home_a),
+        footer_note="\n\n(Текст обрезан — лимит Telegram.)",
+    )
+    context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 
 def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:

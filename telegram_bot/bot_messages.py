@@ -1,3 +1,4 @@
+import html
 from collections import defaultdict
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -195,6 +196,273 @@ def game_exists(game_id: int) -> bool:
         columns=["o"],
     )
     return row["count_rows"] > 0
+
+
+def _fmt_num_max2(val: Union[int, float, None]) -> str:
+    if val is None:
+        return "—"
+    r = round(float(val), 2)
+    s = f"{r:.2f}"
+    return s.rstrip("0").rstrip(".")
+
+
+def _fmt_pct_points(val: Union[int, float, None]) -> str:
+    """Доля очков в БД уже в шкале 0–100 (см. pct_from_ratio в пайплайне)."""
+    if val is None:
+        return "—"
+    r = round(float(val), 2)
+    s = f"{r:.2f}"
+    return s.rstrip("0").rstrip(".") + "%"
+
+
+def _fmt_pct_stat(val: Union[int, float, None]) -> str:
+    """Проценты PP/PK/вбрасываний в БД уже 0–100."""
+    if val is None:
+        return "—"
+    r = round(float(val), 2)
+    s = f"{r:.2f}"
+    return s.rstrip("0").rstrip(".") + "%"
+
+
+def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
+    row = fetch_all(
+        "SELECT team_id FROM teams WHERE season_id = %s "
+        "AND upper(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1",
+        (config.SEASON_ID, abbrev_u),
+        columns=["team_id"],
+    )
+    if row["count_rows"] < 1 or row["team_id"][0] is None:
+        return None
+    return int(row["team_id"][0])
+
+
+def _last_n_form_record(team_id: int, n: int = 5) -> str:
+    """Формат W-L-OTL по последним n завершённым играм (как в таблице очков)."""
+    row = fetch_all(
+        "SELECT winner_id, home_team_id, away_team_id, is_overtime, is_shootouts "
+        "FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
+        "AND (home_team_id = %s OR away_team_id = %s) "
+        "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
+        (config.SEASON_ID, team_id, team_id, n),
+        columns=[
+            "winner_id",
+            "home_team_id",
+            "away_team_id",
+            "is_overtime",
+            "is_shootouts",
+        ],
+    )
+    w = l = otl = 0
+    for i in range(row["count_rows"]):
+        wid = row["winner_id"][i]
+        ot = bool(row["is_overtime"][i])
+        so = bool(row["is_shootouts"][i])
+        if wid == team_id:
+            w += 1
+        elif ot or so:
+            otl += 1
+        else:
+            l += 1
+    if row["count_rows"] == 0:
+        return "—"
+    return f"{w}-{l}-{otl}"
+
+
+def _matchup_aligned_compare_rows(pairs: List[Tuple[str, str, str]], min_gap: int = 4) -> List[str]:
+    """Строки «• метрика: … значение — значение»; числа начинаются в одной колонке (моноширинно в Telegram)."""
+    prefixes = [f"• {lbl}:" for lbl, _, _ in pairs]
+    w = max(len(p) for p in prefixes)
+    value_start = w + min_gap
+    rows: List[str] = []
+    for (lbl, left, right), p in zip(pairs, prefixes):
+        gap = value_start - len(p)
+        if gap < 1:
+            gap = 1
+        rows.append(f"{p}{' ' * gap}{left} — {right}")
+    return rows
+
+
+def _h2h_season_wins(
+    tid_a: int, tid_b: int, abbrev_a: str, abbrev_b: str
+) -> Optional[str]:
+    """Строка «побед в личных встречах» или None, если матчей не было."""
+    row = fetch_all(
+        "SELECT winner_id FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
+        "AND ((home_team_id = %s AND away_team_id = %s) "
+        "     OR (home_team_id = %s AND away_team_id = %s))",
+        (config.SEASON_ID, tid_a, tid_b, tid_b, tid_a),
+        columns=["winner_id"],
+    )
+    if row["count_rows"] == 0:
+        return None
+    wa = wb = 0
+    for i in range(row["count_rows"]):
+        wid = row["winner_id"][i]
+        if wid == tid_a:
+            wa += 1
+        elif wid == tid_b:
+            wb += 1
+    ea, eb = html.escape(abbrev_a), html.escape(abbrev_b)
+    return f"<b>{ea}</b> {wa} — {wb} <b>{eb}</b>"
+
+
+def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
+    """
+    Сезонное сравнение по teams.abbreviation (= abbrev из NHL API).
+
+    Разметка HTML (parse_mode=HTML): блок метрик в &lt;pre&gt; — моноширинный шрифт,
+    иначе в обычном тексте Telegram пробелы не выравнивают колонки.
+    """
+    a = (away_abbr or "").strip().upper()
+    h = (home_abbr or "").strip().upper()
+    if not a or not h or a == "?" or h == "?":
+        return "Не удалось сопоставить команды с данными в базе."
+
+    esc_a = html.escape(away_abbr)
+    esc_h = html.escape(home_abbr)
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+
+    stats = fetch_all(
+        "SELECT upper(trim(COALESCE(t.abbreviation, ''))) AS abbr, ts.games_played, ts.wins, ts.losses, ts.ot, "
+        "ts.points, ts.procent_points, ts.goals_per_game, ts.goals_against_per_game, "
+        "ts.power_play_percentage, ts.penalty_kill_percentage, "
+        "ts.shots_per_game, ts.face_off_win_percentage "
+        "FROM teams_stats ts "
+        "INNER JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
+        "WHERE ts.season_id = %s AND upper(trim(COALESCE(t.abbreviation, ''))) = ANY(%s)",
+        (config.SEASON_ID, [a, h]),
+        columns=[
+            "abbr",
+            "games_played",
+            "wins",
+            "losses",
+            "ot",
+            "points",
+            "procent_points",
+            "goals_per_game",
+            "goals_against_per_game",
+            "power_play_percentage",
+            "penalty_kill_percentage",
+            "shots_per_game",
+            "face_off_win_percentage",
+        ],
+    )
+
+    by_abbr: Dict[str, Dict[str, Union[int, float, None]]] = {}
+    for i in range(stats["count_rows"]):
+        ab = stats["abbr"][i]
+        if not ab:
+            continue
+        by_abbr[str(ab).strip().upper()] = {
+            "games_played": stats["games_played"][i],
+            "wins": stats["wins"][i],
+            "losses": stats["losses"][i],
+            "ot": stats["ot"][i],
+            "points": stats["points"][i],
+            "procent_points": stats["procent_points"][i],
+            "goals_per_game": stats["goals_per_game"][i],
+            "goals_against_per_game": stats["goals_against_per_game"][i],
+            "power_play_percentage": stats["power_play_percentage"][i],
+            "penalty_kill_percentage": stats["penalty_kill_percentage"][i],
+            "shots_per_game": stats["shots_per_game"][i],
+            "face_off_win_percentage": stats["face_off_win_percentage"][i],
+        }
+
+    header = f"<b>{esc_a} @ {esc_h}</b> — сезон {season_esc}\n"
+
+    def _one_line_team_html(ab: str, row: Optional[Dict[str, Union[int, float, None]]]) -> str:
+        eab = html.escape(ab)
+        if not row:
+            return f"<b>{eab}</b>: нет строки в базе для сезона."
+        w, l, ot = row["wins"], row["losses"], row["ot"]
+        rec = f"{_format_leader_value(w)}-{_format_leader_value(l)}-{_format_leader_value(ot)}"
+        pts = row["points"]
+        ppct = _fmt_pct_points(row["procent_points"])
+        return f"<b>{eab}</b> — {rec}, {_format_leader_value(pts)} очков ({ppct})"
+
+    ra, rh = by_abbr.get(a), by_abbr.get(h)
+    if ra is None and rh is None:
+        return (
+            header
+            + f"Команд <b>{esc_a}</b> и <b>{esc_h}</b> нет в базе бота для этого сезона "
+            f"({season_esc})."
+        )
+
+    parts: List[str] = [
+        header.rstrip("\n"),
+        _one_line_team_html(away_abbr, ra),
+        _one_line_team_html(home_abbr, rh),
+    ]
+
+    if ra and rh:
+        gf_a = ra["goals_per_game"]
+        gf_h = rh["goals_per_game"]
+        ga_a = ra["goals_against_per_game"]
+        ga_h = rh["goals_against_per_game"]
+        diff_a = (
+            None
+            if gf_a is None or ga_a is None
+            else round(float(gf_a) - float(ga_a), 2)
+        )
+        diff_h = (
+            None
+            if gf_h is None or ga_h is None
+            else round(float(gf_h) - float(ga_h), 2)
+        )
+
+        parts.append("")
+        parts.append("<b>Сравнение</b>")
+        parts.append(f"<b>{esc_a} VS {esc_h}</b>")
+        parts.append("")
+        compare_pairs: List[Tuple[str, str, str]] = [
+            ("Голы за игру", _fmt_num_max2(gf_a), _fmt_num_max2(gf_h)),
+            ("Пропущенные голы за игру", _fmt_num_max2(ga_a), _fmt_num_max2(ga_h)),
+            (
+                "Большинство",
+                _fmt_pct_stat(ra["power_play_percentage"]),
+                _fmt_pct_stat(rh["power_play_percentage"]),
+            ),
+            (
+                "Меньшинство",
+                _fmt_pct_stat(ra["penalty_kill_percentage"]),
+                _fmt_pct_stat(rh["penalty_kill_percentage"]),
+            ),
+            (
+                "Броски за игру",
+                _fmt_num_max2(ra["shots_per_game"]),
+                _fmt_num_max2(rh["shots_per_game"]),
+            ),
+            (
+                "Вбрасывания",
+                _fmt_pct_stat(ra["face_off_win_percentage"]),
+                _fmt_pct_stat(rh["face_off_win_percentage"]),
+            ),
+            (
+                "Разница шайб за игру",
+                _fmt_num_max2(diff_a),
+                _fmt_num_max2(diff_h),
+            ),
+        ]
+        pre_raw = "\n".join(_matchup_aligned_compare_rows(compare_pairs, min_gap=4))
+        parts.append(f"<pre>{html.escape(pre_raw)}</pre>")
+
+        tid_a = _team_id_for_abbrev(a)
+        tid_h = _team_id_for_abbrev(h)
+        parts.append("")
+        parts.append("<b>Форма (последние 5 игр)</b>")
+        fa = _last_n_form_record(tid_a, 5) if tid_a is not None else "—"
+        fh = _last_n_form_record(tid_h, 5) if tid_h is not None else "—"
+        parts.append(f"<b>{esc_a}</b>: {html.escape(fa)}")
+        parts.append(f"<b>{esc_h}</b>: {html.escape(fh)}")
+
+        if tid_a is not None and tid_h is not None:
+            h2h = _h2h_season_wins(tid_a, tid_h, away_abbr, home_abbr)
+            if h2h:
+                parts.append("")
+                parts.append("<b>Личные встречи в сезоне (победы)</b>")
+                parts.append(h2h)
+
+    return "\n".join(parts)
 
 
 LEADERBOARD_PAGE_SIZE = 10
@@ -648,10 +916,19 @@ def day_digest_summary_body(real_games: List[Tuple[int, str, List[Dict]]]) -> st
     return "\n".join(lines)
 
 
-def truncate_telegram_text(text: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> str:
+def truncate_telegram_text(
+    text: str,
+    max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+    *,
+    footer_note: Optional[str] = None,
+) -> str:
     if len(text) <= max_len:
         return text
-    note = "\n\n_Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже._"
+    note = (
+        footer_note
+        if footer_note is not None
+        else "\n\n_Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже._"
+    )
     cut = max_len - len(note) - 3
     if cut < 80:
         cut = 80

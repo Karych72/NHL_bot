@@ -1,5 +1,7 @@
 import logging
+from typing import List, Optional
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackContext,
     CallbackQueryHandler,
@@ -9,9 +11,17 @@ from telegram.ext import (
 )
 
 import config
-from bot_messages import day_digest, leaders_menu_intro, team_table
+from bot_messages import day_digest, leaders_menu_intro, team_table, truncate_telegram_text
+from nhl_scoreboard import (
+    ScoreboardFetchError,
+    fetch_score_now,
+    slate_games_sorted,
+    tonight_match_button_label,
+    tonight_reply_intro,
+)
 from help_text import ADVANCED_COMMAND_INTRO, HELP_MESSAGE, START_MESSAGE
 from dialog_states import (
+    build_menu,
     CHOOSE_STATS,
     DAY_DIGEST,
     END_CONVERSATION,
@@ -65,6 +75,7 @@ from stats_handlers import (
     STAT_PAGE_CALLBACK_PATTERN,
     STANDALONE_SA_CALLBACK_PATTERN,
     TEAM_PAGE_CALLBACK_PATTERN,
+    TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
     bot_day_digest,
     bot_goalie_percentage,
@@ -100,6 +111,7 @@ from stats_handlers import (
     callback_standalone_sa,
     callback_stats_player_page,
     callback_stats_team_page,
+    callback_tonight_game,
     leaders_category_keyboard,
     dispatch_day_digest_messages,
     handle_goal_video,
@@ -107,6 +119,39 @@ from stats_handlers import (
 )
 
 STANDALONE_GROUP = -1
+
+# Лимит Bot API на число кнопок в одном inline-сообщении.
+_TELEGRAM_INLINE_BUTTON_CAP = 100
+# Как у кнопок «Матч N» в /day_games.
+_TONIGHT_BUTTON_COLUMNS = 4
+
+
+def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
+    """Вертикальный список кнопок матчей: по нажатию — карточка из БД или сезонное сравнение команд."""
+    buttons: List[InlineKeyboardButton] = []
+    for g in games:
+        gid = g.get("id")
+        away = ((g.get("awayTeam") or {}).get("abbrev") or "?").strip()
+        home = ((g.get("homeTeam") or {}).get("abbrev") or "?").strip()
+        if gid is None:
+            continue
+        try:
+            gid_int = int(gid)
+        except (TypeError, ValueError):
+            continue
+        cb = f"tn:{gid_int}:{away}:{home}"
+        if len(cb.encode("utf-8")) > 64:
+            continue
+        label = tonight_match_button_label(g)
+        if len(label) > 64:
+            label = label[:61] + "..."
+        buttons.append(InlineKeyboardButton(label, callback_data=cb))
+    if not buttons:
+        return None
+    if len(buttons) > _TELEGRAM_INLINE_BUTTON_CAP:
+        buttons = buttons[:_TELEGRAM_INLINE_BUTTON_CAP]
+    rows = build_menu(buttons, n_cols=_TONIGHT_BUTTON_COLUMNS)
+    return InlineKeyboardMarkup(rows)
 
 
 def cmd_start(update, context):
@@ -135,6 +180,27 @@ def cmd_day_games(update, context):
         games,
         attach_conv_nav_on_last=False,
     )
+
+
+def cmd_tonight(update, context):
+    try:
+        payload = fetch_score_now()
+    except ScoreboardFetchError:
+        logger.exception("NHL score/now request failed")
+        update.message.reply_text(
+            "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже."
+        )
+        return
+    games = slate_games_sorted(payload)
+    markup = build_tonight_match_keyboard(games) if games else None
+    text = truncate_telegram_text(
+        tonight_reply_intro(payload),
+        footer_note="\n\n(Текст обрезан — лимит Telegram.)",
+    )
+    reply_kwargs = {"parse_mode": "MARKDOWN"}
+    if markup is not None:
+        reply_kwargs["reply_markup"] = markup
+    update.message.reply_text(text, **reply_kwargs)
 
 
 def cmd_table(update, context):
@@ -263,6 +329,7 @@ if __name__ == '__main__':
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
         CommandHandler("day_games", cmd_day_games),
+        CommandHandler("tonight", cmd_tonight),
         CommandHandler("table", cmd_table),
         CommandHandler("leaders", cmd_leaders),
         CommandHandler("game", cmd_game),
@@ -270,6 +337,7 @@ if __name__ == '__main__':
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=r"^dg:\d+$"),
+        CallbackQueryHandler(callback_tonight_game, pattern=TONIGHT_GAME_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),
         CallbackQueryHandler(
             callback_standalone_adv,

@@ -53,6 +53,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         help_text = _load_help_text()
         for fragment in (
             "/day\\_games",  # Markdown escape for Telegram (underscore = italic)
+            "/tonight",
             "/table",
             "/leaders",
             "/stats",
