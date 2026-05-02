@@ -36,7 +36,9 @@ NHL_bot/
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
 │   ├── api_data_research.md
-│   ├── data_loading_and_bot.md
+│   ├── data_loading.md                 # установка окружения, БД, загрузка NHL API
+│   ├── pipeline_nulls_and_explicit_null_tz.md   # контракт NULL-семантики лоадера
+│   ├── telegram_bot.md                 # запуск и команды бота
 │   └── user_journey_stats.md
 │
 ├── plan/                               # Планы (индекс: plan/README.md)
@@ -58,7 +60,6 @@ NHL_bot/
 │   ├── stats_handlers.py              # Фабрика обработчиков статистики
 │   ├── bot_messages.py                 # Формирование текстов ответов (SQL + шаблоны)
 │   ├── template_funcs.py              # Обёртка Jinja2
-│   ├── sql_query.py                    # Legacy-обёртка над database.fetch_all
 │   ├── messages/                       # Jinja2-шаблоны сообщений
 │   │   ├── game_message.txt
 │   │   ├── league_table.txt
@@ -68,13 +69,6 @@ NHL_bot/
 │       ├── get_game_stats.sql
 │       ├── get_goals_game.sql
 │       └── get_goalies_game.sql
-│
-└── all_data/                           # Runtime-директория (gitignored)
-    └── dataframes/
-        ├── rosters/
-        ├── players/
-        ├── teams/
-        └── myself_analyses/
 ```
 
 ---
@@ -103,14 +97,13 @@ NHL_bot/
 |---|---|
 | `make setup` | Создаёт `.venv` (с учётом архитектуры arm64/x86_64), устанавливает зависимости |
 | `make env-example` | Копирует `.env.example` → `.env`, если файл не существует |
-| `make dirs` | Создаёт директории `all_data/dataframes/*` |
-| `make db-init` | Применяет DDL из `data_tables/*.sql` и PL/pgSQL из `telegram_bot/queries/*.sql` |
-| `make db-init-local` | То же, что `db-init`, но с текущим пользователем ОС вместо `postgres` |
-| `make season-load` | Запуск ETL-загрузчика `load_season_modern.py` |
+| `make db-init` / `db-reset` | Применяет DDL из `data_tables/*.sql` и PL/pgSQL из `telegram_bot/queries/*.sql` (DROP → CREATE) |
+| `make db-init-local` / `db-reset-local` | То же, но с текущим пользователем ОС вместо `postgres` |
+| `make season-sync DATE_FROM=… DATE_TO=…` | Запуск ETL-загрузчика `load_season_modern.py` для произвольного окна дат |
+| `make season-load-full` | Полная перезагрузка текущего сезона (от `SEASON_START` до сегодня) |
+| `make season-sync-week` / `-month` / `-today` | Синхронизация за последние 7 / 30 / 0 дней |
 | `make bot` | Запуск Telegram-бота (проверяет наличие токена) |
 | `make run-bot` | `setup` + `env-example` + `bot` |
-| `make run-pipeline` | `setup` + `env-example` + `dirs` + `db-init-local` + `pipeline` |
-| `make run-full` | Полный цикл: venv + db-init + pipeline + bot |
 | `make run-local` | Запуск бота без pipeline (для работы с уже загруженными данными) |
 
 ### Зависимости (`requirements.txt`)
@@ -121,7 +114,8 @@ NHL_bot/
 | `psycopg2-binary` | Драйвер PostgreSQL |
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
-| `pandas` | Указан, но не используется в текущем коде |
+| `pandas` | Используется в `modeling/dataset_builder/*` (сборка фичей для моделирования) |
+| `pytest>=8.0` | Тесты (`tests/test_*.py`); юнит-тесты по `pipeline/`, `modeling/`, бот |
 
 ---
 
@@ -176,12 +170,17 @@ NHL Stats API                          NHL Web API
               │       → games_rows, all_goals_rows, game_team_rows,
               │         game_player_rows, game_goalie_rows
               │
-              └── 8. PostgreSQL: TRUNCATE ALL → bulk INSERT (execute_values)
+              └── 8. PostgreSQL (одна транзакция):
+                      DELETE per-game для game_id в окне
+                      UPSERT в сезонные таблицы (ON CONFLICT DO UPDATE)
+                      INSERT в per-game таблицы
+                      COMMIT (или ROLLBACK при любой ошибке)
 ```
 
 ### Стратегия загрузки
 
-- **Полная перезагрузка:** все 10 таблиц очищаются (`TRUNCATE`) перед вставкой. Идемпотентность гарантирована.
+- **Сезонные таблицы:** UPSERT по PK `(team_id, season_id)` или `(player_id, season_id)`.
+- **Per-game таблицы (`games`, `all_goals`, `game_*_stats`):** `DELETE … WHERE game_id = ANY(window) → INSERT`. Идемпотентно при повторных запусках на пересекающихся окнах.
 - **Пагинация:** API с ответами `{data, total}` выгружаются постранично (`fetch_paginated`, размер страницы 200–1000).
 - **Retry-логика:** до 10 попыток, экспоненциальный backoff, обработка HTTP 429 (Rate Limit) через заголовок `Retry-After`.
 - **Таймаут запросов:** 30 секунд.
@@ -293,7 +292,8 @@ bot.py
   │       └── template_funcs.py   read_template() + output_text()
   │                               → Jinja2 Template.render()
   │
-  └── sql_query.py           Legacy-обёртка → database.fetch_all
+  └── nhl_scoreboard.py      /today / /standings (запросы к Web API NHL,
+                             форматирование расписания)
 ```
 
 ### Фабрика обработчиков (`stats_handlers.py`)
@@ -328,7 +328,7 @@ handler = _make_stats_handler(
 ### Whitelist-валидация
 
 Для защиты от SQL-инъекций при динамическом построении запросов используется двойная защита:
-1. **Whitelist:** `ALLOWED_TABLES` (10 таблиц) и `ALLOWED_COLUMNS` (80+ колонок) — проверка перед использованием.
+1. **Whitelist:** `ALLOWED_TABLES` (12 таблиц) и `ALLOWED_COLUMNS` (80+ колонок) — проверка перед использованием.
 2. **psycopg2.sql:** идентификаторы оборачиваются в `sql.Identifier()`, параметры подставляются через `%s`.
 
 ### Функция `fetch_all()`
@@ -579,17 +579,20 @@ Panthers        28.5  70
 │    load_season_modern.py    │
 │                             │
 │  Парсинг JSON → tuple-ы    │
-│  TRUNCATE → bulk INSERT     │
+│  DELETE per-game / UPSERT   │
+│  одной транзакцией          │
 └─────────────┬───────────────┘
               │  psycopg2 (execute_values)
               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         PostgreSQL                                   │
 │                                                                      │
-│  10 таблиц:                     3 PL/pgSQL функции:                 │
+│  12 таблиц:                     3 PL/pgSQL функции:                 │
 │  teams, teams_stats,            get_game_stats()                     │
 │  rosters,                       get_goals_game()                     │
 │  players_season_stats,          get_goalies_game()                   │
+│  players_advanced_stats,                                             │
+│  players_shot_types,                                                 │
 │  goalies_season_stats,                                               │
 │  games, all_goals,                                                   │
 │  game_team_stats,                                                    │
@@ -676,36 +679,27 @@ Panthers        28.5  70
 ### Первоначальная настройка
 
 ```bash
-make setup          # venv + зависимости
-make env-example    # создать .env из шаблона
-# отредактировать .env: TELEGRAM_BOT_TOKEN=...
-make db-init-local  # создать таблицы и PL/pgSQL функции
-make season-load    # загрузить данные из NHL API
-make bot            # запустить бота
+make setup              # venv + зависимости
+make env-example        # создать .env из шаблона
+# отредактировать .env: TELEGRAM_BOT_TOKEN, PG_*, SEASON_ID, CURRENT_SEASON
+make db-reset-local     # создать таблицы и PL/pgSQL функции (DROP → CREATE)
+make season-load-full   # загрузить данные из NHL API за текущий сезон
+make bot                # запустить бота
 ```
 
 ### Повседневный запуск
 
 ```bash
-make run-local      # бот без перезагрузки данных
-make season-load    # обновить данные (с новым DATE_FROM/DATE_TO)
-```
-
-### Полный цикл с нуля
-
-```bash
-make run-full       # venv + db-init + pipeline + bot
+make run-local            # бот без перезагрузки данных
+make season-sync-month    # обновить данные за последние ~30 дней
 ```
 
 ---
 
 ## Известные особенности и ограничения
 
-1. **Полная перезагрузка:** Pipeline делает TRUNCATE всех таблиц — нет инкрементальной загрузки.
-2. **Makefile `pipeline`:** Цель `make pipeline` ссылается на несуществующие файлы (`teams_and_players.py`, `pipeline.py`); актуальная цель — `make season-load`.
-3. **Отсутствие PRIMARY KEY:** Таблицы `teams`, `rosters`, `players_season_stats`, `goalies_season_stats`, `all_goals` не имеют PRIMARY KEY (только `games`, `game_team_stats`, `game_player_stats`, `game_goalie_stats` имеют UNIQUE constraint).
-4. **Нет FOREIGN KEY:** Связи между таблицами существуют логически, но не объявлены на уровне DDL.
-5. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
-6. **python-telegram-bot 13.15:** Callback-based API (не async). Версия зафиксирована; миграция на v20+ потребует перехода на asyncio.
-7. **pandas:** Указан в зависимостях, но не используется в текущем коде.
-8. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.
+1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
+2. **Без FOREIGN KEY:** Связи между таблицами существуют логически, но не объявлены на уровне DDL — это намеренно, чтобы не блокировать `DELETE`+`INSERT`-стратегию для per-game таблиц. `all_goals` единственная без PK (есть только `event_id`).
+3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
+4. **python-telegram-bot 13.15:** Callback-based API (не async). Версия зафиксирована; миграция на v20+ потребует перехода на asyncio.
+5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.

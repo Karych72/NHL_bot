@@ -119,16 +119,23 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     goals = []
     goals_meta = []
     for i in range(game_goals['count_rows']):
-        h = game_goals['home_score'][i]
-        a = game_goals['away_score'][i]
+        h_raw = game_goals['home_score'][i]
+        a_raw = game_goals['away_score'][i]
         p = game_goals['period'][i]
-        period_home[p] += h - prev_h
-        period_away[p] += a - prev_a
+        h = h_raw if h_raw is not None else prev_h
+        a = a_raw if a_raw is not None else prev_a
+        if p is not None:
+            period_home[p] += h - prev_h
+            period_away[p] += a - prev_a
         prev_h, prev_a = h, a
 
         scorer = game_goals['scorer'][i] or 'Unknown'
-        t_m = str((p - 1) * 20 + int(game_goals['time'][i].split(':')[0]))
-        t_all = t_m + ':' + game_goals['time'][i].split(':')[1]
+        time_str = game_goals['time'][i]
+        if p is not None and time_str:
+            t_m = str((p - 1) * 20 + int(time_str.split(':')[0]))
+            t_all = t_m + ':' + time_str.split(':')[1]
+        else:
+            t_all = '?:??'
         assists = ''
         if game_goals['assist_2'][i] is not None:
             assists = f"({game_goals['assist_1'][i]}, {game_goals['assist_2'][i]})"
@@ -160,16 +167,25 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     goalkeepers = ''
     change_team = False
     for i in range(game_goalies['count_rows']):
-        if game_goalies['timeonice'][i] == '00:00':
+        toi = game_goalies['timeonice'][i]
+        # Both NULL and the legacy "00:00" sentinel mean "this goalie did not
+        # play in this game" — skip rendering.
+        if toi is None or toi == '00:00':
             continue
         if not game_goalies['is_home'][i] and not change_team:
             change_team = True
             goalkeepers += ' - '
+        sv_pct = game_goalies['save_percentage'][i]
+        sv_pct_str = f"{round(sv_pct, 2)}%" if sv_pct is not None else "—"
+        saves = game_goalies['saves'][i]
+        shots = game_goalies['shots'][i]
+        saves_str = saves if saves is not None else "—"
+        shots_str = shots if shots is not None else "—"
         goalkeepers += (
             f"{game_goalies['lastname'][i]} "
-            f"({game_goalies['saves'][i]}/{game_goalies['shots'][i]}, "
-            f"{round(game_goalies['save_percentage'][i], 2)}%, "
-            f"{game_goalies['timeonice'][i]})"
+            f"({saves_str}/{shots_str}, "
+            f"{sv_pct_str}, "
+            f"{toi})"
         )
 
     to_template = {
@@ -207,7 +223,7 @@ def _fmt_num_max2(val: Union[int, float, None]) -> str:
 
 
 def _fmt_pct_points(val: Union[int, float, None]) -> str:
-    """Доля очков в БД уже в шкале 0–100 (см. pct_from_ratio в пайплайне)."""
+    """Доля очков в БД уже в шкале 0–100 (нормализуется в пайплайне через `optional_pct_from_ratio`)."""
     if val is None:
         return "—"
     r = round(float(val), 2)
@@ -502,7 +518,9 @@ def player_stats_with_count(
         "LEFT JOIN rosters r ON pl.player_id = r.player_id AND r.season_id = pl.season_id "
         "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = pl.season_id "
         "WHERE pl.season_id = %s "
-        "ORDER BY {pl_col} DESC, {second_col} DESC "
+        # NULLS LAST keeps unranked players (no value reported) at the bottom of
+        # leaderboards instead of at the top under DESC's default NULLS FIRST.
+        "ORDER BY {pl_col} DESC NULLS LAST, {second_col} DESC NULLS LAST "
         "LIMIT %s OFFSET %s"
     ).format(
         pl_col=pl_col,

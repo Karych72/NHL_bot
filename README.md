@@ -1,7 +1,7 @@
 # NHL_bot
 
 Telegram bot with NHL stats:
-- `pipeline/` loads NHL API data into PostgreSQL and CSV/JSON dumps
+- `pipeline/load_season_modern.py` loads NHL API data into PostgreSQL
 - `telegram_bot/` reads PostgreSQL and shows stats in Telegram menus
 
 ## Quick start
@@ -44,16 +44,15 @@ This applies:
 - table DDL from `data_tables/*.sql`
 - SQL functions from `telegram_bot/queries/*.sql`
 
-## Load NHL data (pipeline)
+## Load NHL data
 
 ```bash
-make pipeline
+make season-sync-month        # last ~30 days
+make season-load-full         # full current season from SEASON_START to today
+make season-sync DATE_FROM=2025-10-01 DATE_TO=2026-03-29  # explicit window
 ```
 
-This will:
-- create required data directories
-- fetch data from NHL API
-- insert data into PostgreSQL
+Подробности — [`docs/data_loading.md`](docs/data_loading.md).
 
 ## Run Telegram bot
 
@@ -92,22 +91,10 @@ Bot run (with setup + env copy helper):
 make run-bot
 ```
 
-Pipeline run only:
-
-```bash
-make run-pipeline
-```
-
 Load full season using modern NHL API (`SEASON_ID`, `DATE_FROM`, `DATE_TO` from `.env`):
 
 ```bash
-make season-load
-```
-
-Full local cycle (fresh venv + db-init-local + pipeline + bot):
-
-```bash
-make run-full
+make season-load-full
 ```
 
 ## Manual equivalent commands (without Makefile)
@@ -118,11 +105,11 @@ source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 
-mkdir -p all_data/dataframes/rosters all_data/dataframes/players all_data/dataframes/teams all_data/dataframes/myself_analyses
-
 for f in data_tables/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres -f "$f"; done
 for f in telegram_bot/queries/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres -f "$f"; done
 
-cd pipeline && ../.venv/bin/python teams_and_players.py && ../.venv/bin/python pipeline.py
+cd pipeline && ../.venv/bin/python -u load_season_modern.py \
+    --date-from 2025-10-01 --date-to 2026-03-29 \
+    --season-id 20252026 --current-season "25/26"
 cd ../telegram_bot && TELEGRAM_BOT_TOKEN=your_bot_token ../.venv/bin/python bot.py
 ```

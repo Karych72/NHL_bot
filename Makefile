@@ -47,7 +47,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup env-example dirs db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local pipeline season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-pipeline run-bot run-local run-full check-token verify-skater-schema test-skater-bot test-fast test-db all-tests
+.PHONY: setup env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local check-token verify-skater-schema test-skater-bot test-fast test-db all-tests
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -61,12 +61,6 @@ setup:
 env-example:
 	cp -n .env.example .env || true
 	@echo ".env created (if it did not exist)"
-
-dirs:
-	mkdir -p all_data/dataframes/rosters
-	mkdir -p all_data/dataframes/players
-	mkdir -p all_data/dataframes/teams
-	mkdir -p all_data/dataframes/myself_analyses
 
 db-drop:
 	@echo "=== Dropping NHL_bot tables ==="
@@ -129,9 +123,6 @@ db-functions:
 db-functions-local:
 	$(MAKE) db-functions PG_USER="$$(id -un)"
 
-pipeline: dirs
-	cd pipeline && ../$(PY) teams_and_players.py && ../$(PY) pipeline.py
-
 # Unified entry: pass DATE_FROM and DATE_TO (and optional SEASON_ID / CURRENT_SEASON via .env).
 # Example: make season-sync DATE_FROM=2025-10-01 DATE_TO=2026-03-29
 season-sync: setup env-example
@@ -172,11 +163,7 @@ check-token:
 bot: check-token
 	cd telegram_bot && ../$(PY) bot.py
 
-run-pipeline: setup env-example dirs db-init-local pipeline
-
 run-bot: setup env-example bot
-
-run-full: setup env-example dirs db-init-local pipeline bot
 
 run-local:
 	$(MAKE) run-bot

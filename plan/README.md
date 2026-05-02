@@ -13,6 +13,7 @@
 | [`refactoring_plan_2.md`](./refactoring_plan_2.md) | **В процессе** | Срез незакрытых задач рефакторинга. |
 | [`refactoring_plan.md`](./refactoring_plan.md) | **Частично / история** | Полный чеклист по фазам; для остатка см. [`refactoring_plan_2.md`](./refactoring_plan_2.md). |
 | [`db_tests_remediation_plan.md`](./db_tests_remediation_plan.md) | **Частично выполнено** | Этап A закрыт; CI и прочее — по чеклисту внутри. |
+| [`dead_code_cleanup_candidates.md`](./dead_code_cleanup_candidates.md) | **Не выполнено** | Найденный, но не удалённый dead code (eager-helpers в loader, `close_pool`, `get_goal_video_url`). Чеклист на снос. |
 
 ## Архив выполненных планов (`plan/deprecated_plan/`)
 

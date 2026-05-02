@@ -4,7 +4,7 @@
 
 Документ описывает реализацию расширений бота: **командные срезы** (поверх `teams`, `teams_stats`, игр) и **агрегаты по странам** (поверх `rosters.nationality` + статистика игроков/вратарей). Согласован с текущей архитектурой: `bot_messages.py` + SQL + Jinja2, `stats_handlers.py` + `dialog_states.py`, whitelist в `database.py`, сезон из `config.SEASON_ID` / `config.CURRENT_SEASON`.
 
-**Связанные документы:** [`architecture.md`](../docs/architecture.md), [`bot_ux_implementation_phases.md`](deprecated_plan/bot_ux_implementation_phases.md), [`data_loading_and_bot.md`](../docs/data_loading_and_bot.md).
+**Связанные документы:** [`architecture.md`](../docs/architecture.md), [`bot_ux_implementation_phases.md`](deprecated_plan/bot_ux_implementation_phases.md), [`data_loading.md`](../docs/data_loading.md), [`telegram_bot.md`](../docs/telegram_bot.md).
 
 ---
 

@@ -20,6 +20,25 @@ import config
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Coercion helpers.
+#
+# One family for each null semantics:
+#   * ``to_int`` — eager default (0 on missing/invalid). Use ONLY for required
+#     (PK / NOT NULL) columns or where business logic mandates a concrete int.
+#   * ``optional_int`` / ``optional_float`` / ``optional_str`` /
+#     ``optional_pct_from_ratio`` / ``optional_split_sv`` /
+#     ``optional_seconds_to_mmss`` / ``optional_mmss`` /
+#     ``optional_age_from_birthdate`` — return ``None`` when the source is
+#     missing / empty / unparseable, so PostgreSQL stores ``NULL`` instead of
+#     a synthetic 0 / "" / "00:00".
+#   * ``safe_pct(numerator, denominator)`` — derived percentage with ``NULL``
+#     when the denominator is missing / zero (no attempts).
+#
+# See ``docs/pipeline_nulls_and_explicit_null_tz.md`` for the contract.
+# ---------------------------------------------------------------------------
+
+
 def to_int(value, default=0):
     try:
         if value is None or value == "":
@@ -29,53 +48,107 @@ def to_int(value, default=0):
         return default
 
 
-def to_float(value, default=0.0):
+def optional_int(value) -> Optional[int]:
+    if value is None or value == "":
+        return None
     try:
-        if value is None or value == "":
-            return default
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def optional_float(value) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
         return float(value)
-    except Exception:
-        return default
+    except (ValueError, TypeError):
+        return None
 
 
-def pct_from_ratio(value, default=0.0):
+def optional_str(value) -> Optional[str]:
     if value is None:
-        return default
-    val = to_float(value, None)
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def optional_pct_from_ratio(value) -> Optional[float]:
+    val = optional_float(value)
     if val is None:
-        return default
+        return None
     if val <= 1.0:
         return round(val * 100, 2)
     return round(val, 2)
 
 
-def split_sv(value: str) -> Tuple[int, int]:
+def optional_split_sv(value) -> Tuple[Optional[int], Optional[int]]:
     if not value or "/" not in str(value):
-        return 0, 0
+        return None, None
     left, right = str(value).split("/", 1)
-    return to_int(left, 0), to_int(right, 0)
+    return optional_int(left), optional_int(right)
 
 
-def seconds_to_mmss(value, default="00:00") -> str:
+def optional_seconds_to_mmss(value) -> Optional[str]:
+    """``mm:ss`` from API seconds, ``None`` if unknown.
+
+    The NHL stats API encodes "did not play / not applicable" as either a missing
+    field or a literal ``0`` (e.g. shTimeOnIce for a player with no PK shifts).
+    Both cases collapse to ``None`` here so the DB sees ``NULL`` instead of
+    ``00:00``, which used to be indistinguishable from "played for 0:00".
+    """
+    if value is None or value == "":
+        return None
     try:
-        s = float(value) if value is not None else 0
+        s = float(value)
     except (ValueError, TypeError):
-        return default
+        return None
     if s <= 0:
-        return default
+        return None
     total_seconds = int(round(s))
     return f"{total_seconds // 60}:{total_seconds % 60:02d}"
 
 
-def age_from_birthdate(birth_date: str) -> int:
+def optional_mmss(value) -> Optional[str]:
+    """Pass-through ``mm:ss`` string with NULL semantics for missing input."""
+    s = optional_str(value)
+    if s is None:
+        return None
+    if s == "00:00":
+        return None
+    return s
+
+
+def optional_age_from_birthdate(birth_date) -> Optional[int]:
     if not birth_date:
-        return 0
+        return None
     try:
-        born = datetime.strptime(birth_date, "%Y-%m-%d").date()
-    except ValueError:
-        return 0
+        born = datetime.strptime(str(birth_date), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
     today = date.today()
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
+    """Return rounded percentage or ``None`` when inputs are missing/zero.
+
+    Used for derived save% / PP% / face-off% values: when there were no
+    attempts, the percentage is undefined and we want ``NULL`` rather than 0.0.
+    """
+    if numerator is None or denominator is None:
+        return None
+    try:
+        denom = float(denominator)
+    except (ValueError, TypeError):
+        return None
+    if denom <= 0:
+        return None
+    try:
+        num = float(numerator)
+    except (ValueError, TypeError):
+        return None
+    return round((num / denom) * 100, 2)
 
 
 class ModernNhlLoader:
@@ -166,15 +239,17 @@ class ModernNhlLoader:
         for row in summary_rows:
             team_id = to_int(row.get("teamId"))
             meta = self.team_meta_by_id.get(team_id, {})
-            tri = meta.get("triCode") or meta.get("rawTricode") or ""
-            standing = self.team_standings_by_abbrev.get(tri, {})
+            tri_lookup = meta.get("triCode") or meta.get("rawTricode") or ""
+            standing = self.team_standings_by_abbrev.get(tri_lookup, {})
 
-            full_name = meta.get("fullName") or row.get("teamFullName") or tri
-            common_name = (standing.get("teamCommonName") or {}).get("default")
+            full_name = optional_str(
+                meta.get("fullName") or row.get("teamFullName") or tri_lookup
+            )
+            common_name = optional_str((standing.get("teamCommonName") or {}).get("default"))
             short_name = common_name or full_name
 
-            division = standing.get("divisionName")
-            conference = standing.get("conferenceName")
+            division = optional_str(standing.get("divisionName"))
+            conference = optional_str(standing.get("conferenceName"))
             city = full_name.split(" ")[0] if full_name else None
 
             teams_rows.append(
@@ -183,10 +258,10 @@ class ModernNhlLoader:
                     self.season_id,
                     full_name,
                     division,
-                    None,  # arena
+                    None,  # arena — not provided by the endpoints used here
                     conference,
-                    tri,
-                    None,  # first_year_of_play
+                    optional_str(tri_lookup),
+                    None,  # first_year_of_play — not provided by these endpoints
                     city,
                     True,
                     short_name,
@@ -197,22 +272,22 @@ class ModernNhlLoader:
                 (
                     team_id,
                     self.season_id,
-                    to_int(row.get("gamesPlayed")),
-                    to_int(row.get("wins")),
-                    to_int(row.get("losses")),
-                    to_int(row.get("otLosses")),
-                    to_int(row.get("points")),
-                    pct_from_ratio(row.get("pointPct")),
-                    to_float(row.get("goalsForPerGame")),
-                    to_float(row.get("goalsAgainstPerGame")),
-                    pct_from_ratio(row.get("powerPlayPct")),
-                    to_int(row.get("powerPlayGoals")),
-                    to_int(row.get("powerPlayGoalsAgainst")),
-                    to_int(row.get("powerPlayOpportunities")),
-                    pct_from_ratio(row.get("penaltyKillPct")),
-                    to_float(row.get("shotsForPerGame")),
-                    to_float(row.get("shotsAgainstPerGame")),
-                    pct_from_ratio(row.get("faceoffWinPct")),
+                    optional_int(row.get("gamesPlayed")),
+                    optional_int(row.get("wins")),
+                    optional_int(row.get("losses")),
+                    optional_int(row.get("otLosses")),
+                    optional_int(row.get("points")),
+                    optional_pct_from_ratio(row.get("pointPct")),
+                    optional_float(row.get("goalsForPerGame")),
+                    optional_float(row.get("goalsAgainstPerGame")),
+                    optional_pct_from_ratio(row.get("powerPlayPct")),
+                    optional_int(row.get("powerPlayGoals")),
+                    optional_int(row.get("powerPlayGoalsAgainst")),
+                    optional_int(row.get("powerPlayOpportunities")),
+                    optional_pct_from_ratio(row.get("penaltyKillPct")),
+                    optional_float(row.get("shotsForPerGame")),
+                    optional_float(row.get("shotsAgainstPerGame")),
+                    optional_pct_from_ratio(row.get("faceoffWinPct")),
                 )
             )
         return teams_rows, teams_stats_rows
@@ -231,22 +306,24 @@ class ModernNhlLoader:
             for group in ("forwards", "defensemen", "goalies"):
                 for p in payload.get(group, []):
                     player_id = to_int(p.get("id"))
-                    first_name = (p.get("firstName") or {}).get("default", "")
-                    last_name = (p.get("lastName") or {}).get("default", "")
-                    full_name = f"{first_name} {last_name}".strip()
-                    position = p.get("positionCode")
+                    first_name = optional_str((p.get("firstName") or {}).get("default")) or ""
+                    last_name = optional_str((p.get("lastName") or {}).get("default")) or ""
+                    full_name = f"{first_name} {last_name}".strip() or None
+                    position = optional_str(p.get("positionCode"))
+                    # captain / alternate_captain / rookie are not exposed by
+                    # /v1/roster — leave as NULL ("unknown") rather than False.
                     row = (
                         player_id,
                         self.season_id,
                         full_name,
                         position,
-                        to_int(p.get("sweaterNumber"), 0),
-                        age_from_birthdate(p.get("birthDate")),
-                        last_name,
-                        p.get("birthCountry"),
-                        False,  # captain
-                        False,  # alternate_captain
-                        False,  # rookie
+                        optional_int(p.get("sweaterNumber")),
+                        optional_age_from_birthdate(p.get("birthDate")),
+                        optional_str(last_name) or full_name,
+                        optional_str(p.get("birthCountry")),
+                        None,  # captain
+                        None,  # alternate_captain
+                        None,  # rookie
                         position,  # abbreviation
                         team_id,
                     )
@@ -277,25 +354,25 @@ class ModernNhlLoader:
         player_id = to_int(payload.get("playerId"))
         if not player_id:
             return None
-        first_name = (payload.get("firstName") or {}).get("default", "")
-        last_name = (payload.get("lastName") or {}).get("default", "")
-        full_name = f"{first_name} {last_name}".strip()
-        last_only = last_name or full_name
+        first_name = optional_str((payload.get("firstName") or {}).get("default")) or ""
+        last_name = optional_str((payload.get("lastName") or {}).get("default")) or ""
+        full_name = f"{first_name} {last_name}".strip() or None
+        last_only = optional_str(last_name) or full_name
         tid = to_int(payload.get("currentTeamId"), 0)
         team_id = tid if tid > 0 else None
-        pos = payload.get("position") or ""
+        pos = optional_str(payload.get("position"))
         return (
             player_id,
             self.season_id,
             full_name,
             pos,
-            to_int(payload.get("sweaterNumber"), 0),
-            age_from_birthdate(payload.get("birthDate") or ""),
+            optional_int(payload.get("sweaterNumber")),
+            optional_age_from_birthdate(payload.get("birthDate")),
             last_only,
-            payload.get("birthCountry"),
-            False,
-            False,
-            False,
+            optional_str(payload.get("birthCountry")),
+            None,  # captain — not exposed by landing
+            None,  # alternate_captain — not exposed by landing
+            None,  # rookie — not exposed by landing
             pos,
             team_id,
         )
@@ -325,22 +402,24 @@ class ModernNhlLoader:
             if not pid or pid in rows_by_player:
                 return
             team_id = self._team_id_from_stats_team_abbrevs(r.get("teamAbbrevs"), abbrev_map)
-            full_name = (r.get("skaterFullName") or r.get("lastName") or "").strip()
-            last_name = (r.get("lastName") or "").strip()
-            pos = r.get("positionCode") or ""
+            full_name = optional_str(r.get("skaterFullName") or r.get("lastName"))
+            last_name = optional_str(r.get("lastName"))
+            pos = optional_str(r.get("positionCode"))
             display_name = full_name or last_name
+            # Stats summary lacks jersey/age/captain flags → store NULL
+            # ("unknown") rather than fabricating zeros / False.
             rows_by_player[pid] = (
                 pid,
                 self.season_id,
                 display_name,
                 pos,
-                0,
-                0,
+                None,  # jersey_number
+                None,  # currentage
                 last_name or display_name,
                 None,
-                False,
-                False,
-                False,
+                None,  # captain
+                None,  # alternate_captain
+                None,  # rookie
                 pos,
                 team_id,
             )
@@ -350,21 +429,21 @@ class ModernNhlLoader:
             if not pid or pid in rows_by_player:
                 return
             team_id = self._team_id_from_stats_team_abbrevs(r.get("teamAbbrevs"), abbrev_map)
-            full_name = (r.get("goalieFullName") or r.get("lastName") or "").strip()
-            last_name = (r.get("lastName") or "").strip()
+            full_name = optional_str(r.get("goalieFullName") or r.get("lastName"))
+            last_name = optional_str(r.get("lastName"))
             display_name = full_name or last_name
             rows_by_player[pid] = (
                 pid,
                 self.season_id,
                 display_name,
                 "G",
-                0,
-                0,
+                None,  # jersey_number
+                None,  # currentage
                 last_name or display_name,
                 None,
-                False,
-                False,
-                False,
+                None,  # captain
+                None,  # alternate_captain
+                None,  # rookie
                 "G",
                 team_id,
             )
@@ -421,21 +500,21 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
-                    pct_from_ratio(pp.get("satPct")),
-                    pct_from_ratio(pp.get("usatPct")),
-                    pct_from_ratio(pp.get("goalsPct")),
-                    pct_from_ratio(pp.get("offensiveZoneStartPct")),
-                    pct_from_ratio(pp.get("defensiveZoneStartPct")),
-                    pct_from_ratio(pp.get("neutralZoneStartPct")),
-                    pct_from_ratio(pp.get("onIceShootingPct")),
-                    to_int(gfa.get("evenStrengthGoalsFor")),
-                    to_int(gfa.get("evenStrengthGoalsAgainst")),
-                    pct_from_ratio(gfa.get("evenStrengthGoalsForPct")),
+                    optional_pct_from_ratio(pp.get("satPct")),
+                    optional_pct_from_ratio(pp.get("usatPct")),
+                    optional_pct_from_ratio(pp.get("goalsPct")),
+                    optional_pct_from_ratio(pp.get("offensiveZoneStartPct")),
+                    optional_pct_from_ratio(pp.get("defensiveZoneStartPct")),
+                    optional_pct_from_ratio(pp.get("neutralZoneStartPct")),
+                    optional_pct_from_ratio(pp.get("onIceShootingPct")),
+                    optional_int(gfa.get("evenStrengthGoalsFor")),
+                    optional_int(gfa.get("evenStrengthGoalsAgainst")),
+                    optional_pct_from_ratio(gfa.get("evenStrengthGoalsForPct")),
                     # NHL API field name (typo: Goal not Goals).
-                    to_int(gfa.get("powerPlayGoalFor")),
-                    to_int(gfa.get("powerPlayGoalsAgainst")),
-                    to_int(gfa.get("shortHandedGoalsFor")),
-                    to_int(gfa.get("shortHandedGoalsAgainst")),
+                    optional_int(gfa.get("powerPlayGoalFor")),
+                    optional_int(gfa.get("powerPlayGoalsAgainst")),
+                    optional_int(gfa.get("shortHandedGoalsFor")),
+                    optional_int(gfa.get("shortHandedGoalsAgainst")),
                 )
             )
         return out
@@ -456,20 +535,20 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
-                    to_int(r.get("goalsWrist")),
-                    to_int(r.get("shotsOnNetWrist")),
-                    to_int(r.get("goalsSlap")),
-                    to_int(r.get("shotsOnNetSlap")),
-                    to_int(r.get("goalsSnap")),
-                    to_int(r.get("shotsOnNetSnap")),
-                    to_int(r.get("goalsBackhand")),
-                    to_int(r.get("shotsOnNetBackhand")),
-                    to_int(r.get("goalsTipIn")),
-                    to_int(r.get("shotsOnNetTipIn")),
-                    to_int(r.get("goalsDeflected")),
-                    to_int(r.get("shotsOnNetDeflected")),
-                    to_int(r.get("goalsWrapAround")),
-                    to_int(r.get("shotsOnNetWrapAround")),
+                    optional_int(r.get("goalsWrist")),
+                    optional_int(r.get("shotsOnNetWrist")),
+                    optional_int(r.get("goalsSlap")),
+                    optional_int(r.get("shotsOnNetSlap")),
+                    optional_int(r.get("goalsSnap")),
+                    optional_int(r.get("shotsOnNetSnap")),
+                    optional_int(r.get("goalsBackhand")),
+                    optional_int(r.get("shotsOnNetBackhand")),
+                    optional_int(r.get("goalsTipIn")),
+                    optional_int(r.get("shotsOnNetTipIn")),
+                    optional_int(r.get("goalsDeflected")),
+                    optional_int(r.get("shotsOnNetDeflected")),
+                    optional_int(r.get("goalsWrapAround")),
+                    optional_int(r.get("shotsOnNetWrapAround")),
                 )
             )
         return out
@@ -525,42 +604,48 @@ class ModernNhlLoader:
             fop = fop_by_player.get(player_id, {})
             so = so_by_player.get(player_id, {})
             rt = rt_by_player.get(player_id, {})
+            # rt.get("hits") may be a real 0 (no hits this season). Only fall back
+            # to the summary value when the realtime row is missing the key.
+            hits_value = rt["hits"] if "hits" in rt else r.get("hits")
+            blocked_value = (
+                rt["blockedShots"] if "blockedShots" in rt else r.get("blockedShots")
+            )
             out.append(
                 (
-                    seconds_to_mmss(toi.get("timeOnIce")),
-                    to_int(r.get("assists")),
-                    to_int(r.get("goals")),
-                    to_int(r.get("penaltyMinutes")),
-                    to_int(r.get("shots")),
-                    to_int(r.get("gamesPlayed")),
-                    to_int(rt.get("hits", r.get("hits"))),
-                    to_int(r.get("ppGoals")),
-                    to_int(r.get("ppPoints")),
-                    seconds_to_mmss(toi.get("ppTimeOnIce")),
-                    seconds_to_mmss(toi.get("evTimeOnIce")),
-                    to_int(r.get("penaltyMinutes")),
-                    pct_from_ratio(r.get("faceoffWinPct")),
-                    pct_from_ratio(r.get("shootingPct")),
-                    to_int(r.get("gameWinningGoals")),
-                    to_int(r.get("otGoals")),
-                    to_int(r.get("shGoals")),
-                    to_int(r.get("shPoints")),
-                    seconds_to_mmss(toi.get("shTimeOnIce")),
-                    to_int(rt.get("blockedShots", r.get("blockedShots"))),
-                    to_int(r.get("plusMinus")),
-                    to_int(r.get("points")),
-                    to_int(r.get("shifts")),
-                    seconds_to_mmss(toi.get("timeOnIcePerGame")),
-                    seconds_to_mmss(toi.get("evTimeOnIcePerGame")),
-                    seconds_to_mmss(toi.get("shTimeOnIcePerGame")),
-                    seconds_to_mmss(toi.get("ppTimeOnIcePerGame")),
-                    pct_from_ratio(fop.get("offensiveZoneFaceoffPct")),
-                    pct_from_ratio(fop.get("defensiveZoneFaceoffPct")),
-                    pct_from_ratio(fop.get("neutralZoneFaceoffPct")),
-                    to_int(so.get("shootoutGoals")),
-                    to_int(so.get("shootoutShots")),
-                    to_int(so.get("shootoutGameDecidingGoals")),
-                    pct_from_ratio(so.get("shootoutShootingPct")),
+                    optional_seconds_to_mmss(toi.get("timeOnIce")),
+                    optional_int(r.get("assists")),
+                    optional_int(r.get("goals")),
+                    optional_int(r.get("penaltyMinutes")),
+                    optional_int(r.get("shots")),
+                    optional_int(r.get("gamesPlayed")),
+                    optional_int(hits_value),
+                    optional_int(r.get("ppGoals")),
+                    optional_int(r.get("ppPoints")),
+                    optional_seconds_to_mmss(toi.get("ppTimeOnIce")),
+                    optional_seconds_to_mmss(toi.get("evTimeOnIce")),
+                    optional_int(r.get("penaltyMinutes")),
+                    optional_pct_from_ratio(r.get("faceoffWinPct")),
+                    optional_pct_from_ratio(r.get("shootingPct")),
+                    optional_int(r.get("gameWinningGoals")),
+                    optional_int(r.get("otGoals")),
+                    optional_int(r.get("shGoals")),
+                    optional_int(r.get("shPoints")),
+                    optional_seconds_to_mmss(toi.get("shTimeOnIce")),
+                    optional_int(blocked_value),
+                    optional_int(r.get("plusMinus")),
+                    optional_int(r.get("points")),
+                    optional_int(r.get("shifts")),
+                    optional_seconds_to_mmss(toi.get("timeOnIcePerGame")),
+                    optional_seconds_to_mmss(toi.get("evTimeOnIcePerGame")),
+                    optional_seconds_to_mmss(toi.get("shTimeOnIcePerGame")),
+                    optional_seconds_to_mmss(toi.get("ppTimeOnIcePerGame")),
+                    optional_pct_from_ratio(fop.get("offensiveZoneFaceoffPct")),
+                    optional_pct_from_ratio(fop.get("defensiveZoneFaceoffPct")),
+                    optional_pct_from_ratio(fop.get("neutralZoneFaceoffPct")),
+                    optional_int(so.get("shootoutGoals")),
+                    optional_int(so.get("shootoutShots")),
+                    optional_int(so.get("shootoutGameDecidingGoals")),
+                    optional_pct_from_ratio(so.get("shootoutShootingPct")),
                     player_id,
                     self.season_id,
                 )
@@ -588,37 +673,40 @@ class ModernNhlLoader:
         for r in rows:
             player_id = to_int(r.get("playerId"))
             sbs = sbs_by_player.get(player_id, {})
-            pp_saves = to_int(sbs.get("ppSaves"))
-            sh_saves = to_int(sbs.get("shSaves"))
-            ev_saves = to_int(sbs.get("evSaves"))
-            pp_shots = to_int(sbs.get("ppShotsAgainst"))
-            sh_shots = to_int(sbs.get("shShotsAgainst"))
-            ev_shots = to_int(sbs.get("evShotsAgainst"))
+            pp_saves = optional_int(sbs.get("ppSaves"))
+            sh_saves = optional_int(sbs.get("shSaves"))
+            ev_saves = optional_int(sbs.get("evSaves"))
+            pp_shots = optional_int(sbs.get("ppShotsAgainst"))
+            sh_shots = optional_int(sbs.get("shShotsAgainst"))
+            ev_shots = optional_int(sbs.get("evShotsAgainst"))
             out.append(
                 (
-                    "00:00",  # time_on_ice — not available in summary/savesByStrength
-                    to_int(r.get("otLosses")),
-                    to_int(r.get("shutouts")),
-                    0,  # ties
-                    to_int(r.get("wins")),
-                    to_int(r.get("losses")),
-                    to_int(r.get("saves")),
+                    None,  # time_on_ice — not available in summary/savesByStrength
+                    optional_int(r.get("otLosses")),
+                    optional_int(r.get("shutouts")),
+                    # The NHL has not had regular-season ties since 2005; the API
+                    # does not expose a "ties" stat anymore. We persist 0 as a
+                    # known-true business value (not "data missing").
+                    0,
+                    optional_int(r.get("wins")),
+                    optional_int(r.get("losses")),
+                    optional_int(r.get("saves")),
                     pp_saves,
                     sh_saves,
                     ev_saves,
                     sh_shots,
                     ev_shots,
                     pp_shots,
-                    pct_from_ratio(r.get("savePct")),
-                    to_float(r.get("goalsAgainstAverage")),
-                    to_int(r.get("gamesPlayed")),
-                    to_int(r.get("gamesStarted")),
-                    to_int(r.get("shotsAgainst")),
-                    to_int(r.get("goalsAgainst")),
-                    "00:00",  # time_on_ice_per_game
-                    round((pp_saves / pp_shots) * 100, 2) if pp_shots else 0.0,
-                    round((sh_saves / sh_shots) * 100, 2) if sh_shots else 0.0,
-                    round((ev_saves / ev_shots) * 100, 2) if ev_shots else 0.0,
+                    optional_pct_from_ratio(r.get("savePct")),
+                    optional_float(r.get("goalsAgainstAverage")),
+                    optional_int(r.get("gamesPlayed")),
+                    optional_int(r.get("gamesStarted")),
+                    optional_int(r.get("shotsAgainst")),
+                    optional_int(r.get("goalsAgainst")),
+                    None,  # time_on_ice_per_game — not in summary/savesByStrength
+                    safe_pct(pp_saves, pp_shots),
+                    safe_pct(sh_saves, sh_shots),
+                    safe_pct(ev_saves, ev_shots),
                     player_id,
                     self.season_id,
                 )
@@ -687,7 +775,7 @@ class ModernNhlLoader:
             game_goals = []
             for g in goals:
                 d = g.get("details", {})
-                period = to_int((g.get("periodDescriptor") or {}).get("number"), 0)
+                period = optional_int((g.get("periodDescriptor") or {}).get("number"))
                 team_id = to_int(d.get("eventOwnerTeamId"))
                 if period in (1, 2, 3) and team_id in team_period_goals:
                     team_period_goals[team_id][period] += 1
@@ -721,14 +809,18 @@ class ModernNhlLoader:
                     except (ValueError, IndexError):
                         pass
 
+                # Player IDs / totals: when a goal play omits the field (rare,
+                # e.g. an unattributed empty-netter or unsigned shootout flush),
+                # store NULL instead of the legacy -9999 sentinel; aggregations
+                # below filter on ``is not None``.
                 game_goals.append(
                     [
-                        to_int(d.get("scoringPlayerId"), -9999),
-                        to_int(d.get("scoringPlayerTotal"), 0),
-                        to_int(d.get("assist1PlayerId"), -9999),
-                        to_int(d.get("assist1PlayerTotal"), 0),
-                        to_int(d.get("assist2PlayerId"), -9999),
-                        to_int(d.get("assist2PlayerTotal"), 0),
+                        optional_int(d.get("scoringPlayerId")),
+                        optional_int(d.get("scoringPlayerTotal")),
+                        optional_int(d.get("assist1PlayerId")),
+                        optional_int(d.get("assist1PlayerTotal")),
+                        optional_int(d.get("assist2PlayerId")),
+                        optional_int(d.get("assist2PlayerTotal")),
                         empty_net,
                         False,
                         is_ppg,
@@ -736,10 +828,10 @@ class ModernNhlLoader:
                         team_id,
                         game_id,
                         period,
-                        g.get("timeInPeriod"),
-                        to_int(d.get("awayScore")),
-                        to_int(d.get("homeScore")),
-                        to_int(g.get("eventId")),
+                        optional_str(g.get("timeInPeriod")),
+                        optional_int(d.get("awayScore")),
+                        optional_int(d.get("homeScore")),
+                        optional_int(g.get("eventId")),
                     ]
                 )
 
@@ -758,7 +850,13 @@ class ModernNhlLoader:
             for p in penalties:
                 d = p.get("details", {})
                 team_id = to_int(d.get("eventOwnerTeamId"))
-                pim_by_team[team_id] = pim_by_team.get(team_id, 0) + to_int(d.get("duration"), 2)
+                # Skip penalties whose duration the API omits — better to
+                # under-count than to invent a 2-minute default. Per-game team
+                # PIM stays an aggregate count (real 0 means "no penalties").
+                duration = optional_int(d.get("duration"))
+                if duration is None:
+                    continue
+                pim_by_team[team_id] = pim_by_team.get(team_id, 0) + duration
 
             hits_by_team = {home_id: 0, away_id: 0}
             for h in hits:
@@ -797,8 +895,8 @@ class ModernNhlLoader:
                 if loser_team in faceoff_taken:
                     faceoff_taken[loser_team] += 1
 
-            home_sog = to_int((box.get("homeTeam") or {}).get("sog"))
-            away_sog = to_int((box.get("awayTeam") or {}).get("sog"))
+            home_sog = optional_int((box.get("homeTeam") or {}).get("sog"))
+            away_sog = optional_int((box.get("awayTeam") or {}).get("sog"))
 
             pp_opps = {home_id: 0, away_id: 0}
             for p in penalties:
@@ -819,11 +917,10 @@ class ModernNhlLoader:
                     "home",
                     pim_by_team.get(home_id, 0),
                     home_sog,
-                    round((pp_goals_team[home_id] / pp_opps[home_id]) * 100, 2) if pp_opps[home_id] > 0 else 0.0,
+                    safe_pct(pp_goals_team[home_id], pp_opps[home_id]),
                     float(pp_goals_team[home_id]),
                     float(pp_opps[home_id]),
-                    round((faceoff_wins.get(home_id, 0) / faceoff_taken.get(home_id, 1)) * 100, 2)
-                    if faceoff_taken.get(home_id, 0) > 0 else 0.0,
+                    safe_pct(faceoff_wins.get(home_id, 0), faceoff_taken.get(home_id, 0)),
                     blocked_by_team.get(home_id, 0),
                     takeaways_by_team.get(home_id, 0),
                     giveaways_by_team.get(home_id, 0),
@@ -841,11 +938,10 @@ class ModernNhlLoader:
                     "away",
                     pim_by_team.get(away_id, 0),
                     away_sog,
-                    round((pp_goals_team[away_id] / pp_opps[away_id]) * 100, 2) if pp_opps[away_id] > 0 else 0.0,
+                    safe_pct(pp_goals_team[away_id], pp_opps[away_id]),
                     float(pp_goals_team[away_id]),
                     float(pp_opps[away_id]),
-                    round((faceoff_wins.get(away_id, 0) / faceoff_taken.get(away_id, 1)) * 100, 2)
-                    if faceoff_taken.get(away_id, 0) > 0 else 0.0,
+                    safe_pct(faceoff_wins.get(away_id, 0), faceoff_taken.get(away_id, 0)),
                     blocked_by_team.get(away_id, 0),
                     takeaways_by_team.get(away_id, 0),
                     giveaways_by_team.get(away_id, 0),
@@ -862,12 +958,15 @@ class ModernNhlLoader:
             player_fo_taken = {}
             for f in faceoffs:
                 d = f.get("details", {})
-                winner_pid = to_int(d.get("winningPlayerId"), 0)
-                loser_pid = to_int(d.get("losingPlayerId"), 0)
-                if winner_pid:
+                # ``winningPlayerId``/``losingPlayerId`` may be missing for
+                # malformed faceoff plays; skip rather than counting a fake "0"
+                # player.
+                winner_pid = optional_int(d.get("winningPlayerId"))
+                loser_pid = optional_int(d.get("losingPlayerId"))
+                if winner_pid is not None:
                     player_fo_wins[winner_pid] = player_fo_wins.get(winner_pid, 0) + 1
                     player_fo_taken[winner_pid] = player_fo_taken.get(winner_pid, 0) + 1
-                if loser_pid:
+                if loser_pid is not None:
                     player_fo_taken[loser_pid] = player_fo_taken.get(loser_pid, 0) + 1
 
             player_pp_assists = {}
@@ -877,17 +976,17 @@ class ModernNhlLoader:
                 scorer_id = row[0]
                 assist1_id = row[2]
                 assist2_id = row[4]
-                if row[8]:
-                    if assist1_id != -9999:
+                if row[8]:  # is_ppg
+                    if assist1_id is not None:
                         player_pp_assists[assist1_id] = player_pp_assists.get(assist1_id, 0) + 1
-                    if assist2_id != -9999:
+                    if assist2_id is not None:
                         player_pp_assists[assist2_id] = player_pp_assists.get(assist2_id, 0) + 1
-                if row[9]:
-                    if scorer_id != -9999:
+                if row[9]:  # is_shg
+                    if scorer_id is not None:
                         player_sh_goals[scorer_id] = player_sh_goals.get(scorer_id, 0) + 1
-                    if assist1_id != -9999:
+                    if assist1_id is not None:
                         player_sh_assists[assist1_id] = player_sh_assists.get(assist1_id, 0) + 1
-                    if assist2_id != -9999:
+                    if assist2_id is not None:
                         player_sh_assists[assist2_id] = player_sh_assists.get(assist2_id, 0) + 1
 
             for side_key, team_id in (("homeTeam", home_id), ("awayTeam", away_id)):
@@ -895,46 +994,51 @@ class ModernNhlLoader:
                 skaters = side_stats.get("forwards", []) + side_stats.get("defense", [])
                 for p in skaters:
                     pid = to_int(p.get("playerId"))
+                    # PP assists / SH goals / SH assists / face-off counts are
+                    # derived from PBP plays; a real 0 here means "the skater
+                    # had none in this game", not "data missing", so we keep 0.
                     game_player_rows.append(
                         (
                             team_id,
                             game_id,
                             pid,
-                            p.get("toi") or "00:00",
-                            to_int(p.get("assists")),
-                            to_int(p.get("goals")),
-                            to_int(p.get("sog")),
-                            to_int(p.get("hits")),
-                            to_int(p.get("powerPlayGoals")),
+                            optional_mmss(p.get("toi")),
+                            optional_int(p.get("assists")),
+                            optional_int(p.get("goals")),
+                            optional_int(p.get("sog")),
+                            optional_int(p.get("hits")),
+                            optional_int(p.get("powerPlayGoals")),
                             player_pp_assists.get(pid, 0),
-                            to_int(p.get("pim")),
+                            optional_int(p.get("pim")),
                             player_fo_wins.get(pid, 0),
                             player_fo_taken.get(pid, 0),
-                            to_int(p.get("takeaways")),
-                            to_int(p.get("giveaways")),
+                            optional_int(p.get("takeaways")),
+                            optional_int(p.get("giveaways")),
                             player_sh_goals.get(pid, 0),
                             player_sh_assists.get(pid, 0),
-                            to_int(p.get("blockedShots")),
-                            to_int(p.get("plusMinus")),
-                            to_float(p.get("faceoffWinningPctg")),
+                            optional_int(p.get("blockedShots")),
+                            optional_int(p.get("plusMinus")),
+                            optional_float(p.get("faceoffWinningPctg")),
                         )
                     )
 
                 for gk in side_stats.get("goalies", []):
-                    pp_saves, pp_shots = split_sv(gk.get("powerPlayShotsAgainst"))
-                    sh_saves, sh_shots = split_sv(gk.get("shorthandedShotsAgainst"))
-                    ev_saves, ev_shots = split_sv(gk.get("evenStrengthShotsAgainst"))
-                    shots_against = to_int(gk.get("shotsAgainst"))
-                    saves = to_int(gk.get("saves"))
+                    pp_saves, pp_shots = optional_split_sv(gk.get("powerPlayShotsAgainst"))
+                    sh_saves, sh_shots = optional_split_sv(gk.get("shorthandedShotsAgainst"))
+                    ev_saves, ev_shots = optional_split_sv(gk.get("evenStrengthShotsAgainst"))
+                    shots_against = optional_int(gk.get("shotsAgainst"))
+                    saves = optional_int(gk.get("saves"))
+                    decision_raw = gk.get("decision")
+                    decision = None if decision_raw is None else (str(decision_raw) == "W")
                     game_goalie_rows.append(
                         (
                             team_id,
                             game_id,
                             to_int(gk.get("playerId")),
-                            gk.get("toi") or "00:00",
-                            to_int(gk.get("assists")),
-                            to_int(gk.get("goals")),
-                            to_int(gk.get("pim")),
+                            optional_mmss(gk.get("toi")),
+                            optional_int(gk.get("assists")),
+                            optional_int(gk.get("goals")),
+                            optional_int(gk.get("pim")),
                             shots_against,
                             saves,
                             pp_saves,
@@ -943,11 +1047,11 @@ class ModernNhlLoader:
                             sh_shots,
                             ev_shots,
                             pp_shots,
-                            str(gk.get("decision")) == "W",
-                            pct_from_ratio(gk.get("savePctg")),
-                            round((pp_saves / pp_shots) * 100, 2) if pp_shots else 0.0,
-                            round((sh_saves / sh_shots) * 100, 2) if sh_shots else 0.0,
-                            round((ev_saves / ev_shots) * 100, 2) if ev_shots else 0.0,
+                            decision,
+                            optional_pct_from_ratio(gk.get("savePctg")),
+                            safe_pct(pp_saves, pp_shots),
+                            safe_pct(sh_saves, sh_shots),
+                            safe_pct(ev_saves, ev_shots),
                         )
                     )
 
