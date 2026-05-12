@@ -23,7 +23,7 @@
 
 1. Соответствие реализации требованиям из:
    - `plan/deprecated_plan/nhl_dataset_build_plan.md`;
-   - `plan/agent_executor_dataset_tz.md`.
+   - `plan/dataset_agents/agent_executor_dataset_tz.md`.
 2. Корректность data contract:
    - train содержит метки;
    - predict без меток;

@@ -1,8 +1,8 @@
 # Ревью датасетного контура NHL: вердикт и findings
 
 **Дата ревью:** 2026-05-10  
-**ТЗ ревьюера:** `plan/agent_reviewer_dataset_tz.md`  
-**Базовые контракты:** `plan/deprecated_plan/nhl_dataset_build_plan.md`, `plan/agent_executor_dataset_tz.md`
+**ТЗ ревьюера:** `plan/dataset_agents/agent_reviewer_dataset_tz.md`
+**Базовые контракты:** `plan/deprecated_plan/nhl_dataset_build_plan.md`, `plan/dataset_agents/agent_executor_dataset_tz.md`
 
 ---
 

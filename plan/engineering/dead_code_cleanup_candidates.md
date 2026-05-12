@@ -103,4 +103,4 @@ rg '\bget_goal_video_url\b' --type py /Users/petrkarol/Desktop/projects/NHL_bot
 - [ ] §2: удалить `close_pool()` из `database.py`, убрать упоминание из `docs/architecture.md`.
 - [ ] §3: удалить `get_goal_video_url()` из `video_replay.py`.
 - [ ] Прогнать `make test-fast` после каждого пункта.
-- [ ] Удалить этот файл (`plan/dead_code_cleanup_candidates.md`) и ссылку в `plan/README.md`.
+- [ ] Удалить этот файл (`plan/engineering/dead_code_cleanup_candidates.md`) и ссылку в `plan/README.md`.

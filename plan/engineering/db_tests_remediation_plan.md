@@ -1,6 +1,6 @@
 # План устранения пропусков тестов БД (`tests/test_db_nhl.py`)
 
-**Статус:** частично выполнено (этап A и цели Makefile/README закрыты; CI и прочее — по чеклисту ниже). Детали — [`README.md`](./README.md).
+**Статус:** частично выполнено (этап A и цели Makefile/README закрыты; CI и прочее — по чеклисту ниже). Детали — [`README.md`](../README.md).
 
 ## 1. Контекст
 
@@ -27,7 +27,7 @@
 
 **Сделано:** в `Makefile` цели `test-fast` (pytest с `--ignore=tests/test_db_nhl.py`) и `all-tests` (`test-fast` + `test-db`); в корневом `README.md` — раздел **Tests**.
 
-- Дополнительно при необходимости: ссылка из [`docs/data_loading.md`](../docs/data_loading.md) на README или этот файл (`plan/db_tests_remediation_plan.md`).
+- Дополнительно при необходимости: ссылка из [`docs/data_loading.md`](../docs/data_loading.md) на README или этот файл (`plan/engineering/db_tests_remediation_plan.md`).
 - В `tests/test_db_nhl.py` модульный докстринг уже хорош; при желании дублировать ссылку на этот документ.
 
 **Критерий:** новый разработчик за один проход находит, как включить оба класса DB-тестов.
