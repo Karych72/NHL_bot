@@ -9,13 +9,26 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
+from modeling.dataset_builder.schema import KEY_COLUMNS, LABEL_COLUMNS, SERVICE_COLUMNS
 
-def _as_plain(value):
+
+def _as_plain(value: object) -> object:
     if isinstance(value, (pd.Timestamp,)):
         return value.isoformat()
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def _canonical_feature_schema_errors(feature_columns: Iterable[str]) -> List[str]:
+    errors: List[str] = []
+    forbidden_leakage = frozenset({"diff_goals_target", "sum_goals_target"})
+    for col in feature_columns:
+        if col in forbidden_leakage:
+            errors.append(f"forbidden target-game leakage feature: {col}")
+        if col.endswith("_x") or col.endswith("_y"):
+            errors.append(f"merge artifact column not allowed in features: {col}")
+    return errors
 
 
 def build_quality_report(
@@ -25,7 +38,10 @@ def build_quality_report(
     min_rows_threshold: int,
 ) -> Dict[str, object]:
     checks: List[Dict[str, object]] = []
-    errors: List[str] = []
+    skip_cols = set(KEY_COLUMNS) | set(LABEL_COLUMNS) | set(SERVICE_COLUMNS)
+    feature_like = {c for c in df.columns if c not in skip_cols}
+    schema_names = set(feature_columns) | feature_like
+    errors: List[str] = list(_canonical_feature_schema_errors(sorted(schema_names)))
 
     required_key_columns = ["game_id", "day", "home_team_id", "away_team_id"]
     for col in required_key_columns:

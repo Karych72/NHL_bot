@@ -30,7 +30,10 @@ def compute_team_rolling_features(
     grp = data.groupby("team_id", sort=False)
 
     data["prev_day"] = grp["day"].shift(1)
-    data["rest_days"] = (data["day"] - data["prev_day"]).dt.days.fillna(99).astype("int64")
+    intra_day_prev = (data["day"] == data["prev_day"]) & data["prev_day"].notna()
+    rest = (data["day"] - data["prev_day"]).dt.days
+    rest = rest.mask(intra_day_prev)
+    data["rest_days"] = rest.fillna(99).astype("int64")
     data["is_b2b"] = (data["rest_days"] <= 1).astype("int64")
 
     day_num = data["day"].map(pd.Timestamp.toordinal)
@@ -42,8 +45,10 @@ def compute_team_rolling_features(
 
     for window in rolling_windows:
         for field in ROLLING_BASE_FIELDS:
-            rolled = grp[field].transform(
-                lambda s: s.shift(1).rolling(window=window, min_periods=1).mean()
+            shifted = grp[field].shift(1)
+            shifted = shifted.mask(intra_day_prev)
+            rolled = shifted.groupby(data["team_id"], sort=False).transform(
+                lambda s: s.rolling(window=window, min_periods=1).mean()
             )
             data[f"{field}_roll_mean_{window}"] = rolled.astype("float64")
 
@@ -67,11 +72,13 @@ def _snapshot_side(
     left = left.sort_values(["team_id", "day", "game_id"]).copy()
     right = team_features.sort_values(["team_id", "day", "game_id"]).copy()
     right["hist_day"] = right["day"]
+    rightCols = [c for c in right.columns if c != "day"]
+    right = right.rename(columns={c: f"__r_{c}" for c in rightCols})
 
     merged_parts = []
     for team_id, left_team in left.groupby("team_id", sort=False):
         left_team = left_team.sort_values(["day", "game_id"])
-        right_team = right[right["team_id"] == team_id].sort_values(["day", "game_id"])
+        right_team = right[right["__r_team_id"] == team_id].sort_values(["day", "__r_game_id"])
         if right_team.empty:
             part = left_team.copy()
             merged_parts.append(part)
@@ -86,13 +93,18 @@ def _snapshot_side(
         merged_parts.append(part)
 
     merged = pd.concat(merged_parts, ignore_index=True)
-    merged = merged.rename(columns={"game_id_x": "game_id", "game_id_y": f"{prefix}_hist_game_id", "hist_day": f"{prefix}_hist_day"})
-    rename_columns = {
-        col: f"{prefix}_{col}"
-        for col in merged.columns
-        if col not in ("game_id", "day", "team_id", f"{prefix}_hist_game_id", f"{prefix}_hist_day")
-    }
-    merged = merged.rename(columns=rename_columns)
+    merged = merged.drop(columns=["__r_team_id"], errors="ignore")
+    rename_out: dict[str, str] = {}
+    for col in list(merged.columns):
+        if col in ("game_id", "day", "team_id"):
+            continue
+        if col == "__r_game_id":
+            rename_out[col] = f"{prefix}_hist_game_id"
+        elif col == "__r_hist_day":
+            rename_out[col] = f"{prefix}_hist_day"
+        elif col.startswith("__r_"):
+            rename_out[col] = f"{prefix}_{col[4:]}"
+    merged = merged.rename(columns=rename_out)
     merged = merged.rename(columns={"team_id": f"{prefix}_team_id"})
     return merged
 
@@ -108,5 +120,8 @@ def build_match_feature_snapshots(
     targets["day"] = pd.to_datetime(targets["day"]).dt.normalize()
     home = _snapshot_side(targets, team_features, "home_team_id", "home")
     away = _snapshot_side(targets, team_features, "away_team_id", "away")
+    # targets already carry home_team_id / away_team_id; dropping avoids pandas merge suffixes (_x/_y).
+    home = home.drop(columns=["home_team_id"], errors="ignore")
+    away = away.drop(columns=["away_team_id"], errors="ignore")
     out = targets.merge(home, on=["game_id", "day"], how="left").merge(away, on=["game_id", "day"], how="left")
     return out

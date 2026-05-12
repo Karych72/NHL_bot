@@ -6,7 +6,11 @@ import unittest
 
 import pandas as pd
 
-from modeling.dataset_builder.assemble import apply_cold_start_policy
+from modeling.dataset_builder.assemble import (
+    _assert_train_labels_match_facts,
+    apply_cold_start_policy,
+    assemble_dataset,
+)
 from modeling.dataset_builder.features import (
     build_match_feature_snapshots,
     compute_team_rolling_features,
@@ -46,6 +50,135 @@ class TestModelingDatasetBuild(unittest.TestCase):
         team_facts, report = build_team_game_facts(broken)
         self.assertFalse((team_facts["game_id"] == 2).any())
         self.assertTrue(any(item["game_id"] == 2 for item in report["dropped_games"]))
+
+    def test_three_rows_two_distinct_teams_dropped(self):
+        hist = _history_df().copy()
+        dup = hist[(hist["game_id"] == 3) & (hist["team_id"] == 20)].iloc[0]
+        hist = pd.concat([hist, pd.DataFrame([dup])], ignore_index=True)
+        self.assertEqual(int(hist[hist["game_id"] == 3].shape[0]), 3)
+        team_facts, report = build_team_game_facts(hist)
+        self.assertFalse((team_facts["game_id"] == 3).any())
+        self.assertTrue(any(item["game_id"] == 3 for item in report["dropped_games"]))
+
+    def test_double_header_rolling_ignores_same_day_prior_shift(self):
+        def row(game_id, day, home, away, team, goals):
+            return {
+                "game_id": game_id,
+                "day": day,
+                "season_id": 20252026,
+                "home_team_id": home,
+                "away_team_id": away,
+                "team_id": team,
+                "goals": goals,
+                "shots": 20,
+                "pim": 5,
+                "power_play_percentage": 20.0,
+                "power_play_goals": 0,
+                "power_play_opportunities": 3,
+                "face_off_win_percentage": 50.0,
+                "blocked": 10,
+                "takeaways": 3,
+                "giveaways": 5,
+                "hits": 10,
+            }
+
+        hist = pd.DataFrame(
+            [
+                row(1, "2026-01-01", 1, 2, 1, 5),
+                row(1, "2026-01-01", 1, 2, 2, 1),
+                row(2, "2026-01-02", 1, 2, 1, 100),
+                row(2, "2026-01-02", 1, 2, 2, 1),
+                row(3, "2026-01-02", 1, 3, 1, 0),
+                row(3, "2026-01-02", 1, 3, 3, 1),
+            ]
+        )
+        team_facts, _ = build_team_game_facts(hist)
+        rolling = compute_team_rolling_features(team_facts, [5])
+        g3_team1 = rolling[(rolling["game_id"] == 3) & (rolling["team_id"] == 1)].iloc[0]
+        self.assertLess(float(g3_team1["goals_for_roll_mean_5"]), 50.0)
+
+    def test_assemble_excludes_goals_target_wide_features(self):
+        snapshots = pd.DataFrame(
+            [
+                {
+                    "game_id": 1,
+                    "day": "2026-01-01",
+                    "season_id": 20252026,
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "winner_id": 10,
+                    "home_goals_target": 4,
+                    "away_goals_target": 2,
+                    "home_prior_games_count": 8,
+                    "away_prior_games_count": 8,
+                    "home_foo": 1.0,
+                    "away_foo": 2.0,
+                }
+            ]
+        )
+        data, _ = assemble_dataset(
+            "train",
+            snapshots,
+            min_prior_games=0,
+            cold_start_policy_predict="allow_with_flag",
+        )
+        self.assertIn("diff_foo", data.columns)
+        self.assertNotIn("diff_goals_target", data.columns)
+        self.assertNotIn("sum_goals_target", data.columns)
+
+    def test_validate_rejects_forbidden_feature_names(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "game_id": 1,
+                    "day": "2026-01-01",
+                    "season_id": 20252026,
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "y_home_win": 1,
+                    "y_over_5_5": 0,
+                    "diff_goals_target": 0.0,
+                }
+            ]
+        )
+        with self.assertRaises(ValueError) as ctx:
+            validate_or_raise("train", df, feature_columns=[])
+        self.assertIn("forbidden", str(ctx.exception).lower())
+
+    def test_train_label_assert_detects_mismatch(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "winner_id": 10,
+                    "home_team_id": 10,
+                    "y_home_win": 0,
+                    "y_over_5_5": 0,
+                    "home_goals_target": 2.0,
+                    "away_goals_target": 2.0,
+                }
+            ]
+        )
+        with self.assertRaises(ValueError):
+            _assert_train_labels_match_facts(df)
+
+    def test_no_merge_suffix_columns_in_snapshots(self):
+        team_facts, _ = build_team_game_facts(_history_df())
+        rolling = compute_team_rolling_features(team_facts, [5])
+        targets = pd.DataFrame(
+            [
+                {
+                    "game_id": 100,
+                    "day": "2026-01-04",
+                    "season_id": 20252026,
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                }
+            ]
+        )
+        snapshots = build_match_feature_snapshots(targets, rolling)
+        for col in snapshots.columns:
+            self.assertFalse(col.endswith("_x"), col)
+            self.assertFalse(col.endswith("_y"), col)
 
     def test_no_same_game_leakage(self):
         team_facts, _ = build_team_game_facts(_history_df())

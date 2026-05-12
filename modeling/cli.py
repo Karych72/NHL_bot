@@ -36,6 +36,15 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--target-day-to")
     build.add_argument("--train-metadata-path")
     build.add_argument("--validate-only", action="store_true")
+    build.add_argument(
+        "--source-snapshot-id",
+        help="Override auto-composed data_snapshot_id (default: from seasons/day range + built_at)",
+    )
+    build.add_argument(
+        "--fail-on-empty-predict",
+        action="store_true",
+        help="Raise when predict mode finds no games (default: allow empty predict aligned to train manifest)",
+    )
     return parser
 
 
@@ -58,6 +67,8 @@ def main() -> None:
             target_day_to=args.target_day_to,
             train_metadata_path=Path(args.train_metadata_path) if args.train_metadata_path else None,
             validate_only=args.validate_only,
+            source_snapshot_id=args.source_snapshot_id,
+            allow_empty_predict=not args.fail_on_empty_predict,
         )
         artifacts = build_dataset(cfg)
         for key, path in artifacts.items():

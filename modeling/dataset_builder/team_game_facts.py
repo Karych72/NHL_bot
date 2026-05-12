@@ -22,7 +22,7 @@ def build_team_game_facts(
     data["away_team_id"] = data["away_team_id"].astype("int64")
     data["day"] = pd.to_datetime(data["day"]).dt.normalize()
 
-    counts = data.groupby("game_id")["team_id"].nunique().rename("team_rows").reset_index()
+    counts = data.groupby("game_id")["team_id"].size().rename("team_rows").reset_index()
     broken = counts[counts["team_rows"] != 2]
     if not broken.empty:
         bad_ids = set(broken["game_id"].tolist())
@@ -31,7 +31,7 @@ def build_team_game_facts(
                 {
                     "reason": "expected_exactly_two_team_rows",
                     "game_id": int(row["game_id"]),
-                    "actual_team_rows": int(row["team_rows"]),
+                    "actual_rows": int(row["team_rows"]),
                 }
             )
         data = data[~data["game_id"].isin(bad_ids)].copy()

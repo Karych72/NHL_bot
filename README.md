@@ -68,6 +68,8 @@ In Telegram send `/stats`.
 - **`make test-db`** — `unittest` для схемы PostgreSQL; нужен доступ к БД из `.env`, таблицы из `make db-init` / `db-init-local`. Включает `RUN_DB_SCHEMA_TESTS=1` (см. `Makefile`).
 - **`make all-tests`** — сначала `test-fast`, затем `test-db` (полный контур для разработчика с поднятой БД).
 
+Общие правила для разработчиков — [`DEVELOPMENT.md`](DEVELOPMENT.md).
+
 Проверки **загруженных данных** (`TestNhlLoadedData`) по умолчанию выключены. После загрузки сезона:
 
 ```bash

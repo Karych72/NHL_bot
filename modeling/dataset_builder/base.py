@@ -40,7 +40,8 @@ class DatasetBuildConfig:
     target_day_to: Optional[str] = None
     train_metadata_path: Optional[Path] = None
     validate_only: bool = False
-    source_snapshot_id: str = "db:games+game_team_stats"
+    source_snapshot_id: Optional[str] = None
+    allow_empty_predict: bool = True
 
 
 def _git_commit_hash() -> str:
@@ -147,11 +148,27 @@ def _load_train_metadata(path: Path) -> Dict[str, object]:
     return data
 
 
+def _compose_data_snapshot_id(config: DatasetBuildConfig, built_at_iso: str) -> str:
+    parts = ["db:games+game_team_stats"]
+    if config.season_ids:
+        parts.append("seasons=" + ",".join(str(int(s)) for s in config.season_ids))
+    else:
+        parts.append("seasons=all")
+    if config.target_day_from:
+        parts.append("day_from=" + config.target_day_from)
+    if config.target_day_to:
+        parts.append("day_to=" + config.target_day_to)
+    parts.append("mode=" + config.mode)
+    parts.append("built_at=" + built_at_iso)
+    return "|".join(parts)
+
+
 def _metadata_dict(
     config: DatasetBuildConfig,
     feature_manifest: List[Dict[str, str]],
     feature_hash: str,
     dataset_rows: int,
+    data_snapshot_id: str,
 ) -> Dict[str, object]:
     return {
         "mode": config.mode,
@@ -163,7 +180,7 @@ def _metadata_dict(
         "min_prior_games": config.min_prior_games,
         "dataset_rows": dataset_rows,
         "code_version": _git_commit_hash(),
-        "data_snapshot_id": config.source_snapshot_id,
+        "data_snapshot_id": data_snapshot_id,
         "dataset_built_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
 
@@ -224,6 +241,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         raise ValueError("mode must be train|predict")
 
     built_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    data_snapshot_id = config.source_snapshot_id or _compose_data_snapshot_id(config, built_at)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     dataset_path = config.output_dir / f"dataset_{config.mode}.csv"
     metadata_path = config.output_dir / f"metadata_{config.mode}.json"
@@ -267,9 +285,14 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     assembled["dataset_built_at"] = built_at
     assembled["feature_set_version"] = config.feature_set_version
     if config.mode == "train":
-        assembled["source_snapshot_id"] = config.source_snapshot_id
+        assembled["source_snapshot_id"] = data_snapshot_id
 
     if config.mode == "predict" and train_manifest is not None:
+        if assembled.empty and not config.allow_empty_predict:
+            raise ValueError(
+                "predict dataset is empty (no target games). "
+                "Pass allow_empty_predict=True when this is expected, or widen day/season filters."
+            )
         assembled = _align_empty_predict_to_manifest(assembled, train_manifest)
         assert_feature_parity(assembled, train_manifest)
 
@@ -304,7 +327,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
                 "features_hash mismatch: "
                 f"train={train_feature_hash}, predict={feature_hash}"
             )
-    metadata = _metadata_dict(config, feature_manifest, feature_hash, len(assembled))
+    metadata = _metadata_dict(config, feature_manifest, feature_hash, len(assembled), data_snapshot_id)
 
     ordered = ordered_columns_for_output(config.mode, assembled, train_manifest=feature_manifest)
     assembled = assembled[ordered].copy()

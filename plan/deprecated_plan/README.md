@@ -9,5 +9,7 @@
 | [`skater_reports_plan.md`](./skater_reports_plan.md) | Ранняя версия ТЗ skater reports |
 | [`skater_reports_plan_v2.md`](./skater_reports_plan_v2.md) | Требования v2 |
 | [`skater_reports_plan_realize.md`](./skater_reports_plan_realize.md) | Пошаговая реализация (выполнена) |
+| [`tonight_games_plan.md`](./tonight_games_plan.md) | Команда `/tonight` (NHL Web API scoreboard; в коде) |
+| [`nhl_dataset_build_plan.md`](./nhl_dataset_build_plan.md) | Сборка датасета train/predict (в коде; контрактный референс) |
 
 Индекс всех планов и статусы — в [`../README.md`](../README.md).
