@@ -43,10 +43,11 @@ NHL_bot/
 │
 ├── plan/                               # Планы (индекс: plan/README.md)
 │   ├── README.md
-│   ├── deprecated_plan/                # Выполненные планы (UX, skater reports)
-│   ├── refactoring_plan.md
-│   ├── refactoring_plan_2.md
-│   └── …                               # тесты БД, tonight games и др.
+│   ├── stats/                          # продуктовые планы (статистика)
+│   ├── dataset_agents/                 # ТЗ и шаблоны агентов для датасета
+│   ├── classifier/                     # ML / прематч-классификаторы
+│   ├── engineering/                    # рефакторинг, тесты БД, dead code
+│   └── deprecated_plan/                # выполненные и архивные планы
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   └── load_season_modern.py           # Класс ModernNhlLoader

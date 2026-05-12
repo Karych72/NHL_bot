@@ -1,22 +1,38 @@
 # Планы разработки NHL_bot
 
-Актуальные и незавершённые планы — в этом каталоге `plan/`. **Выполненные или заархивированные как контракт** перенесены в [`deprecated_plan/`](./deprecated_plan/) (см. [`deprecated_plan/README.md`](./deprecated_plan/README.md)).
+Актуальные планы сгруппированы **по темам** в подкаталогах `plan/<тема>/`. **Выполненные или заархивированные как контракт** лежат в [`deprecated_plan/`](./deprecated_plan/) (см. [`deprecated_plan/README.md`](./deprecated_plan/README.md)).
 
 Оперативная документация по архитектуре и API — в [`docs/`](../docs/).
 
-## Актуальные планы (`plan/`)
+## Статистика и продукт (`stats/`)
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
-| [`team_and_country_stats_plan.md`](./team_and_country_stats_plan.md) | **Не выполнено** | Агрегаты по стране и сравнение команд. |
-| [`refactoring_plan_2.md`](./refactoring_plan_2.md) | **В процессе** | Срез незакрытых задач рефакторинга. |
-| [`refactoring_plan.md`](./refactoring_plan.md) | **Частично / история** | Полный чеклист по фазам; для остатка см. [`refactoring_plan_2.md`](./refactoring_plan_2.md). |
-| [`db_tests_remediation_plan.md`](./db_tests_remediation_plan.md) | **Частично выполнено** | Этап A закрыт; CI и прочее — по чеклисту внутри. |
-| [`dead_code_cleanup_candidates.md`](./dead_code_cleanup_candidates.md) | **Не выполнено** | Найденный, но не удалённый dead code (eager-helpers в loader, `close_pool`, `get_goal_video_url`). Чеклист на снос. |
-| [`nhl_classifier_modeling_plan.md`](./nhl_classifier_modeling_plan.md) | **Проектирование / не выполнено** | Обучение и валидация прематч-классификаторов (модели вне датасетного билдера). |
-| [`agent_executor_dataset_tz.md`](./agent_executor_dataset_tz.md) | **ТЗ процесса** | Промпт для агента-исполнителя датасета; контракт — [`deprecated_plan/nhl_dataset_build_plan.md`](./deprecated_plan/nhl_dataset_build_plan.md). |
-| [`agent_reviewer_dataset_tz.md`](./agent_reviewer_dataset_tz.md) | **ТЗ процесса** | Промпт для агента-ревьюера датасета. |
-| [`agent_prompt_templates_dataset.md`](./agent_prompt_templates_dataset.md) | **Шпаргалка** | Готовые промпты Cursor для executor/reviewer цикла. |
+| [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Не выполнено** | Агрегаты по стране и сравнение команд. |
+
+## Датасет и агенты Cursor (`dataset_agents/`)
+
+| Файл | Статус | Комментарий |
+|------|--------|-------------|
+| [`dataset_agents/agent_executor_dataset_tz.md`](./dataset_agents/agent_executor_dataset_tz.md) | **ТЗ процесса** | Промпт для агента-исполнителя датасета; контракт — [`deprecated_plan/nhl_dataset_build_plan.md`](./deprecated_plan/nhl_dataset_build_plan.md). |
+| [`dataset_agents/agent_reviewer_dataset_tz.md`](./dataset_agents/agent_reviewer_dataset_tz.md) | **ТЗ процесса** | Промпт для агента-ревьюера датасета. |
+| [`dataset_agents/agent_prompt_templates_dataset.md`](./dataset_agents/agent_prompt_templates_dataset.md) | **Шпаргалка** | Готовые промпты Cursor для executor/reviewer цикла. |
+| [`dataset_agents/agent_reviewer_dataset_verdict.md`](./dataset_agents/agent_reviewer_dataset_verdict.md) | **Артефакт ревью** | Вердикт и findings по датасетному контуру (2026-05-10). |
+
+## Прематч-классификаторы (`classifier/`)
+
+| Файл | Статус | Комментарий |
+|------|--------|-------------|
+| [`classifier/nhl_classifier_modeling_plan.md`](./classifier/nhl_classifier_modeling_plan.md) | **Проектирование / не выполнено** | Обучение и валидация прематч-классификаторов (модели вне датасетного билдера). |
+
+## Инженерия кодовой базы (`engineering/`)
+
+| Файл | Статус | Комментарий |
+|------|--------|-------------|
+| [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md) | **В процессе** | Срез незакрытых задач рефакторинга. |
+| [`engineering/refactoring_plan.md`](./engineering/refactoring_plan.md) | **Частично / история** | Полный чеклист по фазам; для остатка см. [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md). |
+| [`engineering/db_tests_remediation_plan.md`](./engineering/db_tests_remediation_plan.md) | **Частично выполнено** | Этап A закрыт; CI и прочее — по чеклисту внутри. |
+| [`engineering/dead_code_cleanup_candidates.md`](./engineering/dead_code_cleanup_candidates.md) | **Не выполнено** | Найденный, но не удалённый dead code (eager-helpers в loader, `close_pool`, `get_goal_video_url`). Чеклист на снос. |
 
 ## Архив выполненных планов (`plan/deprecated_plan/`)
 

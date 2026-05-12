@@ -1,6 +1,6 @@
 # Анализ и план рефакторинга NHL_bot
 
-**Статус:** частично выполнено; актуальный срез открытых задач — [`refactoring_plan_2.md`](./refactoring_plan_2.md). Сводка — [`README.md`](./README.md).
+**Статус:** частично выполнено; актуальный срез открытых задач — [`refactoring_plan_2.md`](./refactoring_plan_2.md). Сводка — [`README.md`](../README.md).
 
 ## Архитектура проекта
 
