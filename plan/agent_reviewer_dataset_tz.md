@@ -1,7 +1,7 @@
 # ТЗ для агента-ревьюера: аудит реализации сборки датасета NHL (train + predict)
 
 **Роль:** независимый reviewer agent.  
-**Цель:** провести строгий технический аудит реализации из `plan/nhl_dataset_build_plan.md` и подтвердить, что датасетный контур корректен, воспроизводим и без leakage.
+**Цель:** провести строгий технический аудит реализации из `plan/deprecated_plan/nhl_dataset_build_plan.md` и подтвердить, что датасетный контур корректен, воспроизводим и без leakage.
 
 ---
 
@@ -22,7 +22,7 @@
 ## 2. Что именно проверять (обязательный scope)
 
 1. Соответствие реализации требованиям из:
-   - `plan/nhl_dataset_build_plan.md`;
+   - `plan/deprecated_plan/nhl_dataset_build_plan.md`;
    - `plan/agent_executor_dataset_tz.md`.
 2. Корректность data contract:
    - train содержит метки;

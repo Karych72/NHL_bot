@@ -21,6 +21,8 @@ def _wide_feature_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     built: List[str] = []
     for home_col in home_columns:
         feature = home_col.removeprefix("home_")
+        if feature == "goals_target":
+            continue
         away_col = f"away_{feature}"
         if away_col not in data.columns:
             continue
@@ -28,6 +30,23 @@ def _wide_feature_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         data[f"sum_{feature}"] = data[home_col] + data[away_col]
         built.extend([home_col, away_col, f"diff_{feature}", f"sum_{feature}"])
     return data, built
+
+
+def _assert_train_labels_match_facts(data: pd.DataFrame) -> None:
+    """Train labels must match joined target-game facts before goals are dropped."""
+    winner = pd.to_numeric(data["winner_id"], errors="coerce")
+    home_tid = pd.to_numeric(data["home_team_id"], errors="coerce")
+    y_win = pd.to_numeric(data["y_home_win"], errors="coerce")
+    expected_win = (winner == home_tid).astype("float64")
+    if not (y_win == expected_win).fillna(False).all():
+        raise ValueError("y_home_win inconsistent with winner_id vs home_team_id")
+
+    hg = pd.to_numeric(data["home_goals_target"], errors="coerce").fillna(0)
+    ag = pd.to_numeric(data["away_goals_target"], errors="coerce").fillna(0)
+    y_over = pd.to_numeric(data["y_over_5_5"], errors="coerce")
+    expected_over = ((hg + ag) > 5.5).astype("float64")
+    if not (y_over == expected_over).all():
+        raise ValueError("y_over_5_5 inconsistent with home_goals_target + away_goals_target")
 
 
 def apply_cold_start_policy(
@@ -92,6 +111,7 @@ def assemble_dataset(
 
     if mode == "train":
         data = attach_train_labels(data)
+        _assert_train_labels_match_facts(data)
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")
     else:
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")

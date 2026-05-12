@@ -1,6 +1,6 @@
 # План: команда «матчи сегодня» (`/tonight`)
 
-**Статус:** не выполнено.
+**Статус:** выполнено (архив). Реализация: `telegram_bot/nhl_scoreboard.py`, `telegram_bot/bot.py` (`/tonight`, callback), тесты `tests/test_nhl_scoreboard.py`. Этапы A–B покрыты; опциональный этап C (аргумент даты `YYYY-MM-DD`, кэш TTL) в коде не делался.
 
 ## Цель
 

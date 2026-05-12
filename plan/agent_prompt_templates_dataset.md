@@ -3,7 +3,7 @@
 Этот документ содержит готовые промпты и практический workflow запуска агентов в Cursor для реализации и ревью датасетного контура.
 
 Связанные документы:
-- План реализации: `plan/nhl_dataset_build_plan.md`
+- План реализации: `plan/deprecated_plan/nhl_dataset_build_plan.md`
 - ТЗ исполнителя: `plan/agent_executor_dataset_tz.md`
 - ТЗ ревьюера: `plan/agent_reviewer_dataset_tz.md`
 
@@ -31,7 +31,7 @@
 Задача: реализовать dataset builder для NHL строго по ТЗ.
 
 Обязательно прочитай и выполни:
-1) plan/nhl_dataset_build_plan.md
+1) plan/deprecated_plan/nhl_dataset_build_plan.md
 2) plan/agent_executor_dataset_tz.md
 
 Требования:
@@ -63,7 +63,7 @@
 Задача: провести независимый аудит реализации dataset builder.
 
 Обязательно прочитай:
-1) plan/nhl_dataset_build_plan.md
+1) plan/deprecated_plan/nhl_dataset_build_plan.md
 2) plan/agent_executor_dataset_tz.md
 3) plan/agent_reviewer_dataset_tz.md
 
@@ -94,7 +94,7 @@
 
 1. Открой новый чат.
 2. Прикрепи контекст через `@`:
-   - `@plan/nhl_dataset_build_plan.md`
+   - `@plan/deprecated_plan/nhl_dataset_build_plan.md`
    - `@plan/agent_executor_dataset_tz.md`
 3. Вставь prompt template исполнителя.
 4. Дождись полного отчёта с результатами тестов.
@@ -103,7 +103,7 @@
 
 1. Открой второй чат (или новый тред).
 2. Прикрепи:
-   - `@plan/nhl_dataset_build_plan.md`
+   - `@plan/deprecated_plan/nhl_dataset_build_plan.md`
    - `@plan/agent_executor_dataset_tz.md`
    - `@plan/agent_reviewer_dataset_tz.md`
 3. Вставь prompt template ревьюера.
@@ -143,7 +143,7 @@
 ## 7. Мини-шаблон для твоего короткого запуска (если спешишь)
 
 ```text
-Реализуй dataset builder по plan/nhl_dataset_build_plan.md и plan/agent_executor_dataset_tz.md.
+Реализуй dataset builder по plan/deprecated_plan/nhl_dataset_build_plan.md и plan/agent_executor_dataset_tz.md.
 Критично: anti-leakage, schema parity train/predict, fail-fast validate, обязательные тесты.
 В конце дай отчёт по файлам, тестам и статус DONE/PARTIAL.
 ```
