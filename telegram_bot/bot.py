@@ -255,7 +255,7 @@ logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
     updater = Updater(token=config.TOKEN)
-    dispatcher = updater.dispatcher
+    dispatcher = updater.dispatcher  # type: ignore[has-type]
 
     logger.info("Starting bot")
 

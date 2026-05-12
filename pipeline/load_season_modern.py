@@ -467,9 +467,9 @@ class ModernNhlLoader:
                 except Exception as exc:
                     logger.warning("Roster supplement: landing failed for player_id=%s: %s", pid, exc)
                     continue
-                row = self._roster_tuple_from_landing(payload)
-                if row:
-                    rows_by_player[pid] = row
+                landing_row = self._roster_tuple_from_landing(payload)
+                if landing_row:
+                    rows_by_player[pid] = landing_row
 
         return list(rows_by_player.values())
 
@@ -954,8 +954,8 @@ class ModernNhlLoader:
                 )
             )
 
-            player_fo_wins = {}
-            player_fo_taken = {}
+            player_fo_wins: Dict[int, int] = {}
+            player_fo_taken: Dict[int, int] = {}
             for f in faceoffs:
                 d = f.get("details", {})
                 # ``winningPlayerId``/``losingPlayerId`` may be missing for
@@ -969,9 +969,9 @@ class ModernNhlLoader:
                 if loser_pid is not None:
                     player_fo_taken[loser_pid] = player_fo_taken.get(loser_pid, 0) + 1
 
-            player_pp_assists = {}
-            player_sh_goals = {}
-            player_sh_assists = {}
+            player_pp_assists: Dict[int, int] = {}
+            player_sh_goals: Dict[int, int] = {}
+            player_sh_assists: Dict[int, int] = {}
             for row in game_goals:
                 scorer_id = row[0]
                 assist1_id = row[2]

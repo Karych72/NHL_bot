@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
@@ -606,11 +606,14 @@ def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     text, hp, hn = stat_leaderboard_for_kind(kind, 0)
     markup = leaderboard_nav_keyboard(kind, 0, hp, hn)
     try:
-        query.edit_message_text(
-            text=text,
-            parse_mode="MARKDOWN",
-            reply_markup=markup,
-        )
+        if markup is None:
+            query.edit_message_text(text=text, parse_mode="MARKDOWN")
+        else:
+            query.edit_message_text(
+                text=text,
+                parse_mode="MARKDOWN",
+                reply_markup=markup,
+            )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -629,11 +632,14 @@ def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
     text, hp, hn = stat_leaderboard_for_kind(kind, offset)
     markup = leaderboard_nav_keyboard(kind, offset, hp, hn)
     try:
-        query.edit_message_text(
-            text=text,
-            parse_mode="MARKDOWN",
-            reply_markup=markup,
-        )
+        if markup is None:
+            query.edit_message_text(text=text, parse_mode="MARKDOWN")
+        else:
+            query.edit_message_text(
+                text=text,
+                parse_mode="MARKDOWN",
+                reply_markup=markup,
+            )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -656,7 +662,7 @@ def handle_goal_video(update: Update, context: CallbackContext) -> int:
         return SECOND
 
     try:
-        send_kw = {"supports_streaming": True}
+        send_kw: Dict[str, Any] = {"supports_streaming": True}
         if delivery.width is not None:
             send_kw["width"] = delivery.width
         if delivery.height is not None:

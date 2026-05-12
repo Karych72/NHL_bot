@@ -1,0 +1,33 @@
+# Local stack: PostgreSQL + bot. Copy .env.example → .env and set TELEGRAM_BOT_TOKEN.
+# Apply schema/functions on first run: make db-init with PG_* pointed at localhost:5432,
+# or run the Makefile DDL targets against host port 5432 after `docker compose up -d db`.
+services:
+  db:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      # Dev-only: avoids password in compose for the default superuser (see docs).
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+  bot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    working_dir: /app/telegram_bot
+    command: ["python", "bot.py"]

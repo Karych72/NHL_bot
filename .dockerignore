@@ -1,0 +1,13 @@
+.venv
+.ci_venv
+__pycache__
+*.pyc
+.env
+.git
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.DS_Store
+.idea
+downloads/*.mp4
+*.mp4

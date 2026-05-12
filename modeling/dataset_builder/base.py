@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 import pandas as pd
 import psycopg2
@@ -212,7 +212,7 @@ def _align_empty_predict_to_manifest(
         if name not in out.columns:
             out[name] = _empty_series_for_dtype(dtype)
         else:
-            out[name] = out[name].astype(dtype)
+            out[name] = out[name].astype(cast(Any, dtype))
     extra_features = [col for col in feature_columns_from_df(out) if col not in expected_features]
     if extra_features:
         out = out.drop(columns=extra_features)

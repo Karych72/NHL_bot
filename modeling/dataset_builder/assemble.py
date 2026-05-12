@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
@@ -96,8 +96,8 @@ def assemble_dataset(
     snapshots: pd.DataFrame,
     min_prior_games: int,
     cold_start_policy_predict: str,
-) -> Tuple[pd.DataFrame, Dict[str, object]]:
-    report: Dict[str, object] = {"drops": []}
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    report: Dict[str, Any] = {"drops": []}
     data, built_feature_columns = _wide_feature_columns(snapshots)
     cold = apply_cold_start_policy(
         data=data,

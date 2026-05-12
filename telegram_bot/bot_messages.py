@@ -1,16 +1,16 @@
 import html
 from collections import defaultdict
 from decimal import Decimal
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
-
-# Telegram message text limit (UTF-16 length can differ; stay under safe byte-ish budget)
-TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from psycopg2 import sql
 
 import config
 from database import fetch_all, validate_table, validate_column
 from template_funcs import output_text
+
+# Telegram message text limit (UTF-16 length can differ; stay under safe byte-ish budget)
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 
 # Subsets of columns allowed in dynamic SQL; keep in sync with ALLOWED_COLUMNS
@@ -268,7 +268,7 @@ def _last_n_form_record(team_id: int, n: int = 5) -> str:
             "is_shootouts",
         ],
     )
-    w = l = otl = 0
+    w = losses = otl = 0
     for i in range(row["count_rows"]):
         wid = row["winner_id"][i]
         ot = bool(row["is_overtime"][i])
@@ -278,10 +278,10 @@ def _last_n_form_record(team_id: int, n: int = 5) -> str:
         elif ot or so:
             otl += 1
         else:
-            l += 1
+            losses += 1
     if row["count_rows"] == 0:
         return "—"
-    return f"{w}-{l}-{otl}"
+    return f"{w}-{losses}-{otl}"
 
 
 def _matchup_aligned_compare_rows(pairs: List[Tuple[str, str, str]], min_gap: int = 4) -> List[str]:
@@ -390,8 +390,8 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
         eab = html.escape(ab)
         if not row:
             return f"<b>{eab}</b>: нет строки в базе для сезона."
-        w, l, ot = row["wins"], row["losses"], row["ot"]
-        rec = f"{_format_leader_value(w)}-{_format_leader_value(l)}-{_format_leader_value(ot)}"
+        w, losses, ot = row["wins"], row["losses"], row["ot"]
+        rec = f"{_format_leader_value(w)}-{_format_leader_value(losses)}-{_format_leader_value(ot)}"
         pts = row["points"]
         ppct = _fmt_pct_points(row["procent_points"])
         return f"<b>{eab}</b> — {rec}, {_format_leader_value(pts)} очков ({ppct})"
@@ -532,7 +532,7 @@ def player_stats_with_count(
         q, (config.SEASON_ID, count, offset), ['lastname', 'points', 'team']
     )
 
-    to_template = {'name_stats': name_stats}
+    to_template: Dict[str, Any] = {'name_stats': name_stats}
     players = []
     for i in range(stats['count_rows']):
         lastname = stats['lastname'][i] or "Unknown"
@@ -844,7 +844,7 @@ def team_stats_with_count(
         columns=['team', 'points', 'games_played'],
     )
 
-    to_template = {'name_stats': name_stats}
+    to_template: Dict[str, Any] = {'name_stats': name_stats}
     teams = []
     for i in range(stats['count_rows']):
         teams.append({
