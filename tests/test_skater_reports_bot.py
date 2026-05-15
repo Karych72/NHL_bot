@@ -23,6 +23,13 @@ def _load_help_text():
     return importlib.import_module("help_text")
 
 
+def _load_nhl_scoreboard():
+    os.chdir(TELEGRAM_BOT)
+    if TELEGRAM_BOT not in sys.path:
+        sys.path.insert(0, TELEGRAM_BOT)
+    return importlib.import_module("nhl_scoreboard")
+
+
 class SkaterReportsLeaderboardsTest(unittest.TestCase):
     def test_new_skater_leaderboards_render(self):
         bot_messages = _load_bot_messages()
@@ -51,25 +58,51 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
 class Phase1UxCommandsTest(unittest.TestCase):
     def test_help_lists_core_commands(self):
         help_text = _load_help_text()
+        hm = help_text.HELP_MESSAGE
+        self.assertIn("<b>Команды</b>", hm)
+        self.assertIn("<code>/day_games</code>", hm)
+        self.assertNotIn("/day\\_games", hm)
+        self.assertNotIn("\\_", hm)
         for fragment in (
-            "/day\\_games",  # Markdown escape for Telegram (underscore = italic)
+            "/day_games",
+            "/today",
             "/tonight",
             "/table",
+            "/standings",
+            "/team",
             "/leaders",
             "/stats",
             "/cancel",
             "/help",
             "/game",
             "/advanced",
+            "/subscribe_digest",
+            "/unsubscribe_digest",
+            "/subscribe_team",
+            "/unsubscribe_team",
         ):
             with self.subTest(cmd=fragment):
-                self.assertIn(fragment, help_text.HELP_MESSAGE)
-        self.assertNotIn("/today", help_text.HELP_MESSAGE)
-        self.assertNotIn("/standings", help_text.HELP_MESSAGE)
-        self.assertNotIn("/shottypes", help_text.HELP_MESSAGE)
-        self.assertIn("типам броска", help_text.HELP_MESSAGE)
-        self.assertIn("Corsi", help_text.HELP_MESSAGE)
-        self.assertIn("Fenwick", help_text.HELP_MESSAGE)
+                self.assertIn(fragment, hm)
+        self.assertNotIn("/shottypes", hm)
+        self.assertIn("Форма до матча", hm)
+        self.assertIn("Corsi", hm)
+        self.assertIn("Fenwick", hm)
+
+    def test_tonight_reply_intro_escapes_league_date(self):
+        nhl = _load_nhl_scoreboard()
+        raw_date = "2025-01-01<script>"
+        text_empty = nhl.tonight_reply_intro({"currentDate": raw_date, "games": []})
+        self.assertNotIn("<script>", text_empty)
+        self.assertIn("script", text_empty)
+        g = {
+            "gameDate": raw_date,
+            "startTimeUTC": "2025-01-01T00:00:00Z",
+            "awayTeam": {"abbrev": "A"},
+            "homeTeam": {"abbrev": "B"},
+        }
+        text_games = nhl.tonight_reply_intro({"currentDate": raw_date, "games": [g]})
+        self.assertIn("&lt;script&gt;", text_games)
+        self.assertNotIn("<script>", text_games)
 
     def test_team_table_includes_season_and_as_of(self):
         bot_messages = _load_bot_messages()
@@ -98,9 +131,9 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
         self.assertIn("BOS", text)
-        self.assertIn("*EASTERN CONFERENCE*", text)
-        self.assertIn("*ATLANTIC DIVISION*", text)
-        self.assertIn("```", text)
+        self.assertIn("<pre>", text)
+        self.assertIn("<b>ATLANTIC DIVISION</b>", text)
+        self.assertIn("<b>EASTERN CONFERENCE</b>", text)
 
     def test_stat_leaderboard_for_kind_points(self):
         bot_messages = _load_bot_messages()
@@ -151,6 +184,7 @@ class Phase2UxNavigationTest(unittest.TestCase):
         )
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["text"], "Полная карточка")
+        self.assertEqual(sent[0].get("parse_mode"), "HTML")
         self.assertIsNotNone(sent[0].get("reply_markup"))
 
     def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
@@ -166,15 +200,16 @@ class Phase2UxNavigationTest(unittest.TestCase):
             bot = FakeBot()
 
         games = [
-            (101, "*Home Away* 1:0\n\ngoal", []),
-            (102, "*B C* 2:2\n", []),
+            (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
+            (102, "<b>B C</b> 2:2\n", []),
         ]
         stats_handlers.dispatch_day_digest_messages(
             FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
         )
         self.assertEqual(len(sent), 1)
         self.assertIn("2 игр", sent[0]["text"])
-        self.assertIn("*Home Away* 1:0", sent[0]["text"])
+        self.assertIn("<b>Home Away</b>", sent[0]["text"])
+        self.assertEqual(sent[0].get("parse_mode"), "HTML")
         kb = sent[0]["reply_markup"].inline_keyboard
         self.assertTrue(any("Матч 1" in row[0].text for row in kb if row))
         ds = importlib.import_module("dialog_states")
@@ -198,6 +233,7 @@ class Phase2UxNavigationTest(unittest.TestCase):
         )
         self.assertEqual(len(sent), 2)
         self.assertEqual(sent[0]["text"], "Нет матчей")
+        self.assertEqual(sent[0].get("parse_mode"), "HTML")
         self.assertIn("/stats", sent[1]["text"])
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -90,23 +91,26 @@ def _format_msk_ahead_hours(dh: float) -> str:
 def tonight_reply_intro(payload: dict) -> str:
     """
     Текст ответа /tonight без списка матчей (матчи только кнопками).
-    Разметка Markdown: *жирный*.
+    Разметка HTML (Telegram): <b>жирный</b>; дата и числа из API — через html.escape.
     """
-    current = payload.get("currentDate") or "—"
+    raw_current = payload.get("currentDate") or "—"
+    current_esc = html.escape(str(raw_current))
     games = slate_games_sorted(payload)
     if not games:
-        return f"На {current} в расписании NHL матчей нет."
+        return f"На {current_esc} в расписании NHL матчей нет."
 
     n = len(games)
     dh = msk_hours_ahead_of_et_now()
     dh_s = _format_msk_ahead_hours(dh)
+    n_esc = html.escape(str(n))
+    dh_esc = html.escape(dh_s)
     return (
-        f"Матчи NHL на календарный день лиги *{current}* "
+        f"Матчи NHL на календарный день лиги <b>{current_esc}</b> "
         f"(актуальное расписание с сайта NHL, не из базы бота).\n\n"
-        f"Ниже *{n}* кнопок — выберите матч: откроется карточка из базы "
+        f"Ниже <b>{n_esc}</b> кнопок — выберите матч: откроется карточка из базы "
         f"(если игра уже загружена) или сравнение сезонных показателей команд.\n\n"
-        f"На кнопках время старта в *ET* (восточное время США). "
-        f"*Москва сейчас на {dh_s} ч впереди ET* "
+        f"На кнопках время старта в <b>ET</b> (восточное время США). "
+        f"<b>Москва сейчас на {dh_esc} ч впереди ET</b> "
         f"(разница меняется при переводе часов в США; в России постоянно UTC+3)."
     )
 

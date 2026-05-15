@@ -1,7 +1,18 @@
-*{{ team_home }} {{ team_away }} {{ home_score }}:{{ away_score}} {{ extra }}* {{ period_scores }}
+<b>{{ team_home }} {{ team_away }} {{ home_score }}:{{ away_score }}{{ extra }}</b> {{ period_scores }}
+{% if recent_form %}
 
-{% for goal in goals %}{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ goal['time'] }}
+{{ recent_form }}
+<i>Форма — последние 5 завершённых игр команды в текущем сезоне (учёт W–L–OTL).</i>
+{% endif %}
+{% if hat_tricks %}
+
+<b>В игре</b>
+{{ hat_tricks }}
+<i>Хет-трик здесь: три и более гола одного игрока в этом матче.</i>
+{% endif %}
+
+{% for goal in goals %}{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ goal['period_label'] }} {{ goal['time'] }}
 {% endfor %}
-*Броски:* {{ home_shots }} - {{ away_shots }}
-*Штрафное время:* {{ home_penalties }} - {{ away_penalties }}
-*Вратари:* {{ goalkeepers }}
+<b>Броски</b>: {{ home_shots }} - {{ away_shots }}
+<b>Штрафное время</b>: {{ home_penalties }} - {{ away_penalties }}
+<b>Вратари</b>: {{ goalkeepers }}

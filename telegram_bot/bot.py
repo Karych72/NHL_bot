@@ -1,17 +1,28 @@
 import logging
+from datetime import date
 from typing import List, Optional
 
+import psycopg2
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackContext,
     CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
+    Filters,
+    MessageHandler,
     Updater,
 )
 
 import config
-from bot_messages import day_digest, leaders_menu_intro, team_table, truncate_telegram_text
+import subscription_repo
+from bot_messages import (
+    day_digest,
+    leaders_menu_intro,
+    season_team_abbrev_help_text,
+    team_table,
+    truncate_telegram_text,
+)
 from nhl_scoreboard import (
     ScoreboardFetchError,
     fetch_score_now,
@@ -24,11 +35,15 @@ from dialog_states import (
     build_menu,
     CHOOSE_STATS,
     DAY_DIGEST,
+    DIGEST_CALENDAR_TODAY,
+    DIGEST_CALENDAR_YESTERDAY,
+    DIGEST_PICK_DATE,
     END_CONVERSATION,
     FIRST,
     GOALIE_PERCENTAGE,
     GOALIE_SHOOTOUTS,
     GOALIE_WINS,
+    LEAGUE_STANDINGS,
     PLAYER_ADVANCED_SUBMENU,
     PLAYER_ASSISTS,
     PLAYER_BLOCKS,
@@ -58,18 +73,26 @@ from dialog_states import (
     TEAM_POWER_PLAY,
     TEAM_PROCENT_WINS,
     TEAM_STATS,
+    THIRD,
 )
 from script_bot import (
+    NAV_FIELD,
+    NAV_PLAYERS,
+    bot_digest_date_menu,
     bot_player_advanced_menu,
     bot_player_field,
     bot_player_goalie,
     bot_player_stats,
     bot_team_stats,
     end,
+    nav_back_to_field,
+    nav_back_to_players,
     stats,
     stats_over,
+    stats_root_edit,
 )
 from stats_handlers import (
+    DIGEST_BACK_FROM_DATE_CALLBACK,
     LEADERS_PICK_CALLBACK_PATTERN,
     LEADERBOARD_PAGE_CALLBACK_PATTERN,
     STAT_PAGE_CALLBACK_PATTERN,
@@ -77,10 +100,14 @@ from stats_handlers import (
     TEAM_PAGE_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
-    bot_day_digest,
+    bot_digest_calendar_today,
+    bot_digest_calendar_yesterday,
+    bot_digest_custom_date,
+    bot_digest_pick_date_prompt,
     bot_goalie_percentage,
     bot_goalie_shootouts,
     bot_goalie_wins,
+    bot_league_standings,
     bot_player_assists,
     bot_player_blocks,
     bot_player_goals,
@@ -160,15 +187,15 @@ def cmd_start(update, context):
         try:
             gid = int(args[0].split("_", 1)[1])
         except (IndexError, ValueError):
-            update.message.reply_text(START_MESSAGE, parse_mode="MARKDOWN")
+            update.message.reply_text(START_MESSAGE, parse_mode="HTML")
             return
         send_game_card_message(context, update.message.chat_id, gid)
         return
-    update.message.reply_text(START_MESSAGE, parse_mode="MARKDOWN")
+    update.message.reply_text(START_MESSAGE, parse_mode="HTML")
 
 
 def cmd_help(update, context):
-    update.message.reply_text(HELP_MESSAGE, parse_mode="MARKDOWN")
+    update.message.reply_text(HELP_MESSAGE, parse_mode="HTML")
 
 
 def cmd_day_games(update, context):
@@ -197,20 +224,39 @@ def cmd_tonight(update, context):
         tonight_reply_intro(payload),
         footer_note="\n\n(Текст обрезан — лимит Telegram.)",
     )
-    reply_kwargs = {"parse_mode": "MARKDOWN"}
+    reply_kwargs = {"parse_mode": "HTML"}
     if markup is not None:
         reply_kwargs["reply_markup"] = markup
     update.message.reply_text(text, **reply_kwargs)
 
 
 def cmd_table(update, context):
-    update.message.reply_text(team_table(), parse_mode="MARKDOWN")
+    update.message.reply_text(team_table(), parse_mode="HTML")
+
+
+def cmd_standings(update, context):
+    cmd_table(update, context)
+
+
+def cmd_today(update, context):
+    day_label, games = day_digest(date.today().isoformat())
+    dispatch_day_digest_messages(
+        context,
+        update.message.chat_id,
+        day_label,
+        games,
+        attach_conv_nav_on_last=False,
+    )
+
+
+def cmd_team(update, context):
+    update.message.reply_text(season_team_abbrev_help_text(), parse_mode="HTML")
 
 
 def cmd_leaders(update, context):
     update.message.reply_text(
         leaders_menu_intro(),
-        parse_mode="MARKDOWN",
+        parse_mode="HTML",
         reply_markup=leaders_category_keyboard(),
     )
 
@@ -218,8 +264,9 @@ def cmd_leaders(update, context):
 def cmd_game(update, context):
     if not context.args:
         update.message.reply_text(
-            "Карточку матча проще открыть так: отправьте `/day_games` и нажмите кнопку нужной игры под сводкой.",
-            parse_mode="Markdown",
+            "Карточку матча проще открыть так: отправьте <code>/day_games</code> "
+            "и нажмите кнопку нужной игры под сводкой.",
+            parse_mode="HTML",
         )
         return
     try:
@@ -233,7 +280,7 @@ def cmd_game(update, context):
 def cmd_advanced(update, context):
     update.message.reply_text(
         ADVANCED_COMMAND_INTRO,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=advanced_standalone_keyboard(),
     )
 
@@ -245,6 +292,85 @@ def cmd_cancel_in_conversation(update, context: CallbackContext) -> int:
 
 def cmd_cancel_outside_conversation(update, context):
     update.message.reply_text("Меню /stats сейчас не открыто. Справка: /help")
+
+
+def _subscriptions_db_error_reply(update, context):
+    update.message.reply_text(
+        "Подписки недоступны: выполните `make db-bot-subscriptions` "
+        "или SQL из файла scripts/create_bot_subscriptions.sql на вашей БД PostgreSQL."
+    )
+
+
+def cmd_subscribe_digest(update, context):
+    try:
+        subscription_repo.upsert_morning_digest(update.effective_chat.id)
+    except psycopg2.Error:
+        logger.exception("subscribe_digest DB error")
+        _subscriptions_db_error_reply(update, context)
+        return
+    update.message.reply_text(
+        "Вы подписаны на утренний дайджест (тот же контент, что даёт /day_games по последнему игровому дню в базе). "
+        "Отписка: /unsubscribe_digest. Фактическая отправка по расписанию включается администратором (`ENABLE_PUSH_DIGEST=1`)."
+    )
+
+
+def cmd_unsubscribe_digest(update, context):
+    try:
+        subscription_repo.deactivate_morning_digest(update.effective_chat.id)
+    except psycopg2.Error:
+        logger.exception("unsubscribe_digest DB error")
+        _subscriptions_db_error_reply(update, context)
+        return
+    update.message.reply_text(
+        "Утренний дайджест отключён для этого чата (подписка помечена неактивной)."
+    )
+
+
+def cmd_subscribe_team(update, context):
+    args = context.args or []
+    if not args:
+        update.message.reply_text(
+            "Укажите аббревиатуру команды, например: /subscribe_team WSH"
+        )
+        return
+    tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
+    if tid is None:
+        update.message.reply_text(
+            f"Команда «{args[0]}» не найдена для сезона в базе. Список: /team"
+        )
+        return
+    try:
+        subscription_repo.upsert_team_scores(update.effective_chat.id, tid)
+    except psycopg2.Error:
+        logger.exception("subscribe_team DB error")
+        _subscriptions_db_error_reply(update, context)
+        return
+    update.message.reply_text(
+        f"Подписка на итоги игр команды сохранена (аббревиатура {args[0].strip().upper()}). "
+        "Отписка: /unsubscribe_team с тем же кодом. Рассылка по календарному «вчера» при ENABLE_PUSH_DIGEST=1."
+    )
+
+
+def cmd_unsubscribe_team(update, context):
+    args = context.args or []
+    if not args:
+        update.message.reply_text(
+            "Укажите ту же аббревиатуру, например: /unsubscribe_team WSH"
+        )
+        return
+    tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
+    if tid is None:
+        update.message.reply_text(
+            f"Команда «{args[0]}» не найдена для сезона в базе."
+        )
+        return
+    try:
+        subscription_repo.deactivate_team_scores(update.effective_chat.id, tid)
+    except psycopg2.Error:
+        logger.exception("unsubscribe_team DB error")
+        _subscriptions_db_error_reply(update, context)
+        return
+    update.message.reply_text("Подписка на эту команду отключена.")
 
 
 logging.basicConfig(
@@ -263,6 +389,21 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('stats', stats)],
         states={
             FIRST: [
+                CallbackQueryHandler(stats_root_edit, pattern='^' + str(CHOOSE_STATS) + '$'),
+                CallbackQueryHandler(bot_digest_date_menu, pattern='^' + str(DAY_DIGEST) + '$'),
+                CallbackQueryHandler(bot_league_standings, pattern='^' + str(LEAGUE_STANDINGS) + '$'),
+                CallbackQueryHandler(
+                    bot_digest_calendar_today, pattern='^' + str(DIGEST_CALENDAR_TODAY) + '$'
+                ),
+                CallbackQueryHandler(
+                    bot_digest_calendar_yesterday,
+                    pattern='^' + str(DIGEST_CALENDAR_YESTERDAY) + '$',
+                ),
+                CallbackQueryHandler(
+                    bot_digest_pick_date_prompt, pattern='^' + str(DIGEST_PICK_DATE) + '$'
+                ),
+                CallbackQueryHandler(nav_back_to_players, pattern=f'^{NAV_PLAYERS}$'),
+                CallbackQueryHandler(nav_back_to_field, pattern=f'^{NAV_FIELD}$'),
                 CallbackQueryHandler(
                     callback_stats_player_page, pattern=STAT_PAGE_CALLBACK_PATTERN
                 ),
@@ -271,7 +412,6 @@ if __name__ == '__main__':
                 ),
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
                 CallbackQueryHandler(bot_player_stats, pattern='^' + str(PLAYER_STATS) + '$'),
-                CallbackQueryHandler(bot_day_digest, pattern='^' + str(DAY_DIGEST) + '$'),
 
                 CallbackQueryHandler(bot_player_field, pattern='^' + str(PLAYER_FIELD) + '$'),
                 CallbackQueryHandler(bot_player_goalie, pattern='^' + str(PLAYER_GOALIE) + '$'),
@@ -318,6 +458,14 @@ if __name__ == '__main__':
                 CallbackQueryHandler(stats_over, pattern='^' + str(CHOOSE_STATS) + '$'),
                 CallbackQueryHandler(end, pattern='^' + str(END_CONVERSATION) + '$'),
             ],
+            THIRD: [
+                CallbackQueryHandler(stats_root_edit, pattern='^' + str(CHOOSE_STATS) + '$'),
+                CallbackQueryHandler(
+                    bot_digest_date_menu,
+                    pattern=f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$",
+                ),
+                MessageHandler(Filters.text & ~Filters.command, bot_digest_custom_date),
+            ],
         },
         fallbacks=[
             CommandHandler('stats', stats),
@@ -329,11 +477,18 @@ if __name__ == '__main__':
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
         CommandHandler("day_games", cmd_day_games),
+        CommandHandler("today", cmd_today),
         CommandHandler("tonight", cmd_tonight),
         CommandHandler("table", cmd_table),
+        CommandHandler("standings", cmd_standings),
+        CommandHandler("team", cmd_team),
         CommandHandler("leaders", cmd_leaders),
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
+        CommandHandler("subscribe_digest", cmd_subscribe_digest),
+        CommandHandler("unsubscribe_digest", cmd_unsubscribe_digest),
+        CommandHandler("subscribe_team", cmd_subscribe_team),
+        CommandHandler("unsubscribe_team", cmd_unsubscribe_team),
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=r"^dg:\d+$"),

@@ -37,6 +37,8 @@ make bot
 | `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_DATABASE` | Те же `PG_*`, что использует лоадер. |
 | `SEASON_ID` | Сезон, по которому бот фильтрует ответы (`config.SEASON_ID`). |
 | `CURRENT_SEASON` | Подпись сезона в сообщениях, например `25/26`. |
+| `ENABLE_PUSH_DIGEST` | `0`/`1` — разрешить скрипт рассылки `push_digest_job.py` (по умолчанию выкл.). |
+| `PUSH_SEND_INTERVAL_SEC` | Пауза между сообщениями при массовой отправке (по умолчанию `0.05`). |
 
 Модуль `telegram_bot/config.py` читает эти переменные. `Makefile` подключает
 `.env` автоматически.
@@ -109,6 +111,8 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 | `/advanced` | Топ по advanced-статам (Corsi / Fenwick / GF% / OZ-старт / shootout %). |
 | `/game` | Детальная карточка игры по `game_id`. |
 | `/cancel` | Прервать диалог. |
+| `/subscribe_digest`, `/unsubscribe_digest` | Opt-in / отписка от утренней рассылки дайджеста (`push_digest_job.py`). |
+| `/subscribe_team`, `/unsubscribe_team` | Подписка на краткие итоги игр команды по аббревиатуре сезона. |
 
 Подробный пользовательский сценарий: [`user_journey_stats.md`](user_journey_stats.md).
 
@@ -132,3 +136,30 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 - [`pipeline_nulls_and_explicit_null_tz.md`](pipeline_nulls_and_explicit_null_tz.md) — контракт `NULL`-семантики; важно для понимания, почему бот в некоторых местах рендерит `—` или «Unknown».
 - [`architecture.md`](architecture.md) — общая архитектура и схема таблиц БД.
 - [`api_data_research.md`](api_data_research.md) — какие поля NHL API маппятся в какие колонки.
+
+---
+
+## 7. Подписки и push (`bot_subscriptions`)
+
+Модель данных и ограничения уникальности — в docstring
+[`push_subscriptions.py`](../telegram_bot/push_subscriptions.py).
+
+Создание таблицы:
+
+```bash
+make db-bot-subscriptions
+```
+
+Поля: `chat_id`, `kind` (`morning_digest` | `team_scores`), `team_id` (для команды),
+опционально `timezone`, `active`, временные метки. Согласие — команды
+`/subscribe_digest`, `/subscribe_team`; отписка — `/unsubscribe_digest`,
+`/unsubscribe_team` (см. `/help`).
+
+Рассылка: [`push_digest_job.py`](../telegram_bot/push_digest_job.py),
+та же логика что `day_digest` / `dispatch_day_digest_messages`, с
+`attach_conv_nav_on_last=False`. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
+`PUSH_SEND_INTERVAL_SEC`, обработка `429` и блокировки бота — см. исходники скрипта.
+
+```bash
+cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
+```

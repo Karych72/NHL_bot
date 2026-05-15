@@ -28,3 +28,26 @@ DATE_FROM = _env("DATE_FROM", "2025-10-01")
 DATE_TO = _env("DATE_TO", date.today().isoformat())
 SEASON_ID = _env_int("SEASON_ID", 20252026)
 CURRENT_SEASON = _env("CURRENT_SEASON", "25/26")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+ENABLE_PUSH_DIGEST = _env_bool("ENABLE_PUSH_DIGEST", False)
+PUSH_SEND_INTERVAL_SEC = _env_float("PUSH_SEND_INTERVAL_SEC", 0.05)

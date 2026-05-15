@@ -85,6 +85,23 @@ def _pss_join_sql(table_name: str, second_order: str) -> sql.Composable:
     return sql.SQL("")
 
 
+def _goal_situation_suffix(
+    is_ppg: Optional[bool],
+    is_shg: Optional[bool],
+    empty_net: Optional[bool],
+) -> str:
+    parts: List[str] = []
+    if empty_net:
+        parts.append("ПВ")
+    elif is_shg:
+        parts.append("МБ")
+    elif is_ppg:
+        parts.append("ББ")
+    if not parts:
+        return ""
+    return " (" + ", ".join(parts) + ")"
+
+
 def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     """Return (rendered_text, goal_video_metadata)."""
     game_stats = fetch_all(
@@ -92,10 +109,39 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         ['goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
          'is_shootouts', 'field', 'team_name'],
     )
+    teams_row = fetch_all(
+        "SELECT home_team_id, away_team_id FROM games WHERE game_id = %s LIMIT 1",
+        (game_id,),
+        columns=["home_team_id", "away_team_id"],
+    )
+    away_tid = (
+        int(teams_row["away_team_id"][0])
+        if teams_row["count_rows"] and teams_row["away_team_id"][0] is not None
+        else None
+    )
+    home_tid = (
+        int(teams_row["home_team_id"][0])
+        if teams_row["count_rows"] and teams_row["home_team_id"][0] is not None
+        else None
+    )
     game_goals = fetch_all(
         "SELECT * FROM get_goals_game(%s)", (game_id,),
-        ['scorer', 'assist_1', 'assist_2', 'period', 'time',
-         'home_score', 'away_score', 'game_id', 'event_id'],
+        [
+            "scorer",
+            "scorer_position",
+            "assist_1",
+            "assist_2",
+            "period",
+            "goal_time",
+            "home_score",
+            "away_score",
+            "is_ppg",
+            "is_shg",
+            "empty_net",
+            "winner_goal",
+            "goal_game_id",
+            "goal_event_id",
+        ],
     )
     game_goalies = fetch_all(
         "SELECT * FROM get_goalies_game(%s)", (game_id,),
@@ -118,6 +164,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
 
     goals = []
     goals_meta = []
+    scorer_counts: Dict[str, int] = defaultdict(int)
     for i in range(game_goals['count_rows']):
         h_raw = game_goals['home_score'][i]
         a_raw = game_goals['away_score'][i]
@@ -130,12 +177,23 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         prev_h, prev_a = h, a
 
         scorer = game_goals['scorer'][i] or 'Unknown'
-        time_str = game_goals['time'][i]
+        pos_raw = game_goals['scorer_position'][i]
+        pos = (str(pos_raw).strip() if pos_raw else "") or ""
+        scorer_counts[scorer] += 1
+        situation = _goal_situation_suffix(
+            game_goals['is_ppg'][i],
+            game_goals['is_shg'][i],
+            game_goals['empty_net'][i],
+        )
+        winner_mark = " ★" if game_goals['winner_goal'][i] else ""
+
+        time_str = game_goals['goal_time'][i]
         if p is not None and time_str:
             t_m = str((p - 1) * 20 + int(time_str.split(':')[0]))
             t_all = t_m + ':' + time_str.split(':')[1]
         else:
             t_all = '?:??'
+        period_label = f"P{p}" if p is not None else "?"
         assists = ''
         if game_goals['assist_2'][i] is not None:
             assists = f"({game_goals['assist_1'][i]}, {game_goals['assist_2'][i]})"
@@ -143,17 +201,19 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             assists = f"({game_goals['assist_1'][i]})"
 
         score = f"{h}:{a}"
+        scorer_line = scorer + (f" [{pos}]" if pos else "") + assists + situation + winner_mark
         goals.append({
             'home_score': h,
             'away_score': a,
-            'scorer': scorer + assists,
-            'time': t_all,
+            'scorer': html.escape(scorer_line),
+            'time': html.escape(t_all),
+            'period_label': html.escape(period_label),
         })
 
-        evt = game_goals['event_id'][i]
+        evt = game_goals['goal_event_id'][i]
         if evt is not None:
             goals_meta.append({
-                'game_id': game_goals['game_id'][i],
+                'game_id': game_goals['goal_game_id'][i],
                 'event_id': evt,
                 'label': f"{score} {scorer}{assists} {t_all}",
             })
@@ -163,6 +223,25 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         num_periods = 4
     parts = [f"{period_home[p]}:{period_away[p]}" for p in range(1, num_periods + 1)]
     period_scores = f"({', '.join(parts)})"
+
+    hat_lines = [
+        f"• {html.escape(name)}: хет-трик (×{n})"
+        for name, n in scorer_counts.items()
+        if n >= 3
+    ]
+    hat_tricks = "\n".join(hat_lines) if hat_lines else ""
+
+    away_abbr = (game_stats['team_name'][1] or "").strip()
+    home_abbr = (game_stats['team_name'][0] or "").strip()
+    form_away = _last_n_form_record(away_tid, 5) if away_tid is not None else "—"
+    form_home = _last_n_form_record(home_tid, 5) if home_tid is not None else "—"
+    recent_form = (
+        "<b>Форма до матча (последние 5)</b>: "
+        f"<b>{html.escape(away_abbr)}</b> {html.escape(form_away)} — "
+        f"<b>{html.escape(home_abbr)}</b> {html.escape(form_home)}"
+        if away_abbr and home_abbr
+        else ""
+    )
 
     goalkeepers = ''
     change_team = False
@@ -181,26 +260,30 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         shots = game_goalies['shots'][i]
         saves_str = saves if saves is not None else "—"
         shots_str = shots if shots is not None else "—"
+        raw_last = game_goalies["lastname"][i]
+        ln_esc = html.escape(str(raw_last or ""))
         goalkeepers += (
-            f"{game_goalies['lastname'][i]} "
-            f"({saves_str}/{shots_str}, "
-            f"{sv_pct_str}, "
-            f"{toi})"
+            f"{ln_esc} "
+            f"({html.escape(str(saves_str))}/{html.escape(str(shots_str))}, "
+            f"{html.escape(str(sv_pct_str))}, "
+            f"{html.escape(str(toi))})"
         )
 
     to_template = {
-        'team_home': game_stats['team_name'][0],
-        'team_away': game_stats['team_name'][1],
-        'home_score': game_stats['goals'][0],
-        'away_score': game_stats['goals'][1],
-        'home_shots': game_stats['shots'][0],
-        'away_shots': game_stats['shots'][1],
-        'home_penalties': game_stats['pim'][0],
-        'away_penalties': game_stats['pim'][1],
+        'team_home': html.escape(str(game_stats['team_name'][0] or "")),
+        'team_away': html.escape(str(game_stats['team_name'][1] or "")),
+        'home_score': html.escape(str(game_stats['goals'][0])),
+        'away_score': html.escape(str(game_stats['goals'][1])),
+        'home_shots': html.escape(str(game_stats['shots'][0])),
+        'away_shots': html.escape(str(game_stats['shots'][1])),
+        'home_penalties': html.escape(str(game_stats['pim'][0])),
+        'away_penalties': html.escape(str(game_stats['pim'][1])),
         'goals': goals,
         'goalkeepers': goalkeepers,
-        'extra': extra,
-        'period_scores': period_scores,
+        'extra': html.escape(extra),
+        'period_scores': html.escape(period_scores),
+        'hat_tricks': hat_tricks,
+        'recent_form': recent_form,
     }
     return output_text('messages/game_message.txt', to_template), goals_meta
 
@@ -496,6 +579,7 @@ def player_stats_with_count(
     offset: int = 0,
     *,
     secondary_sort: Optional[str] = None,
+    use_html: bool = False,
 ) -> Tuple[str, int]:
     validate_table(table_name)
     validate_column(column_name)
@@ -512,7 +596,7 @@ def player_stats_with_count(
     )
 
     q = sql.SQL(
-        "SELECT r.lastname, {pl_col}, t.abbreviation AS team "
+        "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.abbreviation AS team "
         "FROM {table} pl "
         "{join_pss}"
         "LEFT JOIN rosters r ON pl.player_id = r.player_id AND r.season_id = pl.season_id "
@@ -529,21 +613,40 @@ def player_stats_with_count(
         second_col=second_col,
     )
     stats = fetch_all(
-        q, (config.SEASON_ID, count, offset), ['lastname', 'points', 'team']
+        q, (config.SEASON_ID, count, offset),
+        ['lastname', 'roster_position', 'points', 'team'],
     )
 
-    to_template: Dict[str, Any] = {'name_stats': name_stats}
+    roster_positions = stats.get("roster_position")
     players = []
     for i in range(stats['count_rows']):
         lastname = stats['lastname'][i] or "Unknown"
+        pos_raw = roster_positions[i] if roster_positions is not None else None
+        pos = (str(pos_raw).strip() if pos_raw else "") or ""
         players.append({
             'rank': offset + i + 1,
-            'lastname': lastname,
+            'lastname': lastname + (f" [{pos}]" if pos else ""),
             'value': _format_leader_value(stats['points'][i]),
             'team': stats['team'][i] or "—",
         })
 
-    to_template['players'] = players
+    if use_html:
+        lines: List[str] = []
+        for p in players:
+            line = (
+                f"{p['rank']}. {html.escape(p['lastname'])} — "
+                f"{html.escape(str(p['value']))} ({html.escape(str(p['team']))})"
+            )
+            lines.append(line)
+        inner = "\n".join(lines)
+        body_inner = f"<pre>{inner}</pre>" if inner else ""
+        if name_stats:
+            body = f"<b>{html.escape(name_stats)}</b>\n\n{body_inner}"
+        else:
+            body = body_inner
+        return body, stats["count_rows"]
+
+    to_template: Dict[str, Any] = {'name_stats': name_stats, 'players': players}
     return output_text('messages/season_leaders_players.txt', to_template), stats[
         "count_rows"
     ]
@@ -558,6 +661,7 @@ def player_stats(
     *,
     secondary_sort: Optional[str] = None,
 ) -> str:
+    """Текст лидерборда; всегда HTML (экранирование имён из БД), как в /stats и /leaders."""
     return player_stats_with_count(
         name_stats,
         table_name,
@@ -565,6 +669,7 @@ def player_stats(
         count=count,
         offset=offset,
         secondary_sort=secondary_sort,
+        use_html=True,
     )[0]
 
 
@@ -580,8 +685,9 @@ def _rank_range_label(offset: int, rows: int) -> str:
 
 def leaders_menu_intro() -> str:
     """Текст первого шага /leaders — до выбора категории кнопкой."""
+    season_esc = html.escape(str(config.CURRENT_SEASON))
     return (
-        f"*Лидеры сезона* ({config.CURRENT_SEASON})\n\n"
+        f"<b>Лидеры сезона</b> ({season_esc})\n\n"
         "Выберите категорию:"
     )
 
@@ -604,11 +710,15 @@ def player_stat_leaderboard_page(
         count=LEADERBOARD_PAGE_SIZE,
         offset=offset,
         secondary_sort=secondary_sort,
+        use_html=True,
     )
     span = _rank_range_label(offset, n)
     if n == 0:
-        body = "_Нет данных в этом диапазоне._"
-    text = f"*{heading}* ({config.CURRENT_SEASON}) — _{span}_\n\n{body}"
+        body = "<i>Нет данных в этом диапазоне.</i>"
+    text = (
+        f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
+        f"— <i>{html.escape(span)}</i>\n\n{body}"
+    )
     has_prev = offset > 0
     has_next = n >= LEADERBOARD_PAGE_SIZE
     return text, has_prev, has_next
@@ -738,8 +848,15 @@ def _standings_md_code_block(lines: List[str]) -> str:
     return f"```\n{body}\n```"
 
 
+def _standings_html_pre_block(lines: List[str]) -> str:
+    body = html.escape("\n".join(lines).rstrip("\n"))
+    return f"<pre>{body}</pre>"
+
+
 def _build_standings_table_body(
     teams: List[Dict[str, Union[int, str, float, None]]],
+    *,
+    use_html: bool = False,
 ) -> str:
     by_division: Dict[str, List[Dict[str, Union[int, str, float, None]]]] = defaultdict(
         list
@@ -756,18 +873,21 @@ def _build_standings_table_body(
 
     chunks: List[str] = []
 
+    block_fmt = _standings_html_pre_block if use_html else _standings_md_code_block
+    title_fmt = (lambda t: f"<b>{html.escape(t)}</b>") if use_html else (lambda t: f"*{t}*")
+
     def append_conference(title: str, div_order: Tuple[str, ...], wc_title: str) -> None:
-        chunks.append(f"*{title}*")
+        chunks.append(title_fmt(title))
         for div in div_order:
             label = _STANDINGS_DIV_LABEL.get(div, div.upper())
             hdr = f"{'Команда':<{name_w}} {'Очк':>3} {'Игр':>3} {'%очк':>6}"
             block_lines = [hdr, "-" * len(hdr)]
             for t in sorted(by_division.get(div) or [], key=_standings_sort_key):
                 block_lines.append(row_fmt(t))
-            chunks.append(f"*{label}*")
-            chunks.append(_standings_md_code_block(block_lines))
-        chunks.append(f"*{wc_title}*")
-        chunks.append(_standings_md_code_block(_wild_card_lines(
+            chunks.append(title_fmt(label))
+            chunks.append(block_fmt(block_lines))
+        chunks.append(title_fmt(wc_title))
+        chunks.append(block_fmt(_wild_card_lines(
             by_division, div_order, name_w, row_fmt
         )))
 
@@ -782,7 +902,8 @@ def _build_standings_table_body(
         "WILD CARD — WESTERN (вне топ-3 дивизиона, по очкам)",
     )
 
-    return "\n\n".join(chunks)
+    sep = "\n\n" if not use_html else "\n"
+    return sep.join(chunks)
 
 
 def team_table() -> str:
@@ -811,13 +932,47 @@ def team_table() -> str:
             'conference_name': stats['conference_name'][i],
         })
 
-    table_body = _build_standings_table_body(teams)
+    table_body = _build_standings_table_body(teams, use_html=True)
     to_template = {
-        'season': config.CURRENT_SEASON,
-        'as_of': _standings_as_of_day(),
+        'season': html.escape(str(config.CURRENT_SEASON)),
+        'as_of': html.escape(str(_standings_as_of_day())),
         'table_body': table_body,
     }
     return output_text('messages/league_table.txt', to_template)
+
+
+def season_team_abbrev_help_text() -> str:
+    """Краткий список аббревиатур команд текущего сезона для /team."""
+    stats = fetch_all(
+        "SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation), ''), short_name)) AS ab "
+        "FROM teams WHERE season_id = %s ORDER BY ab",
+        (config.SEASON_ID,),
+        columns=["ab"],
+    )
+    abbrevs: List[str] = []
+    for i in range(stats["count_rows"]):
+        a = (stats["ab"][i] or "").strip()
+        if a:
+            abbrevs.append(a)
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    if not abbrevs:
+        return (
+            f"<b>Команды сезона</b> ({season_esc})\n"
+            "В базе пока нет списка команд для этого сезона."
+        )
+    parts = [f"<code>{html.escape(a)}</code>" for a in abbrevs]
+    inner = ", ".join(parts)
+    max_inner = 3500
+    while len(inner) > max_inner and len(parts) > 1:
+        parts = parts[:-1]
+        inner = ", ".join(parts) + "…"
+    if len(inner) > max_inner:
+        inner = inner[: max_inner - 1] + "…"
+    return (
+        f"<b>Команды сезона</b> ({season_esc}) — аббревиатуры:\n{inner}\n\n"
+        "Карточку матча из базы удобнее открыть через <code>/day_games</code> "
+        "или <code>/stats</code> → дайджест."
+    )
 
 
 def team_stats_with_count(
@@ -825,6 +980,8 @@ def team_stats_with_count(
     column_name: str,
     count: int = 10,
     offset: int = 0,
+    *,
+    use_html: bool = False,
 ) -> Tuple[str, int]:
     validate_column(column_name)
     if offset < 0:
@@ -844,7 +1001,6 @@ def team_stats_with_count(
         columns=['team', 'points', 'games_played'],
     )
 
-    to_template: Dict[str, Any] = {'name_stats': name_stats}
     teams = []
     for i in range(stats['count_rows']):
         teams.append({
@@ -854,7 +1010,24 @@ def team_stats_with_count(
             'games': stats['games_played'][i],
         })
 
-    to_template['teams'] = teams
+    if use_html:
+        lines_t: List[str] = []
+        for trow in teams:
+            gn = html.escape(str(trow["games"]))
+            lines_t.append(
+                f"{trow['rank']}. {html.escape(trow['name'])} — "
+                f"{html.escape(str(trow['value']))} (игр: {gn})"
+            )
+        inner_t = "\n".join(lines_t)
+        body_t = f"<pre>{inner_t}</pre>" if inner_t else ""
+        if name_stats:
+            return (
+                f"<b>{html.escape(name_stats)}</b>\n\n{body_t}",
+                stats["count_rows"],
+            )
+        return body_t, stats["count_rows"]
+
+    to_template: Dict[str, Any] = {'name_stats': name_stats, 'teams': teams}
     return output_text('messages/team_stats.txt', to_template), stats["count_rows"]
 
 
@@ -869,11 +1042,15 @@ def team_stat_leaderboard_page(
         column_name,
         count=LEADERBOARD_PAGE_SIZE,
         offset=offset,
+        use_html=True,
     )
     span = _rank_range_label(offset, n)
     if n == 0:
-        body = "_Нет данных в этом диапазоне._"
-    text = f"*{heading}* ({config.CURRENT_SEASON}) — _{span}_\n\n{body}"
+        body = "<i>Нет данных в этом диапазоне.</i>"
+    text = (
+        f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
+        f"— <i>{html.escape(span)}</i>\n\n{body}"
+    )
     has_prev = offset > 0
     has_next = n >= LEADERBOARD_PAGE_SIZE
     return text, has_prev, has_next
@@ -945,7 +1122,9 @@ def truncate_telegram_text(
     note = (
         footer_note
         if footer_note is not None
-        else "\n\n_Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже._"
+        else (
+            "\n\n<i>Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже.</i>"
+        )
     )
     cut = max_len - len(note) - 3
     if cut < 80:

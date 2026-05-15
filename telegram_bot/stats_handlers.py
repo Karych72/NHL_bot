@@ -1,6 +1,9 @@
+import html
 import logging
 import os
 import re
+import time
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -17,12 +20,15 @@ from bot_messages import (
     player_stat_leaderboard_page,
     stat_leaderboard_for_kind,
     team_stat_leaderboard_page,
+    team_table,
     truncate_telegram_text,
 )
 from dialog_states import (
     CHOOSE_STATS,
     END_CONVERSATION,
+    FIRST,
     SECOND,
+    THIRD,
     build_menu,
 )
 from leaderboard_specs import (
@@ -39,6 +45,7 @@ logger = logging.getLogger(__name__)
 LEADERS_PICK_CALLBACK_PATTERN = r"^pl:pick:(points|goals|assists)$"
 LEADERBOARD_PAGE_CALLBACK_PATTERN = r"^pl:(points|goals|assists):(\d+)$"
 DIGEST_EXPAND_PREFIX = "dg:"
+DIGEST_BACK_FROM_DATE_CALLBACK = "digest:back"
 # /tonight: кнопка матча tn:<game_id>:<away>:<home>
 TONIGHT_GAME_CALLBACK_PATTERN = r"^tn:\d+:[^:]+:[^:]+$"
 
@@ -126,7 +133,7 @@ def _make_paginated_player_stat_open_handler(table: str, column: str):
         query.answer()
         text, hp, hn = player_stat_leaderboard_page(title, table, column, 0)
         markup = conversation_player_stat_keyboard(table, column, 0, hp, hn)
-        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
         return SECOND
 
     return handler
@@ -140,7 +147,7 @@ def _make_paginated_team_stat_open_handler(column: str):
         query.answer()
         text, hp, hn = team_stat_leaderboard_page(title, column, 0)
         markup = conversation_team_stat_keyboard(column, 0, hp, hn)
-        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
         return SECOND
 
     return handler
@@ -164,7 +171,7 @@ def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
     text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
     markup = conversation_player_stat_keyboard(table, col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -188,7 +195,7 @@ def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
     text, hp, hn = team_stat_leaderboard_page(title, col, offset)
     markup = conversation_team_stat_keyboard(col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -250,7 +257,7 @@ def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
     text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
     markup = standalone_player_stat_keyboard(table, col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=markup)
+        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -365,7 +372,7 @@ def send_game_card_message(
         context.bot.send_message(
             chat_id=chat_id,
             text="Такого матча нет в базе бота.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
     text, goals_meta = game_message(game_id)
@@ -377,7 +384,7 @@ def send_game_card_message(
     else:
         markup = None
     context.bot.send_message(
-        chat_id=chat_id, text=text, parse_mode="MARKDOWN", reply_markup=markup,
+        chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
     )
 
 
@@ -388,8 +395,14 @@ def dispatch_day_digest_messages(
     games: List[Tuple[int, str, List[Dict]]],
     *,
     attach_conv_nav_on_last: bool = True,
+    inter_message_sleep_sec: Optional[float] = None,
 ) -> None:
     """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота."""
+
+    def _pause() -> None:
+        if inter_message_sleep_sec is not None and inter_message_sleep_sec > 0:
+            time.sleep(inter_message_sleep_sec)
+
     nav_buttons = [
         InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
         InlineKeyboardButton("Закрыть меню", callback_data=str(END_CONVERSATION)),
@@ -399,12 +412,23 @@ def dispatch_day_digest_messages(
 
     if not real_games:
         _, text, _ = games[0]
-        context.bot.send_message(chat_id=chat_id, text=text, parse_mode="MARKDOWN")
+        nav_markup = (
+            InlineKeyboardMarkup([nav_buttons]) if attach_conv_nav_on_last else None
+        )
+        safe_text = html.escape(text) if text else ""
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=safe_text,
+            parse_mode="HTML",
+            reply_markup=nav_markup,
+        )
+        _pause()
         if not attach_conv_nav_on_last:
             context.bot.send_message(
                 chat_id=chat_id,
                 text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
+            _pause()
         return
 
     if len(real_games) == 1:
@@ -413,21 +437,25 @@ def dispatch_day_digest_messages(
         buttons = goal_buttons + (nav_buttons if attach_conv_nav_on_last else [])
         markup = InlineKeyboardMarkup(build_menu(buttons, n_cols=1)) if buttons else None
         context.bot.send_message(
-            chat_id=chat_id, text=text, parse_mode="MARKDOWN", reply_markup=markup,
+            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
         )
+        _pause()
         if not attach_conv_nav_on_last:
             context.bot.send_message(
                 chat_id=chat_id,
                 text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
+            _pause()
         return
 
     day_str = day_label or "—"
     body = day_digest_summary_body(real_games)
-    header = f"*Матчи {day_str}* ({len(real_games)} игр)\n\n"
+    header = (
+        f"<b>Матчи {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
+    )
     intro = (
         f"{header}{body}\n\n"
-        f"_Нажмите «Матч N» для полной карточки и кнопок видео голов._"
+        "<i>Нажмите «Матч N» для полной карточки и кнопок видео голов.</i>"
     )
     summary_text = truncate_telegram_text(intro)
 
@@ -441,14 +469,16 @@ def dispatch_day_digest_messages(
     markup = InlineKeyboardMarkup(rows)
 
     context.bot.send_message(
-        chat_id=chat_id, text=summary_text, parse_mode="MARKDOWN", reply_markup=markup,
+        chat_id=chat_id, text=summary_text, parse_mode="HTML", reply_markup=markup,
     )
+    _pause()
 
     if not attach_conv_nav_on_last:
         context.bot.send_message(
             chat_id=chat_id,
             text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи из базы, /tonight — расписание NHL, /help — справка.",
         )
+        _pause()
 
 
 def callback_tonight_game(update: Update, context: CallbackContext) -> None:
@@ -513,7 +543,7 @@ def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
     title = PLAYER_STAT_TITLES[(table, col)]
     text, hp, hn = player_stat_leaderboard_page(title, table, col, 0)
     kb = standalone_player_stat_keyboard(table, col, 0, hp, hn)
-    query.edit_message_text(text=text, parse_mode="MARKDOWN", reply_markup=kb)
+    query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
 
 
 def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
@@ -544,10 +574,25 @@ def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def bot_day_digest(update: Update, context: CallbackContext) -> int:
+def bot_league_standings(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
-    day_label, games = day_digest()
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("« Главное меню", callback_data=str(CHOOSE_STATS))]]
+    )
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=team_table(),
+        parse_mode="HTML",
+        reply_markup=markup,
+    )
+    return FIRST
+
+
+def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    day_label, games = day_digest(date.today().isoformat())
     dispatch_day_digest_messages(
         context,
         query.message.chat_id,
@@ -558,9 +603,78 @@ def bot_day_digest(update: Update, context: CallbackContext) -> int:
     return SECOND
 
 
+def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    day_label, games = day_digest((date.today() - timedelta(days=1)).isoformat())
+    dispatch_day_digest_messages(
+        context,
+        query.message.chat_id,
+        day_label,
+        games,
+        attach_conv_nav_on_last=True,
+    )
+    return SECOND
+
+
+def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    back_kb = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "« Назад",
+                    callback_data=DIGEST_BACK_FROM_DATE_CALLBACK,
+                )
+            ]
+        ]
+    )
+    query.edit_message_text(
+        "Отправьте дату одним сообщением в формате <code>YYYY-MM-DD</code>.\n"
+        "/cancel — выход из меню.",
+        parse_mode="HTML",
+        reply_markup=back_kb,
+    )
+    return THIRD
+
+
+def bot_digest_custom_date(update: Update, context: CallbackContext) -> int:
+    raw = (update.message.text or "").strip()
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        update.message.reply_text(
+            "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel."
+        )
+        return THIRD
+    day_label, games = day_digest(raw)
+    dispatch_day_digest_messages(
+        context,
+        update.message.chat_id,
+        day_label,
+        games,
+        attach_conv_nav_on_last=True,
+    )
+    return SECOND
+
+
+def leaders_category_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Очки", callback_data="pl:pick:points"),
+                InlineKeyboardButton("Голы", callback_data="pl:pick:goals"),
+                InlineKeyboardButton("Передачи", callback_data="pl:pick:assists"),
+            ]
+        ]
+    )
+
+
 def leaderboard_nav_keyboard(
     kind: str, offset: int, has_prev: bool, has_next: bool
-) -> Optional[InlineKeyboardMarkup]:
+) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     if has_prev:
         prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
@@ -577,21 +691,10 @@ def leaderboard_nav_keyboard(
                 callback_data=f"pl:{kind}:{offset + LEADERBOARD_PAGE_SIZE}",
             )
         )
-    if not row:
-        return None
-    return InlineKeyboardMarkup([row])
-
-
-def leaders_category_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Очки", callback_data="pl:pick:points"),
-                InlineKeyboardButton("Голы", callback_data="pl:pick:goals"),
-                InlineKeyboardButton("Передачи", callback_data="pl:pick:assists"),
-            ]
-        ]
-    )
+    if row:
+        rows.append(row)
+    rows.extend(leaders_category_keyboard().inline_keyboard)
+    return InlineKeyboardMarkup(rows)
 
 
 def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
@@ -606,14 +709,11 @@ def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     text, hp, hn = stat_leaderboard_for_kind(kind, 0)
     markup = leaderboard_nav_keyboard(kind, 0, hp, hn)
     try:
-        if markup is None:
-            query.edit_message_text(text=text, parse_mode="MARKDOWN")
-        else:
-            query.edit_message_text(
-                text=text,
-                parse_mode="MARKDOWN",
-                reply_markup=markup,
-            )
+        query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -632,14 +732,11 @@ def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
     text, hp, hn = stat_leaderboard_for_kind(kind, offset)
     markup = leaderboard_nav_keyboard(kind, offset, hp, hn)
     try:
-        if markup is None:
-            query.edit_message_text(text=text, parse_mode="MARKDOWN")
-        else:
-            query.edit_message_text(
-                text=text,
-                parse_mode="MARKDOWN",
-                reply_markup=markup,
-            )
+        query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
