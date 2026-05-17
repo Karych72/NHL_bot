@@ -22,5 +22,5 @@ def build_menu(
     if header_buttons:
         menu.insert(0, header_buttons)
     if footer_buttons:
-        menu.append(footer_buttons)
+        menu.extend(footer_buttons)
     return menu

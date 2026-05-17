@@ -66,6 +66,12 @@ def assert_feature_parity(
     predict_df: pd.DataFrame,
     train_manifest: Sequence[Dict[str, str]],
 ) -> None:
+    """Check that manifest feature columns match this frame (order + dtypes).
+
+    Introduced for predict-vs-train schema checks; equivalently validates any dataset
+    (including train CSV read into ``pandas``): non-(key/label/service) columns must equal
+    the manifest list. Parameter names retain the predict/builder naming convention.
+    """
     train_columns = [item["name"] for item in train_manifest]
     predict_columns = feature_columns_from_df(predict_df)
     if predict_columns != train_columns:

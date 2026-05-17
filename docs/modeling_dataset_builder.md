@@ -9,6 +9,8 @@ This document describes the implemented dataset builder for NHL modeling in two 
 Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
 `python -m modeling.cli build-dataset ...`
 
+**Training (stage 1):** consuming built artifacts for model fitting is documented below under [Training input contract (stage 1)](#training-input-contract-stage-1) (`modeling/train_input.py`).
+
 ## Implemented Components
 
 - `modeling/cli.py`
@@ -52,6 +54,9 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Fail-fast quality validation.
   - Leakage checks and consistency checks.
   - Writes `data_quality_report.json`.
+
+- `modeling/train_input.py`
+  - Validates `dataset_train.csv` + `metadata_train.json` for training (manifest-ordered **X**, keys/labels/service aligned with `schema.py`).
 
 ## Anti-Leakage Contract
 
@@ -128,6 +133,40 @@ Validation only (no dataset file write):
 python -m modeling.cli build-dataset --mode train --validate-only
 ```
 
+## Training input contract (stage 1)
+
+Downstream training code should consume the same artifacts the builder writes:
+
+- `dataset_train.csv` — primary tabular format for v1 training (Parquet is not read by the loader until explicitly supported alongside CSV).
+- `metadata_train.json` — required companion file in the same output directory.
+
+**Mandatory metadata keys for the training loader** (must match builder output):
+
+- `feature_manifest` — ordered list of objects with at least `name` and `dtype`; defines the exact columns and order of **X**.
+- `features_hash` — must equal `schema.features_hash(...)` recomputed from manifest + rolling/policy/version fields below (fail-fast on mismatch).
+- `feature_set_version` — semantic tag; included in `features_hash`.
+
+**Additional keys required so `features_hash` can be validated** (same composition as `dataset_builder/base.py`):
+
+- `rolling_windows`
+- `cold_start_policy_predict`
+
+Any inconsistency between the CSV and the manifest (missing/extra feature columns, wrong feature column order for parity checks, dtype mismatch) raises a predictable error (`TrainSchemaError`). Unknown columns outside `KEY_COLUMNS ∪ LABEL_COLUMNS ∪ SERVICE_COLUMNS ∪ manifest names` also fail fast (`TrainSchemaError`). Invalid or incomplete metadata raises `TrainMetadataError`.
+
+The module `modeling/train_input.py` is the single entrypoint for validating that pair and splitting columns **without guessing features by name prefixes**: the feature matrix **X** uses exactly the ordered names from `feature_manifest`, matching `ordered_columns_for_output` semantics from `schema.py`. Keys, labels (`y_home_win`, `y_over_5_5`), and service columns follow `KEY_COLUMNS`, `LABEL_COLUMNS`, and `SERVICE_COLUMNS` in `modeling/dataset_builder/schema.py`.
+
+Public helpers:
+
+- `load_training_table(csv_path, metadata_path)` — fail-fast validation (`features_hash` recomputed like `dataset_builder/base.py`, dtypes checked via `assert_feature_parity`) and returns the full frame.
+- `load_training_table_split(...)` — returns `(X, keys, labels, service, metadata)` for pipelines.
+
+Example paths after `build-dataset --mode train --output-dir artifacts/datasets`:
+
+- `artifacts/datasets/dataset_train.csv`
+- `artifacts/datasets/metadata_train.json`
+
+Tests: `tests/test_modeling_train_input.py`.
+
 ## Tests Added
 
 File: `tests/test_modeling_dataset_build.py`
@@ -141,10 +180,15 @@ Implemented tests:
 - `test_features_hash_detects_cold_start_drift`
 - `test_validate_fails_on_nan_keys`
 
-Local run example:
+File: `tests/test_modeling_train_input.py`
+
+- Validates `modeling/train_input.py`: manifest-ordered `X`, keys/labels/service split, fail-fast on hash/metadata/schema mismatches.
+
+Local run examples:
 
 ```bash
 .venv/bin/python -m unittest tests.test_modeling_dataset_build -v
+.venv/bin/python -m unittest tests.test_modeling_train_input -v
 ```
 
 Current result: all tests pass.
