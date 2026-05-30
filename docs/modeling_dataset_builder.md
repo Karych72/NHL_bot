@@ -11,6 +11,8 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
 
 **Training (stage 1):** consuming built artifacts for model fitting is documented below under [Training input contract (stage 1)](#training-input-contract-stage-1) (`modeling/train_input.py`).
 
+**Training configuration (stage 2):** YAML config, metadata merge, and CLI flags — see [`modeling_training.md`](modeling_training.md).
+
 ## Implemented Components
 
 - `modeling/cli.py`

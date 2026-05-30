@@ -1,0 +1,64 @@
+random_seed: 42
+
+compute:
+  num_threads: 4
+  log_level: INFO
+
+tasks:
+  home_win:
+    enabled: true
+  over_5_5:
+    enabled: true
+
+split:
+  method: month
+  n_test_windows: 5
+  inner_val_games: 300
+  calibration_games: 300
+  holdout:
+    fraction: 0.15
+    date_range:
+      from: null
+      to: null
+
+models:
+  logreg:
+    grids:
+      C: [0.01, 0.1, 1.0, 10.0]
+  lgbm:
+    grids:
+      num_leaves: [15, 31, 63]
+      min_data_in_leaf: [20, 50, 100]
+      feature_fraction: [0.7, 0.9, 1.0]
+      bagging_fraction: [0.7, 0.9, 1.0]
+      lambda_l1: [0.0, 0.1, 1.0]
+      lambda_l2: [0.0, 0.1, 1.0]
+      learning_rate: [0.03, 0.05, 0.1]
+    monotone:
+      home_win:
+        diff_goal_diff_roll_mean_5: 1
+        diff_goal_diff_roll_mean_10: 1
+        diff_goal_diff_roll_mean_20: 1
+        diff_gf_roll_mean_5: 1
+        diff_gf_roll_mean_10: 1
+        diff_gf_roll_mean_20: 1
+        diff_ga_roll_mean_5: -1
+        diff_ga_roll_mean_10: -1
+        diff_ga_roll_mean_20: -1
+      over_5_5:
+        sum_gf_roll_mean_5: 1
+        sum_gf_roll_mean_10: 1
+        sum_gf_roll_mean_20: 1
+        sum_ga_roll_mean_5: 1
+        sum_ga_roll_mean_10: 1
+        sum_ga_roll_mean_20: 1
+
+calibration:
+  method: isotonic
+  min_samples: 500
+
+evaluation:
+  ece_bins: 10
+  bootstrap_samples: 1000
+  bootstrap_block_by_day: true
+  epsilon_clip: 1.0e-15

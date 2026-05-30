@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from modeling.dataset_builder import DatasetBuildConfig, build_dataset
+from modeling.config import (
+    ConfigError,
+    load_config,
+    load_metadata_json,
+    parse_override,
+    resolved_config_to_yaml,
+)
 
 
 def _parse_windows(raw: str) -> list[int]:
@@ -45,6 +52,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Raise when predict mode finds no games (default: allow empty predict aligned to train manifest)",
     )
+
+    train = sub.add_parser("train", help="Train classifiers (config resolution in stage 2)")
+    train.add_argument("--config", required=True, help="Path to training YAML config")
+    train.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override config value via dotted path; value parsed as YAML literal",
+    )
+    train.add_argument(
+        "--print-resolved-config",
+        action="store_true",
+        help="Print merged config to stdout and exit without training",
+    )
+    train.add_argument(
+        "--metadata",
+        default="artifacts/datasets/metadata_train.json",
+        help="Path to metadata_train.json for metadata truth merge (default: artifacts/datasets/metadata_train.json)",
+    )
     return parser
 
 
@@ -53,6 +80,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "build-dataset":
+        # Lazy import: train path must not require psycopg2 (see modeling/dataset_builder/__init__.py).
+        from modeling.dataset_builder import DatasetBuildConfig, build_dataset
+
         season_ids = [int(item.strip()) for item in args.season_ids.split(",") if item.strip()]
         cfg = DatasetBuildConfig(
             mode=args.mode,
@@ -73,6 +103,22 @@ def main() -> None:
         artifacts = build_dataset(cfg)
         for key, path in artifacts.items():
             print(f"{key}: {path}")
+        return
+
+    if args.command == "train":
+        try:
+            overrides = [parse_override(item) for item in args.set]
+            metadata = load_metadata_json(args.metadata)
+            resolved = load_config(args.config, overrides=overrides, metadata=metadata)
+        except ConfigError as exc:
+            print(f"config error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+
+        if args.print_resolved_config:
+            print(resolved_config_to_yaml(resolved), end="")
+            return
+
+        raise NotImplementedError("stage 10")
 
 
 if __name__ == "__main__":

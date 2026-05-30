@@ -21,6 +21,7 @@
 | [`architecture/`](architecture/) | Фаза 5 — архитектурные улучшения |
 | [`tests_and_documentation/`](tests_and_documentation/) | Фаза 6 — тесты и документация |
 | [`ux_and_content/`](ux_and_content/) | Фаза 7 — UX и контент; см. также [`html_parse_mode_polish_tz.md`](ux_and_content/html_parse_mode_polish_tz.md) (дожим HTML после ревью). |
+| [`classifier_modeling/`](classifier_modeling/) | Прематч-классификаторы NHL — этапы 1–7 [`nhl_classifier_modeling_plan_UPDATE.md`](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md); см. [`classifier_modeling/README.md`](classifier_modeling/README.md). |
 
 Фазы **4** в плане нет — отдельной папки нет.
 

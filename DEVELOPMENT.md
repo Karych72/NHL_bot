@@ -36,6 +36,7 @@
 ## Зависимости и изменения кода
 
 - Пакеты приложения — в `requirements.txt`; инструменты CI/линтера — в `requirements-dev.txt`, по необходимости с коротким комментарием «зачем».
+- **Зависимости моделирования** — отдельный файл `requirements-modeling.txt`: семь ML-пакетов этапа 3 (LightGBM, scikit-learn, matplotlib и др.) плюс `pydantic` v2 для `modeling/config.py` (этап 2). Установка: `make modeling-dev`. Они **не** входят в `requirements.txt`, **не** ставятся через `make setup` / `make run-bot` и **не** попадают в Docker-образ бота. CatBoost в v1 не используется (опционально — этап 15 UPDATE-плана). Подробнее: [`docs/modeling_training.md`](docs/modeling_training.md#dependencies).
 - Следуем стилю существующих модулей (импорты, имена, обработка ошибок) вместо разнобоя.
 - Большие бинарные артефакты и выгрузки данных не коммитить без явной договорённости (см. `.gitignore`).
 

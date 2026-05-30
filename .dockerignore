@@ -1,5 +1,7 @@
 .venv
 .ci_venv
+requirements-modeling.txt
+artifacts/
 __pycache__
 *.pyc
 .env

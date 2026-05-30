@@ -1,0 +1,14 @@
+# Offline modeling / training dependencies — NOT bot runtime. Install: make modeling-dev
+# Not copied into the bot Docker image (see DEVELOPMENT.md, docs/modeling_training.md).
+#
+# Stage 3 (executor TZ §2.1): seven ML/offline-train packages (numpy … joblib).
+# Stage 2 extension: pydantic v2 — required by modeling/config.py (YAML config validation);
+#   not in requirements.txt / Docker; co-installed here so make modeling-dev covers all modeling code.
+numpy==2.2.6
+pandas==2.2.3
+scikit-learn==1.6.1
+lightgbm==4.6.0
+matplotlib==3.10.1
+pyyaml==6.0.2
+joblib==1.4.2
+pydantic==2.10.6
