@@ -55,7 +55,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 import pandas as pd
 
-from modeling.dataset_builder.schema import (
+from modeling.feature_schema import (
     KEY_COLUMNS,
     LABEL_COLUMNS,
     SERVICE_COLUMNS,

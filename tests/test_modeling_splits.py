@@ -1,4 +1,4 @@
-"""Tests for modeling.splits walk-forward temporal splits (stage 4)."""
+"""Tests for modeling.splits walk-forward temporal splits (stage 11)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from modeling.config import ConfigError, HoldoutConfig, SplitConfig, SplitMethod
 from modeling.splits import SplitError, build_walk_forward_splits, validate_metadata_parity
+from tests._modeling_fixtures import synthetic_calendar_keys
 
 
 def _default_split_config(**overrides: object) -> SplitConfig:
@@ -24,21 +25,8 @@ def _default_split_config(**overrides: object) -> SplitConfig:
     return SplitConfig.model_validate(payload)
 
 
-def _synthetic_calendar_keys(
-    *,
-    start: str = "2018-10-01",
-    n_days: int = 1200,
-    games_per_day: int = 1,
-) -> pd.DataFrame:
-    """Two+ seasons of daily games; default one game per day for strict day gaps."""
-    days = pd.date_range(start=start, periods=n_days, freq="D")
-    rows: list[dict[str, object]] = []
-    game_id = 1
-    for day in days:
-        for _ in range(games_per_day):
-            rows.append({"day": day, "game_id": game_id})
-            game_id += 1
-    return pd.DataFrame(rows)
+def _synthetic_calendar_keys(**kwargs: object) -> pd.DataFrame:
+    return synthetic_calendar_keys(**kwargs)  # type: ignore[arg-type]
 
 
 def _game_ids_for(keys: pd.DataFrame) -> list[int]:

@@ -47,7 +47,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-bot-subscriptions season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local check-token verify-skater-schema test-skater-bot test-fast test-db all-tests lint typecheck ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-bot-subscriptions season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local check-token verify-skater-schema test-skater-bot test-fast test-db all-tests lint typecheck ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -63,6 +63,9 @@ setup-dev: setup
 
 modeling-dev: setup
 	$(PIP) install -r requirements-modeling.txt
+
+modeling-train: modeling-dev
+	$(PY) -m modeling.cli train --config configs/modeling_default.yaml
 
 env-example:
 	cp -n .env.example .env || true
