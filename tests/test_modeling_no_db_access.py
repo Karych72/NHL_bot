@@ -38,7 +38,7 @@ def collect_no_db_access_targets(root: Path = MODELING_ROOT) -> list[Path]:
     paths: set[Path] = set()
     for pattern in ("train_*.py",):
         paths.update(root.glob(pattern))
-    for name in ("calibrate.py", "splits.py", "metrics.py"):
+    for name in ("acceptance.py", "calibrate.py", "splits.py", "metrics.py"):
         paths.add(root / name)
     return sorted(paths)
 

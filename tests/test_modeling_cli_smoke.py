@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 import sys
@@ -25,8 +24,10 @@ from modeling.train_runner import (
     update_latest_symlink,
     validate_run_id_override,
 )
-from modeling.train_runner import _apply_task_baseline_gate, _TaskModelOutcome
+from modeling.acceptance import evaluate_baseline_gate, TaskModelHoldout
+from modeling.train_runner import _TaskModelOutcome
 from tests._modeling_fixtures import write_synthetic_train_dataset
+from tests.test_modeling_no_db_access import forbidden_imports_in_module
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
@@ -58,24 +59,6 @@ def _test_config_yaml() -> dict:
 def _cli_train(args: list[str]) -> subprocess.CompletedProcess[str]:
     cmd = [PY, "-m", "modeling.cli", "train", *args]
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
-
-
-def _forbidden_imports_in_module(path: Path) -> list[str]:
-    roots = frozenset({"psycopg2", "modeling.dataset_builder"})
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    hits: list[str] = []
-
-    def is_forbidden(module: str) -> bool:
-        return any(module == root or module.startswith(f"{root}.") for root in roots)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if is_forbidden(alias.name):
-                    hits.append(f"{path}:{node.lineno}: import {alias.name}")
-        elif isinstance(node, ast.ImportFrom) and node.module and is_forbidden(node.module):
-            hits.append(f"{path}:{node.lineno}: from {node.module} import ...")
-    return hits
 
 
 class TestRunIdResolution(unittest.TestCase):
@@ -154,27 +137,23 @@ class TestRunIdOverrideValidation(unittest.TestCase):
 
 
 class TestBaselineGate(unittest.TestCase):
-    def test_apply_task_baseline_gate_marks_failed(self) -> None:
-        result = RunResult(
-            run_id=VALID_RUN_ID,
-            task="home_win",
-            model="logreg",
-            status="ok",
-            exit_code=0,
-            reports_dir=Path("."),
-            model_run_dir=Path("."),
-            holdout_calibrated_log_loss=0.75,
+    def test_baseline_gate_marks_failed_when_not_strictly_better(self) -> None:
+        gate = evaluate_baseline_gate(
+            ["home_win"],
+            {
+                "home_win": [
+                    TaskModelHoldout(
+                        task="home_win",
+                        model="logreg",
+                        run_id=VALID_RUN_ID,
+                        reports_dir=Path("."),
+                        model_log_loss=0.75,
+                        trivial_log_loss=0.70,
+                    )
+                ]
+            },
         )
-        outcome = _TaskModelOutcome(
-            task="home_win",
-            model="logreg",
-            result=result,
-            holdout_calibrated_log_loss=0.75,
-            holdout_trivial_log_loss=0.70,
-        )
-        _apply_task_baseline_gate([outcome])
-        self.assertEqual(outcome.result.status, "failed_baseline_check")
-        self.assertEqual(outcome.result.exit_code, 1)
+        self.assertEqual(gate.status, "failed_baseline_check")
 
     def test_latest_symlink_skipped_on_failed_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -303,7 +282,7 @@ class TestCliTrainSmoke(unittest.TestCase):
 
     def test_cli_train_handler_ast_has_no_top_level_db_imports(self) -> None:
         """build-dataset uses lazy import inside its handler; train path must not."""
-        hits = _forbidden_imports_in_module(ROOT / "modeling" / "train_runner.py")
+        hits = forbidden_imports_in_module(ROOT / "modeling" / "train_runner.py")
         self.assertEqual(hits, [], msg=f"forbidden imports in train_runner.py: {hits}")
 
 

@@ -1,221 +1,45 @@
-# NHL Modeling Training Configuration
+# NHL Modeling Training
 
-This document describes the **training configuration** contract introduced in modeling stage 2. Training hyperparameters, split settings, model grids, calibration, and evaluation options live in a single YAML file validated by typed Python models in `modeling/config.py`.
+Practical guide to offline training of pre-match classifiers for NHL games: **`y_home_win`** (home team wins including OT/SO) and **`y_over_5_5`** (total goals over 5.5).
 
-Default config: [`configs/modeling_default.yaml`](../configs/modeling_default.yaml).
+**Source of truth for stages and acceptance criteria:** [`plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md).
 
-Training input (CSV + metadata) is documented in [`modeling_dataset_builder.md`](modeling_dataset_builder.md#training-input-contract-stage-1).
+**Where the training table comes from:** [`docs/modeling_dataset_builder.md`](modeling_dataset_builder.md) (`modeling/dataset_builder/`, CLI `build-dataset`). Training consumes only the built artifacts — **no PostgreSQL access** in the train path (`dataset_train.csv` + `metadata_train.json` via `modeling/train_input.py`).
 
-## Walk-forward temporal splits (stage 4)
+---
 
-Split geometry is implemented in [`modeling/splits.py`](../modeling/splits.py). Training stages 5–10 consume its output; the splitter does **not** train models or touch PostgreSQL.
+## 1. Installing dependencies
 
-### Timeline layout
-
-One outer window `k` (expanding train, fixed val/cal/test tail):
-
-```text
-[ train_k ... | inner_val_k | calibration_k | test_k ]    ...    [ holdout ]
-```
-
-- **Holdout** is cut **first** from the timeline tail (by day fraction or explicit date range) and is excluded from all walk-forward windows.
-- **`train_k`**: all rows strictly before `inner_val_k` (expanding window; train blocks may overlap across `k`).
-- **`inner_val_k`**, **`calibration_k`**, **`test_k`**: three consecutive, non-overlapping blocks immediately after `train_k`.
-- **Embargo is not used** — rolling features use `shift(1)`; see the module comment in `modeling/splits.py` and UPDATE plan stage 4.
-
-Index fields (`train_idx`, `inner_val_idx`, …) are **positional** indices into keys sorted by `(day, game_id)`.
-
-### Required YAML fields (`split.*`)
-
-| Field | Constraint | Notes |
-|-------|------------|-------|
-| `split.method` | `"month"` or `"fixed_games"` | Calendar month vs fixed game blocks for `test_k` |
-| `split.n_test_windows` | integer **≥ 5** | Outer evaluation windows (bootstrap stage 6 needs ≥ 5) |
-| `split.inner_val_games` | integer **≥ 300** | Inner validation / early stopping block |
-| `split.calibration_games` | integer **≥ 300** | Calibration block (stage 9) |
-| `split.holdout.fraction` | `0 < fraction < 0.5` | **Or** explicit `split.holdout.date_range.from` / `.to` (mutually exclusive with `fraction`) |
-| `split.outer_block_games` | required when `method=fixed_games` | Must be ≥ `inner_val_games + calibration_games + 1` |
-
-Default values live in [`configs/modeling_default.yaml`](../configs/modeling_default.yaml).
-
-Example:
-
-```python
-from modeling.config import load_config, load_metadata_json
-from modeling.splits import build_walk_forward_splits
-from modeling.train_input import load_training_table_split
-
-meta = load_metadata_json("artifacts/datasets/metadata_train.json")
-cfg = load_config("configs/modeling_default.yaml", metadata=meta)
-_, keys, _, _, _ = load_training_table_split(
-    "artifacts/datasets/dataset_train.csv",
-    "artifacts/datasets/metadata_train.json",
-)
-splits = build_walk_forward_splits(keys, cfg.split, metadata=meta)
-```
-
-Validation errors: `ConfigError` (config / metadata parity), `SplitError` (geometry / insufficient history).
-
-## Metrics and run report format (stage 5)
-
-Offline metric functions live in [`modeling/metrics.py`](../modeling/metrics.py) (`log_loss`, `brier`, `ece`, `reliability_table`, `team_breakdown`, `trivial_baseline`). Report assembly and file output live in [`modeling/report.py`](../modeling/report.py).
-
-Each training run writes:
-
-```text
-artifacts/reports/<run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
-```
-
-Fixed top-level keys in `metrics.json`: `run_id`, `task`, `model`, `features_hash`, `evaluation`, `folds`, `holdout`, `team_breakdown`. Each fold and the holdout block include `raw`, `calibrated` (or `null`), and `trivial_base_rate` (`log_loss`, `brier`, `p` — base rate from **train**, not test). Holdout also includes `reliability_path`.
-
-Run logging for reports uses `configure_run_logger(out_dir, level=...)` in `modeling/report.py` (UTC timestamps in `run.log`). Stage 10 CLI wires this together with `write_report()`.
-
-## Bootstrap confidence intervals (stage 6)
-
-Bootstrap CIs live in [`modeling/bootstrap.py`](../modeling/bootstrap.py). They call [`modeling/metrics.py`](../modeling/metrics.py) (`log_loss`, `brier`) via `metric_fns` so point estimates and resamples use the same formulas and `evaluation.epsilon_clip` clipping as stage 5.
-
-### Percentile 95% CI
-
-For each metric, draw `N = evaluation.bootstrap_samples` bootstrap replicates (default **1000**), compute the metric on each replicate, then:
-
-- `ci_low` = 2.5% quantile of replicates
-- `ci_high` = 97.5% quantile of replicates
-- `point` = metric on the original `(y_true, y_pred)` (no resample)
-
-v1 uses the **percentile method only** (no BCa, t-bootstrap, or normal approximation).
-
-### Resampling modes
-
-| Split | Mode | `block_by_day` |
-|-------|------|----------------|
-| Walk-forward `test_k` | i.i.d. resample matches with replacement (`idx = rng.integers(0, n, size=n)`) | `False` (caller responsibility) |
-| `holdout` | Block bootstrap by `day`: resample `D` whole days with replacement (`D` = number of unique days); all games from a chosen day stay together | `True` (YAML `evaluation.bootstrap_block_by_day`) |
-
-If `block_by_day=True` but fewer than two unique days exist, bootstrap raises `BootstrapError` (no silent fallback to i.i.d.).
-
-### Reproducibility and threads
-
-- **Seed:** `bootstrap.seed = random_seed` from YAML. One `numpy.random.Generator` per call; independent per-fold or per-metric seeds are forbidden. Global `np.random.seed` is never used.
-- **Threads:** `num_threads` defaults to **1** (sequential). When `compute.num_threads > 1`, resamples may run in parallel via `joblib` with `n_jobs=num_threads` only — never `os.cpu_count()` or env vars.
-
-Run metadata fields (also on each `BootstrapResult.to_dict()`): `bootstrap.N`, `bootstrap.block_by_day`, `bootstrap.seed`. Stage 10 CLI copies these into `metrics.json` / artifact `metadata.json`.
-
-**Serialization:** `BootstrapResult.to_dict()` is the API for run logging (dotted `bootstrap.*` keys). `dataclasses.asdict(result)` keeps Python field names (`n_resamples`, `block_by_day`, `seed`) — useful for tests and in-process use, not for the metadata contract.
-
-**Epsilon naming:** YAML `evaluation.epsilon_clip` maps to the `epsilon=` argument of `log_loss()` / `standard_metric_fns(epsilon=...)` in `modeling/metrics.py` (stage 5). Bootstrap does not re-clip probabilities; clipping stays inside the metric callables passed as `metric_fns`.
-
-## LightGBM training (stage 8)
-
-Primary classifiers live in [`modeling/train_lgbm.py`](../modeling/train_lgbm.py). Shared task labels, grid expansion, and monotone-constraint building are in [`modeling/train_common.py`](../modeling/train_common.py).
-
-### Fixed hyperparameters
-
-- `objective='binary'`, `metric='binary_logloss'`
-- Early stopping on **`inner_val_k`** only (not test/holdout/calibration)
-- `early_stopping_rounds` and `num_boost_round` are function parameters (wired from YAML in stage 10 CLI)
-- Full Cartesian product over `models.lgbm.grids.*` (`num_leaves`, `min_data_in_leaf`, `feature_fraction`, `bagging_fraction`, `lambda_l1`, `lambda_l2`, `learning_rate`)
-- Best config chosen by minimum `binary_logloss` on `inner_val_k`; tie-break = first grid point in YAML order
-- **No Optuna / Bayes search** in v1
-
-### Determinism
-
-All LightGBM seed fields (`seed`, `feature_fraction_seed`, `bagging_seed`, `data_random_seed`, `extra_seed`) are set to YAML `random_seed`. Also: `deterministic=True`, `force_row_wise=True`, `num_threads = compute.num_threads` (must be ≥ 1; never `-1` or `os.cpu_count()`).
-
-### Monotone constraints
-
-Signs are defined in YAML `models.lgbm.monotone.{home_win,over_5_5}` and mapped **by feature name** onto the positional order of `feature_manifest`:
-
-| Task | +1 | −1 |
-|------|----|----|
-| `home_win` | `diff_goal_diff_roll_mean_*`, `diff_gf_roll_mean_*` | `diff_ga_roll_mean_*` |
-| `over_5_5` | `sum_gf_roll_mean_*`, `sum_ga_roll_mean_*` | — |
-
-Patterns use `fnmatch` (exact names or `*` wildcards). Unmatched patterns raise `ConfigError` (fail-fast). Empty monotone spec → train without constraints (logged at INFO).
-
-Raw probabilities are returned without clipping; calibration is stage 9.
-
-## Probability calibration (stage 9)
-
-Post-hoc calibration lives in [`modeling/calibrate.py`](../modeling/calibrate.py). It is **model-family agnostic**: logreg and LGBM both produce raw probabilities on `calibration_k`, and the same calibrator API fits on those scores.
-
-### Two-step protocol (no leakage)
-
-1. **Raw classifier** (stages 7–8) is trained **only on `train_k`**. Stage 9 never retrains it.
-2. **Calibrator** is fit **only on `calibration_k`**: pairs `(raw_p_cal, y_cal)` — frozen raw-model probabilities on the calibration block and the corresponding labels.
-3. Evaluation on `test_k` and `holdout` uses the chain **raw → calibrator**.
-
-`sklearn.calibration.CalibratedClassifierCV` is **forbidden**: its internal cross-validation does not respect temporal order and cannot accept a `TimeSeriesSplit` for `method='isotonic'`. The project uses an explicit two-step pipeline instead.
-
-### Methods (`calibration.method`)
-
-| Method | Estimator | Notes |
-|--------|-----------|-------|
-| `isotonic` | `IsotonicRegression(out_of_bounds='clip')` | Monotonic; clips out-of-range inputs |
-| `platt` | `LogisticRegression` on **raw probability** `p.reshape(-1, 1)` | Not logit(p) — avoids instability near 0/1 |
-
-Unknown methods raise `CalibrationError` (no silent fallback).
-
-### Small calibration block (`calibration.min_samples`)
-
-When `|calibration_k| < calibration.min_samples` (default **500**):
-
-- `calibration_skipped=true` in metadata;
-- calibrator is an identity marker (`apply_calibrator` returns `raw_p` unchanged);
-- stage 5/10 report uses raw probabilities with an explicit skip flag.
-
-### Artifacts
-
-Per fold (stage 10 layout):
-
-```text
-artifacts/models/<task>/<model>/<run_id>/fold_<k>/
-    model_raw.joblib
-    calibrator.joblib
-    metadata.json
-```
-
-`metadata.json` includes `method`, `calibration_skipped`, `n_calibration`, slice date ranges, `seed`, `features_hash`, library versions, and `git_commit`.
-
-### Result format vs logreg (stage 10)
-
-Both trainers return a per-task dataclass with shared fields: `task`, `chosen_inner_val_log_loss`, `n_rows_train`, `n_rows_inner_val`. Grid diagnostics differ because logreg searches a 1-D `C` grid (`FitResult.inner_val_log_loss_by_C: dict[float, float]`) while LGBM searches a multi-dimensional grid (`LgbmFitResult.inner_val_log_loss_by_config: list[tuple[dict, float]]`). Stage 10 CLI must normalise these into a common logging/report shape; no shared dataclass is required at stage 8.
-
-## Dependencies
-
-Offline training uses [`requirements-modeling.txt`](../requirements-modeling.txt):
-
-- **Stage 3 (seven ML packages):** `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib` — all pinned with `==`.
-- **Stage 2 extension:** `pydantic` v2 — not in the stage-3 seven-pack list, but required by [`modeling/config.py`](../modeling/config.py) for YAML config validation; included here so `make modeling-dev` installs the full modeling stack (config + future train code), not bot runtime.
-
-Install after the base venv:
+Modeling dependencies are **separate from bot runtime**. They are not in `requirements.txt` and are not installed into the bot Docker image.
 
 ```bash
 make modeling-dev
 ```
 
-These packages are **not** in `requirements.txt`, are **not** installed by `make setup` / `make run-bot`, and are **not** included in the bot Docker image. **CatBoost** is out of scope for v1 (optional stage 15 in the UPDATE plan).
+This installs packages from [`requirements-modeling.txt`](../requirements-modeling.txt): `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib`, and `pydantic` (config validation in `modeling/config.py`).
 
-## Required YAML sections
+---
 
-The default YAML and validator require at least:
+## 2. Configuration
+
+Default config: [`configs/modeling_default.yaml`](../configs/modeling_default.yaml), validated by typed models in [`modeling/config.py`](../modeling/config.py).
+
+### Key YAML sections
 
 | Section | Purpose |
 |---------|---------|
-| `random_seed` | Single source for all subsystem seeds (derived in later stages) |
-| `compute.num_threads`, `compute.log_level` | Thread limit and logging level |
-| `tasks.home_win.enabled`, `tasks.over_5_5.enabled` | At least one task must be enabled |
-| `split.*` | Walk-forward method, window counts, holdout (`fraction` **or** `date_range`, mutually exclusive) |
-| `models.logreg.grids.C` | Logistic regression penalty grid |
-| `models.lgbm.grids.*` | LightGBM hyperparameter grid |
-| `models.lgbm.monotone.*` | Reference monotone signs by feature name (validated here; manifest check in stage 8) |
-| `calibration.method`, `calibration.min_samples` | Post-hoc calibration protocol |
+| `random_seed` | Single seed for all subsystems (training, bootstrap, LightGBM, Platt calibration) |
+| `compute.num_threads`, `compute.log_level` | Thread limit for sklearn/LightGBM and log level for `run.log` |
+| `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
+| `split.*` | Walk-forward geometry: method, `n_test_windows` (≥ 5), `inner_val_games`, `calibration_games`, holdout (`fraction` or `date_range`) |
+| `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
+| `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
+| `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
 
-Unknown keys at any modeled level raise `ConfigError` (`extra = forbid`).
+### Priority: YAML vs `metadata_train.json`
 
-## Priority: YAML vs `metadata_train.json`
-
-**Source of truth** for dataset identity fields:
+**Source of truth** for dataset identity:
 
 - `feature_set_version`
 - `rolling_windows`
@@ -223,136 +47,155 @@ Unknown keys at any modeled level raise `ConfigError` (`extra = forbid`).
 - `feature_manifest`
 - `cold_start_policy_predict`
 
-Rules:
+Rules (UPDATE plan cross-cutting requirements):
 
-1. Resolved training config **always** takes these values from `metadata_train.json`.
+1. Resolved config **always** takes these values from `metadata_train.json`.
 2. YAML may contain matching reference copies for human readability.
-3. If a reference field in YAML **differs** from metadata → `ConfigError` with a field-by-field diff (`value_yaml` vs `value_metadata`). No silent overrides.
+3. If a reference field in YAML **differs** from metadata → `ConfigError` with a field-by-field diff. **Fail-fast**, no silent override.
 4. If a reference field is absent in YAML → value from metadata is merged into the resolved config.
 
-Resolution happens in `modeling.config.resolve_config()` / `load_config()`.
-
-## CLI (`train` subcommand)
-
-Stage 10 implements full training orchestration in `modeling/train_runner.py`; `modeling/cli.py` stays a thin argparse wrapper.
-
-```bash
-python -m modeling.cli train --config configs/modeling_default.yaml
-make modeling-train
-```
-
-### Flags
+### CLI flags
 
 | Flag | Description |
 |------|-------------|
-| `--config <path.yaml>` | Training YAML (default: `configs/modeling_default.yaml`). |
-| `--set key=value` | Repeatable dotted-path override; value parsed as a YAML literal. |
-| `--task {home_win,over_5_5,both}` | Tasks to train (default: `both`; respects `tasks.*.enabled`). |
-| `--model {logreg,lgbm,both}` | Model families (default: `both`). |
-| `--run-id RUN_ID` | Override autogenerated `<run_id>` (tests / single `(task, model)` pair only). **Rejected** when `--task both` and/or `--model both` would produce more than one pair — use autogenerated ids or one pair at a time. |
-| `--dry-run` | Load data + build splits; print resolved config and **all block sizes** (`train/inner_val/calibration/test/holdout` per fold and final retrain); no training or artifacts. |
-| `--print-resolved-config` | Print merged YAML and exit 0 (no training). |
-| `--metadata <path>` | `metadata_train.json` for truth merge (default: `artifacts/datasets/metadata_train.json`). |
-| `--dataset <path>` | `dataset_train.csv` (default: `dataset_train.csv` next to `--metadata`). |
+| `--config <path.yaml>` | Training YAML (default: `configs/modeling_default.yaml`) |
+| `--set key=value` | Repeatable dotted-path override; value parsed as YAML literal |
+| `--print-resolved-config` | Print merged config and exit (no training) |
+| `--dry-run` | Load data, build splits, print resolved config and all block sizes; no training or artifacts |
+| `--task {home_win,over_5_5,both}` | Tasks to train (default: `both`; respects `tasks.*.enabled`) |
+| `--model {logreg,lgbm,both}` | Model families (default: `both`) |
+| `--run-id RUN_ID` | Override autogenerated `<run_id>` (single `(task, model)` pair only) |
+| `--metadata <path>` | Path to `metadata_train.json` (default: `artifacts/datasets/metadata_train.json`) |
+| `--dataset <path>` | Path to `dataset_train.csv` (default: next to `--metadata`) |
 
-`--task home_win` when `tasks.home_win.enabled=false` → `ConfigError` (non-zero exit), not a silent no-op.
-
-Dry-run example:
+Examples:
 
 ```bash
+python -m modeling.cli train --config configs/modeling_default.yaml --print-resolved-config
+
 python -m modeling.cli train \
   --config configs/modeling_default.yaml \
+  --set random_seed=123 \
   --dry-run
 ```
 
-### Run id format
+---
 
-Canonical run id (`modeling.config.build_run_id()` / `modeling.train_runner.resolve_run_id()`):
+## 3. Run id (`<run_id>`)
 
-```text
-<task>_<model>_<features_hash[:8]>_<YYYYmmddTHHMMSSZ>
-```
-
-Example: `home_win_lgbm_b334df68_20260530T143022Z`.
-
-All `(task, model)` pairs in one CLI invocation share the same UTC timestamp at start; only the `<task>_<model>_` prefix differs so artifacts never overwrite each other.
-
-### Artifact layout
-
-**Models** (walk-forward folds + production bundle):
+Every training run gets a canonical id shared by all artifacts and reports for that `(task, model)` pair:
 
 ```text
-artifacts/models/<task>/<model>/<run_id>/
-    fold_<k>/
-        model_raw.joblib
-        calibrator.joblib
-        metadata.json
-    final/
-        model.joblib          # model_final (raw classifier)
-        calibrator.joblib     # calibrator_final
-        metadata.json         # includes train/inner_val/calibration/holdout ranges;
-                              # test_days=null, n_rows_test=0 (no walk-forward test block);
-                              # library_versions.scikit-learn; bootstrap.{N,block_by_day,seed}; status
+<task>_<model>_<features_hash[:8]>_<utc_timestamp_YYYYmmddTHHMMSSZ>
 ```
 
-**Reports**:
+| Field | Meaning |
+|-------|---------|
+| `<task>` | `home_win` or `over_5_5` |
+| `<model>` | `logreg` or `lgbm` |
+| `<features_hash[:8]>` | First 8 hex characters of the dataset `features_hash` from `metadata_train.json` |
+| `<utc_timestamp_YYYYmmddTHHMMSSZ>` | UTC wall time at run start, e.g. `20260530T143022Z` |
+
+**Example:** `home_win_lgbm_b334df68_20260530T143022Z`
+
+Built by `modeling.config.build_run_id()`. All `(task, model)` pairs in one CLI invocation share the same UTC timestamp; only the `<task>_<model>_` prefix differs.
+
+Use `--run-id` to override (tests or a single pair only — rejected when `--task both` and/or `--model both` would produce multiple pairs).
+
+---
+
+## 4. Artifacts layout
+
+Matches the UPDATE plan file map. All paths are under repository root.
 
 ```text
-artifacts/reports/<run_id>/
-    metrics.json
-    summary.md
-    reliability_<task>.png
-    run.log
+artifacts/
+  models/
+    home_win/
+      lgbm/
+        <run_id>/
+          fold_<k>/
+          final/{model.joblib, calibrator.joblib, metadata.json}
+        latest -> <run_id>/final/
+      logreg/
+        <run_id>/...
+        latest -> <run_id>/final/
+    over_5_5/
+      ...
+  reports/
+    <run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
 ```
 
-After a successful run (`status: ok`), an atomic symlink update points:
+- **Walk-forward folds** — `artifacts/models/<task>/<model>/<run_id>/fold_<k>/` (per-fold raw model, calibrator, metadata).
+- **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final` after final retrain before holdout).
+- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated only when run status is `ok`.
+- **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
-```text
-artifacts/models/<task>/<model>/latest  →  <run_id>/final/
-```
+### `metadata.json` (final and fold artifacts)
 
-(relative target inside `artifacts/models/<task>/<model>/`). If symlinks are unsupported, `latest.txt` holds the relative path instead (logged at WARNING).
+Required fields include:
 
-When `status: failed_baseline_check`, **`latest` is not updated** — production must not reference a model that did not beat the trivial baseline.
+- `features_hash` — must match `metadata_train.json`
+- Date ranges for train / inner_val / calibration / test / holdout slices
+- Sample sizes per slice
+- Library versions (`sklearn`, `lightgbm`, `pandas`, `numpy`, …)
+- `git_commit` — short hash if `.git` exists, else `null`
+- `random_seed`
+- `<run_id>` (field `run_id`)
+- Bootstrap settings: `bootstrap.N`, `bootstrap.block_by_day`, `bootstrap.seed`
 
-### Final retrain before holdout
+Reproducibility: a single `random_seed` from YAML drives all stochastic subsystems; versions are logged at artifact write time.
 
-Holdout is never used for training, calibration, or hyperparameter selection.
+### Training input isolation
 
-1. **`calibration_final`** — last `split.calibration_games` rows in the walk-forward region (immediately before holdout).
-2. **`train_full`** — all walk-forward rows strictly before `calibration_final`.
-3. **`model_final`** — raw classifier fit on **`train_full`**; hyperparameters chosen on `train_hp` + `inner_val_final` inside `train_full` (same protocol as stages 7–8).
-4. **`calibrator_final`** — post-hoc calibrator on `calibration_final` using frozen `model_final` probabilities.
-5. Holdout metrics use the chain **`model_final → calibrator_final`** only.
+The `train` subcommand loads data only through `load_training_table_split()`. It must not import `psycopg2` or `modeling.dataset_builder.*`. The dataset builder is lazy-imported only for the separate `build-dataset` command.
 
-Trivial baseline base rate on holdout is computed from **`train_full`**, not from holdout.
+---
 
-### Baseline gate
+## 5. Full run example
 
-On holdout, if **no** trained model family for a task strictly improves calibrated log loss vs `trivial_base_rate`, the task run is marked `status: failed_baseline_check` in `summary.md` and `final/metadata.json`, and the CLI exits non-zero (for CI). When `status: ok`, `latest` is updated as above.
-
-### Full training example
+From a clean checkout with train artifacts already built (dataset step requires PostgreSQL; training does not):
 
 ```bash
+# 1. Modeling stack (once per venv)
 make modeling-dev
-python -m modeling.cli build-dataset --mode train   # separate step; requires DB
+
+# 2. Build train dataset (separate step; requires DB — see modeling_dataset_builder.md)
+python -m modeling.cli build-dataset --mode train
+
+# 3. Train all enabled tasks and model families
+python -m modeling.cli train --config configs/modeling_default.yaml
+# equivalent shortcut:
 make modeling-train
-# Inspect:
-#   artifacts/reports/<run_id>/summary.md
-#   artifacts/reports/<run_id>/reliability_<task>.png
-#   artifacts/models/<task>/<model>/latest/
 ```
 
-Train path isolation: `modeling/cli.py` lazy-imports `dataset_builder` only for `build-dataset`. `train` / `train_runner` load data only via `load_training_table_split()` — no `psycopg2`, no `modeling.dataset_builder.*`.
+After the run completes, inspect (replace `<run_id>`, `<task>` with actual values from CLI output or `summary.md`):
 
-Each full run writes `artifacts/reports/<run_id>/run.log` at `compute.log_level` via `configure_run_logger()` in `modeling/report.py` (UTC timestamps).
+```bash
+cat artifacts/reports/<run_id>/summary.md
+open artifacts/reports/<run_id>/reliability_<task>.png   # macOS; use your viewer on Linux
+ls -la artifacts/models/<task>/<model>/latest/
+```
 
-## Subsystem seeds
+**`status: failed_baseline_check`** — first line of `summary.md` when, on holdout, the best model family for a task does **not strictly improve** calibrated log loss vs the trivial constant predictor (`trivial_base_rate` computed from train base rate). Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
 
-All randomness in the train CLI path flows from YAML ``random_seed`` passed directly to splits consumers, logreg/LGBM training, calibration (Platt), and bootstrap — no independent or derived seeds on the CLI side.
+Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
-:meth:`modeling.config.ResolvedConfig.derive_seed` / :func:`modeling.config.derive_seed` remain available for future subsystems or tests; stages 6–10 train orchestration use ``random_seed`` as-is per UPDATE plan §3.
+---
 
-## Isolation from PostgreSQL
+## 6. Definition of Done (training run)
 
-Training configuration code must not import `psycopg2` or `modeling.dataset_builder.*`. The `train` CLI subcommand lazy-imports `dataset_builder` only in `build-dataset`, so `--print-resolved-config` and future training do not require PostgreSQL drivers. Training consumes only `dataset_train.csv` + `metadata_train.json` via `modeling/train_input.py`.
+Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md) (Diagnostics and acceptance):
+
+1. `python -m modeling.cli train --config configs/modeling_default.yaml` produces final models, walk-forward reports, and a holdout report with reliability PNG.
+2. Stage-11 modeling tests pass (`tests/test_modeling_*.py`).
+3. Holdout report for each task includes: log loss, Brier, ECE before and after calibration, block-bootstrap 95% CIs, trivial baseline row, reliability PNG, team error breakdown.
+4. Each artifact `metadata.json` contains `features_hash`, date ranges, sample sizes, library versions, `git_commit`/`null`, `random_seed`, `run_id`.
+5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run.
+6. On holdout, the best family must **strictly beat** `trivial_base_rate` log loss; otherwise `status: failed_baseline_check`.
+
+---
+
+## Further reading
+
+Deeper module-level notes (splits, metrics, bootstrap, calibration, acceptance) were consolidated here from implementation stages 2–12. For module entry points see [`modeling/cli.py`](../modeling/cli.py), [`modeling/train_runner.py`](../modeling/train_runner.py), and the UPDATE plan stage list.

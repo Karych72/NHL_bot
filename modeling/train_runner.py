@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import joblib
 import numpy as np
@@ -35,6 +35,11 @@ from modeling.calibrate import (
 )
 from modeling.config import ConfigError, ResolvedConfig, SplitConfig, build_run_id
 from modeling.metrics import brier, ece, log_loss, reliability_table, team_breakdown, trivial_baseline
+from modeling.acceptance import (
+    RunStatus,
+    apply_acceptance_to_training_outcomes,
+    apply_latest_symlink_check,
+)
 from modeling.report import compose_metrics_json, compose_summary_md, configure_run_logger, write_report
 from modeling.splits import OuterWindow, WalkForwardSplits, build_walk_forward_splits
 from modeling.train_common import build_monotone_constraints, expand_lgbm_grid, get_task_label
@@ -53,7 +58,6 @@ logger = logging.getLogger(__name__)
 
 TASK_NAMES: tuple[str, ...] = ("home_win", "over_5_5")
 MODEL_FAMILIES: tuple[str, ...] = ("logreg", "lgbm")
-RunStatus = Literal["ok", "failed_baseline_check"]
 
 LGBM_NUM_BOOST_ROUND = 500
 LGBM_EARLY_STOPPING_ROUNDS = 50
@@ -703,30 +707,6 @@ def _fit_final_raw_model(
     return final_booster, fit
 
 
-def _apply_task_baseline_gate(outcomes: list[_TaskModelOutcome]) -> None:
-    """Set ``failed_baseline_check`` when no model family beats trivial baseline."""
-    by_task: dict[str, list[_TaskModelOutcome]] = {}
-    for item in outcomes:
-        by_task.setdefault(item.task, []).append(item)
-
-    for task, items in by_task.items():
-        best_cal = min(item.holdout_calibrated_log_loss for item in items)
-        trivial = items[0].holdout_trivial_log_loss
-        task_ok = best_cal < trivial
-        for item in items:
-            if task_ok:
-                continue
-            item.result.status = "failed_baseline_check"
-            item.result.exit_code = 1
-            logger.warning(
-                "Task %s failed baseline gate: best calibrated holdout log_loss=%.6f "
-                ">= trivial=%.6f",
-                task,
-                best_cal,
-                trivial,
-            )
-
-
 def run_training(
     config: ResolvedConfig,
     *,
@@ -738,6 +718,7 @@ def run_training(
     dry_run: bool = False,
     artifacts_root: Path | None = None,
     run_start_utc: datetime | None = None,
+    fail_on_baseline: bool = True,
 ) -> list[RunResult]:
     """Execute walk-forward training for selected task × model pairs."""
     if dry_run:
@@ -931,6 +912,9 @@ def run_training(
                 ece_bins=config.evaluation.ece_bins,
                 reliability_path=f"reliability_{task_name}.png",
             )
+            holdout_block["bootstrap"] = {
+                name: result.to_dict() for name, result in holdout_bootstrap.items()
+            }
 
             team_bd = _team_breakdown_or_empty(
                 y_holdout,
@@ -1020,22 +1004,18 @@ def run_training(
             )
             results.append(result)
 
-    _apply_task_baseline_gate(outcomes)
+    # Acceptance phase 1 (artifacts + baseline); phase 2 (``latest`` symlink) runs below.
+    _combined, baseline, _artifacts = apply_acceptance_to_training_outcomes(
+        outcomes,
+        config=config,
+        enabled_tasks=tasks,
+        models=models,
+        artifacts_root=artifacts,
+    )
 
     for item in outcomes:
-        if item.result.status == "failed_baseline_check":
-            summary_path = item.result.reports_dir / "summary.md"
-            text = summary_path.read_text(encoding="utf-8")
-            text = text.replace("status: ok", f"status: {item.result.status}", 1)
-            summary_path.write_text(text, encoding="utf-8")
-            final_meta_path = item.result.model_run_dir / "final" / "metadata.json"
-            if final_meta_path.exists():
-                meta = json.loads(final_meta_path.read_text(encoding="utf-8"))
-                meta["status"] = item.result.status
-                final_meta_path.write_text(
-                    json.dumps(meta, ensure_ascii=False, sort_keys=True, indent=2),
-                    encoding="utf-8",
-                )
+        if not fail_on_baseline and item.result.status == "failed_baseline_check":
+            item.result.exit_code = 0
         update_latest_symlink(
             item.task,
             item.model,
@@ -1043,6 +1023,16 @@ def run_training(
             artifacts_root=artifacts,
             status=item.result.status,
         )
+
+    # Phase 2: symlinks exist only after update_latest_symlink for status=ok pairs.
+    apply_latest_symlink_check(
+        outcomes,
+        config=config,
+        enabled_tasks=tasks,
+        models=models,
+        artifacts_root=artifacts,
+        baseline=baseline,
+    )
 
     return results
 

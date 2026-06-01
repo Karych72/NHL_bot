@@ -1,7 +1,7 @@
 # ТЗ для ревьюера: этап 11 — тесты
 
 **Роль:** независимый reviewer.  
-**Источник:** `plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`, раздел «### 11. Тесты» **+ обязательно** раздел «Сквозные требования (читать перед каждым этапом)» (строка 16 UPDATE-плана).  
+**Источник:** [`plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`](../../../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md), раздел «### 11. Тесты», с учётом «## Сквозные требования (читать перед каждым этапом)».  
 **Пара ТЗ для исполнителя:** [`executor_tz.md`](executor_tz.md).
 
 Пути — от корня репозитория.

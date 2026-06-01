@@ -1,6 +1,6 @@
 # План: прематч-классификаторы NHL (победитель, тотал O/U 5.5)
 
-**Статус:** постановка и дизайн зафиксированы; **сборка датасета** (фичи, метки, анти-утечка) реализована в `modeling/dataset_builder/` — см. [docs/modeling_dataset_builder.md](../../docs/modeling_dataset_builder.md). **Обучение, сплиты, калибровка, отчёты** — по поэтапному плану в **[nhl_classifier_modeling_plan_UPDATE.md](nhl_classifier_modeling_plan_UPDATE.md)** (UPDATE).
+**Статус:** постановка и дизайн зафиксированы; **сборка датасета** реализована в `modeling/dataset_builder/` — см. [docs/modeling_dataset_builder.md](../../docs/modeling_dataset_builder.md); **контракт загрузки train-датасета** реализован в `modeling/train_input.py`. **Обучение, сплиты, калибровка, отчёты** — по [nhl_classifier_modeling_plan_UPDATE.md](nhl_classifier_modeling_plan_UPDATE.md) (UPDATE); практический гайд запуска — [docs/modeling_training.md](../../docs/modeling_training.md).
 
 **Цель документа:** зафиксировать контракт данных, каталог признаков, протокол обучения/валидации, выбор моделей, калибровку, метрики, структуру кода и критерии приёмки на уровне, достаточном для реализации без «додумывания» на месте.
 

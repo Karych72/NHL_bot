@@ -34,14 +34,17 @@ P_MINI = np.array([0.1, 0.9, 0.7, 0.2])
 EXPECTED_LOG_LOSS_MINI = float(
     np.mean(
         [
-            -math.log(0.9),
-            -math.log(0.9),
-            -math.log(0.7),
-            -math.log(0.8),
+            -math.log(0.9),  # y=0, p=0.1 → clip to 0.1
+            -math.log(0.9),  # y=1, p=0.9
+            -math.log(0.7),  # y=1, p=0.7
+            -math.log(0.8),  # y=0, p=0.2 → clip to 0.2
         ]
     )
 )
+# Brier = mean((y − p)²): (0.1² + 0.1² + 0.3² + 0.2²) / 4 = 0.15 / 4
 EXPECTED_BRIER_MINI = 0.0375
+# ECE (n_bins=10, equal-width): each sample alone in bins 1/2/7/9;
+# weighted |conf − acc| = 0.25 × (0.1 + 0.2 + 0.3 + 0.1) = 0.175
 EXPECTED_ECE_MINI = 0.175
 
 VALID_RUN_ID = "home_win_lgbm_b334df68_20260530T143022Z"

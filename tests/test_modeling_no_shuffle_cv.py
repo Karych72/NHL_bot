@@ -61,17 +61,43 @@ def find_shuffle_cv_violations(root: Path = MODELING_ROOT) -> list[str]:
     return violations
 
 
+def _violations_for_snippet(snippet: str, *, path: Path | None = None) -> list[str]:
+    tree = ast.parse(snippet)
+    visitor = _ShuffleCVVisitor(path or Path("fake.py"))
+    visitor.visit(tree)
+    return visitor.violations
+
+
 class TestNoShuffleCV(unittest.TestCase):
     def test_modeling_tree_has_no_forbidden_splitters(self) -> None:
         violations = find_shuffle_cv_violations()
         self.assertEqual(violations, [])
 
     def test_detector_catches_kfold_shuffle_true(self) -> None:
-        snippet = "from sklearn.model_selection import KFold\nKFold(shuffle=True)\n"
-        tree = ast.parse(snippet)
-        visitor = _ShuffleCVVisitor(Path("fake.py"))
-        visitor.visit(tree)
-        self.assertTrue(any("KFold" in item for item in visitor.violations))
+        violations = _violations_for_snippet(
+            "from sklearn.model_selection import KFold\nKFold(shuffle=True)\n"
+        )
+        self.assertTrue(any("KFold" in item for item in violations))
+
+    def test_detector_catches_stratified_kfold_shuffle_true(self) -> None:
+        violations = _violations_for_snippet(
+            "from sklearn.model_selection import StratifiedKFold\n"
+            "StratifiedKFold(shuffle=True)\n"
+        )
+        self.assertTrue(any("StratifiedKFold" in item for item in violations))
+
+    def test_detector_catches_shuffle_split(self) -> None:
+        violations = _violations_for_snippet(
+            "from sklearn.model_selection import ShuffleSplit\nShuffleSplit()\n"
+        )
+        self.assertTrue(any("ShuffleSplit" in item for item in violations))
+
+    def test_detector_catches_train_test_split_without_shuffle_false(self) -> None:
+        violations = _violations_for_snippet(
+            "from sklearn.model_selection import train_test_split\n"
+            "train_test_split(X, y)\n"
+        )
+        self.assertTrue(any("train_test_split" in item for item in violations))
 
 
 if __name__ == "__main__":

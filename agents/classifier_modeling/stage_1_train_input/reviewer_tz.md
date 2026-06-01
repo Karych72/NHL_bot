@@ -1,7 +1,7 @@
 # ТЗ для ревьюера: этап 1 — контракт входа для обучения
 
 **Роль:** независимый reviewer.  
-**Источник:** `plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`, этап 1.  
+**Источник:** [`plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`](../../../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md), раздел «### 1. Использование уже готового контракта входа», с учётом «## Сквозные требования (читать перед каждым этапом)».  
 **Пара ТЗ для исполнителя:** [`executor_tz.md`](executor_tz.md).
 
 Пути — от корня репозитория.

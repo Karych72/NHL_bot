@@ -101,6 +101,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         help="Path to dataset_train.csv (default: dataset_train.csv next to --metadata)",
     )
+    train.add_argument(
+        "--no-fail-on-baseline",
+        action="store_true",
+        help=(
+            "Do not return a non-zero exit code when status is failed_baseline_check "
+            "(status in summary.md is still recorded)"
+        ),
+    )
     return parser
 
 
@@ -166,6 +174,7 @@ def _handle_train(args: argparse.Namespace) -> int:
             task=args.task,
             model=args.model,
             run_id=args.run_id,
+            fail_on_baseline=not args.no_fail_on_baseline,
         )
     except (ConfigError, ValueError) as exc:
         print(f"training error: {exc}", file=sys.stderr)

@@ -1,7 +1,7 @@
 # ТЗ для исполнителя: этап 11 — тесты
 
 **Роль:** инженер-исполнитель.  
-**Источник требований:** `plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`, раздел «### 11. Тесты» **с обязательным учётом** раздела «Сквозные требования (читать перед каждым этапом)» (раздел перед списком этапов, строка 16 UPDATE-плана).  
+**Источник требований:** [`plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`](../../../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md), раздел «### 11. Тесты», с учётом «## Сквозные требования (читать перед каждым этапом)» того же документа.  
 **Пара ТЗ для ревью:** [`reviewer_tz.md`](reviewer_tz.md).  
 **Связанные ТЗ темы:**
 - [`../stage_4_splits/executor_tz.md`](../stage_4_splits/executor_tz.md) — `modeling/splits.py`, базовые версии `test_modeling_splits.py` и `test_modeling_no_shuffle_cv.py`;
