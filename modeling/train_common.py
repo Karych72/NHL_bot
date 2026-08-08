@@ -49,8 +49,6 @@ def get_task_label(labels, task: str) -> np.ndarray:
     Raises:
         ValueError: Unknown task or missing label column.
     """
-    import pandas as pd
-
     if task not in TASK_LABEL_MAP:
         raise ValueError(f"Unknown task {task!r}. Supported: {sorted(SUPPORTED_TASKS)}")
     col = TASK_LABEL_MAP[task]

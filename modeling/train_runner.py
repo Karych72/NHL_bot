@@ -311,7 +311,7 @@ def _metric_bundle(
     y_train_for_baseline: np.ndarray,
     epsilon: float,
     ece_bins: int,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
     raw = {
         "log_loss": log_loss(y_true, p_raw, epsilon=epsilon),
         "brier": brier(y_true, p_raw),

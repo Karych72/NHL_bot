@@ -92,7 +92,7 @@ class HoldoutDateRange(_ForbidExtraModel):
 
 class HoldoutConfig(_ForbidExtraModel):
     fraction: Optional[float] = None
-    date_range: HoldoutDateRange = Field(default_factory=HoldoutDateRange)
+    date_range: HoldoutDateRange = Field(default_factory=lambda: HoldoutDateRange.model_validate({}))
 
     @model_validator(mode="after")
     def _validate_holdout_mode(self) -> HoldoutConfig:

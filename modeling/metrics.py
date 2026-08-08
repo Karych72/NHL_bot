@@ -183,9 +183,12 @@ def team_breakdown(
         if n_games == 0:
             continue
         ll = log_loss(group["y"].to_numpy(), group["p"].to_numpy(), epsilon=epsilon)
+        assert isinstance(team_id, (np.integer, int)), (
+            f"team_id must be int-like, got {type(team_id).__name__}"
+        )
         rows.append(
             {
-                "team_id": int(team_id) if isinstance(team_id, (np.integer, int)) else team_id,
+                "team_id": int(team_id),
                 "n_games": n_games,
                 "log_loss": ll,
                 "log_loss_minus_overall": ll - overall,

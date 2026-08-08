@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import pandas as pd
 
@@ -54,7 +54,9 @@ def _sort_dict_keys(value: Any) -> Any:
 
 def _records_to_list(frame: pd.DataFrame | Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     if isinstance(frame, pd.DataFrame):
-        return frame.to_dict(orient="records")
+        # Columns are always str here (built from modeling.metrics DataFrames);
+        # pandas-stubs types to_dict() keys as Hashable in general.
+        return cast("list[dict[str, Any]]", frame.to_dict(orient="records"))
     return [dict(row) for row in frame]
 
 

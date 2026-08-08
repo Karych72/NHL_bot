@@ -18,7 +18,8 @@ from datetime import date, timedelta
 from typing import Any
 
 from telegram import Bot
-from telegram.error import Forbidden, RetryAfter, TelegramError
+# Forbidden не существует в PTB 13.15 (там Unauthorized); снять в Задаче 3c (переход на PTB 21.x)
+from telegram.error import Forbidden, RetryAfter, TelegramError  # type: ignore[attr-defined]
 
 # Запуск из каталога telegram_bot (как make bot).
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +77,7 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
     for chat_id in list_active_morning_digest_chat_ids():
         try:
             dispatch_day_digest_messages(
-                ctx,
+                ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (переход на PTB 21.x)
                 chat_id,
                 day_label,
                 games,
@@ -94,7 +95,7 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
             time.sleep(wait)
             try:
                 dispatch_day_digest_messages(
-                    ctx,
+                    ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (переход на PTB 21.x)
                     chat_id,
                     day_label,
                     games,

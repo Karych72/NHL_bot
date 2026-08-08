@@ -132,8 +132,9 @@ lint:
 typecheck:
 	@$(PY) -m mypy telegram_bot modeling pipeline
 
-# Same checks as GitHub Actions (no DB-backed tests).
-ci-local: lint typecheck
+# Same checks as GitHub Actions (no DB-backed tests). modeling-dev pulls in
+# requirements-modeling.txt so tests/test_modeling_*.py actually collect.
+ci-local: setup-dev modeling-dev lint typecheck
 	@$(PY) -m compileall -q telegram_bot modeling pipeline
 	@$(PY) -m pytest tests/ -q --ignore=tests/test_db_nhl.py
 
