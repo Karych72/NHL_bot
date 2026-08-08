@@ -3,6 +3,13 @@
 * Schema: set RUN_DB_SCHEMA_TESTS=1 (``make test-db`` does this) and reachable PG from config.
 * Data: set RUN_DB_DATA_TESTS=1 after loading (e.g. ``make season-sync-month``).
 
+Once RUN_DB_SCHEMA_TESTS is on, TestNhlSchema fails loudly (error/failure, not
+skip) on an unreachable server or a missing table — the caller asked for these
+checks, so "couldn't check" must not read as "passed" (see CLAUDE.md Global
+Constraint 4, падать громко). Only TestNhlLoadedData (opt-in via
+RUN_DB_DATA_TESTS, never run in CI) still skips on missing prerequisites, since
+that flag is a developer choosing to check loaded data, not a CI gate.
+
 Requires: psycopg2, .env or env vars PG_* matching the loader.
 """
 
@@ -76,10 +83,9 @@ def _pk_columns(cur, table: str):
 class TestNhlSchema(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        try:
-            cls.conn = _connect()
-        except Exception as exc:  # noqa: BLE001
-            raise unittest.SkipTest(f"PostgreSQL unavailable: {exc}") from exc
+        # RUN_DB_SCHEMA_TESTS was explicitly requested (see class decorator above),
+        # so an unreachable server is a hard error, not a skip.
+        cls.conn = _connect()
 
     @classmethod
     def tearDownClass(cls):
@@ -89,7 +95,7 @@ class TestNhlSchema(unittest.TestCase):
     def test_primary_keys(self):
         with self.conn.cursor() as cur:
             if not _base_table_exists(cur, "teams"):
-                self.skipTest("public.teams missing — run: make db-reset-local")
+                self.fail("public.teams missing — run: make db-reset-local (or check DDL)")
             pk = _pk_columns(cur, "teams")
             if not pk:
                 self.fail(
@@ -108,7 +114,7 @@ class TestNhlSchema(unittest.TestCase):
     def test_games_has_season_id(self):
         with self.conn.cursor() as cur:
             if not _base_table_exists(cur, "games"):
-                self.skipTest("public.games missing — run: make db-reset-local")
+                self.fail("public.games missing — run: make db-reset-local (or check DDL)")
             cur.execute(
                 """
                 SELECT format_type(a.atttypid, a.atttypmod)

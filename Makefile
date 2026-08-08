@@ -77,7 +77,7 @@ db-drop:
 
 db-tables:
 	@echo "=== Creating tables ==="
-	@for f in $(DDL_TABLES); do \
+	@set -e; for f in $(DDL_TABLES); do \
 		echo "  $$f"; \
 		$(PSQL) -v ON_ERROR_STOP=1 -f $$f; \
 	done
@@ -145,9 +145,9 @@ ci-local: setup-dev modeling-dev lint typecheck
 	@$(PY) -m pytest tests/ -q --ignore=tests/test_db_nhl.py
 
 db-functions:
-	@for f in $(FN_FILES); do \
+	@set -e; for f in $(FN_FILES); do \
 		echo "  $$f"; \
-		$(PSQL) -q -f $$f; \
+		$(PSQL) -v ON_ERROR_STOP=1 -q -f $$f; \
 	done
 	@echo "Functions synced."
 
