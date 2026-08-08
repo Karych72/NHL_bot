@@ -36,3 +36,43 @@ jobs:
 
       - name: Tests without PostgreSQL
         run: python -m pytest tests/ -q --ignore=tests/test_db_nhl.py
+
+  db-tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+          # Dev/CI-only: no loaded data, no secrets to protect (see docker-compose.yml).
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      PG_HOST: localhost
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies (venv via make setup)
+        run: make setup
+
+      - name: Apply DDL and SQL functions (DDL_TABLES, then queries) — same order as make db-init
+        run: make db-sync
+
+      - name: DB schema tests (tests/test_db_nhl.py)
+        run: make test-db
