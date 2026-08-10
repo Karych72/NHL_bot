@@ -246,18 +246,22 @@ def test_standalone_sa_renders_known_stat_with_close_only_footer(bot_module, mak
 # BadRequest("message is not modified") is swallowed; anything else re-raises
 # ---------------------------------------------------------------------------
 
+# All five handlers below render via the same (text, has_prev, has_next) shape;
+# only the handler under test and its callback_data/collaborator vary.
+_RENDER_RETURN = ("t", False, False)
+
 _BAD_REQUEST_CASES = [
-    ("callback_stats_player_page", "st:players_season_stats:points:0", "player_stat_leaderboard_page", ("t", False, False)),
-    ("callback_stats_team_page", "tm:procent_points:0", "team_stat_leaderboard_page", ("t", False, False)),
-    ("callback_standalone_sa", "sa:players_season_stats:points:0", "player_stat_leaderboard_page", ("t", False, False)),
-    ("callback_leaders_pick", "pl:pick:points", "stat_leaderboard_for_kind", ("t", False, False)),
-    ("callback_leaderboard_page", "pl:points:0", "stat_leaderboard_for_kind", ("t", False, False)),
+    ("callback_stats_player_page", "st:players_season_stats:points:0", "player_stat_leaderboard_page"),
+    ("callback_stats_team_page", "tm:procent_points:0", "team_stat_leaderboard_page"),
+    ("callback_standalone_sa", "sa:players_season_stats:points:0", "player_stat_leaderboard_page"),
+    ("callback_leaders_pick", "pl:pick:points", "stat_leaderboard_for_kind"),
+    ("callback_leaderboard_page", "pl:points:0", "stat_leaderboard_for_kind"),
 ]
 
 
-@pytest.mark.parametrize("handler_name, data, patched_func, patched_return", _BAD_REQUEST_CASES)
+@pytest.mark.parametrize("handler_name, data, patched_func", _BAD_REQUEST_CASES)
 def test_callback_swallows_message_not_modified(
-    bot_module, make_callback_update, fake_context, handler_name, data, patched_func, patched_return
+    bot_module, make_callback_update, fake_context, handler_name, data, patched_func
 ):
     stats_handlers = bot_module("stats_handlers")
     update = make_callback_update(data)
@@ -268,13 +272,17 @@ def test_callback_swallows_message_not_modified(
 
     update.callback_query.edit_message_text = raise_not_modified
 
-    with patch.object(stats_handlers, patched_func, return_value=patched_return):
+    with patch.object(stats_handlers, patched_func, return_value=_RENDER_RETURN):
         handler(update, fake_context)  # must not raise
 
+    # The handler ran its normal course up to the swallowed edit — it didn't
+    # bail out earlier (e.g. on a guard clause) before ever reaching it.
+    assert update.callback_query.answers == [None]
 
-@pytest.mark.parametrize("handler_name, data, patched_func, patched_return", _BAD_REQUEST_CASES)
+
+@pytest.mark.parametrize("handler_name, data, patched_func", _BAD_REQUEST_CASES)
 def test_callback_reraises_other_bad_request(
-    bot_module, make_callback_update, fake_context, handler_name, data, patched_func, patched_return
+    bot_module, make_callback_update, fake_context, handler_name, data, patched_func
 ):
     stats_handlers = bot_module("stats_handlers")
     update = make_callback_update(data)
@@ -285,7 +293,7 @@ def test_callback_reraises_other_bad_request(
 
     update.callback_query.edit_message_text = raise_other
 
-    with patch.object(stats_handlers, patched_func, return_value=patched_return):
+    with patch.object(stats_handlers, patched_func, return_value=_RENDER_RETURN):
         with pytest.raises(BadRequest, match="Chat not found"):
             handler(update, fake_context)
 
@@ -429,6 +437,7 @@ def test_leaderboard_page_ignores_unmatched_data(bot_module, make_callback_updat
         stats_handlers.callback_leaderboard_page(update, fake_context)
 
     mock_kind.assert_not_called()
+    assert update.callback_query.answers == []
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +633,10 @@ def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, make_me
 
     mock_digest.assert_called_once_with("2025-12-01")
     assert result == stats_handlers.SECOND
-    assert fake_context.bot.sent_messages  # dispatch_day_digest_messages ran for real
+    # dispatch_day_digest_messages ran for real (not mocked) — assert on what
+    # it actually sent, not just that something was sent.
+    assert fake_context.bot.sent_messages[0]["text"] == "text"
+    assert fake_context.bot.sent_messages[0]["chat_id"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -657,3 +669,17 @@ def test_tonight_game_callback_pattern_matches_only_well_formed_data(bot_module,
 def test_stat_page_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
     stats_handlers = bot_module("stats_handlers")
     assert bool(re.match(stats_handlers.STAT_PAGE_CALLBACK_PATTERN, data)) is expected
+
+
+@pytest.mark.parametrize(
+    "data, expected",
+    [
+        ("tm:procent_points:0", True),
+        ("tm:procent_points:-5", False),  # \d+ rejects a leading '-'
+        ("tm:procent_points", False),  # missing offset
+        ("tm:points; DROP TABLE teams;--:0", False),  # SQL-injection-shaped garbage
+    ],
+)
+def test_team_page_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
+    stats_handlers = bot_module("stats_handlers")
+    assert bool(re.match(stats_handlers.TEAM_PAGE_CALLBACK_PATTERN, data)) is expected

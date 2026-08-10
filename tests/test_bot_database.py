@@ -264,8 +264,10 @@ def test_close_pool_closes_and_clears_global_pool(fake_pool_class):
 
 
 def test_close_pool_is_a_no_op_when_no_pool_exists(fake_pool_class):
+    """fake_pool_class already guarantees _pool is None; the only thing this
+    test asserts is that close_pool() tolerates that (no AttributeError from
+    calling closeall() on None)."""
     database = fake_pool_class
-    assert database._pool is None
 
     database.close_pool()  # must not raise
 

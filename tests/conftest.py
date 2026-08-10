@@ -86,17 +86,17 @@ class FakeCursor:
 
 
 class FakeConnection:
-    """Stand-in for a psycopg2 connection: one cursor, tracks rollback()."""
+    """Stand-in for a psycopg2 connection: holds the one cursor fetch_all() gets
+    via ``.cursor()``. get_connection()'s own borrow/rollback/return contract
+    around the pool is a separate concern, tested directly in
+    tests/test_bot_database.py against a fake pool — this class only needs to
+    satisfy fetch_all()'s ``with get_connection() as conn: conn.cursor()``."""
 
     def __init__(self, cursor: FakeCursor) -> None:
         self._cursor = cursor
-        self.rollback_called = False
 
     def cursor(self) -> FakeCursor:
         return self._cursor
-
-    def rollback(self) -> None:
-        self.rollback_called = True
 
 
 @pytest.fixture
