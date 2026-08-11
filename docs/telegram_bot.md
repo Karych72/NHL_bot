@@ -160,6 +160,11 @@ make db-bot-subscriptions
 `attach_conv_nav_on_last=False`. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
 `PUSH_SEND_INTERVAL_SEC`, обработка `429` и блокировки бота — см. исходники скрипта.
 
+Это отдельный процесс из cron, а не задача внутри бота: скрипт поднимает свой
+`Application` (без polling и без `JobQueue`), рассылает и завершается, поэтому
+запускать его можно и при выключенном боте. Поведение закреплено в
+`tests/test_push_digest_job.py`.
+
 ```bash
 cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
 ```

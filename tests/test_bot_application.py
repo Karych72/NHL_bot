@@ -283,15 +283,13 @@ def test_main_starts_polling_on_application_built_from_config_token(
 # Асинхронность колбэков каркаса
 # ---------------------------------------------------------------------------
 
-def test_bot_and_script_bot_callbacks_are_coroutine_functions(bot_module, application) -> None:
-    """Всё, что перевела Задача 3a, обязано быть корутинами.
+def test_every_registered_callback_is_a_coroutine_function(bot_module, application) -> None:
+    """Все зарегистрированные колбэки обязаны быть корутинами.
 
     PTB 21 делает ``await callback(...)``, поэтому синхронный колбэк падает
-    в рантайме. Колбэки из ``stats_handlers`` здесь сознательно не проверяются:
-    их переводит Задача 3b.
+    в рантайме. Исключений больше нет: перевод ``bot.py``/``script_bot.py``
+    (Задача 3a) и ``stats_handlers.py`` (Задача 3b) завершён.
     """
-    migrated_modules = {"bot", "script_bot"}
-    checked = []
     conversation = application.handlers[0][0]
     registered = [
         *application.handlers[bot_module("bot").STANDALONE_GROUP],
@@ -302,14 +300,16 @@ def test_bot_and_script_bot_callbacks_are_coroutine_functions(bot_module, applic
     ]
     for handler in registered:
         callback = handler.callback
-        if callback.__module__ not in migrated_modules:
-            continue
-        checked.append(callback)
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
     # Страховка от «проверили пустой список»: 17 регистраций колбэков bot.py
     # (15 standalone-команд, cmd_cancel_outside_conversation в группе 0,
-    # cmd_cancel_in_conversation в fallbacks) и 15 регистраций script_bot.py
+    # cmd_cancel_in_conversation в fallbacks), 15 регистраций script_bot.py
     # (12 функций, из них stats, stats_root_edit и bot_digest_date_menu
-    # зарегистрированы дважды).
-    assert len(checked) == 32
+    # зарегистрированы дважды) и 42 регистрации stats_handlers.py.
+    assert len(registered) == 74
+    assert {h.callback.__module__ for h in registered} == {
+        "bot",
+        "script_bot",
+        "stats_handlers",
+    }

@@ -765,7 +765,9 @@ async def handle_goal_video(update: Update, context: CallbackContext) -> int:
 
     chat_id = query.message.chat.id
 
-    delivery = download_goal_video(game_id, event_id)
+    # В отдельном потоке: скачивание MP4 и два прохода ffmpeg блокируют
+    # единственный event loop бота до ~2 минут (см. video_replay).
+    delivery = await asyncio.to_thread(download_goal_video, game_id, event_id)
     if delivery is None:
         await context.bot.send_message(chat_id=chat_id, text="Видео пока недоступно.")
         return SECOND
