@@ -221,7 +221,7 @@ async def cmd_start(update: Update, context: CallbackContext) -> None:
         except (IndexError, ValueError):
             await message.reply_text(START_MESSAGE, parse_mode="HTML")
             return
-        send_game_card_message(context, message.chat_id, gid)
+        await send_game_card_message(context, message.chat_id, gid)
         return
     await message.reply_text(START_MESSAGE, parse_mode="HTML")
 
@@ -235,7 +235,7 @@ async def cmd_day_games(update: Update, context: CallbackContext) -> None:
     """`/day_games`: дайджест последнего игрового дня, который есть в базе."""
     message = _message(update)
     day_label, games = day_digest()
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
         message.chat_id,
         day_label,
@@ -281,7 +281,7 @@ async def cmd_today(update: Update, context: CallbackContext) -> None:
     """`/today`: дайджест за сегодняшнюю календарную дату."""
     message = _message(update)
     day_label, games = day_digest(date.today().isoformat())
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
         message.chat_id,
         day_label,
@@ -319,7 +319,7 @@ async def cmd_game(update: Update, context: CallbackContext) -> None:
     except ValueError:
         await message.reply_text("После `/game` укажите одно целое число.")
         return
-    send_game_card_message(context, message.chat_id, game_id)
+    await send_game_card_message(context, message.chat_id, game_id)
 
 
 async def cmd_advanced(update: Update, context: CallbackContext) -> None:

@@ -18,8 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from telegram import Bot
-# Forbidden не существует в PTB 13.15 (там Unauthorized); снять в Задаче 3c (переход на PTB 21.x)
-from telegram.error import Forbidden, RetryAfter, TelegramError  # type: ignore[attr-defined]
+from telegram.error import Forbidden, RetryAfter, TelegramError
 
 # Запуск из каталога telegram_bot (как make bot).
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -62,12 +61,13 @@ def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
 
 def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
     try:
-        bot.send_message(chat_id=chat_id, **kwargs)
+        # Bot API в 21.x асинхронный; снять ignore в Задаче 3c (перевод модуля на async)
+        bot.send_message(chat_id=chat_id, **kwargs)  # type: ignore[unused-coroutine]
     except RetryAfter as exc:
         wait = float(getattr(exc, "retry_after", 3))
         logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
         time.sleep(wait)
-        bot.send_message(chat_id=chat_id, **kwargs)
+        bot.send_message(chat_id=chat_id, **kwargs)  # type: ignore[unused-coroutine]
     time.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
@@ -76,8 +76,8 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
     ctx = _JobCtx(bot)
     for chat_id in list_active_morning_digest_chat_ids():
         try:
-            dispatch_day_digest_messages(
-                ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (переход на PTB 21.x)
+            dispatch_day_digest_messages(  # type: ignore[unused-coroutine]
+                ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (перевод модуля на async)
                 chat_id,
                 day_label,
                 games,
@@ -94,8 +94,8 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
             logger.warning("digest RetryAfter %ss chat_id=%s", wait, chat_id)
             time.sleep(wait)
             try:
-                dispatch_day_digest_messages(
-                    ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (переход на PTB 21.x)
+                dispatch_day_digest_messages(  # type: ignore[unused-coroutine]
+                    ctx,  # type: ignore[arg-type]  # снять в Задаче 3c (перевод модуля на async)
                     chat_id,
                     day_label,
                     games,

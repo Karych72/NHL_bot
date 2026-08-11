@@ -160,13 +160,13 @@ def _load_stats_handlers():
     return importlib.import_module("stats_handlers")
 
 
-class Phase2UxNavigationTest(unittest.TestCase):
-    def test_day_digest_single_game_sends_full_card_with_markup(self):
+class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_day_digest_single_game_sends_full_card_with_markup(self):
         stats_handlers = _load_stats_handlers()
         sent = []
 
         class FakeBot:
-            def send_message(self, **kwargs):
+            async def send_message(self, **kwargs):
                 sent.append(kwargs)
 
         class FakeContext:
@@ -179,7 +179,7 @@ class Phase2UxNavigationTest(unittest.TestCase):
                 [{"label": "Гол", "game_id": 1, "event_id": 2}],
             ),
         ]
-        stats_handlers.dispatch_day_digest_messages(
+        await stats_handlers.dispatch_day_digest_messages(
             FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
         )
         self.assertEqual(len(sent), 1)
@@ -187,13 +187,13 @@ class Phase2UxNavigationTest(unittest.TestCase):
         self.assertEqual(sent[0].get("parse_mode"), "HTML")
         self.assertIsNotNone(sent[0].get("reply_markup"))
 
-    def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
+    async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
         """Несколько матчей — одно сообщение-сводка и кнопки dg:<game_id>."""
         stats_handlers = _load_stats_handlers()
         sent = []
 
         class FakeBot:
-            def send_message(self, **kwargs):
+            async def send_message(self, **kwargs):
                 sent.append(kwargs)
 
         class FakeContext:
@@ -203,7 +203,7 @@ class Phase2UxNavigationTest(unittest.TestCase):
             (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
             (102, "<b>B C</b> 2:2\n", []),
         ]
-        stats_handlers.dispatch_day_digest_messages(
+        await stats_handlers.dispatch_day_digest_messages(
             FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
         )
         self.assertEqual(len(sent), 1)
@@ -216,19 +216,19 @@ class Phase2UxNavigationTest(unittest.TestCase):
         self.assertEqual(kb[-1][0].callback_data, str(ds.CHOOSE_STATS))
         self.assertEqual(kb[-1][1].callback_data, str(ds.END_CONVERSATION))
 
-    def test_day_digest_synthetic_message_only(self):
+    async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()
         sent = []
 
         class FakeBot:
-            def send_message(self, **kwargs):
+            async def send_message(self, **kwargs):
                 sent.append(kwargs)
 
         class FakeContext:
             bot = FakeBot()
 
         games = [(0, "Нет матчей", [])]
-        stats_handlers.dispatch_day_digest_messages(
+        await stats_handlers.dispatch_day_digest_messages(
             FakeContext(), chat_id=7, day_label="2025-01-01", games=games, attach_conv_nav_on_last=False
         )
         self.assertEqual(len(sent), 2)

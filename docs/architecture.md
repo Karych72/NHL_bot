@@ -214,6 +214,13 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `run_polling()`. Состав и порядок регистрации закреплены в `tests/test_bot_application.py`.
 Основной механизм диалога — `ConversationHandler` с состояниями FSM.
 
+Все колбэки в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
+вызовы Bot API идут под `await`: в 21.x PTB делает `await callback(update, context)`.
+`Optional`-поля `Update` (`update.message`, `update.callback_query`, `query.message`)
+распаковываются через `assert` там, где инвариант гарантирован типом хендлера;
+данные от пользователя (`query.data`) по-прежнему проверяются обычными гардами.
+Исключение — `push_digest_job.py`: модуль ещё синхронный, его перевод — отдельная задача.
+
 ### FSM (Finite State Machine)
 
 ```

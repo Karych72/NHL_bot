@@ -1,8 +1,8 @@
+import asyncio
 import html
 import logging
 import os
 import re
-import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -128,12 +128,13 @@ def conversation_team_stat_keyboard(
 def _make_paginated_player_stat_open_handler(table: str, column: str):
     title = PLAYER_STAT_TITLES[(table, column)]
 
-    def handler(update: Update, context: CallbackContext) -> int:
+    async def handler(update: Update, context: CallbackContext) -> int:
         query = update.callback_query
-        query.answer()
+        assert query is not None
+        await query.answer()
         text, hp, hn = player_stat_leaderboard_page(title, table, column, 0)
         markup = conversation_player_stat_keyboard(table, column, 0, hp, hn)
-        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
         return SECOND
 
     return handler
@@ -142,18 +143,19 @@ def _make_paginated_player_stat_open_handler(table: str, column: str):
 def _make_paginated_team_stat_open_handler(column: str):
     title = TEAM_STAT_TITLES[column]
 
-    def handler(update: Update, context: CallbackContext) -> int:
+    async def handler(update: Update, context: CallbackContext) -> int:
         query = update.callback_query
-        query.answer()
+        assert query is not None
+        await query.answer()
         text, hp, hn = team_stat_leaderboard_page(title, column, 0)
         markup = conversation_team_stat_keyboard(column, 0, hp, hn)
-        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
         return SECOND
 
     return handler
 
 
-def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
+async def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     if not query or not query.data:
         return SECOND
@@ -163,22 +165,22 @@ def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
     table, col, off_s = m.group(1), m.group(2), m.group(3)
     key = (table, col)
     if key not in PLAYER_STAT_TITLES:
-        query.answer()
+        await query.answer()
         return SECOND
     title = PLAYER_STAT_TITLES[key]
     offset = int(off_s)
-    query.answer()
+    await query.answer()
     text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
     markup = conversation_player_stat_keyboard(table, col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
     return SECOND
 
 
-def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
+async def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     if not query or not query.data:
         return SECOND
@@ -187,15 +189,15 @@ def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
         return SECOND
     col, off_s = m.group(1), m.group(2)
     if col not in TEAM_STAT_TITLES:
-        query.answer()
+        await query.answer()
         return SECOND
     title = TEAM_STAT_TITLES[col]
     offset = int(off_s)
-    query.answer()
+    await query.answer()
     text, hp, hn = team_stat_leaderboard_page(title, col, offset)
     markup = conversation_team_stat_keyboard(col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -234,30 +236,30 @@ def standalone_player_stat_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
+async def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
     if query.data == "sa:close":
-        query.answer()
-        query.edit_message_reply_markup(reply_markup=None)
+        await query.answer()
+        await query.edit_message_reply_markup(reply_markup=None)
         return
     m = re.match(r"^sa:([\w_]+):([\w_]+):(\d+)$", query.data)
     if not m:
-        query.answer()
+        await query.answer()
         return
     table, col, off_s = m.group(1), m.group(2), m.group(3)
     key = (table, col)
     if key not in PLAYER_STAT_TITLES:
-        query.answer()
+        await query.answer()
         return
     title = PLAYER_STAT_TITLES[key]
     offset = int(off_s)
-    query.answer()
+    await query.answer()
     text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
     markup = standalone_player_stat_keyboard(table, col, offset, hp, hn)
     try:
-        query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             raise
@@ -360,7 +362,7 @@ def _goal_video_buttons(goals_meta: List[Dict]) -> List[InlineKeyboardButton]:
     ]
 
 
-def send_game_card_message(
+async def send_game_card_message(
     context: CallbackContext,
     chat_id: int,
     game_id: int,
@@ -369,7 +371,7 @@ def send_game_card_message(
 ) -> None:
     """Полная карточка матча (текст + опционально клавиатура)."""
     if not game_exists(game_id):
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id,
             text="Такого матча нет в базе бота.",
             parse_mode="HTML",
@@ -383,12 +385,12 @@ def send_game_card_message(
         markup = InlineKeyboardMarkup(build_menu(gbtn, n_cols=1))
     else:
         markup = None
-    context.bot.send_message(
+    await context.bot.send_message(
         chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
     )
 
 
-def dispatch_day_digest_messages(
+async def dispatch_day_digest_messages(
     context: CallbackContext,
     chat_id: int,
     day_label: Optional[str],
@@ -399,9 +401,9 @@ def dispatch_day_digest_messages(
 ) -> None:
     """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота."""
 
-    def _pause() -> None:
+    async def _pause() -> None:
         if inter_message_sleep_sec is not None and inter_message_sleep_sec > 0:
-            time.sleep(inter_message_sleep_sec)
+            await asyncio.sleep(inter_message_sleep_sec)
 
     nav_buttons = [
         InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
@@ -416,19 +418,19 @@ def dispatch_day_digest_messages(
             InlineKeyboardMarkup([nav_buttons]) if attach_conv_nav_on_last else None
         )
         safe_text = html.escape(text) if text else ""
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id,
             text=safe_text,
             parse_mode="HTML",
             reply_markup=nav_markup,
         )
-        _pause()
+        await _pause()
         if not attach_conv_nav_on_last:
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=chat_id,
                 text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
-            _pause()
+            await _pause()
         return
 
     if len(real_games) == 1:
@@ -436,16 +438,16 @@ def dispatch_day_digest_messages(
         goal_buttons = _goal_video_buttons(goals_meta)
         buttons = goal_buttons + (nav_buttons if attach_conv_nav_on_last else [])
         markup = InlineKeyboardMarkup(build_menu(buttons, n_cols=1)) if buttons else None
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
         )
-        _pause()
+        await _pause()
         if not attach_conv_nav_on_last:
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=chat_id,
                 text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
             )
-            _pause()
+            await _pause()
         return
 
     day_str = day_label or "—"
@@ -468,28 +470,30 @@ def dispatch_day_digest_messages(
         rows.append(nav_buttons)
     markup = InlineKeyboardMarkup(rows)
 
-    context.bot.send_message(
+    await context.bot.send_message(
         chat_id=chat_id, text=summary_text, parse_mode="HTML", reply_markup=markup,
     )
-    _pause()
+    await _pause()
 
     if not attach_conv_nav_on_last:
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id,
             text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи из базы, /tonight — расписание NHL, /help — справка.",
         )
-        _pause()
+        await _pause()
 
 
-def callback_tonight_game(update: Update, context: CallbackContext) -> None:
+async def callback_tonight_game(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("tn:"):
         return
-    query.answer()
+    assert query.message is not None
+    chat_id = query.message.chat.id
+    await query.answer()
     parts = query.data.split(":", 3)
     if len(parts) != 4 or parts[0] != "tn":
-        context.bot.send_message(
-            chat_id=query.message.chat_id,
+        await context.bot.send_message(
+            chat_id=chat_id,
             text="Некорректная кнопка.",
         )
         return
@@ -497,53 +501,54 @@ def callback_tonight_game(update: Update, context: CallbackContext) -> None:
     try:
         game_id = int(gid_s)
     except ValueError:
-        context.bot.send_message(
-            chat_id=query.message.chat_id,
+        await context.bot.send_message(
+            chat_id=chat_id,
             text="Некорректная кнопка.",
         )
         return
-    chat_id = query.message.chat_id
     if game_exists(game_id):
-        send_game_card_message(context, chat_id, game_id)
+        await send_game_card_message(context, chat_id, game_id)
         return
     text = truncate_telegram_text(
         matchup_season_preview(away_a, home_a),
         footer_note="\n\n(Текст обрезан — лимит Telegram.)",
     )
-    context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 
-def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:
+async def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
-    if not query or not query.data.startswith(DIGEST_EXPAND_PREFIX):
+    if not query or not query.data or not query.data.startswith(DIGEST_EXPAND_PREFIX):
         return
-    query.answer()
+    assert query.message is not None
+    chat_id = query.message.chat.id
+    await query.answer()
     try:
         game_id = int(query.data.split(":", 1)[1])
     except (IndexError, ValueError):
-        context.bot.send_message(chat_id=query.message.chat_id, text="Некорректная ссылка на матч.")
+        await context.bot.send_message(chat_id=chat_id, text="Некорректная ссылка на матч.")
         return
-    send_game_card_message(context, query.message.chat_id, game_id)
+    await send_game_card_message(context, chat_id, game_id)
 
 
-def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
+async def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
-    if not query:
+    if not query or not query.data:
         return
     key = query.data.split(":", 1)[1]
     if key == "close":
-        query.answer()
-        query.edit_message_reply_markup(reply_markup=None)
+        await query.answer()
+        await query.edit_message_reply_markup(reply_markup=None)
         return
     pair = ADV_STANDALONE_TO_STAT.get(key) or SHOT_STANDALONE_TO_STAT.get(key)
     if not pair:
         return
     table, col = pair
-    query.answer()
+    await query.answer()
     title = PLAYER_STAT_TITLES[(table, col)]
     text, hp, hn = player_stat_leaderboard_page(title, table, col, 0)
     kb = standalone_player_stat_keyboard(table, col, 0, hp, hn)
-    query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
+    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
 
 
 def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
@@ -574,14 +579,15 @@ def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def bot_league_standings(update: Update, context: CallbackContext) -> int:
+async def bot_league_standings(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None and query.message is not None
+    await query.answer()
     markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("« Главное меню", callback_data=str(CHOOSE_STATS))]]
     )
-    context.bot.send_message(
-        chat_id=query.message.chat_id,
+    await context.bot.send_message(
+        chat_id=query.message.chat.id,
         text=team_table(),
         parse_mode="HTML",
         reply_markup=markup,
@@ -589,13 +595,14 @@ def bot_league_standings(update: Update, context: CallbackContext) -> int:
     return FIRST
 
 
-def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
+async def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None and query.message is not None
+    await query.answer()
     day_label, games = day_digest(date.today().isoformat())
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
-        query.message.chat_id,
+        query.message.chat.id,
         day_label,
         games,
         attach_conv_nav_on_last=True,
@@ -603,13 +610,14 @@ def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
     return SECOND
 
 
-def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> int:
+async def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None and query.message is not None
+    await query.answer()
     day_label, games = day_digest((date.today() - timedelta(days=1)).isoformat())
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
-        query.message.chat_id,
+        query.message.chat.id,
         day_label,
         games,
         attach_conv_nav_on_last=True,
@@ -617,9 +625,10 @@ def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> i
     return SECOND
 
 
-def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
+async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     back_kb = InlineKeyboardMarkup(
         [
             [
@@ -630,7 +639,7 @@ def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int
             ]
         ]
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         "Отправьте дату одним сообщением в формате <code>YYYY-MM-DD</code>.\n"
         "/cancel — выход из меню.",
         parse_mode="HTML",
@@ -639,19 +648,21 @@ def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int
     return THIRD
 
 
-def bot_digest_custom_date(update: Update, context: CallbackContext) -> int:
-    raw = (update.message.text or "").strip()
+async def bot_digest_custom_date(update: Update, context: CallbackContext) -> int:
+    message = update.message
+    assert message is not None
+    raw = (message.text or "").strip()
     try:
         datetime.strptime(raw, "%Y-%m-%d")
     except ValueError:
-        update.message.reply_text(
+        await message.reply_text(
             "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel."
         )
         return THIRD
     day_label, games = day_digest(raw)
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
-        update.message.chat_id,
+        message.chat_id,
         day_label,
         games,
         attach_conv_nav_on_last=True,
@@ -693,11 +704,11 @@ def leaderboard_nav_keyboard(
         )
     if row:
         rows.append(row)
-    rows.extend(leaders_category_keyboard().inline_keyboard)
+    rows.extend(list(row) for row in leaders_category_keyboard().inline_keyboard)
     return InlineKeyboardMarkup(rows)
 
 
-def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
+async def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
@@ -705,11 +716,11 @@ def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     if not m:
         return
     kind = m.group(1)
-    query.answer()
+    await query.answer()
     text, hp, hn = stat_leaderboard_for_kind(kind, 0)
     markup = leaderboard_nav_keyboard(kind, 0, hp, hn)
     try:
-        query.edit_message_text(
+        await query.edit_message_text(
             text=text,
             parse_mode="HTML",
             reply_markup=markup,
@@ -719,7 +730,7 @@ def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
             raise
 
 
-def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
+async def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
@@ -728,11 +739,11 @@ def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
         return
     kind, off_s = m.group(1), m.group(2)
     offset = int(off_s)
-    query.answer()
+    await query.answer()
     text, hp, hn = stat_leaderboard_for_kind(kind, offset)
     markup = leaderboard_nav_keyboard(kind, offset, hp, hn)
     try:
-        query.edit_message_text(
+        await query.edit_message_text(
             text=text,
             parse_mode="HTML",
             reply_markup=markup,
@@ -742,20 +753,21 @@ def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
             raise
 
 
-def handle_goal_video(update: Update, context: CallbackContext) -> int:
+async def handle_goal_video(update: Update, context: CallbackContext) -> int:
     """Download and send goal video when button is pressed."""
     query = update.callback_query
-    query.answer("Загружаю видео гола...")
+    assert query is not None and query.data is not None and query.message is not None
+    await query.answer("Загружаю видео гола...")
 
     parts = query.data.split(":")
     game_id = int(parts[1])
     event_id = int(parts[2])
 
-    chat_id = query.message.chat_id
+    chat_id = query.message.chat.id
 
     delivery = download_goal_video(game_id, event_id)
     if delivery is None:
-        context.bot.send_message(chat_id=chat_id, text="Видео пока недоступно.")
+        await context.bot.send_message(chat_id=chat_id, text="Видео пока недоступно.")
         return SECOND
 
     try:
@@ -769,15 +781,15 @@ def handle_goal_video(update: Update, context: CallbackContext) -> int:
         with open(delivery.path, "rb") as video_f:
             if delivery.thumb_path:
                 with open(delivery.thumb_path, "rb") as thumb_f:
-                    send_kw["thumb"] = thumb_f
-                    context.bot.send_video(
+                    send_kw["thumbnail"] = thumb_f
+                    await context.bot.send_video(
                         chat_id=chat_id, video=video_f, **send_kw
                     )
             else:
-                context.bot.send_video(chat_id=chat_id, video=video_f, **send_kw)
+                await context.bot.send_video(chat_id=chat_id, video=video_f, **send_kw)
     except Exception:
         logger.exception("Failed to send goal video")
-        context.bot.send_message(chat_id=chat_id, text="Ошибка при отправке видео.")
+        await context.bot.send_message(chat_id=chat_id, text="Ошибка при отправке видео.")
     finally:
         try:
             os.unlink(delivery.path)

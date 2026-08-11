@@ -124,16 +124,20 @@ def fake_db_connection(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeCur
 
 
 # ---------------------------------------------------------------------------
-# Fake Update / CallbackContext (PTB 13.15 shape)
+# Fake Update / CallbackContext (PTB 21.x shape)
 # ---------------------------------------------------------------------------
 #
 # Duck-typed stand-ins, not real `telegram.Update`/`telegram.CallbackQuery`
 # instances: handlers under test only ever touch `.callback_query`/`.message`
-# and a handful of their attributes and methods, and PTB 13's real objects
-# require constructing several unrelated nested objects (User, Chat, Message,
-# Bot...) just to satisfy __init__. Задача 3b (PTB 13 -> 21 migration) only
-# needs to adapt these classes in this one place, not every call site in
-# tests/test_bot_*.py.
+# and a handful of their attributes and methods, and the real objects require
+# constructing several unrelated nested objects (User, Chat, Message, Bot...)
+# just to satisfy __init__.
+#
+# Every Bot API method here is `async def`, mirroring PTB 21.x: handlers await
+# them, so a sync stand-in would blow up on `await`. Recording still happens
+# eagerly inside the coroutine body, so a call that is created but never
+# awaited records nothing — that is deliberate, it keeps a forgotten `await`
+# in a test visible instead of silently passing.
 
 class FakeBot:
     """Records outgoing calls instead of hitting api.telegram.org."""
@@ -142,11 +146,11 @@ class FakeBot:
         self.sent_messages: List[dict] = []
         self.sent_videos: List[dict] = []
 
-    def send_message(self, **kwargs: Any) -> SimpleNamespace:
+    async def send_message(self, **kwargs: Any) -> SimpleNamespace:
         self.sent_messages.append(kwargs)
         return SimpleNamespace(message_id=len(self.sent_messages))
 
-    def send_video(self, **kwargs: Any) -> SimpleNamespace:
+    async def send_video(self, **kwargs: Any) -> SimpleNamespace:
         self.sent_videos.append(kwargs)
         return SimpleNamespace(message_id=len(self.sent_videos))
 
@@ -156,18 +160,22 @@ class FakeCallbackQuery:
 
     def __init__(self, data: Optional[str], chat_id: int = 100) -> None:
         self.data = data
-        self.message = SimpleNamespace(chat_id=chat_id, message_id=1)
+        # PTB 21.x: CallbackQuery.message is a MaybeInaccessibleMessage, which
+        # carries `.chat` but no `.chat_id` — handlers read `message.chat.id`.
+        self.message = SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id), message_id=1
+        )
         self.answers: List[Optional[str]] = []
         self.edited_texts: List[dict] = []
         self.edited_markups: List[Any] = []
 
-    def answer(self, text: Optional[str] = None, **kwargs: Any) -> None:
+    async def answer(self, text: Optional[str] = None, **kwargs: Any) -> None:
         self.answers.append(text)
 
-    def edit_message_text(self, text: str, **kwargs: Any) -> None:
+    async def edit_message_text(self, text: str, **kwargs: Any) -> None:
         self.edited_texts.append({"text": text, **kwargs})
 
-    def edit_message_reply_markup(self, reply_markup: Any = None, **kwargs: Any) -> None:
+    async def edit_message_reply_markup(self, reply_markup: Any = None, **kwargs: Any) -> None:
         self.edited_markups.append(reply_markup)
 
 
@@ -179,7 +187,7 @@ class FakeMessage:
         self.chat_id = chat_id
         self.replies: List[dict] = []
 
-    def reply_text(self, text: str, **kwargs: Any) -> None:
+    async def reply_text(self, text: str, **kwargs: Any) -> None:
         self.replies.append({"text": text, **kwargs})
 
 
