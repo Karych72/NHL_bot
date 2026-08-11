@@ -55,11 +55,6 @@ def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
     return [int(row["game_id"][i]) for i in range(row["count_rows"])]
 
 
-async def _pause_between_sends() -> None:
-    """Пауза между отправками: Telegram лимитирует бота ~30 сообщениями в секунду."""
-    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
-
-
 async def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
     """Отправляет одно сообщение и выдерживает паузу до следующего.
 
@@ -77,7 +72,8 @@ async def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
         logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
         await asyncio.sleep(wait)
         await bot.send_message(chat_id=chat_id, **kwargs)
-    await _pause_between_sends()
+    # Telegram лимитирует бота ~30 сообщениями в секунду.
+    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
 async def run_morning_digest_broadcast(context: CallbackContext) -> None:
@@ -125,7 +121,8 @@ async def run_morning_digest_broadcast(context: CallbackContext) -> None:
                 )
         except TelegramError as exc:
             logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
-        await _pause_between_sends()
+        # Telegram лимитирует бота ~30 сообщениями в секунду.
+        await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
 async def run_team_scores_broadcast(context: CallbackContext) -> None:

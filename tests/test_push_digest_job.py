@@ -15,10 +15,15 @@ from unittest.mock import patch
 
 import pytest
 from telegram.error import Forbidden, RetryAfter
+from telegram.ext import Application
+from telegram.warnings import PTBUserWarning
 
 # Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
 # а следом, при attach_conv_nav_on_last=False, подсказку «Ещё: …».
 ONE_GAME_DAY = ("2026-01-15", [(2026020001, "<b>BOS 3 : 2 TOR</b>", [])])
+
+# Синтаксически валидный, но заведомо несуществующий токен: никуда не ходим.
+FAKE_TOKEN = "123456789:TEST-TOKEN-NOT-A-REAL-SECRET"
 
 
 @pytest.fixture
@@ -196,3 +201,54 @@ async def test_main_does_nothing_while_enable_push_digest_is_off(
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
     await push_job.main()
+
+
+@pytest.mark.asyncio
+async def test_main_runs_both_broadcasts_on_a_context_bound_to_its_application(
+    push_job, bot_module, monkeypatch
+):
+    """Обвязка ``main()``: builder → ``Application`` → ``CallbackContext``.
+
+    ``Application`` собирается настоящий, подменены только ``initialize`` /
+    ``shutdown``: единственный сетевой шаг PTB — ``get_me()`` внутри
+    ``initialize()`` — так не выполняется, и тест не ходит в api.telegram.org.
+    """
+    config = bot_module("config")
+    monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
+    monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", True)
+
+    steps = []
+
+    async def fake_initialize(self):
+        steps.append("initialize")
+
+    async def fake_shutdown(self):
+        steps.append("shutdown")
+
+    monkeypatch.setattr(Application, "initialize", fake_initialize)
+    monkeypatch.setattr(Application, "shutdown", fake_shutdown)
+
+    contexts = []
+
+    async def record(context):
+        steps.append("broadcast")
+        contexts.append(context)
+
+    monkeypatch.setattr(push_job, "run_morning_digest_broadcast", record)
+    monkeypatch.setattr(push_job, "run_team_scores_broadcast", record)
+
+    await push_job.main()
+
+    # Рассылки идут строго между initialize и shutdown — иначе HTTP-клиент бота
+    # либо не поднят, либо уже погашен.
+    assert steps == ["initialize", "broadcast", "broadcast", "shutdown"]
+
+    morning_context, team_context = contexts
+    application = morning_context.application
+    assert team_context.application is application
+    assert morning_context.bot is application.bot
+    assert application.bot.token == FAKE_TOKEN
+    # Скрипт ничего не принимает и ничего не планирует.
+    assert application.updater is None
+    with pytest.warns(PTBUserWarning, match="No `JobQueue` set up"):
+        assert application.job_queue is None
