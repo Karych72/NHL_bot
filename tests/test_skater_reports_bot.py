@@ -48,7 +48,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
         ]
         for title, table, col in cases:
             with self.subTest(table=table, column=col):
-                with patch.object(bot_messages, "fetch_all", return_value=fake_rows) as mock_fetch:
+                with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows) as mock_fetch:
                     text = bot_messages.player_stats(title, table, col)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
@@ -126,7 +126,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
                 return max_day_row
             return standings_row
 
-        with patch.object(bot_messages, "fetch_all", side_effect=fake_fetch):
+        with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
             text = bot_messages.team_table()
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
@@ -143,7 +143,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "team": ["WSH"],
             "count_rows": 1,
         }
-        with patch.object(bot_messages, "fetch_all", return_value=fake_rows):
+        with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows):
             text, has_prev, has_next = bot_messages.stat_leaderboard_for_kind(
                 bot_messages.LEADERBOARD_KIND_POINTS, 0
             )

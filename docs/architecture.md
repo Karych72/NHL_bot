@@ -307,7 +307,7 @@ bot.py
   │       │                  team_table(), team_stats(), game_message()
   │       │
   │       ├── database.py    Пул (SimpleConnectionPool 1–5 conn),
-  │       │                  get_connection(), fetch_all(),
+  │       │                  get_connection(), fetch_all(), cached_fetch_all(),
   │       │                  whitelist-валидация (ALLOWED_TABLES, ALLOWED_COLUMNS)
   │       │
   │       └── template_funcs.py   read_template() + output_text()
@@ -361,6 +361,14 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 ```
 
 Возвращает словарь, где ключи — имена колонок, значения — списки значений. Добавляется ключ `count_rows` с количеством строк.
+
+### TTL-кэш `cached_fetch_all()`
+
+`ttl_cache()` — декоратор-мемоизатор поверх `fetch_all()` (`CACHED_FETCH_ALL_TTL_SECONDS`,
+5 минут); `cached_fetch_all = ttl_cache(fetch_all)` лежит рядом в `database.py`. На него
+переведены только вызовы справочников/таблиц/лидеров в `bot_messages.py` (команда,
+таблица очков, лидерборды, форма команды), которые меняются раз в загрузку данных;
+данные идущей игры (`game_message()`, `day_digest()`) остаются на обычном `fetch_all()`.
 
 ---
 

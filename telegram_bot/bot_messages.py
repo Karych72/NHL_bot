@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from psycopg2 import sql
 
 import config
-from database import fetch_all, validate_table, validate_column
+from database import cached_fetch_all, fetch_all, validate_table, validate_column
 from template_funcs import output_text
 
 # Telegram message text limit (UTF-16 length can differ; stay under safe byte-ish budget)
@@ -289,7 +289,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
 
 
 def game_exists(game_id: int) -> bool:
-    row = fetch_all(
+    row = cached_fetch_all(
         "SELECT 1 AS o FROM games WHERE game_id = %s LIMIT 1",
         (game_id,),
         columns=["o"],
@@ -324,7 +324,7 @@ def _fmt_pct_stat(val: Union[int, float, None]) -> str:
 
 
 def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
-    row = fetch_all(
+    row = cached_fetch_all(
         "SELECT team_id FROM teams WHERE season_id = %s "
         "AND upper(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1",
         (config.SEASON_ID, abbrev_u),
@@ -337,7 +337,7 @@ def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
 
 def _last_n_form_record(team_id: int, n: int = 5) -> str:
     """Формат W-L-OTL по последним n завершённым играм (как в таблице очков)."""
-    row = fetch_all(
+    row = cached_fetch_all(
         "SELECT winner_id, home_team_id, away_team_id, is_overtime, is_shootouts "
         "FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
@@ -385,7 +385,7 @@ def _h2h_season_wins(
     tid_a: int, tid_b: int, abbrev_a: str, abbrev_b: str
 ) -> Optional[str]:
     """Строка «побед в личных встречах» или None, если матчей не было."""
-    row = fetch_all(
+    row = cached_fetch_all(
         "SELECT winner_id FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND ((home_team_id = %s AND away_team_id = %s) "
         "     OR (home_team_id = %s AND away_team_id = %s))",
@@ -421,7 +421,7 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
     esc_h = html.escape(home_abbr)
     season_esc = html.escape(str(config.CURRENT_SEASON))
 
-    stats = fetch_all(
+    stats = cached_fetch_all(
         "SELECT upper(trim(COALESCE(t.abbreviation, ''))) AS abbr, ts.games_played, ts.wins, ts.losses, ts.ot, "
         "ts.points, ts.procent_points, ts.goals_per_game, ts.goals_against_per_game, "
         "ts.power_play_percentage, ts.penalty_kill_percentage, "
@@ -612,7 +612,7 @@ def player_stats_with_count(
         join_pss=join_pss,
         second_col=second_col,
     )
-    stats = fetch_all(
+    stats = cached_fetch_all(
         q, (config.SEASON_ID, count, offset),
         ['lastname', 'roster_position', 'points', 'team'],
     )
@@ -753,7 +753,7 @@ def stat_leaderboard_for_kind(kind: str, offset: int) -> Tuple[str, bool, bool]:
 
 
 def _standings_as_of_day() -> str:
-    row = fetch_all(
+    row = cached_fetch_all(
         "SELECT max(day)::text AS d FROM games WHERE season_id = %s",
         (config.SEASON_ID,),
         columns=["d"],
@@ -907,7 +907,7 @@ def _build_standings_table_body(
 
 
 def team_table() -> str:
-    stats = fetch_all(
+    stats = cached_fetch_all(
         "SELECT short_name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "
         "FROM teams_stats ts "
@@ -943,7 +943,7 @@ def team_table() -> str:
 
 def season_team_abbrev_help_text() -> str:
     """Краткий список аббревиатур команд текущего сезона для /team."""
-    stats = fetch_all(
+    stats = cached_fetch_all(
         "SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation), ''), short_name)) AS ab "
         "FROM teams WHERE season_id = %s ORDER BY ab",
         (config.SEASON_ID,),
@@ -995,7 +995,7 @@ def team_stats_with_count(
         "ORDER BY {col} DESC NULLS LAST, short_name "
         "LIMIT %s OFFSET %s"
     ).format(col=sql.Identifier(column_name))
-    stats = fetch_all(
+    stats = cached_fetch_all(
         q,
         (config.SEASON_ID, count, offset),
         columns=['team', 'points', 'games_played'],

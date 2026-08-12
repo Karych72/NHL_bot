@@ -5,6 +5,7 @@ get_connection() are both replaced with fakes at their respective boundaries.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -126,6 +127,146 @@ def test_fetch_all_without_columns_returns_only_count_rows(bot_module, fake_db_c
     result = database.fetch_all("SELECT 1")
 
     assert result == {"count_rows": 3}
+
+
+# ---------------------------------------------------------------------------
+# cached_fetch_all — ttl_cache() memoization around fetch_all
+# ---------------------------------------------------------------------------
+#
+# database.cached_fetch_all is built once at import time
+# (``cached_fetch_all = ttl_cache(fetch_all)``), and module imports are cached
+# in sys.modules — so its internal cache dict would otherwise leak state
+# between tests (and between test files) that happen to reuse the same query
+# text. `cleared_cache` resets it before and after each test, the same way
+# `fake_pool_class` below resets `database._pool`.
+
+@pytest.fixture
+def cleared_cache(bot_module):
+    database = bot_module("database")
+    database.cached_fetch_all._cache.clear()
+    yield database
+    database.cached_fetch_all._cache.clear()
+
+
+def test_cached_fetch_all_reuses_result_within_ttl_without_hitting_db(cleared_cache, fake_db_connection):
+    database = cleared_cache
+    cursor = fake_db_connection(database, rows=[(1, "Ovechkin")])
+
+    first = database.cached_fetch_all("SELECT id, name FROM x", (), columns=["id", "name"])
+    second = database.cached_fetch_all("SELECT id, name FROM x", (), columns=["id", "name"])
+
+    assert len(cursor.executed) == 1, "second call within TTL must not reach the DB"
+    assert first == second == {"id": [1], "name": ["Ovechkin"], "count_rows": 1}
+
+
+def test_cached_fetch_all_hits_db_again_after_ttl_expires(cleared_cache, fake_db_connection, monkeypatch):
+    database = cleared_cache
+    cursor = fake_db_connection(database, rows=[(1,)])
+    clock = {"now": 0.0}
+    monkeypatch.setattr(database.time, "monotonic", lambda: clock["now"])
+
+    database.cached_fetch_all("SELECT 1", (), columns=["x"])
+    clock["now"] += database.CACHED_FETCH_ALL_TTL_SECONDS + 1.0
+    database.cached_fetch_all("SELECT 1", (), columns=["x"])
+
+    assert len(cursor.executed) == 2, "call after TTL expiry must reach the DB again"
+
+
+def test_cached_fetch_all_distinguishes_different_params(cleared_cache, fake_db_connection):
+    database = cleared_cache
+    cursor = fake_db_connection(database, rows=[(1,)])
+
+    database.cached_fetch_all("SELECT 1 FROM teams WHERE team_id = %s", (1,), columns=["x"])
+    database.cached_fetch_all("SELECT 1 FROM teams WHERE team_id = %s", (2,), columns=["x"])
+
+    assert len(cursor.executed) == 2, "different params must be different cache entries"
+
+
+def test_cached_fetch_all_distinguishes_different_query_text(cleared_cache, fake_db_connection):
+    database = cleared_cache
+    cursor = fake_db_connection(database, rows=[(1,)])
+
+    database.cached_fetch_all("SELECT 1 FROM teams", (), columns=["x"])
+    database.cached_fetch_all("SELECT 1 FROM rosters", (), columns=["x"])
+
+    assert len(cursor.executed) == 2, "different query text must be different cache entries"
+
+
+def test_cached_fetch_all_distinguishes_different_composable_queries_by_content(cleared_cache, fake_db_connection):
+    """Composable's default identity (id()) would make every call a cache miss
+    (a fresh sql.SQL(...).format(...) object is built per bot_messages.py call
+    site); its default repr must instead reflect the wrapped SQL content, so
+    that two *different* queries get different keys and the *same* query
+    (rebuilt with the same arguments) reuses the cached entry."""
+    database = cleared_cache
+    cursor = fake_db_connection(database, rows=[(1,)])
+    q_team_id = sql.SQL("SELECT {col} FROM teams").format(col=sql.Identifier("team_id"))
+    q_player_id = sql.SQL("SELECT {col} FROM teams").format(col=sql.Identifier("player_id"))
+
+    database.cached_fetch_all(q_team_id, (), columns=["x"])
+    database.cached_fetch_all(q_player_id, (), columns=["x"])
+    # Rebuilt as a brand-new object, but same content/content-repr as q_team_id.
+    q_team_id_again = sql.SQL("SELECT {col} FROM teams").format(col=sql.Identifier("team_id"))
+    database.cached_fetch_all(q_team_id_again, (), columns=["x"])
+
+    assert len(cursor.executed) == 2, (
+        "two distinct Composable queries -> 2 DB hits; the repeat of the "
+        "first (new object, same content) must be served from cache"
+    )
+
+
+def test_cached_fetch_all_returns_independent_copies_not_shared_mutable_state(cleared_cache, fake_db_connection):
+    """The dict fetch_all()/cached_fetch_all() returns holds plain lists;
+    bot_messages.py never mutates them today, but the cache must not rely on
+    that — mutating one caller's result must not corrupt what the next caller
+    (or the cache entry itself) sees."""
+    database = cleared_cache
+    fake_db_connection(database, rows=[(1,)])
+
+    first = database.cached_fetch_all("SELECT 1", (), columns=["x"])
+    first["x"].append(999)
+    second = database.cached_fetch_all("SELECT 1", (), columns=["x"])
+
+    assert second["x"] == [1]
+    assert second is not first
+
+
+def test_cached_fetch_all_does_not_cache_a_raised_exception(cleared_cache, monkeypatch):
+    database = cleared_cache
+    calls = {"n": 0}
+
+    class RaisingCursor:
+        def execute(self, query: Any, params: Any = None) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+
+        def fetchall(self) -> list:
+            return [(1,)]
+
+        def __enter__(self) -> "RaisingCursor":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    class RaisingConnection:
+        def cursor(self) -> RaisingCursor:
+            return RaisingCursor()
+
+    @contextmanager
+    def fake_get_connection():
+        yield RaisingConnection()
+
+    monkeypatch.setattr(database, "get_connection", fake_get_connection)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        database.cached_fetch_all("SELECT 1", (), columns=["x"])
+
+    result = database.cached_fetch_all("SELECT 1", (), columns=["x"])
+
+    assert result == {"x": [1], "count_rows": 1}
+    assert calls["n"] == 2, "the raised first call must not have been cached"
 
 
 # ---------------------------------------------------------------------------
