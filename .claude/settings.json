@@ -1,0 +1,61 @@
+{
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(make ci-local)",
+      "Bash(make lint)",
+      "Bash(make typecheck)",
+      "Bash(make test-fast)",
+      "Bash(make all-tests)",
+      "Bash(make test-db)",
+      "Bash(make setup)",
+      "Bash(make setup-dev)",
+      "Bash(make modeling-dev)",
+      "Bash(.venv/bin/python -m pytest:*)",
+      "Bash(.venv/bin/python -m ruff:*)",
+      "Bash(.venv/bin/python -m mypy:*)",
+      "Bash(.venv/bin/python -m compileall:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git branch:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git worktree:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(mkdir:*)",
+      "Bash(diff:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(make db-drop:*)",
+      "Bash(make db-reset:*)",
+      "Bash(make db-reset-local:*)",
+      "Bash(psql:*)",
+      "Bash(rm -rf:*)",
+      "Bash(docker compose down:*)",
+      "Read(./.env)",
+      "Edit(./.env)"
+    ]
+  }
+}
