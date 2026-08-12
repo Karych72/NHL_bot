@@ -432,11 +432,13 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `active` | boolean | Активная франшиза |
 | `short_name` | varchar(30) | Краткое название для отображения |
 
+Индекс `idx_teams_season (season_id)` — под поиск команды по аббревиатуре в рамках сезона.
+
 #### `teams_stats` — Статистика команд за сезон
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `team_id` | int | FK → teams |
+| `team_id` | int | FK → teams (team_id, season_id) |
 | `games_played` | int | Сыгранные матчи |
 | `wins`, `losses`, `ot` | int | Победы, поражения, OT-поражения |
 | `points` | int | Очки |
@@ -451,6 +453,8 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `shots_per_game` | double | Бросков за игру |
 | `shots_allowed` | double | Бросков пропущено за игру |
 | `face_off_win_percentage` | double | Процент выигранных вбрасываний |
+
+Индекс `idx_teams_stats_season (season_id)` — под турнирную таблицу и сравнение команд.
 
 #### `rosters` — Составы команд
 
@@ -467,15 +471,18 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `alternate_captain` | boolean | Ассистент капитана |
 | `rookie` | boolean | Новичок |
 | `abbreviation` | varchar(10) | Код позиции (дублирует position) |
-| `current_team_id` | int | FK → teams |
+| `current_team_id` | int | FK → teams (team_id, season_id), nullable |
 
 #### `players_season_stats` — Сезонная статистика полевых игроков
 
 28 колонок, основные: `player_id`, `goals`, `assists`, `points`, `pim`, `shots`, `games`, `hits`, `blocked`, `plus_minus`, `time_on_ice_per_game`, `power_play_goals`, `power_play_points`, `face_off_pct`, `shot_pct`, `game_winning_goals`.
+FK `(player_id, season_id) → rosters`; индекс `idx_players_season_stats_season (season_id)` под лидерборды.
+То же самое (FK на rosters + индекс на season_id) — у `players_advanced_stats` и `players_shot_types`.
 
 #### `goalies_season_stats` — Сезонная статистика вратарей
 
 24 колонки, основные: `player_id`, `wins`, `losses`, `shutouts`, `save_percentage`, `goal_against_average`, `games`, `saves`, `shots_against`, `goals_against`.
+FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_season (season_id)` под лидерборды вратарей.
 
 #### `games` — Матчи
 
@@ -483,12 +490,15 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 |---|---|---|
 | `game_id` | bigint | UNIQUE. NHL game ID |
 | `day` | date | Дата матча |
-| `home_team_id` | bigint | FK → teams |
-| `away_team_id` | bigint | FK → teams |
-| `winner_id` | bigint | FK → teams |
+| `home_team_id` | bigint | FK → teams (team_id, season_id), nullable |
+| `away_team_id` | bigint | FK → teams (team_id, season_id), nullable |
+| `winner_id` | bigint | FK → teams (team_id, season_id), nullable |
 | `is_overtime` | boolean | Овертайм |
 | `is_shootouts` | boolean | Буллиты |
 | `season` | varchar(10) | Метка сезона (25/26) |
+
+Индекс `idx_games_season_day (season_id, day)` — под фильтры `WHERE season_id = %s`
+(частично — с `day`), которыми пользуются день-дайджест, «форма команды» и датасет-билдер.
 
 #### `all_goals` — Все голы
 
@@ -503,8 +513,8 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `empty_net` | boolean | Гол в пустые ворота |
 | `winner_goal` | boolean | Победный гол |
 | `is_ppg` / `is_shg` | boolean | Гол в большинстве / меньшинстве |
-| `team_id` | int | FK → teams |
-| `game_id` | bigint | FK → games |
+| `team_id` | int | логическая ссылка на teams; DDL FK невозможен — у all_goals нет season_id |
+| `game_id` | bigint | FK → games; индекс `idx_all_goals_game_id` |
 | `period` | int | Период |
 | `time` | varchar(20) | Время гола в периоде |
 | `goals_away` / `goals_home` | int | Счёт на момент гола |
@@ -720,7 +730,7 @@ make season-sync-month    # обновить данные за последни�
 ## Известные особенности и ограничения
 
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
-2. **Без FOREIGN KEY:** Связи между таблицами существуют логически, но не объявлены на уровне DDL — это намеренно, чтобы не блокировать `DELETE`+`INSERT`-стратегию для per-game таблиц. `all_goals` единственная без PK (есть только `event_id`).
+2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals.game_id → games.game_id`. `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), вставка — в порядке `DDL_TABLES` из `Makefile` (родители раньше детей); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна (см. `.superpowers/sdd/work_plan_2026-08-08/task-4-report.md`). `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
 4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в cron-скрипте `push_digest_job.py`, — поэтому extra `[job-queue]` (APScheduler) не ставится.
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.

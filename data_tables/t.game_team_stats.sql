@@ -16,5 +16,12 @@ CREATE TABLE game_team_stats(
     fst_period_goals            int,
     snd_period_goals            int,
     trd_period_goals            int,
-    UNIQUE (game_id, team_id)
+    UNIQUE (game_id, team_id),
+    -- Построчная статистика команды по конкретной игре. Проверено на живой БД: 0 сирот.
+    FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
+
+-- Отдельный индекс на game_id не нужен: UNIQUE (game_id, team_id) уже даёт btree с
+-- ведущей колонкой game_id, чего достаточно для WHERE game_id = %s
+-- (telegram_bot/queries/get_game_stats.sql:16-21,
+--  modeling/dataset_builder/base.py:88-93,129-130) и для этого FK.

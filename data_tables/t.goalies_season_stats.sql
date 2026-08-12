@@ -24,5 +24,14 @@ CREATE TABLE goalies_season_stats(
     even_strength_save_percentage       double precision,
     player_id                           int NOT NULL,
     season_id                           bigint NOT NULL,
-    PRIMARY KEY (player_id, season_id)
+    PRIMARY KEY (player_id, season_id),
+    -- См. players_season_stats.sql — тот же контракт (rosters.PK = player_id+season_id).
+    -- Проверено на живой БД: 0 сирот.
+    FOREIGN KEY (player_id, season_id) REFERENCES rosters (player_id, season_id)
 );
+
+-- Обслуживает лидерборды вратарей WHERE pl.season_id = %s
+-- (table_name="goalies_season_stats" — см. telegram_bot/leaderboard_specs.py:30-32 и
+-- telegram_bot/stats_handlers.py:314-320):
+--   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
+CREATE INDEX idx_goalies_season_stats_season ON goalies_season_stats (season_id);
