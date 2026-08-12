@@ -47,7 +47,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-bot-subscriptions season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local check-token verify-skater-schema test-skater-bot test-fast test-db all-tests lint typecheck ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-bot-subscriptions season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local check-token verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -58,7 +58,7 @@ setup:
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
 
-setup-dev: setup
+setup-dev: setup modeling-dev
 	$(PIP) install -r requirements-dev.txt
 
 modeling-dev: setup
@@ -77,7 +77,7 @@ db-drop:
 
 db-tables:
 	@echo "=== Creating tables ==="
-	@for f in $(DDL_TABLES); do \
+	@set -e; for f in $(DDL_TABLES); do \
 		echo "  $$f"; \
 		$(PSQL) -v ON_ERROR_STOP=1 -f $$f; \
 	done
@@ -122,6 +122,12 @@ test-fast:
 test-db:
 	@$(PY) -m unittest tests.test_db_nhl -v
 
+# Data-integrity checks (TestNhlLoadedData) against a DB you've already loaded,
+# e.g. via `make season-sync-month`. NOT run in CI: the CI Postgres service has
+# schema (db-sync) but no loaded games/rosters/stats, so these would just fail.
+test-db-data:
+	@RUN_DB_DATA_TESTS=1 $(PY) -m unittest tests.test_db_nhl -v
+
 # Полный прогон: быстрые тесты + проверки схемы БД (нужны PostgreSQL и DDL, см. README).
 all-tests: test-fast test-db
 	@echo "=== all-tests завершён ==="
@@ -132,15 +138,16 @@ lint:
 typecheck:
 	@$(PY) -m mypy telegram_bot modeling pipeline
 
-# Same checks as GitHub Actions (no DB-backed tests).
-ci-local: lint typecheck
+# Same checks as GitHub Actions (no DB-backed tests). setup-dev pulls in
+# requirements-modeling.txt (via modeling-dev) so tests/test_modeling_*.py actually collect.
+ci-local: setup-dev lint typecheck
 	@$(PY) -m compileall -q telegram_bot modeling pipeline
 	@$(PY) -m pytest tests/ -q --ignore=tests/test_db_nhl.py
 
 db-functions:
-	@for f in $(FN_FILES); do \
+	@set -e; for f in $(FN_FILES); do \
 		echo "  $$f"; \
-		$(PSQL) -q -f $$f; \
+		$(PSQL) -v ON_ERROR_STOP=1 -q -f $$f; \
 	done
 	@echo "Functions synced."
 

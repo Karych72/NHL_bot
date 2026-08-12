@@ -634,7 +634,7 @@ def player_stats_with_count(
         lines: List[str] = []
         for p in players:
             line = (
-                f"{p['rank']}. {html.escape(p['lastname'])} — "
+                f"{p['rank']}. {html.escape(str(p['lastname']))} — "
                 f"{html.escape(str(p['value']))} ({html.escape(str(p['team']))})"
             )
             lines.append(line)

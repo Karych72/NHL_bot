@@ -8,3 +8,6 @@ all_data/
 
 .DS_Store
 .idea/
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/

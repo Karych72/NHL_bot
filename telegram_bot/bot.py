@@ -1,17 +1,27 @@
+"""Точка входа Telegram-бота: сборка `Application` и регистрация хендлеров.
+
+Роль в пайплайне: `bot.py` собирает python-telegram-bot 21.x `Application`,
+вешает на него standalone-команды/кнопки и `ConversationHandler` меню `/stats`
+и запускает long polling. Сами обработчики живут в `script_bot.py` (навигация)
+и `stats_handlers.py` (выборки из БД); здесь — только команды верхнего уровня.
+"""
+
+import asyncio
 import logging
 from datetime import date
 from typing import List, Optional
 
 import psycopg2
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
+    Application,
+    BaseHandler,
     CallbackContext,
     CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
-    Filters,
     MessageHandler,
-    Updater,
+    filters,
 )
 
 import config
@@ -145,6 +155,8 @@ from stats_handlers import (
     send_game_card_message,
 )
 
+logger = logging.getLogger(__name__)
+
 STANDALONE_GROUP = -1
 
 # Лимит Bot API на число кнопок в одном inline-сообщении.
@@ -181,89 +193,123 @@ def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
     return InlineKeyboardMarkup(rows)
 
 
-def cmd_start(update, context):
+def _message(update: Update) -> Message:
+    """Сообщение, на которое отвечает команда.
+
+    Зачем: у `Update.message` тип `Optional`, а CommandHandler вызывает нас
+    только на апдейтах с сообщением — распаковываем один раз и громко падаем,
+    если инвариант нарушен. `update` — апдейт, пришедший в хендлер.
+    """
+    message = update.message
+    assert message is not None
+    return message
+
+
+def _chat_id(update: Update) -> int:
+    """Чат, из которого пришла команда (для записи подписок)."""
+    chat = update.effective_chat
+    assert chat is not None
+    return chat.id
+
+
+async def cmd_start(update: Update, context: CallbackContext) -> None:
+    """`/start`, в том числе deep link `?start=game_<id>` из карточки матча."""
+    message = _message(update)
     args = context.args or []
     if args and args[0].startswith("game_"):
         try:
             gid = int(args[0].split("_", 1)[1])
         except (IndexError, ValueError):
-            update.message.reply_text(START_MESSAGE, parse_mode="HTML")
+            await message.reply_text(START_MESSAGE, parse_mode="HTML")
             return
-        send_game_card_message(context, update.message.chat_id, gid)
+        await send_game_card_message(context, message.chat_id, gid)
         return
-    update.message.reply_text(START_MESSAGE, parse_mode="HTML")
+    await message.reply_text(START_MESSAGE, parse_mode="HTML")
 
 
-def cmd_help(update, context):
-    update.message.reply_text(HELP_MESSAGE, parse_mode="HTML")
+async def cmd_help(update: Update, context: CallbackContext) -> None:
+    """`/help`: список команд бота."""
+    await _message(update).reply_text(HELP_MESSAGE, parse_mode="HTML")
 
 
-def cmd_day_games(update, context):
+async def cmd_day_games(update: Update, context: CallbackContext) -> None:
+    """`/day_games`: дайджест последнего игрового дня, который есть в базе."""
+    message = _message(update)
     day_label, games = day_digest()
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
-        update.message.chat_id,
+        message.chat_id,
         day_label,
         games,
         attach_conv_nav_on_last=False,
     )
 
 
-def cmd_tonight(update, context):
+async def cmd_tonight(update: Update, context: CallbackContext) -> None:
+    """`/tonight`: расписание сегодняшнего дня из NHL API плюс кнопки матчей."""
+    message = _message(update)
     try:
-        payload = fetch_score_now()
+        payload = await asyncio.to_thread(fetch_score_now)
     except ScoreboardFetchError:
         logger.exception("NHL score/now request failed")
-        update.message.reply_text(
+        await message.reply_text(
             "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже."
         )
         return
     games = slate_games_sorted(payload)
-    markup = build_tonight_match_keyboard(games) if games else None
     text = truncate_telegram_text(
         tonight_reply_intro(payload),
         footer_note="\n\n(Текст обрезан — лимит Telegram.)",
     )
-    reply_kwargs = {"parse_mode": "HTML"}
-    if markup is not None:
-        reply_kwargs["reply_markup"] = markup
-    update.message.reply_text(text, **reply_kwargs)
+    await message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=build_tonight_match_keyboard(games) if games else None,
+    )
 
 
-def cmd_table(update, context):
-    update.message.reply_text(team_table(), parse_mode="HTML")
+async def cmd_table(update: Update, context: CallbackContext) -> None:
+    """`/table`: турнирная таблица лиги."""
+    await _message(update).reply_text(team_table(), parse_mode="HTML")
 
 
-def cmd_standings(update, context):
-    cmd_table(update, context)
+async def cmd_standings(update: Update, context: CallbackContext) -> None:
+    """`/standings`: синоним `/table`."""
+    await cmd_table(update, context)
 
 
-def cmd_today(update, context):
+async def cmd_today(update: Update, context: CallbackContext) -> None:
+    """`/today`: дайджест за сегодняшнюю календарную дату."""
+    message = _message(update)
     day_label, games = day_digest(date.today().isoformat())
-    dispatch_day_digest_messages(
+    await dispatch_day_digest_messages(
         context,
-        update.message.chat_id,
+        message.chat_id,
         day_label,
         games,
         attach_conv_nav_on_last=False,
     )
 
 
-def cmd_team(update, context):
-    update.message.reply_text(season_team_abbrev_help_text(), parse_mode="HTML")
+async def cmd_team(update: Update, context: CallbackContext) -> None:
+    """`/team`: справка по аббревиатурам команд текущего сезона."""
+    await _message(update).reply_text(season_team_abbrev_help_text(), parse_mode="HTML")
 
 
-def cmd_leaders(update, context):
-    update.message.reply_text(
+async def cmd_leaders(update: Update, context: CallbackContext) -> None:
+    """`/leaders`: выбор категории лидеров кнопками."""
+    await _message(update).reply_text(
         leaders_menu_intro(),
         parse_mode="HTML",
         reply_markup=leaders_category_keyboard(),
     )
 
 
-def cmd_game(update, context):
+async def cmd_game(update: Update, context: CallbackContext) -> None:
+    """`/game <id>`: карточка конкретного матча."""
+    message = _message(update)
     if not context.args:
-        update.message.reply_text(
+        await message.reply_text(
             "Карточку матча проще открыть так: отправьте <code>/day_games</code> "
             "и нажмите кнопку нужной игры под сводкой.",
             parse_mode="HTML",
@@ -272,120 +318,124 @@ def cmd_game(update, context):
     try:
         game_id = int(context.args[0])
     except ValueError:
-        update.message.reply_text("После `/game` укажите одно целое число.")
+        await message.reply_text("После `/game` укажите одно целое число.")
         return
-    send_game_card_message(context, update.message.chat_id, game_id)
+    await send_game_card_message(context, message.chat_id, game_id)
 
 
-def cmd_advanced(update, context):
-    update.message.reply_text(
+async def cmd_advanced(update: Update, context: CallbackContext) -> None:
+    """`/advanced`: расширенная статистика полевых игроков вне диалога `/stats`."""
+    await _message(update).reply_text(
         ADVANCED_COMMAND_INTRO,
         parse_mode="HTML",
         reply_markup=advanced_standalone_keyboard(),
     )
 
 
-def cmd_cancel_in_conversation(update, context: CallbackContext) -> int:
-    update.message.reply_text("Вы вышли из меню. Снова: /stats")
+async def cmd_cancel_in_conversation(update: Update, context: CallbackContext) -> int:
+    """`/cancel` внутри диалога `/stats`: закрывает разговор."""
+    await _message(update).reply_text("Вы вышли из меню. Снова: /stats")
     return ConversationHandler.END
 
 
-def cmd_cancel_outside_conversation(update, context):
-    update.message.reply_text("Меню /stats сейчас не открыто. Справка: /help")
+async def cmd_cancel_outside_conversation(update: Update, context: CallbackContext) -> None:
+    """`/cancel` вне диалога: объясняет, что отменять нечего."""
+    await _message(update).reply_text("Меню /stats сейчас не открыто. Справка: /help")
 
 
-def _subscriptions_db_error_reply(update, context):
-    update.message.reply_text(
+async def _subscriptions_db_error_reply(update: Update) -> None:
+    """Ответ на недоступную таблицу подписок — одинаковый для всех четырёх команд."""
+    await _message(update).reply_text(
         "Подписки недоступны: выполните `make db-bot-subscriptions` "
         "или SQL из файла scripts/create_bot_subscriptions.sql на вашей БД PostgreSQL."
     )
 
 
-def cmd_subscribe_digest(update, context):
+async def cmd_subscribe_digest(update: Update, context: CallbackContext) -> None:
+    """`/subscribe_digest`: подписка чата на утренний дайджест."""
     try:
-        subscription_repo.upsert_morning_digest(update.effective_chat.id)
+        subscription_repo.upsert_morning_digest(_chat_id(update))
     except psycopg2.Error:
         logger.exception("subscribe_digest DB error")
-        _subscriptions_db_error_reply(update, context)
+        await _subscriptions_db_error_reply(update)
         return
-    update.message.reply_text(
+    await _message(update).reply_text(
         "Вы подписаны на утренний дайджест (тот же контент, что даёт /day_games по последнему игровому дню в базе). "
         "Отписка: /unsubscribe_digest. Фактическая отправка по расписанию включается администратором (`ENABLE_PUSH_DIGEST=1`)."
     )
 
 
-def cmd_unsubscribe_digest(update, context):
+async def cmd_unsubscribe_digest(update: Update, context: CallbackContext) -> None:
+    """`/unsubscribe_digest`: отключает утренний дайджест для чата."""
     try:
-        subscription_repo.deactivate_morning_digest(update.effective_chat.id)
+        subscription_repo.deactivate_morning_digest(_chat_id(update))
     except psycopg2.Error:
         logger.exception("unsubscribe_digest DB error")
-        _subscriptions_db_error_reply(update, context)
+        await _subscriptions_db_error_reply(update)
         return
-    update.message.reply_text(
+    await _message(update).reply_text(
         "Утренний дайджест отключён для этого чата (подписка помечена неактивной)."
     )
 
 
-def cmd_subscribe_team(update, context):
+async def cmd_subscribe_team(update: Update, context: CallbackContext) -> None:
+    """`/subscribe_team <ABBREV>`: подписка чата на итоги игр команды."""
+    message = _message(update)
     args = context.args or []
     if not args:
-        update.message.reply_text(
+        await message.reply_text(
             "Укажите аббревиатуру команды, например: /subscribe_team WSH"
         )
         return
     tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
     if tid is None:
-        update.message.reply_text(
+        await message.reply_text(
             f"Команда «{args[0]}» не найдена для сезона в базе. Список: /team"
         )
         return
     try:
-        subscription_repo.upsert_team_scores(update.effective_chat.id, tid)
+        subscription_repo.upsert_team_scores(_chat_id(update), tid)
     except psycopg2.Error:
         logger.exception("subscribe_team DB error")
-        _subscriptions_db_error_reply(update, context)
+        await _subscriptions_db_error_reply(update)
         return
-    update.message.reply_text(
+    await message.reply_text(
         f"Подписка на итоги игр команды сохранена (аббревиатура {args[0].strip().upper()}). "
         "Отписка: /unsubscribe_team с тем же кодом. Рассылка по календарному «вчера» при ENABLE_PUSH_DIGEST=1."
     )
 
 
-def cmd_unsubscribe_team(update, context):
+async def cmd_unsubscribe_team(update: Update, context: CallbackContext) -> None:
+    """`/unsubscribe_team <ABBREV>`: отключает подписку чата на итоги игр команды."""
+    message = _message(update)
     args = context.args or []
     if not args:
-        update.message.reply_text(
+        await message.reply_text(
             "Укажите ту же аббревиатуру, например: /unsubscribe_team WSH"
         )
         return
     tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
     if tid is None:
-        update.message.reply_text(
+        await message.reply_text(
             f"Команда «{args[0]}» не найдена для сезона в базе."
         )
         return
     try:
-        subscription_repo.deactivate_team_scores(update.effective_chat.id, tid)
+        subscription_repo.deactivate_team_scores(_chat_id(update), tid)
     except psycopg2.Error:
         logger.exception("unsubscribe_team DB error")
-        _subscriptions_db_error_reply(update, context)
+        await _subscriptions_db_error_reply(update)
         return
-    update.message.reply_text("Подписка на эту команду отключена.")
+    await message.reply_text("Подписка на эту команду отключена.")
 
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+def build_conversation_handler() -> ConversationHandler:
+    """Собирает `ConversationHandler` меню `/stats`.
 
-if __name__ == '__main__':
-    updater = Updater(token=config.TOKEN)
-    dispatcher = updater.dispatcher  # type: ignore[has-type]
-
-    logger.info("Starting bot")
-
-    conv_handler = ConversationHandler(
+    Зачем отдельной функцией: состав и порядок хендлеров внутри состояний FSM —
+    поведение бота, и его надо проверять тестом без запуска polling.
+    """
+    return ConversationHandler(
         entry_points=[CommandHandler('stats', stats)],
         states={
             FIRST: [
@@ -464,7 +514,7 @@ if __name__ == '__main__':
                     bot_digest_date_menu,
                     pattern=f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$",
                 ),
-                MessageHandler(Filters.text & ~Filters.command, bot_digest_custom_date),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot_digest_custom_date),
             ],
         },
         fallbacks=[
@@ -473,7 +523,13 @@ if __name__ == '__main__':
         ],
     )
 
-    standalone = [
+def build_standalone_handlers() -> List[BaseHandler]:
+    """Хендлеры вне диалога `/stats`: команды верхнего уровня и inline-кнопки.
+
+    Регистрируются в группе STANDALONE_GROUP, то есть просматриваются раньше
+    `ConversationHandler`, и потому работают и при открытом меню `/stats`.
+    """
+    return [
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
         CommandHandler("day_games", cmd_day_games),
@@ -500,11 +556,32 @@ if __name__ == '__main__':
         ),
         CallbackQueryHandler(handle_goal_video, pattern="^gv:"),
     ]
-    for h in standalone:
-        dispatcher.add_handler(h, group=STANDALONE_GROUP)
 
-    dispatcher.add_handler(conv_handler)
-    dispatcher.add_handler(CommandHandler('cancel', cmd_cancel_outside_conversation))
 
-    updater.start_polling()
-    updater.idle()
+def build_application(token: str) -> Application:
+    """Собирает `Application` 21.x со всеми хендлерами бота.
+
+    Зачем: единственная точка сборки, которую тест может построить с фиктивным
+    токеном и проверить состав и порядок хендлеров, не поднимая polling.
+    `token` — токен бота (в проде `config.TOKEN`).
+    """
+    application = Application.builder().token(token).build()
+    for handler in build_standalone_handlers():
+        application.add_handler(handler, group=STANDALONE_GROUP)
+    application.add_handler(build_conversation_handler())
+    application.add_handler(CommandHandler('cancel', cmd_cancel_outside_conversation))
+    return application
+
+
+def main() -> None:
+    """Точка входа `python bot.py`: long polling до сигнала остановки."""
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO,
+    )
+    logger.info("Starting bot")
+    build_application(config.TOKEN).run_polling()
+
+
+if __name__ == '__main__':
+    main()

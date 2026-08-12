@@ -7,7 +7,7 @@ NHL Bot — это Telegram-бот для просмотра статистик�
 1. **Pipeline** (`pipeline/`) — ETL-загрузчик, который забирает данные из официального NHL API и записывает их в PostgreSQL.
 2. **Telegram Bot** (`telegram_bot/`) — интерактивный бот с многоуровневым inline-меню, который читает данные из PostgreSQL и отображает статистику через Jinja2-шаблоны.
 
-Стек: Python 3, PostgreSQL, python-telegram-bot 13.15, psycopg2, requests, Jinja2.
+Стек: Python 3, PostgreSQL, python-telegram-bot 21.11.1 (asyncio), psycopg2, requests, Jinja2.
 
 ---
 
@@ -53,7 +53,7 @@ NHL_bot/
 │   └── load_season_modern.py           # Класс ModernNhlLoader
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Updater + ConversationHandler
+│   ├── bot.py                          # Точка входа: Application + ConversationHandler
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
 │   ├── dialog_states.py                # FSM-состояния и callback ID
@@ -111,7 +111,7 @@ NHL_bot/
 
 | Пакет | Назначение |
 |---|---|
-| `python-telegram-bot==13.15` | Telegram Bot API, ConversationHandler, InlineKeyboard |
+| `python-telegram-bot==21.11.1` | Telegram Bot API (asyncio), ConversationHandler, InlineKeyboard |
 | `psycopg2-binary` | Драйвер PostgreSQL |
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
@@ -208,7 +208,27 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
 ### Точка входа: `bot.py`
 
-Использует `python-telegram-bot` v13.15 (callback-based, не async). Основной механизм — `ConversationHandler` с двумя состояниями FSM.
+Использует `python-telegram-bot` 21.x (asyncio). `build_application(token)` создаёт `Application`,
+регистрирует standalone-команды и inline-кнопки в группе `STANDALONE_GROUP = -1`, затем
+`ConversationHandler` меню `/stats` и `/cancel` вне диалога в группе 0; `main()` запускает
+`run_polling()`. Состав и порядок регистрации закреплены в `tests/test_bot_application.py`.
+Основной механизм диалога — `ConversationHandler` с состояниями FSM.
+
+Все колбэки в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
+вызовы Bot API идут под `await`: в 21.x PTB делает `await callback(update, context)`.
+`Optional`-поля `Update` (`update.message`, `update.callback_query`, `query.message`)
+распаковываются через `assert` там, где инвариант гарантирован типом хендлера;
+данные от пользователя (`query.data`) по-прежнему проверяются обычными гардами.
+Асинхронен и cron-скрипт рассылки `push_digest_job.py`: он не часть процесса бота,
+а отдельный запуск, который поднимает собственный `Application` (без polling и без
+`JobQueue`), строит от него `CallbackContext` и переиспользует
+`dispatch_day_digest_messages`; точка входа — `asyncio.run(main())`.
+
+Единственный event loop обслуживает и polling, и обработчики, поэтому блокирующая
+работа выносится в поток: скачивание MP4 + два прохода ffmpeg
+(`video_replay.download_goal_video`, до ~2 минут) вызывается из `stats_handlers`
+через `asyncio.to_thread`. Запросы psycopg2 и `nhl_scoreboard.fetch_score_now`
+пока идут в loop'е синхронно.
 
 ### FSM (Finite State Machine)
 
@@ -702,5 +722,5 @@ make season-sync-month    # обновить данные за последни�
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
 2. **Без FOREIGN KEY:** Связи между таблицами существуют логически, но не объявлены на уровне DDL — это намеренно, чтобы не блокировать `DELETE`+`INSERT`-стратегию для per-game таблиц. `all_goals` единственная без PK (есть только `event_id`).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
-4. **python-telegram-bot 13.15:** Callback-based API (не async). Версия зафиксирована; миграция на v20+ потребует перехода на asyncio.
+4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в cron-скрипте `push_digest_job.py`, — поэтому extra `[job-queue]` (APScheduler) не ставится.
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.

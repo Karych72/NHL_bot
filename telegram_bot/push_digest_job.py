@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Рассылка утреннего дайджеста и кратких итогов по команде подписчикам.
 
-Запуск из cron (после загрузки данных в БД), например раз в день:
+Отдельный cron-скрипт вне процесса бота: поднимает собственный ``Application``
+(без polling и без ``JobQueue``), рассылает и завершается. Запуск из cron после
+загрузки данных в БД, например раз в день:
 
     cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
 
@@ -10,15 +12,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
-import time
 from datetime import date, timedelta
 from typing import Any
 
 from telegram import Bot
 from telegram.error import Forbidden, RetryAfter, TelegramError
+from telegram.ext import Application, CallbackContext
 
 # Запуск из каталога telegram_bot (как make bot).
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,13 +45,6 @@ logging.basicConfig(
 logger = logging.getLogger("push_digest_job")
 
 
-class _JobCtx:
-    __slots__ = ("bot",)
-
-    def __init__(self, bot: Bot) -> None:
-        self.bot = bot
-
-
 def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
     row = fetch_all(
         "SELECT game_id FROM games WHERE season_id = %s AND day = %s::date "
@@ -59,24 +55,42 @@ def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
     return [int(row["game_id"][i]) for i in range(row["count_rows"])]
 
 
-def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
+async def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
+    """Отправляет одно сообщение и выдерживает паузу до следующего.
+
+    Зачем: ``RetryAfter`` означает, что сообщение не доставлено, — повторяем
+    его один раз после указанной API задержки. Второй ``RetryAfter``, как и
+    любая другая ошибка Telegram, улетает вызывающему.
+
+    Аргументы: ``bot`` — клиент Bot API; ``chat_id`` — получатель;
+    ``kwargs`` — параметры ``Bot.send_message`` (``text``, ``parse_mode``, …).
+    """
     try:
-        bot.send_message(chat_id=chat_id, **kwargs)
+        await bot.send_message(chat_id=chat_id, **kwargs)
     except RetryAfter as exc:
-        wait = float(getattr(exc, "retry_after", 3))
+        wait = float(exc.retry_after)
         logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
-        time.sleep(wait)
-        bot.send_message(chat_id=chat_id, **kwargs)
-    time.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
+        await asyncio.sleep(wait)
+        await bot.send_message(chat_id=chat_id, **kwargs)
+    # Telegram лимитирует бота ~30 сообщениями в секунду.
+    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
-def run_morning_digest_broadcast(bot: Bot) -> None:
+async def run_morning_digest_broadcast(context: CallbackContext) -> None:
+    """Шлёт дайджест текущего дня всем активным подписчикам ``morning_digest``.
+
+    Зачем: ровно те же карточки, что и меню ``/stats``, но без навигации диалога
+    (``attach_conv_nav_on_last=False``) — в рассылке кнопки диалога некуда вести.
+    Заблокировавший бота чат (``Forbidden``) деактивируется, чтобы не долбиться
+    в него каждый день.
+
+    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``.
+    """
     day_label, games = day_digest()
-    ctx = _JobCtx(bot)
     for chat_id in list_active_morning_digest_chat_ids():
         try:
-            dispatch_day_digest_messages(
-                ctx,
+            await dispatch_day_digest_messages(
+                context,
                 chat_id,
                 day_label,
                 games,
@@ -89,12 +103,12 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
                 chat_id, "morning_digest", None
             )
         except RetryAfter as exc:
-            wait = float(getattr(exc, "retry_after", 3))
+            wait = float(exc.retry_after)
             logger.warning("digest RetryAfter %ss chat_id=%s", wait, chat_id)
-            time.sleep(wait)
+            await asyncio.sleep(wait)
             try:
-                dispatch_day_digest_messages(
-                    ctx,
+                await dispatch_day_digest_messages(
+                    context,
                     chat_id,
                     day_label,
                     games,
@@ -107,11 +121,18 @@ def run_morning_digest_broadcast(bot: Bot) -> None:
                 )
         except TelegramError as exc:
             logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
-        time.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
+        # Telegram лимитирует бота ~30 сообщениями в секунду.
+        await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
-def run_team_scores_broadcast(bot: Bot) -> None:
-    """Календарный «вчера»: краткая строка по каждому матчу команды."""
+async def run_team_scores_broadcast(context: CallbackContext) -> None:
+    """Календарный «вчера»: краткая строка по каждому матчу команды.
+
+    Зачем: подписка ``team_scores`` — одно короткое сообщение на чат со счётом
+    матчей его команды за вчерашний календарный день; чат без матчей пропускается.
+
+    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``.
+    """
     yday = (date.today() - timedelta(days=1)).isoformat()
     for chat_id, team_id in list_active_team_scores_rows():
         gids = _game_ids_for_team_on_calendar_day(team_id, yday)
@@ -130,8 +151,8 @@ def run_team_scores_broadcast(bot: Bot) -> None:
             continue
         html_body = "\n".join(parts[:5])
         try:
-            _send_throttled(
-                bot,
+            await _send_throttled(
+                context.bot,
                 chat_id,
                 text=f"<b>Ваши матчи ({yday})</b>\n\n{html_body}",
                 parse_mode="HTML",
@@ -149,18 +170,29 @@ def run_team_scores_broadcast(bot: Bot) -> None:
             logger.warning("team notify failed chat_id=%s: %s", chat_id, exc)
 
 
-def main() -> None:
+async def main() -> None:
+    """Точка входа cron-скрипта: проверяет флаги и прогоняет обе рассылки.
+
+    Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
+    принимает ``CallbackContext``, а построить его можно только от ``Application``.
+    Ни polling, ни ``JobQueue`` скрипту не нужны — отключены явно; ``async with``
+    инициализирует и корректно гасит HTTP-клиент бота.
+    """
     if not config.TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN пуст — выход.")
         sys.exit(1)
     if not config.ENABLE_PUSH_DIGEST:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return
-    bot = Bot(token=config.TOKEN)
-    run_morning_digest_broadcast(bot)
-    run_team_scores_broadcast(bot)
+    application = (
+        Application.builder().token(config.TOKEN).updater(None).job_queue(None).build()
+    )
+    async with application:
+        context = CallbackContext(application)
+        await run_morning_digest_broadcast(context)
+        await run_team_scores_broadcast(context)
     logger.info("Рассылка завершена.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

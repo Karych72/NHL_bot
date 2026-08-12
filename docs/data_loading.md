@@ -40,7 +40,7 @@ telegram_bot/bot.py (только чтение БД)  ── см. telegram_bot.
 ## 1. Требования
 
 - **Python 3** (проект использует venv `.venv`; в `requirements.txt`
-  закреплён `python-telegram-bot==13.15`, остальные пакеты — `pandas`,
+  закреплён `python-telegram-bot==21.11.1`, остальные пакеты — `pandas`,
   `requests`, `psycopg2-binary`, `jinja2`, `pytest>=8.0`).
 - **PostgreSQL** (≥ 12, проверено на 14/15/16) с возможностью подключиться по
   `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_DATABASE`.

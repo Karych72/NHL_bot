@@ -78,7 +78,7 @@ class TasksConfig(_ForbidExtraModel):
 class HoldoutDateRange(_ForbidExtraModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    from_: Optional[str] = Field(None, alias="from")
+    from_: Optional[str] = Field(default=None, alias="from")
     to: Optional[str] = None
 
     @model_validator(mode="after")
@@ -127,7 +127,7 @@ class SplitConfig(_ForbidExtraModel):
     inner_val_games: int = Field(..., ge=300)
     calibration_games: int = Field(..., ge=300)
     holdout: HoldoutConfig
-    outer_block_games: Optional[int] = Field(None, ge=1)
+    outer_block_games: Optional[int] = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_outer_block_games(self) -> SplitConfig:

@@ -203,7 +203,6 @@ def build_walk_forward_splits(
         raise SplitError("game_ids length must match keys after sorting")
 
     holdout_idx = _holdout_indices(days, config.holdout)
-    holdout_set = set(holdout_idx.tolist())
     wf_mask = np.ones(len(sorted_keys), dtype=bool)
     wf_mask[list(holdout_idx)] = False
     wf_positions = np.flatnonzero(wf_mask)

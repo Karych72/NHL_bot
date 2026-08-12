@@ -240,6 +240,9 @@ def download_goal_video(game_id: int, event_id: int) -> Optional[GoalVideoDelive
     fixes Telegram inline preview (white bubble) for MP4 with moov at EOF.
 
     Returns GoalVideoDelivery on success; caller must delete path and thumb_path.
+
+    Blocking (HTTP download + two ffmpeg passes, up to ~2 minutes): call it from
+    async code via ``asyncio.to_thread`` so the bot's event loop keeps polling.
     """
     clip_id = _get_brightcove_clip_id(game_id, event_id)
     if clip_id is None:

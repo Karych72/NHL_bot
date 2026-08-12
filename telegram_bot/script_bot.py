@@ -1,3 +1,11 @@
+"""Inline-меню навигации диалога `/stats`.
+
+Роль в пайплайне: рисует корневое меню и подменю (команды, полевые игроки,
+вратари, расширенная статистика, выбор даты дайджеста) и возвращает следующее
+состояние FSM для `ConversationHandler`, собранного в `bot.py`. Сами выборки
+из БД живут в `stats_handlers.py`.
+"""
+
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -70,11 +78,12 @@ def stats_main_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(build_menu(stats_main_keyboard_rows(), n_cols=1))
 
 
-def stats_root_edit(update: Update, context: CallbackContext) -> int:
+async def stats_root_edit(update: Update, context: CallbackContext) -> int:
     """Главное меню тем же сообщением (редактирование текста кнопки)."""
     query = update.callback_query
-    query.answer()
-    query.edit_message_text(
+    assert query is not None
+    await query.answer()
+    await query.edit_message_text(
         text=STATS_MENU_INTRO,
         reply_markup=stats_main_markup(),
         parse_mode="HTML",
@@ -82,23 +91,27 @@ def stats_root_edit(update: Update, context: CallbackContext) -> int:
     return FIRST
 
 
-def stats(update: Update, context: CallbackContext) -> int:
+async def stats(update: Update, context: CallbackContext) -> int:
     """Вызывается по команде `/stats`."""
-    update.message.reply_text(
+    message = update.message
+    assert message is not None
+    await message.reply_text(
         text=STATS_MENU_INTRO,
         reply_markup=stats_main_markup(),
         parse_mode="HTML",
     )
-    logger.info("User %s started /stats", update.message.from_user.first_name)
+    assert message.from_user is not None
+    logger.info("User %s started /stats", message.from_user.first_name)
     return FIRST
 
 
-def stats_over(update: Update, context: CallbackContext) -> int:
+async def stats_over(update: Update, context: CallbackContext) -> int:
     """Главное меню новым сообщением — предыдущий контент (статы/дайджест) остаётся в чате."""
     query = update.callback_query
-    query.answer()
-    context.bot.send_message(
-        chat_id=query.message.chat_id,
+    assert query is not None and query.message is not None
+    await query.answer()
+    await context.bot.send_message(
+        chat_id=query.message.chat.id,
         text=STATS_MENU_INTRO,
         reply_markup=stats_main_markup(),
         parse_mode="HTML",
@@ -106,9 +119,10 @@ def stats_over(update: Update, context: CallbackContext) -> int:
     return FIRST
 
 
-def bot_team_stats(update: Update, context: CallbackContext) -> int:
+async def bot_team_stats(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Статистика процент набранных очков", callback_data=str(TEAM_PROCENT_WINS)),
         InlineKeyboardButton("Статистика большинства", callback_data=str(TEAM_POWER_PLAY)),
@@ -118,15 +132,16 @@ def bot_team_stats(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text="Выберите статистику", reply_markup=reply_markup
     )
     return FIRST
 
 
-def bot_player_stats(update: Update, context: CallbackContext) -> int:
+async def bot_player_stats(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Статистика полевых игроков", callback_data=str(PLAYER_FIELD)),
         InlineKeyboardButton("Статистика вратарей", callback_data=str(PLAYER_GOALIE)),
@@ -135,15 +150,16 @@ def bot_player_stats(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text="Выберите тип игроков", reply_markup=reply_markup
     )
     return FIRST
 
 
-def bot_player_field(update: Update, context: CallbackContext) -> int:
+async def bot_player_field(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Лидеры по очкам", callback_data=str(PLAYER_POINTS)),
         InlineKeyboardButton("Лидеры по голам", callback_data=str(PLAYER_GOALS)),
@@ -162,15 +178,16 @@ def bot_player_field(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text="Выберите тип статистики", reply_markup=reply_markup
     )
     return FIRST
 
 
-def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
+async def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Лидеры по Corsi (SAT%)", callback_data=str(PLAYER_SAT_PCT)),
         InlineKeyboardButton("Лидеры по Fenwick (USAT%)", callback_data=str(PLAYER_USAT_PCT)),
@@ -189,15 +206,16 @@ def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text="Расширенная статистика полевых", reply_markup=reply_markup
     )
     return FIRST
 
 
-def bot_player_goalie(update: Update, context: CallbackContext) -> int:
+async def bot_player_goalie(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Лидеры по победам", callback_data=str(GOALIE_WINS)),
         InlineKeyboardButton("Лидеры по % отр бросков", callback_data=str(GOALIE_PERCENTAGE)),
@@ -207,16 +225,17 @@ def bot_player_goalie(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text="Выберите тип статистики", reply_markup=reply_markup
     )
     return FIRST
 
 
-def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
+async def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
     """Выбор даты дайджеста перед загрузкой матчей."""
     query = update.callback_query
-    query.answer()
+    assert query is not None
+    await query.answer()
     keyboard = [
         InlineKeyboardButton("Сегодня", callback_data=str(DIGEST_CALENDAR_TODAY)),
         InlineKeyboardButton("Вчера", callback_data=str(DIGEST_CALENDAR_YESTERDAY)),
@@ -226,7 +245,7 @@ def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(
         build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    query.edit_message_text(
+    await query.edit_message_text(
         text=(
             "Дайджест по завершённым матчам в базе.\n"
             "<i>Сегодня</i> и <i>Вчера</i> — календарные даты "
@@ -238,17 +257,18 @@ def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
     return FIRST
 
 
-def nav_back_to_players(update: Update, context: CallbackContext) -> int:
-    return bot_player_stats(update, context)
+async def nav_back_to_players(update: Update, context: CallbackContext) -> int:
+    return await bot_player_stats(update, context)
 
 
-def nav_back_to_field(update: Update, context: CallbackContext) -> int:
-    return bot_player_field(update, context)
+async def nav_back_to_field(update: Update, context: CallbackContext) -> int:
+    return await bot_player_field(update, context)
 
 
-def end(update: Update, context: CallbackContext) -> int:
+async def end(update: Update, context: CallbackContext) -> int:
     """Завершает разговор: снимаем inline-кнопки, текст статистики в чате оставляем."""
     query = update.callback_query
-    query.answer()
-    query.edit_message_reply_markup(reply_markup=None)
+    assert query is not None
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
     return ConversationHandler.END
