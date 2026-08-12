@@ -6,6 +6,7 @@
 и `stats_handlers.py` (выборки из БД); здесь — только команды верхнего уровня.
 """
 
+import asyncio
 import logging
 from datetime import date
 from typing import List, Optional
@@ -248,7 +249,7 @@ async def cmd_tonight(update: Update, context: CallbackContext) -> None:
     """`/tonight`: расписание сегодняшнего дня из NHL API плюс кнопки матчей."""
     message = _message(update)
     try:
-        payload = fetch_score_now()
+        payload = await asyncio.to_thread(fetch_score_now)
     except ScoreboardFetchError:
         logger.exception("NHL score/now request failed")
         await message.reply_text(

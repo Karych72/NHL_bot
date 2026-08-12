@@ -58,7 +58,7 @@ setup:
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
 
-setup-dev: setup
+setup-dev: setup modeling-dev
 	$(PIP) install -r requirements-dev.txt
 
 modeling-dev: setup
@@ -138,9 +138,9 @@ lint:
 typecheck:
 	@$(PY) -m mypy telegram_bot modeling pipeline
 
-# Same checks as GitHub Actions (no DB-backed tests). modeling-dev pulls in
-# requirements-modeling.txt so tests/test_modeling_*.py actually collect.
-ci-local: setup-dev modeling-dev lint typecheck
+# Same checks as GitHub Actions (no DB-backed tests). setup-dev pulls in
+# requirements-modeling.txt (via modeling-dev) so tests/test_modeling_*.py actually collect.
+ci-local: setup-dev lint typecheck
 	@$(PY) -m compileall -q telegram_bot modeling pipeline
 	@$(PY) -m pytest tests/ -q --ignore=tests/test_db_nhl.py
 

@@ -66,6 +66,7 @@ In Telegram send `/stats`.
 
 - **`make test-fast`** — `pytest` по всем файлам в `tests/`, кроме `test_db_nhl.py` (без обязательной БД).
 - **`make test-db`** — `unittest` для схемы PostgreSQL; нужен доступ к БД из `.env`, таблицы из `make db-init` / `db-init-local`. Включает `RUN_DB_SCHEMA_TESTS=1` (см. `Makefile`).
+- **`make test-db-data`** — проверки загруженных данных (`TestNhlLoadedData`); нужна БД с данными.
 - **`make all-tests`** — сначала `test-fast`, затем `test-db` (полный контур для разработчика с поднятой БД).
 
 Общие правила для разработчиков — [`DEVELOPMENT.md`](DEVELOPMENT.md).
@@ -73,8 +74,7 @@ In Telegram send `/stats`.
 Проверки **загруженных данных** (`TestNhlLoadedData`) по умолчанию выключены. После загрузки сезона:
 
 ```bash
-export RUN_DB_DATA_TESTS=1
-make test-db
+make test-db-data
 ```
 
 ## One-command flows
