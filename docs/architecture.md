@@ -432,8 +432,6 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `active` | boolean | Активная франшиза |
 | `short_name` | varchar(30) | Краткое название для отображения |
 
-Индекс `idx_teams_season (season_id)` — под поиск команды по аббревиатуре в рамках сезона.
-
 #### `teams_stats` — Статистика команд за сезон
 
 | Колонка | Тип | Описание |
@@ -453,8 +451,6 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `shots_per_game` | double | Бросков за игру |
 | `shots_allowed` | double | Бросков пропущено за игру |
 | `face_off_win_percentage` | double | Процент выигранных вбрасываний |
-
-Индекс `idx_teams_stats_season (season_id)` — под турнирную таблицу и сравнение команд.
 
 #### `rosters` — Составы команд
 
