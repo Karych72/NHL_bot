@@ -625,11 +625,8 @@ async def bot_digest_calendar_yesterday(update: Update, context: CallbackContext
     return SECOND
 
 
-async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
-    back_kb = InlineKeyboardMarkup(
+def _digest_back_from_date_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
@@ -639,11 +636,17 @@ async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) 
             ]
         ]
     )
+
+
+async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    assert query is not None
+    await query.answer()
     await query.edit_message_text(
         "Отправьте дату одним сообщением в формате <code>YYYY-MM-DD</code>.\n"
         "/cancel — выход из меню.",
         parse_mode="HTML",
-        reply_markup=back_kb,
+        reply_markup=_digest_back_from_date_keyboard(),
     )
     return THIRD
 
@@ -656,7 +659,8 @@ async def bot_digest_custom_date(update: Update, context: CallbackContext) -> in
         datetime.strptime(raw, "%Y-%m-%d")
     except ValueError:
         await message.reply_text(
-            "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel."
+            "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel.",
+            reply_markup=_digest_back_from_date_keyboard(),
         )
         return THIRD
     day_label, games = day_digest(raw)
