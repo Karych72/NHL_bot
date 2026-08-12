@@ -655,7 +655,12 @@ async def test_digest_custom_date_rejects_bad_format(bot_module, make_message_up
     result = await stats_handlers.bot_digest_custom_date(update, fake_context)
 
     assert result == stats_handlers.THIRD
-    assert "YYYY-MM-DD" in update.message.replies[0]["text"]
+    reply = update.message.replies[0]
+    assert "YYYY-MM-DD" in reply["text"]
+    # Дно без клавиатуры — тупик (CLAUDE.md, Задача 5): пользователь должен
+    # иметь кнопку выхода, а не только текстовое упоминание /cancel.
+    buttons = [b for row in reply["reply_markup"].inline_keyboard for b in row]
+    assert buttons[0].callback_data == stats_handlers.DIGEST_BACK_FROM_DATE_CALLBACK
 
 
 @pytest.mark.asyncio
