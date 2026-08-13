@@ -21,6 +21,7 @@ from dialog_states import (
     GOALIE_PERCENTAGE,
     GOALIE_SHOOTOUTS,
     GOALIE_WINS,
+    LAST_MENU_MESSAGE_ID_KEY,
     LEAGUE_STANDINGS,
     PLAYER_ADVANCED_SUBMENU,
     PLAYER_ASSISTS,
@@ -95,11 +96,17 @@ async def stats(update: Update, context: CallbackContext) -> int:
     """Вызывается по команде `/stats`."""
     message = update.message
     assert message is not None
-    await message.reply_text(
+    sent = await message.reply_text(
         text=STATS_MENU_INTRO,
         reply_markup=stats_main_markup(),
         parse_mode="HTML",
     )
+    # Новое сообщение (`reply_text`, не `edit_message_text`): id записывается,
+    # чтобы /cancel мог снять клавиатуру, если диалог оборвётся до «Готово»
+    # (Задача 6, §5.2). Все последующие экраны FIRST/SECOND/THIRD правят этот
+    # же message_id через edit_message_text — записывать его повторно не нужно.
+    assert context.user_data is not None
+    context.user_data[LAST_MENU_MESSAGE_ID_KEY] = sent.message_id
     assert message.from_user is not None
     logger.info("User %s started /stats", message.from_user.first_name)
     return FIRST
@@ -110,12 +117,14 @@ async def stats_over(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
-    await context.bot.send_message(
+    sent = await context.bot.send_message(
         chat_id=query.message.chat.id,
         text=STATS_MENU_INTRO,
         reply_markup=stats_main_markup(),
         parse_mode="HTML",
     )
+    assert context.user_data is not None
+    context.user_data[LAST_MENU_MESSAGE_ID_KEY] = sent.message_id
     return FIRST
 
 

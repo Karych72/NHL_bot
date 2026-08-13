@@ -163,6 +163,7 @@ def test_state_first_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.DIGEST_CALENDAR_TODAY), sh.bot_digest_calendar_today),
         _cq(_state(ds.DIGEST_CALENDAR_YESTERDAY), sh.bot_digest_calendar_yesterday),
         _cq(_state(ds.DIGEST_PICK_DATE), sh.bot_digest_pick_date_prompt),
+        _cq(f"^{sh.DIGEST_BACK_FROM_DATE_CALLBACK}$", sb.bot_digest_date_menu),
         _cq(f"^{sb.NAV_PLAYERS}$", sb.nav_back_to_players),
         _cq(f"^{sb.NAV_FIELD}$", sb.nav_back_to_field),
         _cq(sh.STAT_PAGE_CALLBACK_PATTERN, sh.callback_stats_player_page),
@@ -210,6 +211,12 @@ def test_state_second_handlers_and_their_order(bot_module, application) -> None:
     assert _describe_all(conversation.states[ds.SECOND]) == [
         _cq(sh.STAT_PAGE_CALLBACK_PATTERN, sh.callback_stats_player_page),
         _cq(sh.TEAM_PAGE_CALLBACK_PATTERN, sh.callback_stats_team_page),
+        _cq(_state(ds.PLAYER_FIELD), sb.bot_player_field),
+        _cq(_state(ds.PLAYER_GOALIE), sb.bot_player_goalie),
+        _cq(_state(ds.PLAYER_ADVANCED_SUBMENU), sb.bot_player_advanced_menu),
+        _cq(_state(ds.TEAM_STATS), sb.bot_team_stats),
+        _cq(_state(ds.DAY_DIGEST), sb.bot_digest_date_menu),
+        _cq(f"^{sh.DIGEST_BACK_FROM_DATE_CALLBACK}$", sb.bot_digest_date_menu),
         _cq(_state(ds.CHOOSE_STATS), sb.stats_over),
         _cq(_state(ds.END_CONVERSATION), sb.end),
     ]
@@ -254,6 +261,44 @@ def test_state_third_message_handler_takes_text_but_not_commands(bot_module, app
         _text_update("/cancel", (MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=7),))
     )
     assert date_input_handler.filters is not filters.TEXT
+
+
+# ---------------------------------------------------------------------------
+# /cancel внутри диалога — снятие «зомби»-клавиатуры (Задача 6, §5.2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_in_conversation_clears_recorded_menu_keyboard(
+    bot_module, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    dialog_states = bot_module("dialog_states")
+    update = make_message_update("/cancel", chat_id=555)
+    fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] = 42
+
+    result = await bot.cmd_cancel_in_conversation(update, fake_context)
+
+    assert result == ConversationHandler.END
+    [call] = fake_context.bot.edited_markups
+    assert call == {"chat_id": 555, "message_id": 42, "reply_markup": None}
+    # Ключ снят — второй /cancel подряд не редактирует уже неактуальное сообщение.
+    assert dialog_states.LAST_MENU_MESSAGE_ID_KEY not in fake_context.user_data
+    assert update.message.replies[0]["text"] == "Вы вышли из меню. Снова: /stats"
+
+
+@pytest.mark.asyncio
+async def test_cancel_in_conversation_without_recorded_id_skips_keyboard_edit(
+    bot_module, make_message_update, fake_context
+):
+    """`/cancel` без открытого кнопкой меню — штатный случай (CLAUDE.md,
+    Global Constraint 4): отсутствие записи не ошибка, а не try/except."""
+    bot = bot_module("bot")
+    update = make_message_update("/cancel", chat_id=555)
+
+    result = await bot.cmd_cancel_in_conversation(update, fake_context)
+
+    assert result == ConversationHandler.END
+    assert fake_context.bot.edited_markups == []
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +349,13 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
 
     # Страховка от «проверили пустой список»: 17 регистраций колбэков bot.py
     # (15 standalone-команд, cmd_cancel_outside_conversation в группе 0,
-    # cmd_cancel_in_conversation в fallbacks), 15 регистраций script_bot.py
-    # (12 функций, из них stats, stats_root_edit и bot_digest_date_menu
-    # зарегистрированы дважды) и 42 регистрации stats_handlers.py.
-    assert len(registered) == 74
+    # cmd_cancel_in_conversation в fallbacks), 22 регистрации script_bot.py
+    # (12 функций; Задача 6 добавила в SECOND «« Назад»» на родительские
+    # подменю — bot_player_field/bot_player_goalie/bot_player_advanced_menu/
+    # bot_team_stats по 2 раза каждый, bot_digest_date_menu 5 раз — FIRST×2,
+    # SECOND×2, THIRD×1 — и stats/stats_root_edit по 2 раза, как раньше)
+    # и 42 регистрации stats_handlers.py (не менялось).
+    assert len(registered) == 81
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",

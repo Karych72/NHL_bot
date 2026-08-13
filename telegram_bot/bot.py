@@ -53,6 +53,7 @@ from dialog_states import (
     GOALIE_PERCENTAGE,
     GOALIE_SHOOTOUTS,
     GOALIE_WINS,
+    LAST_MENU_MESSAGE_ID_KEY,
     LEAGUE_STANDINGS,
     PLAYER_ADVANCED_SUBMENU,
     PLAYER_ASSISTS,
@@ -333,8 +334,29 @@ async def cmd_advanced(update: Update, context: CallbackContext) -> None:
 
 
 async def cmd_cancel_in_conversation(update: Update, context: CallbackContext) -> int:
-    """`/cancel` внутри диалога `/stats`: закрывает разговор."""
-    await _message(update).reply_text("Вы вышли из меню. Снова: /stats")
+    """`/cancel` внутри диалога `/stats`: закрывает разговор.
+
+    Зачем читает `user_data`: `ConversationHandler.END` не трогает сообщение
+    меню — его inline-клавиатура остаётся в чате на вид живой, но после конца
+    диалога ни один хендлер её callback_data больше не матчит (тот же класс
+    дефекта, что чинит §5.1 для кнопки «« Назад»» ввода даты). Если экран
+    меню создавался НОВЫМ сообщением (`script_bot.stats`/`stats_over`,
+    `stats_handlers.bot_league_standings`/`bot_digest_custom_date`/
+    `dispatch_day_digest_messages`), его id записан под
+    `dialog_states.LAST_MENU_MESSAGE_ID_KEY` — снимаем клавиатуру явно
+    (Задача 6, §5.2). Отсутствие записи — штатный случай (`/cancel` без
+    открытого меню), не ошибка.
+    """
+    message = _message(update)
+    assert context.user_data is not None
+    menu_message_id = context.user_data.pop(LAST_MENU_MESSAGE_ID_KEY, None)
+    if menu_message_id is not None:
+        await context.bot.edit_message_reply_markup(
+            chat_id=message.chat_id,
+            message_id=menu_message_id,
+            reply_markup=None,
+        )
+    await message.reply_text("Вы вышли из меню. Снова: /stats")
     return ConversationHandler.END
 
 
@@ -452,6 +474,12 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(
                     bot_digest_pick_date_prompt, pattern='^' + str(DIGEST_PICK_DATE) + '$'
                 ),
+                # Просроченная кнопка «« Назад»» ввода даты (её копии переживают
+                # выход из THIRD, см. stats_handlers.bot_digest_custom_date) —
+                # открывает меню дайджеста, родительский экран (Задача 6, §5.1).
+                CallbackQueryHandler(
+                    bot_digest_date_menu, pattern=f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$"
+                ),
                 CallbackQueryHandler(nav_back_to_players, pattern=f'^{NAV_PLAYERS}$'),
                 CallbackQueryHandler(nav_back_to_field, pattern=f'^{NAV_FIELD}$'),
                 CallbackQueryHandler(
@@ -504,6 +532,22 @@ def build_conversation_handler() -> ConversationHandler:
                 ),
                 CallbackQueryHandler(
                     callback_stats_team_page, pattern=TEAM_PAGE_CALLBACK_PATTERN
+                ),
+                # «« Назад»» страницы стата ведёт на родительское подменю
+                # (Задача 6, §4) — эти подменю возвращают FIRST, страница
+                # стата в SECOND, поэтому их хендлеры нужны и здесь.
+                CallbackQueryHandler(bot_player_field, pattern='^' + str(PLAYER_FIELD) + '$'),
+                CallbackQueryHandler(bot_player_goalie, pattern='^' + str(PLAYER_GOALIE) + '$'),
+                CallbackQueryHandler(
+                    bot_player_advanced_menu, pattern='^' + str(PLAYER_ADVANCED_SUBMENU) + '$'
+                ),
+                CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
+                # «« Назад»» результата дайджеста ведёт на меню дайджеста
+                # (Задача 6, §4); та же просроченная кнопка ввода даты, что
+                # и в FIRST (§5.1) — сюда тоже можно вернуться из SECOND.
+                CallbackQueryHandler(bot_digest_date_menu, pattern='^' + str(DAY_DIGEST) + '$'),
+                CallbackQueryHandler(
+                    bot_digest_date_menu, pattern=f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$"
                 ),
                 CallbackQueryHandler(stats_over, pattern='^' + str(CHOOSE_STATS) + '$'),
                 CallbackQueryHandler(end, pattern='^' + str(END_CONVERSATION) + '$'),
