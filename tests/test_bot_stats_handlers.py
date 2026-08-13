@@ -823,6 +823,60 @@ async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_
 
 
 # ---------------------------------------------------------------------------
+# dispatch_day_digest_messages — truncation marker on the multi-game summary
+# (Задача 11: граница Telegram 4096 отбрасывает заголовки матчей молча без
+# маркера «показаны N из M»).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
+    bot_module, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
+    )
+
+    sent_text = fake_context.bot.sent_messages[0]["text"]
+    assert "Показаны" not in sent_text
+    assert "Матч 1 текст" in sent_text
+    assert "Матч 2 текст" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
+    bot_module, fake_context
+):
+    """Сводка дня, которая не влезает в лимит Telegram, должна честно сказать,
+    сколько из всех матчей дня реально попало в текст, а не молчать про
+    отброшенные заголовки."""
+    stats_handlers = bot_module("stats_handlers")
+    total_games = 80
+    games = [
+        (
+            i + 1,
+            f"Матч {i + 1}: команда А против команды Б, финальный счёт " + "X" * 40,
+            [],
+        )
+        for i in range(total_games)
+    ]
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
+    )
+
+    sent_text = fake_context.bot.sent_messages[0]["text"]
+    assert len(sent_text) <= 4096
+    match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
+    assert match is not None
+    shown, total = int(match.group(1)), int(match.group(2))
+    assert total == total_games
+    assert 0 < shown < total_games
+
+
+# ---------------------------------------------------------------------------
 # Callback regex patterns directly — malformed/malicious shapes must not match
 # ---------------------------------------------------------------------------
 

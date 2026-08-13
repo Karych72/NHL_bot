@@ -580,7 +580,25 @@ def player_stats_with_count(
     *,
     secondary_sort: Optional[str] = None,
     use_html: bool = False,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, int]:
+    """Страница лидерборда игроков/вратарей плюс размер полной выборки.
+
+    Зачем: страница отдаёт `LIMIT`/`OFFSET`-подмножество строк, но для маркера
+    «показаны N из M» (Задача 11) вызывающему коду нужен и полный размер
+    выборки — берём его окном `COUNT(*) OVER ()` в том же запросе, без
+    отдельного похода в БД.
+
+    Аргументы:
+        name_stats: заголовок блока (пусто — без заголовка, см. `use_html`).
+        table_name: таблица статистики, из белого списка `validate_table`.
+        column_name: колонка сортировки, из белого списка `validate_column`.
+        count: сколько строк вернуть (размер страницы).
+        offset: сдвиг страницы.
+        secondary_sort: вторичная сортировка при равенстве `column_name`.
+        use_html: HTML-рендер (для ботовых сообщений) вместо jinja-шаблона.
+
+    Возвращает: (текст, число строк на странице, полный размер выборки).
+    """
     validate_table(table_name)
     validate_column(column_name)
     if offset < 0:
@@ -596,7 +614,8 @@ def player_stats_with_count(
     )
 
     q = sql.SQL(
-        "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.abbreviation AS team "
+        "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.abbreviation AS team, "
+        "COUNT(*) OVER () AS total "
         "FROM {table} pl "
         "{join_pss}"
         "LEFT JOIN rosters r ON pl.player_id = r.player_id AND r.season_id = pl.season_id "
@@ -614,8 +633,12 @@ def player_stats_with_count(
     )
     stats = cached_fetch_all(
         q, (config.SEASON_ID, count, offset),
-        ['lastname', 'roster_position', 'points', 'team'],
+        ['lastname', 'roster_position', 'points', 'team', 'total'],
     )
+
+    # COUNT(*) OVER () не возвращает строк вовсе для пустой выборки — total
+    # в этом случае 0, а не отсутствующее значение.
+    total = int(stats['total'][0]) if stats['count_rows'] else 0
 
     roster_positions = stats.get("roster_position")
     players = []
@@ -644,12 +667,14 @@ def player_stats_with_count(
             body = f"<b>{html.escape(name_stats)}</b>\n\n{body_inner}"
         else:
             body = body_inner
-        return body, stats["count_rows"]
+        return body, stats["count_rows"], total
 
     to_template: Dict[str, Any] = {'name_stats': name_stats, 'players': players}
-    return output_text('messages/season_leaders_players.txt', to_template), stats[
-        "count_rows"
-    ]
+    return (
+        output_text('messages/season_leaders_players.txt', to_template),
+        stats["count_rows"],
+        total,
+    )
 
 
 def player_stats(
@@ -703,7 +728,7 @@ def player_stat_leaderboard_page(
     """Произвольная таблица лидеров игроков/вратарей: шапка + пустая строка + список."""
     if offset < 0:
         offset = 0
-    body, n = player_stats_with_count(
+    body, n, total = player_stats_with_count(
         "",
         table_name,
         column_name,
@@ -715,12 +740,17 @@ def player_stat_leaderboard_page(
     span = _rank_range_label(offset, n)
     if n == 0:
         body = "<i>Нет данных в этом диапазоне.</i>"
+        marker = f"<i>{html.escape(span)}</i>"
+    else:
+        marker = truncation_marker(html.escape(span), total, item_word="строк")
     text = (
         f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
-        f"— <i>{html.escape(span)}</i>\n\n{body}"
+        f"— {marker}\n\n{body}"
     )
     has_prev = offset > 0
-    has_next = n >= LEADERBOARD_PAGE_SIZE
+    # total, а не «страница пришла полной» — иначе последняя полная страница
+    # рисует кнопку «вперёд» на пустой диапазон, противореча маркеру выше.
+    has_next = offset + n < total
     return text, has_prev, has_next
 
 
@@ -960,16 +990,20 @@ def season_team_abbrev_help_text() -> str:
             f"<b>Команды сезона</b> ({season_esc})\n"
             "В базе пока нет списка команд для этого сезона."
         )
-    parts = [f"<code>{html.escape(a)}</code>" for a in abbrevs]
+    parts_all = [f"<code>{html.escape(a)}</code>" for a in abbrevs]
+    parts = parts_all
     inner = ", ".join(parts)
     max_inner = 3500
     while len(inner) > max_inner and len(parts) > 1:
         parts = parts[:-1]
-        inner = ", ".join(parts) + "…"
+        inner = ", ".join(parts)
     if len(inner) > max_inner:
         inner = inner[: max_inner - 1] + "…"
+    marker = ""
+    if len(parts) < len(parts_all):
+        marker = "\n\n" + truncation_marker(len(parts), len(parts_all), item_word="команд")
     return (
-        f"<b>Команды сезона</b> ({season_esc}) — аббревиатуры:\n{inner}\n\n"
+        f"<b>Команды сезона</b> ({season_esc}) — аббревиатуры:\n{inner}{marker}\n\n"
         "Карточку матча из базы удобнее открыть через <code>/day_games</code> "
         "или <code>/stats</code> → дайджест."
     )
@@ -982,13 +1016,25 @@ def team_stats_with_count(
     offset: int = 0,
     *,
     use_html: bool = False,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, int]:
+    """Страница лидерборда команд плюс размер полной выборки.
+
+    Зачем: как `player_stats_with_count` — маркер «показаны N из M» (Задача 11)
+    нуждается в полном размере выборки, который берём окном `COUNT(*) OVER ()`
+    в этом же запросе, а не отдельным `SELECT count(*)`.
+
+    Аргументы: как у `team_stats`/`team_stat_leaderboard_page` — заголовок,
+    колонка сортировки (из белого списка `validate_column`), размер и сдвиг
+    страницы, HTML-рендер вместо jinja-шаблона.
+
+    Возвращает: (текст, число строк на странице, полный размер выборки).
+    """
     validate_column(column_name)
     if offset < 0:
         offset = 0
 
     q = sql.SQL(
-        "SELECT short_name, {col}, games_played "
+        "SELECT short_name, {col}, games_played, COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
@@ -998,8 +1044,10 @@ def team_stats_with_count(
     stats = cached_fetch_all(
         q,
         (config.SEASON_ID, count, offset),
-        columns=['team', 'points', 'games_played'],
+        columns=['team', 'points', 'games_played', 'total'],
     )
+
+    total = int(stats['total'][0]) if stats['count_rows'] else 0
 
     teams = []
     for i in range(stats['count_rows']):
@@ -1024,11 +1072,16 @@ def team_stats_with_count(
             return (
                 f"<b>{html.escape(name_stats)}</b>\n\n{body_t}",
                 stats["count_rows"],
+                total,
             )
-        return body_t, stats["count_rows"]
+        return body_t, stats["count_rows"], total
 
     to_template: Dict[str, Any] = {'name_stats': name_stats, 'teams': teams}
-    return output_text('messages/team_stats.txt', to_template), stats["count_rows"]
+    return (
+        output_text('messages/team_stats.txt', to_template),
+        stats["count_rows"],
+        total,
+    )
 
 
 def team_stat_leaderboard_page(
@@ -1037,7 +1090,7 @@ def team_stat_leaderboard_page(
     offset: int,
 ) -> Tuple[str, bool, bool]:
     """Топ команд по одной колонке teams_stats."""
-    body, n = team_stats_with_count(
+    body, n, total = team_stats_with_count(
         "",
         column_name,
         count=LEADERBOARD_PAGE_SIZE,
@@ -1047,12 +1100,15 @@ def team_stat_leaderboard_page(
     span = _rank_range_label(offset, n)
     if n == 0:
         body = "<i>Нет данных в этом диапазоне.</i>"
+        marker = f"<i>{html.escape(span)}</i>"
+    else:
+        marker = truncation_marker(html.escape(span), total, item_word="строк")
     text = (
         f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
-        f"— <i>{html.escape(span)}</i>\n\n{body}"
+        f"— {marker}\n\n{body}"
     )
     has_prev = offset > 0
-    has_next = n >= LEADERBOARD_PAGE_SIZE
+    has_next = offset + n < total
     return text, has_prev, has_next
 
 
@@ -1111,22 +1167,111 @@ def day_digest_summary_body(real_games: List[Tuple[int, str, List[Dict]]]) -> st
     return "\n".join(lines)
 
 
+def truncation_marker(
+    shown: Optional[Union[int, str]] = None,
+    total: Optional[int] = None,
+    *,
+    item_word: str = "",
+) -> str:
+    """Единственная точка, где собирается курсивная HTML-сноска об усечении.
+
+    Зачем: обрезка по лимиту Telegram (`truncate_telegram_text`) и обрезка
+    выборки (страницы лидербордов, список аббревиатур команд) не должны каждая
+    заново собирать текст сноски — иначе формат расползается по веткам
+    (Задача 11).
+
+    Экранирование: `shown` вставляется в HTML как есть — экранировать его
+    (если это строка из непроверенного источника) обязана вызывающая сторона
+    до передачи сюда, как делают лидерборды (`html.escape(span)`).
+
+    Аргументы:
+        shown: сколько показано — число или диапазон («1–10»); None — сноска
+            без чисел, для обрезки прозаического текста, где считать элементы
+            нечем (нет счётных элементов, N/M выдумывать не из чего).
+        total: всего элементов в исходной выборке; обязателен, если задан
+            `shown` — иначе неоднозначно, что означает «показаны N из ничего».
+        item_word: существительное в родительном падеже множественного числа
+            («строк», «матчей», «команд»); пусто, если числа сами по себе ясны.
+
+    Исключения:
+        ValueError: если `shown` задан, а `total` — нет.
+    """
+    if shown is None:
+        return "<i>Текст обрезан (лимит Telegram).</i>"
+    if total is None:
+        raise ValueError("truncation_marker: total обязателен, если задан shown")
+    word = f" {item_word}" if item_word else ""
+    return f"<i>Показаны {shown} из {total}{word}.</i>"
+
+
+def _telegram_cut_budget(
+    note: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH
+) -> int:
+    """Сколько символов исходного текста остаётся под обрезку `truncate_telegram_text`
+    при данной сноске `note`.
+
+    Зачем: `digest_shown_match_count` предсказывает результат
+    `truncate_telegram_text` заранее (чтобы посчитать N для маркера), поэтому
+    обе функции обязаны считать бюджет одной и той же формулой — раздельные
+    копии рассинхронизируются при правке одной из них и заставят маркер
+    молча врать про число показанных элементов.
+
+    Аргументы:
+        note: сноска, которая будет дописана после обрезки (с учётом
+            разделителя "\\n\\n", если он нужен).
+        max_len: лимит символов сообщения (по умолчанию
+            `TELEGRAM_MAX_MESSAGE_LENGTH`).
+    """
+    cut = max_len - len(note) - 3
+    return max(cut, 80)
+
+
+def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
+    """Сколько заголовков матчей из `lines` уместится в сводке дайджеста после
+    обрезки `truncate_telegram_text` по лимиту Telegram.
+
+    Зачем: обрезка режет текст по символам, а не по заголовкам матчей, поэтому
+    число реально показанных матчей для маркера «показаны N из M» (Задача 11)
+    нужно подобрать отдельно — иначе сноска солжёт о том, сколько матчей
+    осталось видно.
+
+    Аргументы:
+        header: неизменяемая часть сводки перед списком заголовков матчей
+            (включает завершающие переносы строк).
+        lines: заголовки матчей, по одному на матч, в порядке отображения.
+        total: всего матчей в выборке дня — M в маркере.
+    """
+    shown = len(lines)
+    while shown > 0:
+        note = "\n\n" + truncation_marker(shown, total, item_word="матчей")
+        cut = _telegram_cut_budget(note)
+        prefix_len = len(header) + len("\n".join(lines[:shown]))
+        if prefix_len <= cut:
+            return shown
+        shown -= 1
+    return 0
+
+
 def truncate_telegram_text(
     text: str,
     max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH,
     *,
     footer_note: Optional[str] = None,
 ) -> str:
+    """Режет `text` под лимит Telegram (по умолчанию 4096), добавляя сноску.
+
+    Зачем: сообщения Telegram не долетают за лимитом символов; резать нужно с
+    запасом под сноску и добавлять её саму, а не отправлять оборванный текст
+    без предупреждения.
+
+    Аргументы:
+        text: исходный текст сообщения.
+        max_len: лимит символов (по умолчанию `TELEGRAM_MAX_MESSAGE_LENGTH`).
+        footer_note: сноска, дописываемая после обрезки; по умолчанию — общая
+            сноска о лимите Telegram без чисел (`truncation_marker()`).
+    """
     if len(text) <= max_len:
         return text
-    note = (
-        footer_note
-        if footer_note is not None
-        else (
-            "\n\n<i>Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже.</i>"
-        )
-    )
-    cut = max_len - len(note) - 3
-    if cut < 80:
-        cut = 80
+    note = footer_note if footer_note is not None else ("\n\n" + truncation_marker())
+    cut = _telegram_cut_budget(note, max_len)
     return text[:cut] + "..." + note

@@ -38,6 +38,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
             "lastname": ["Ovechkin"],
             "points": [58.2],
             "team": ["WSH"],
+            "total": [1],
             "count_rows": 1,
         }
         cases = [
@@ -142,6 +143,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "lastname": ["Ovechkin"],
             "points": [99],
             "team": ["WSH"],
+            "total": [1],
             "count_rows": 1,
         }
         with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows):
