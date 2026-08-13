@@ -3,6 +3,7 @@ import importlib
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -168,9 +169,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         class FakeBot:
             async def send_message(self, **kwargs):
                 sent.append(kwargs)
+                return SimpleNamespace(message_id=len(sent))
 
         class FakeContext:
             bot = FakeBot()
+            user_data: dict = {}
 
         games = [
             (
@@ -195,9 +198,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         class FakeBot:
             async def send_message(self, **kwargs):
                 sent.append(kwargs)
+                return SimpleNamespace(message_id=len(sent))
 
         class FakeContext:
             bot = FakeBot()
+            user_data: dict = {}
 
         games = [
             (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
@@ -213,8 +218,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         kb = sent[0]["reply_markup"].inline_keyboard
         self.assertTrue(any("Матч 1" in row[0].text for row in kb if row))
         ds = importlib.import_module("dialog_states")
-        self.assertEqual(kb[-1][0].callback_data, str(ds.CHOOSE_STATS))
-        self.assertEqual(kb[-1][1].callback_data, str(ds.END_CONVERSATION))
+        # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
+        # сразу в корень; «В начало»/«Закрыть меню» — следом.
+        self.assertEqual(kb[-1][0].callback_data, str(ds.DAY_DIGEST))
+        self.assertEqual(kb[-1][1].callback_data, str(ds.CHOOSE_STATS))
+        self.assertEqual(kb[-1][2].callback_data, str(ds.END_CONVERSATION))
 
     async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()

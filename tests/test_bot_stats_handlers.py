@@ -23,30 +23,33 @@ from telegram.error import BadRequest
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "builder_name, args, prefix, footer_kind",
+    "builder_name, args, prefix, footer_kind, parent_attr",
     [
         (
             "conversation_player_stat_keyboard",
             ("players_season_stats", "points"),
             "st:players_season_stats:points:",
             "menu_nav",
+            "PLAYER_FIELD",
         ),
         (
             "conversation_team_stat_keyboard",
             ("procent_points",),
             "tm:procent_points:",
             "menu_nav",
+            "TEAM_STATS",
         ),
         (
             "standalone_player_stat_keyboard",
             ("players_season_stats", "points"),
             "sa:players_season_stats:points:",
             "close",
+            None,
         ),
     ],
 )
 def test_pagination_keyboard_offsets_and_prev_floor(
-    bot_module, builder_name, args, prefix, footer_kind
+    bot_module, builder_name, args, prefix, footer_kind, parent_attr
 ):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
@@ -62,7 +65,10 @@ def test_pagination_keyboard_offsets_and_prev_floor(
 
     footer = markup.inline_keyboard[-1]
     if footer_kind == "menu_nav":
+        # «« Назад»» на родительское подменю, «В начало» на корень, «Готово»
+        # на выход: родитель, если он есть, а не корень.
         assert [b.callback_data for b in footer] == [
+            str(getattr(dialog_states, parent_attr)),
             str(dialog_states.CHOOSE_STATS),
             str(dialog_states.END_CONVERSATION),
         ]
@@ -83,8 +89,42 @@ def test_pagination_keyboard_omits_nav_row_on_single_page(bot_module, builder_na
 
     markup = builder(*args, 0, has_prev=False, has_next=False)
 
-    # Only the "В начало"/"Готово" footer row remains — no empty nav row.
+    # Only the footer row («« Назад»» / «В начало» / «Готово») remains — no
+    # empty pagination row.
     assert len(markup.inline_keyboard) == 1
+
+
+# ---------------------------------------------------------------------------
+# «« Назад»» страницы стата игрока/вратаря — родитель выводится из
+# (table, column), а не хранится: callback_data пагинации
+# (`st:{table}:{column}:{offset}`) не оставляет места для лишнего поля.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "table, column, expected_parent_attr",
+    [
+        ("players_season_stats", "points", "PLAYER_FIELD"),
+        ("players_season_stats", "time_on_ice_per_game", "PLAYER_FIELD"),
+        # shootout_pct физически лежит в players_season_stats, но в меню
+        # (script_bot.bot_player_advanced_menu) он в advanced-подменю, не в
+        # полевых — правило деривации должно это отражать.
+        ("players_season_stats", "shootout_pct", "PLAYER_ADVANCED_SUBMENU"),
+        ("players_advanced_stats", "sat_pct", "PLAYER_ADVANCED_SUBMENU"),
+        ("players_shot_types", "goals_wrist", "PLAYER_ADVANCED_SUBMENU"),
+        ("goalies_season_stats", "wins", "PLAYER_GOALIE"),
+    ],
+)
+def test_conversation_player_stat_keyboard_back_targets_correct_submenu(
+    bot_module, table, column, expected_parent_attr
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+
+    markup = stats_handlers.conversation_player_stat_keyboard(
+        table, column, 0, has_prev=False, has_next=False
+    )
+    [footer] = markup.inline_keyboard
+    assert footer[0].callback_data == str(getattr(dialog_states, expected_parent_attr))
 
 
 def test_leaders_category_keyboard_has_fixed_three_categories(bot_module):
@@ -309,6 +349,32 @@ async def test_callback_reraises_other_bad_request(
     with patch.object(stats_handlers, patched_func, return_value=_RENDER_RETURN):
         with pytest.raises(BadRequest, match="Chat not found"):
             await handler(update, fake_context)
+
+
+# ---------------------------------------------------------------------------
+# bot_league_standings создаёт НОВОЕ сообщение (`send_message`, не
+# `edit_message_text`) с клавиатурой меню (« Главное меню» → CHOOSE_STATS) —
+# его message_id должен попасть в user_data так же, как у остальных мест,
+# создающих новое сообщение с живой FSM-клавиатурой.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_league_standings_records_new_message_id_for_cancel(
+    bot_module, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    update = make_callback_update(str(dialog_states.LEAGUE_STANDINGS))
+
+    with patch.object(stats_handlers, "team_table", return_value="TABLE"):
+        result = await stats_handlers.bot_league_standings(update, fake_context)
+
+    assert result == dialog_states.FIRST
+    sent = fake_context.bot.sent_messages[0]
+    assert sent["text"] == "TABLE"
+    [row] = sent["reply_markup"].inline_keyboard
+    assert row[0].callback_data == str(dialog_states.CHOOSE_STATS)
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +716,7 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
 @pytest.mark.asyncio
 async def test_digest_custom_date_rejects_bad_format(bot_module, make_message_update, fake_context):
     stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
     update = make_message_update("not-a-date")
 
     result = await stats_handlers.bot_digest_custom_date(update, fake_context)
@@ -661,11 +728,15 @@ async def test_digest_custom_date_rejects_bad_format(bot_module, make_message_up
     # иметь кнопку выхода, а не только текстовое упоминание /cancel.
     buttons = [b for row in reply["reply_markup"].inline_keyboard for b in row]
     assert buttons[0].callback_data == stats_handlers.DIGEST_BACK_FROM_DATE_CALLBACK
+    # Это НОВОЕ сообщение (reply_text) — его id записан, чтобы /cancel мог
+    # снять клавиатуру с него.
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 @pytest.mark.asyncio
 async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, make_message_update, fake_context):
     stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
     update = make_message_update("2025-12-01")
 
     with patch.object(
@@ -677,8 +748,78 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
     assert result == stats_handlers.SECOND
     # dispatch_day_digest_messages ran for real (not mocked) — assert on what
     # it actually sent, not just that something was sent.
-    assert fake_context.bot.sent_messages[0]["text"] == "text"
-    assert fake_context.bot.sent_messages[0]["chat_id"] == 100
+    sent = fake_context.bot.sent_messages[0]
+    assert sent["text"] == "text"
+    assert sent["chat_id"] == 100
+    # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень;
+    # сообщение новое (send_message) — id записан для /cancel. Единственный
+    # реальный матч без кнопок видео гола рендерится build_menu(..., n_cols=1)
+    # — каждая кнопка на своей строке.
+    nav_rows = sent["reply_markup"].inline_keyboard[-3:]
+    assert [row[0].callback_data for row in nav_rows] == [
+        str(dialog_states.DAY_DIGEST),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+
+
+# ---------------------------------------------------------------------------
+# dispatch_day_digest_messages — the two branches not covered by the
+# bot_digest_custom_date test above: "no real games" (gid == 0, built at
+# stats_handlers.py:473) and multi-game (2+ real games, built starting at
+# stats_handlers.py:515). Each is a physically separate code path — its own
+# nav_markup/send_message call — but both attach the same 3-button footer and
+# record the same way, so one parametrized test asserts both.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "games",
+    [
+        pytest.param([(0, "Матчей не найдено", [])], id="no_real_games"),
+        pytest.param(
+            [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])], id="multi_game"
+        ),
+    ],
+)
+async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
+    bot_module, fake_context, games
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=True,
+    )
+
+    sent = fake_context.bot.sent_messages[0]
+    nav_row = sent["reply_markup"].inline_keyboard[-1]
+    assert [b.callback_data for b in nav_row] == [
+        str(dialog_states.DAY_DIGEST),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_id(
+    bot_module, fake_context
+):
+    """`/day_games` и `/today` вызывают с `attach_conv_nav_on_last=False` — вне
+    диалога `/stats`, никакая FSM-клавиатура не рисуется, поэтому и записывать
+    в `user_data` нечего (иначе /cancel начал бы снимать клавиатуру с чужого,
+    не диалогового сообщения)."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
+    )
+
+    assert dialog_states.LAST_MENU_MESSAGE_ID_KEY not in fake_context.user_data
 
 
 # ---------------------------------------------------------------------------

@@ -25,9 +25,15 @@ from bot_messages import (
 )
 from dialog_states import (
     CHOOSE_STATS,
+    DAY_DIGEST,
     END_CONVERSATION,
     FIRST,
+    LAST_MENU_MESSAGE_ID_KEY,
+    PLAYER_ADVANCED_SUBMENU,
+    PLAYER_FIELD,
+    PLAYER_GOALIE,
     SECOND,
+    TEAM_STATS,
     THIRD,
     build_menu,
 )
@@ -59,11 +65,60 @@ STANDALONE_SA_CALLBACK_PATTERN = r"^sa:"
 ADV_CALLBACK_PREFIX = "adv:"
 
 
-def _stats_menu_nav_row() -> List[InlineKeyboardButton]:
+def _stats_menu_nav_row(parent_state: int) -> List[InlineKeyboardButton]:
+    """Нижний ряд навигации страницы стата: родитель / корень / выход.
+
+    `parent_state` — callback_data родительского экрана (подменю, из которого
+    открыли эту страницу): «« Назад» ведёт туда, а не сразу в корень.
+    Родитель для страниц статов игроков/вратарей выводится из
+    (table, column) — см. `_player_stat_parent_state`.
+    """
     return [
+        InlineKeyboardButton("« Назад", callback_data=str(parent_state)),
         InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
         InlineKeyboardButton("Готово", callback_data=str(END_CONVERSATION)),
     ]
+
+
+def _record_menu_message(context: CallbackContext, message_id: int) -> None:
+    """Записывает id сообщения с живой FSM-клавиатурой меню в `user_data`
+    под ключом `dialog_states.LAST_MENU_MESSAGE_ID_KEY` (см. его комментарий
+    для канонического списка мест, которые сюда пишут и читают).
+
+    Вызывается только там, где страница диалога `/stats` создаёт НОВОЕ
+    сообщение (`send_message`/`reply_text`, а не `edit_message_text`) — эти
+    места в этом модуле собраны через один вызов, чтобы не повторять guard
+    на каждом из них. `context.user_data` типизирован как `Optional`, но
+    гарантированно не `None` для контекста, порождённого реальным Update от
+    пользователя (единственный вызывающий тут сценарий, в отличие от
+    `push_digest_job.py`, который сам себе строит контекст без пользователя
+    и не проходит в ветки, откуда зовётся эта функция).
+    """
+    assert context.user_data is not None
+    context.user_data[LAST_MENU_MESSAGE_ID_KEY] = message_id
+
+
+def _player_stat_parent_state(table: str, column: str) -> int:
+    """Родительское подменю страницы стата игрока/вратаря — по (table, column).
+
+    Зачем выводить, а не хранить: пагинация (`callback_stats_player_page`)
+    восстанавливает клавиатуру только из `table`/`column`/`offset` в
+    callback_data (лимит Telegram 64 байта не оставляет места для лишнего
+    поля) — родитель должен считаться тем же правилом, каким собраны сами
+    подменю в `script_bot.py`: `bot_player_advanced_menu` собирает
+    `players_advanced_stats`, `players_shot_types` и `shootout_pct`
+    (единственный столбец advanced-набора, физически лежащий в
+    `players_season_stats`); остальные `players_season_stats` — подменю
+    полевых (`bot_player_field`); `goalies_season_stats` — подменю вратарей
+    (`bot_player_goalie`).
+    """
+    if table == "goalies_season_stats":
+        return PLAYER_GOALIE
+    if table in ("players_advanced_stats", "players_shot_types") or (
+        table, column
+    ) == ("players_season_stats", "shootout_pct"):
+        return PLAYER_ADVANCED_SUBMENU
+    return PLAYER_FIELD
 
 
 def conversation_player_stat_keyboard(
@@ -92,7 +147,7 @@ def conversation_player_stat_keyboard(
         )
     if nav:
         rows.append(nav)
-    rows.append(_stats_menu_nav_row())
+    rows.append(_stats_menu_nav_row(_player_stat_parent_state(table, column)))
     return InlineKeyboardMarkup(rows)
 
 
@@ -121,7 +176,10 @@ def conversation_team_stat_keyboard(
         )
     if nav:
         rows.append(nav)
-    rows.append(_stats_menu_nav_row())
+    # Единственное подменю команд (bot_team_stats/TEAM_STATS) — table в
+    # callback_data «tm:...» не передаётся, других родителей у страниц
+    # команд нет.
+    rows.append(_stats_menu_nav_row(TEAM_STATS))
     return InlineKeyboardMarkup(rows)
 
 
@@ -405,7 +463,11 @@ async def dispatch_day_digest_messages(
         if inter_message_sleep_sec is not None and inter_message_sleep_sec > 0:
             await asyncio.sleep(inter_message_sleep_sec)
 
+    # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), а не сразу
+    # корень: «Сегодня»/«Вчера»/ввод даты открываются из bot_digest_date_menu,
+    # туда и ведёт «« Назад»».
     nav_buttons = [
+        InlineKeyboardButton("« Назад", callback_data=str(DAY_DIGEST)),
         InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
         InlineKeyboardButton("Закрыть меню", callback_data=str(END_CONVERSATION)),
     ]
@@ -418,12 +480,14 @@ async def dispatch_day_digest_messages(
             InlineKeyboardMarkup([nav_buttons]) if attach_conv_nav_on_last else None
         )
         safe_text = html.escape(text) if text else ""
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             chat_id=chat_id,
             text=safe_text,
             parse_mode="HTML",
             reply_markup=nav_markup,
         )
+        if attach_conv_nav_on_last:
+            _record_menu_message(context, sent.message_id)
         await _pause()
         if not attach_conv_nav_on_last:
             await context.bot.send_message(
@@ -438,9 +502,11 @@ async def dispatch_day_digest_messages(
         goal_buttons = _goal_video_buttons(goals_meta)
         buttons = goal_buttons + (nav_buttons if attach_conv_nav_on_last else [])
         markup = InlineKeyboardMarkup(build_menu(buttons, n_cols=1)) if buttons else None
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
         )
+        if attach_conv_nav_on_last:
+            _record_menu_message(context, sent.message_id)
         await _pause()
         if not attach_conv_nav_on_last:
             await context.bot.send_message(
@@ -470,9 +536,11 @@ async def dispatch_day_digest_messages(
         rows.append(nav_buttons)
     markup = InlineKeyboardMarkup(rows)
 
-    await context.bot.send_message(
+    sent = await context.bot.send_message(
         chat_id=chat_id, text=summary_text, parse_mode="HTML", reply_markup=markup,
     )
+    if attach_conv_nav_on_last:
+        _record_menu_message(context, sent.message_id)
     await _pause()
 
     if not attach_conv_nav_on_last:
@@ -580,18 +648,26 @@ def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
 
 
 async def bot_league_standings(update: Update, context: CallbackContext) -> int:
+    """Турнирная таблица NHL: отдельное сообщение с кнопкой «« Главное меню»».
+
+    `LEAGUE_STANDINGS` — прямой пункт главного меню, поэтому родитель этой
+    страницы уже корень: кнопка ведёт в `CHOOSE_STATS`. Сообщение новое
+    (`send_message`, не `edit_message_text`), поэтому его id записывается в
+    `user_data`, чтобы `/cancel` мог снять с него клавиатуру.
+    """
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
     markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("« Главное меню", callback_data=str(CHOOSE_STATS))]]
     )
-    await context.bot.send_message(
+    sent = await context.bot.send_message(
         chat_id=query.message.chat.id,
         text=team_table(),
         parse_mode="HTML",
         reply_markup=markup,
     )
+    _record_menu_message(context, sent.message_id)
     return FIRST
 
 
@@ -658,10 +734,14 @@ async def bot_digest_custom_date(update: Update, context: CallbackContext) -> in
     try:
         datetime.strptime(raw, "%Y-%m-%d")
     except ValueError:
-        await message.reply_text(
+        # Новое сообщение (не edit_message_text) со своей копией «« Назад»» —
+        # id записывается в user_data, чтобы /cancel мог снять клавиатуру
+        # с этой конкретной (последней) копии.
+        sent = await message.reply_text(
             "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel.",
             reply_markup=_digest_back_from_date_keyboard(),
         )
+        _record_menu_message(context, sent.message_id)
         return THIRD
     day_label, games = day_digest(raw)
     await dispatch_day_digest_messages(

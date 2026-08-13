@@ -11,6 +11,16 @@ CHOOSE_STATS, TEAM_STATS, PLAYER_STATS, DAY_DIGEST, PLAYER_FIELD, PLAYER_GOALIE,
     PLAYER_SHOT_TIP_IN, PLAYER_SHOT_DEFLECTED, PLAYER_SHOT_WRAP_AROUND, \
     LEAGUE_STANDINGS, DIGEST_CALENDAR_TODAY, DIGEST_CALENDAR_YESTERDAY, DIGEST_PICK_DATE = range(38)
 
+# Ключ context.user_data: id последнего сообщения, созданного НОВЫМ
+# send_message()/reply_text() (а не edit_message_text(), который message_id
+# не меняет) и несущего актуальную FSM-клавиатуру меню /stats. Записывается
+# в script_bot.py (stats(), stats_over()) и stats_handlers.py
+# (bot_league_standings(), bot_digest_custom_date() при ошибке формата даты,
+# dispatch_day_digest_messages() при attach_conv_nav_on_last=True), читается
+# в bot.py (cmd_cancel_in_conversation()), чтобы /cancel мог снять клавиатуру
+# с этого сообщения — иначе она виснет «мёртвой» после конца диалога.
+LAST_MENU_MESSAGE_ID_KEY = "stats_last_menu_message_id"
+
 
 def build_menu(
     buttons: list,

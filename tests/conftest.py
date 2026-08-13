@@ -145,6 +145,7 @@ class FakeBot:
     def __init__(self) -> None:
         self.sent_messages: List[dict] = []
         self.sent_videos: List[dict] = []
+        self.edited_markups: List[dict] = []
 
     async def send_message(self, **kwargs: Any) -> SimpleNamespace:
         self.sent_messages.append(kwargs)
@@ -153,6 +154,10 @@ class FakeBot:
     async def send_video(self, **kwargs: Any) -> SimpleNamespace:
         self.sent_videos.append(kwargs)
         return SimpleNamespace(message_id=len(self.sent_videos))
+
+    async def edit_message_reply_markup(self, **kwargs: Any) -> SimpleNamespace:
+        self.edited_markups.append(kwargs)
+        return SimpleNamespace()
 
 
 class FakeCallbackQuery:
@@ -186,15 +191,20 @@ class FakeMessage:
         self.text = text
         self.chat_id = chat_id
         self.replies: List[dict] = []
+        # script_bot.stats() logs message.from_user.first_name; a real
+        # message-triggered Update always carries a from_user.
+        self.from_user = SimpleNamespace(first_name="Test")
 
-    async def reply_text(self, text: str, **kwargs: Any) -> None:
+    async def reply_text(self, text: str, **kwargs: Any) -> SimpleNamespace:
         self.replies.append({"text": text, **kwargs})
+        return SimpleNamespace(message_id=len(self.replies))
 
 
 @pytest.fixture
 def fake_context() -> SimpleNamespace:
-    """A CallbackContext-shaped object exposing only ``.bot`` (a FakeBot)."""
-    return SimpleNamespace(bot=FakeBot())
+    """A CallbackContext-shaped object exposing ``.bot`` (a FakeBot) and
+    ``.user_data`` (a plain dict, as PTB gives every per-user handler call)."""
+    return SimpleNamespace(bot=FakeBot(), user_data={})
 
 
 @pytest.fixture
