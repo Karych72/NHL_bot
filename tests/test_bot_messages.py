@@ -108,8 +108,14 @@ def _game_message_fetch_all(query, params=None, columns=None):
 
 @pytest.fixture
 def game_message_text(bot_module):
+    """game_message() itself only calls fetch_all (:106,111,126,145), but it
+    also calls _last_n_form_record() (:236-237), which since Task 9 goes
+    through cached_fetch_all — patch both to the same stub, so an unmocked
+    query fails loudly (the stub's terminal AssertionError) instead of
+    silently escaping to the real database.get_connection()."""
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all):
+    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
         text, goals_meta = bot_messages.game_message(555)
     return text, goals_meta
 

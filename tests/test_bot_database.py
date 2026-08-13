@@ -135,17 +135,17 @@ def test_fetch_all_without_columns_returns_only_count_rows(bot_module, fake_db_c
 #
 # database.cached_fetch_all is built once at import time
 # (``cached_fetch_all = ttl_cache(fetch_all)``), and module imports are cached
-# in sys.modules — so its internal cache dict would otherwise leak state
-# between tests (and between test files) that happen to reuse the same query
-# text. `cleared_cache` resets it before and after each test, the same way
-# `fake_pool_class` below resets `database._pool`.
+# in sys.modules — so its cache would otherwise leak state between tests (and
+# between test files) that happen to reuse the same query text. `ttl_cache`
+# is public, so `cleared_cache` gives each test its own fresh wrapper —
+# `database.ttl_cache(database.fetch_all)` — with an empty closure-local
+# cache, restored by monkeypatch's own teardown.
 
 @pytest.fixture
-def cleared_cache(bot_module):
+def cleared_cache(bot_module, monkeypatch):
     database = bot_module("database")
-    database.cached_fetch_all._cache.clear()
-    yield database
-    database.cached_fetch_all._cache.clear()
+    monkeypatch.setattr(database, "cached_fetch_all", database.ttl_cache(database.fetch_all))
+    return database
 
 
 def test_cached_fetch_all_reuses_result_within_ttl_without_hitting_db(cleared_cache, fake_db_connection):

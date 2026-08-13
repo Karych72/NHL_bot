@@ -13,7 +13,7 @@ import inspect
 import logging
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, ParamSpec, Sequence, Tuple, Union
 
 import psycopg2
 import psycopg2.pool
@@ -206,8 +206,10 @@ def fetch_all(
 # но не откладывает видимость новой загрузки на сколько-нибудь заметное время.
 CACHED_FETCH_ALL_TTL_SECONDS = 300.0  # 5 минут
 
+P = ParamSpec("P")
 
-def ttl_cache(func):
+
+def ttl_cache(func: Callable[P, Dict[str, Any]]) -> Callable[P, Dict[str, Any]]:
     """Мемоизирует синхронную функцию на CACHED_FETCH_ALL_TTL_SECONDS секунд.
 
     Аргументы вызова нормализуются через ``inspect.signature(func).bind()``,
@@ -235,7 +237,7 @@ def ttl_cache(func):
     cache: Dict[Tuple[str, ...], Tuple[float, Dict[str, Any]]] = {}
 
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Dict[str, Any]:
         bound = signature.bind(*args, **kwargs)
         bound.apply_defaults()
         key = tuple(
@@ -254,11 +256,6 @@ def ttl_cache(func):
         cache[key] = (now + CACHED_FETCH_ALL_TTL_SECONDS, result)
         return _copy_fetch_result(result)
 
-    # Внутренний кэш-дикт доступен тестам напрямую (по аналогии с тем, как
-    # тесты этого модуля уже сбрасывают database._pool между прогонами) —
-    # без него состояние утекало бы между тестами через закэшированный
-    # sys.modules["database"].
-    wrapper._cache = cache  # type: ignore[attr-defined]
     return wrapper
 
 
