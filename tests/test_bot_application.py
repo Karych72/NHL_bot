@@ -345,34 +345,12 @@ async def test_cancel_in_conversation_without_recorded_id_skips_keyboard_edit(
 # Точка входа
 # ---------------------------------------------------------------------------
 
-# config.validate_env() смотрит на сырое окружение (os.environ), а не на уже
-# задефолченные config.PG_*, поэтому тесты на main() выставляют все пять
-# обязательных переменных явно — не полагаясь на то, чем их снабдил make.
-_REQUIRED_ENV = {
-    "TELEGRAM_BOT_TOKEN": FAKE_TOKEN,
-    "PG_HOST": "localhost",
-    "PG_PORT": "5432",
-    "PG_USER": "nhl_bot_test",
-    "PG_DATABASE": "nhl_bot_test",
-}
-
-
-def _set_required_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
-    """Выставляет все переменные, обязательные для `config.validate_env()`.
-
-    `overrides` точечно подменяет значения из `_REQUIRED_ENV` (например, на
-    пустую строку) — для тестов конкретной недостающей переменной.
-    """
-    for name, value in {**_REQUIRED_ENV, **overrides}.items():
-        monkeypatch.setenv(name, value)
-
-
 def test_main_starts_polling_on_application_built_from_config_token(
-    bot_module, monkeypatch: pytest.MonkeyPatch
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
 ) -> None:
     bot = bot_module("bot")
     config = bot_module("config")
-    _set_required_env(monkeypatch)
+    set_required_bot_env()
     monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
 
     polled: List[Application] = []
@@ -388,11 +366,11 @@ def test_main_starts_polling_on_application_built_from_config_token(
 
 
 def test_main_raises_and_never_polls_when_token_missing(
-    bot_module, monkeypatch: pytest.MonkeyPatch
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
 ) -> None:
     """`bot.main()` падает до сборки `Application`, если токена нет."""
     bot = bot_module("bot")
-    _set_required_env(monkeypatch, TELEGRAM_BOT_TOKEN="")
+    set_required_bot_env(TELEGRAM_BOT_TOKEN="")
 
     polled: List[Application] = []
     monkeypatch.setattr(
@@ -413,11 +391,11 @@ def test_main_raises_and_never_polls_when_token_missing(
     "missing_var", ["TELEGRAM_BOT_TOKEN", "PG_HOST", "PG_PORT", "PG_USER", "PG_DATABASE"]
 )
 def test_validate_env_raises_on_missing_variable(
-    bot_module, monkeypatch: pytest.MonkeyPatch, missing_var: str
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env, missing_var: str
 ) -> None:
     """Отсутствующая (не заданная вовсе) переменная — падение с её именем."""
     config = bot_module("config")
-    _set_required_env(monkeypatch)
+    set_required_bot_env()
     monkeypatch.delenv(missing_var, raising=False)
 
     with pytest.raises(RuntimeError, match=missing_var):
@@ -426,23 +404,23 @@ def test_validate_env_raises_on_missing_variable(
 
 @pytest.mark.parametrize("blank_value", ["", "   "])
 def test_validate_env_raises_on_blank_variable(
-    bot_module, monkeypatch: pytest.MonkeyPatch, blank_value: str
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env, blank_value: str
 ) -> None:
     """Пустая строка или строка из пробелов считается отсутствием переменной."""
     config = bot_module("config")
-    _set_required_env(monkeypatch, PG_DATABASE=blank_value)
+    set_required_bot_env(PG_DATABASE=blank_value)
 
     with pytest.raises(RuntimeError, match="PG_DATABASE"):
         config.validate_env()
 
 
 def test_validate_env_error_message_does_not_leak_other_values(
-    bot_module, monkeypatch: pytest.MonkeyPatch
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
 ) -> None:
     """Сообщение об ошибке называет переменную, но не значения остальных."""
     config = bot_module("config")
     secret_token = "123456789:SUPER-SECRET-VALUE"
-    _set_required_env(monkeypatch, TELEGRAM_BOT_TOKEN=secret_token, PG_HOST="")
+    set_required_bot_env(TELEGRAM_BOT_TOKEN=secret_token, PG_HOST="")
 
     with pytest.raises(RuntimeError) as exc_info:
         config.validate_env()
@@ -451,10 +429,10 @@ def test_validate_env_error_message_does_not_leak_other_values(
 
 
 def test_validate_env_passes_when_all_required_variables_are_set(
-    bot_module, monkeypatch: pytest.MonkeyPatch
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
 ) -> None:
     config = bot_module("config")
-    _set_required_env(monkeypatch)
+    set_required_bot_env()
 
     config.validate_env()  # не должно бросить исключение
 
