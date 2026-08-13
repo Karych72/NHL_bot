@@ -172,9 +172,16 @@ PIM по командам считается суммой событий-пен�
 
 ## 6. Тестовое покрытие
 
-- `tests/test_pipeline_optional_helpers.py` — юнит-тесты на `optional_*` и
-  `safe_pct`, плюс контрактные тесты `build_game_rows` (PPG-флаг, отсутствие
-  `-9999`, NULL для пропущенного `toi` / `decision` / `duration`).
+- `tests/test_pipeline_optional_helpers.py` — юнит-тесты §1 на `to_int`,
+  `optional_*` и `safe_pct`, плюс контрактные тесты `build_game_rows` на
+  синтетическом payload (PPG-флаг, отсутствие `-9999`, NULL для пропущенного
+  `toi` / `decision` / `duration`).
+- `tests/test_pipeline_season_rows.py` и `tests/test_pipeline_game_rows.py` —
+  сборка строк для всех целевых таблиц на урезанных **реальных** ответах API
+  (`tests/fixtures/nhl_*.json`, снимаются `scripts/capture_nhl_fixtures.py`):
+  для каждой таблицы из §2 показаны оба случая — пришедшее значение (включая
+  настоящий 0) сохраняется, отсутствующее поле даёт `None`; отдельно
+  проверены намеренные не-`NULL` default из §3.
 - `tests/test_db_nhl.py` (включается через `RUN_DB_DATA_TESTS=1`) — ссылочная
   целостность; запускается после `make season-sync-month` на тестовом окне.
 

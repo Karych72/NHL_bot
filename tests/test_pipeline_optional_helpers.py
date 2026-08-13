@@ -1,8 +1,10 @@
 """Loader contract: missing source fields must surface as Python ``None``.
 
-Targets the helpers introduced for ``docs/pipeline_nulls_and_explicit_null_tz.md``
-so PostgreSQL stores ``NULL`` instead of legacy 0 / "00:00" / -9999 sentinels
-when the NHL API omits a field.
+Covers both coercion families of ``docs/pipeline_nulls_and_explicit_null_tz.md``
+§1 at single-value level — ``to_int``'s eager default for key columns, and the
+``optional_*`` / ``safe_pct`` helpers that make PostgreSQL store ``NULL``
+instead of legacy 0 / "00:00" / -9999 sentinels when the NHL API omits a field.
+Row assembly on real payloads lives in ``tests/test_pipeline_*_rows.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +22,22 @@ for path in (TELEGRAM_BOT, PIPELINE_DIR):
         sys.path.insert(0, path)
 
 import load_season_modern as loader  # noqa: E402
+
+
+class EagerDefaultCoercerTest(unittest.TestCase):
+    """The other half of §1: ``to_int`` keeps an eager default for key columns."""
+
+    def test_to_int_falls_back_to_default_for_missing_or_invalid(self):
+        self.assertEqual(loader.to_int(None), 0)
+        self.assertEqual(loader.to_int(""), 0)
+        self.assertEqual(loader.to_int("abc"), 0)
+        self.assertEqual(loader.to_int(object()), 0)
+        self.assertEqual(loader.to_int(None, 5), 5)
+
+    def test_to_int_parses_present_values(self):
+        self.assertEqual(loader.to_int(0), 0)
+        self.assertEqual(loader.to_int("42"), 42)
+        self.assertEqual(loader.to_int(7.9), 7)
 
 
 class OptionalCoercersTest(unittest.TestCase):

@@ -1,0 +1,17 @@
+[
+  {
+    "id": 2025021079,
+    "easternStartTime": "2026-03-18T19:30:00",
+    "gameDate": "2026-03-18",
+    "gameNumber": 1079,
+    "gameScheduleStateId": 1,
+    "gameStateId": 7,
+    "gameType": 2,
+    "homeScore": 4,
+    "homeTeamId": 15,
+    "period": 3,
+    "season": 20252026,
+    "visitingScore": 1,
+    "visitingTeamId": 9
+  }
+]

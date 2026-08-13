@@ -1,0 +1,503 @@
+{
+  "id": 2025021079,
+  "season": 20252026,
+  "gameType": 2,
+  "limitedScoring": false,
+  "gameDate": "2026-03-18",
+  "venue": {
+    "default": "Capital One Arena"
+  },
+  "venueLocation": {
+    "default": "Washington"
+  },
+  "startTimeUTC": "2026-03-18T23:30:00Z",
+  "easternUTCOffset": "-04:00",
+  "venueUTCOffset": "-04:00",
+  "tvBroadcasts": [
+    {
+      "id": 282,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "SN",
+      "sequenceNumber": 107
+    },
+    {
+      "id": 281,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "TVAS",
+      "sequenceNumber": 120
+    },
+    {
+      "id": 517,
+      "market": "H",
+      "countryCode": "US",
+      "network": "MNMT",
+      "sequenceNumber": 396
+    }
+  ],
+  "gameState": "OFF",
+  "gameScheduleState": "OK",
+  "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+  },
+  "awayTeam": {
+    "id": 9,
+    "commonName": {
+      "default": "Senators",
+      "fr": "Sénateurs"
+    },
+    "abbrev": "OTT",
+    "score": 1,
+    "sog": 35,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/OTT_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/OTT_dark.svg",
+    "placeName": {
+      "default": "Ottawa"
+    },
+    "placeNameWithPreposition": {
+      "default": "Ottawa",
+      "fr": "d'Ottawa"
+    }
+  },
+  "homeTeam": {
+    "id": 15,
+    "commonName": {
+      "default": "Capitals"
+    },
+    "abbrev": "WSH",
+    "score": 4,
+    "sog": 25,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_dark.svg",
+    "placeName": {
+      "default": "Washington"
+    },
+    "placeNameWithPreposition": {
+      "default": "Washington",
+      "fr": "de Washington"
+    }
+  },
+  "shootoutInUse": true,
+  "otInUse": true,
+  "clock": {
+    "timeRemaining": "00:00",
+    "secondsRemaining": 0,
+    "running": false,
+    "inIntermission": false
+  },
+  "displayPeriod": 1,
+  "maxPeriods": 5,
+  "gameOutcome": {
+    "lastPeriodType": "REG"
+  },
+  "plays": [
+    {
+      "eventId": 53,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:00",
+      "timeRemaining": "20:00",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 502,
+      "typeDescKey": "faceoff",
+      "sortOrder": 11,
+      "details": {
+        "eventOwnerTeamId": 9,
+        "losingPlayerId": 8482088,
+        "winningPlayerId": 8481596,
+        "xCoord": 0,
+        "yCoord": 0,
+        "zoneCode": "N"
+      }
+    },
+    {
+      "eventId": 69,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:04",
+      "timeRemaining": "19:56",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 503,
+      "typeDescKey": "hit",
+      "sortOrder": 13,
+      "details": {
+        "xCoord": -2,
+        "yCoord": -38,
+        "zoneCode": "N",
+        "eventOwnerTeamId": 15,
+        "hittingPlayerId": 8479520,
+        "hitteePlayerId": 8481606
+      }
+    },
+    {
+      "eventId": 58,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:31",
+      "timeRemaining": "19:29",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 508,
+      "typeDescKey": "blocked-shot",
+      "sortOrder": 18,
+      "details": {
+        "xCoord": -85,
+        "yCoord": 1,
+        "zoneCode": "D",
+        "blockingPlayerId": 8478502,
+        "shootingPlayerId": 8483573,
+        "eventOwnerTeamId": 15,
+        "reason": "blocked"
+      }
+    },
+    {
+      "eventId": 84,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "02:26",
+      "timeRemaining": "17:34",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 502,
+      "typeDescKey": "faceoff",
+      "sortOrder": 46,
+      "details": {
+        "eventOwnerTeamId": 9,
+        "losingPlayerId": 8482148,
+        "winningPlayerId": 8481596,
+        "xCoord": 69,
+        "yCoord": -22,
+        "zoneCode": "O"
+      }
+    },
+    {
+      "eventId": 212,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "03:08",
+      "timeRemaining": "16:52",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 504,
+      "typeDescKey": "giveaway",
+      "sortOrder": 53,
+      "details": {
+        "xCoord": 36,
+        "yCoord": 40,
+        "zoneCode": "O",
+        "eventOwnerTeamId": 9,
+        "playerId": 8482095
+      }
+    },
+    {
+      "eventId": 370,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "11:51",
+      "timeRemaining": "08:09",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 509,
+      "typeDescKey": "penalty",
+      "sortOrder": 176,
+      "details": {
+        "xCoord": 49,
+        "yCoord": 28,
+        "zoneCode": "D",
+        "typeCode": "MIN",
+        "descKey": "holding",
+        "duration": 2,
+        "committedByPlayerId": 8476880,
+        "drawnByPlayerId": 8476393,
+        "eventOwnerTeamId": 15
+      }
+    },
+    {
+      "eventId": 524,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "01:30",
+      "timeRemaining": "18:30",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 509,
+      "typeDescKey": "penalty",
+      "sortOrder": 328,
+      "details": {
+        "xCoord": 68,
+        "yCoord": 40,
+        "zoneCode": "D",
+        "typeCode": "MIN",
+        "descKey": "slashing",
+        "duration": 2,
+        "committedByPlayerId": 8476393,
+        "drawnByPlayerId": 8480796,
+        "eventOwnerTeamId": 9
+      }
+    },
+    {
+      "eventId": 675,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "05:36",
+      "timeRemaining": "14:24",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 525,
+      "typeDescKey": "takeaway",
+      "sortOrder": 374,
+      "details": {
+        "xCoord": -14,
+        "yCoord": 38,
+        "zoneCode": "N",
+        "playerId": 8473512,
+        "eventOwnerTeamId": 9
+      }
+    },
+    {
+      "eventId": 710,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "08:09",
+      "timeRemaining": "11:51",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 413,
+      "details": {
+        "xCoord": 73,
+        "yCoord": 3,
+        "zoneCode": "O",
+        "shotType": "tip-in",
+        "scoringPlayerId": 8471214,
+        "scoringPlayerTotal": 25,
+        "assist1PlayerId": 8480873,
+        "assist1PlayerTotal": 21,
+        "eventOwnerTeamId": 15,
+        "goalieInNetId": 8476999,
+        "awayScore": 0,
+        "homeScore": 1,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-wsh-ovechkin-scores-goal-against-linus-ullmark-6391150993112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-wsh-ovechkin-marque-un-but-contre-linus-ullmark-6391152468112",
+        "highlightClip": 6391150993112,
+        "highlightClipFr": 6391152468112,
+        "discreteClip": 6391151767112,
+        "discreteClipFr": 6391151680112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev710.json"
+    },
+    {
+      "eventId": 841,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "18:13",
+      "timeRemaining": "01:47",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 537,
+      "details": {
+        "xCoord": 73,
+        "yCoord": 23,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8476880,
+        "scoringPlayerTotal": 25,
+        "assist1PlayerId": 8477845,
+        "assist1PlayerTotal": 8,
+        "assist2PlayerId": 8479400,
+        "assist2PlayerTotal": 4,
+        "eventOwnerTeamId": 15,
+        "goalieInNetId": 8476999,
+        "awayScore": 0,
+        "homeScore": 2,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-wsh-wilson-scores-goal-against-linus-ullmark-6391152875112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-wsh-wilson-marque-un-but-contre-linus-ullmark-6391151414112",
+        "highlightClip": 6391152875112,
+        "highlightClipFr": 6391151414112,
+        "discreteClip": 6391152491112,
+        "discreteClipFr": 6391152180112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev841.json"
+    },
+    {
+      "eventId": 1109,
+      "periodDescriptor": {
+        "number": 3,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "17:19",
+      "timeRemaining": "02:41",
+      "situationCode": "0651",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 791,
+      "details": {
+        "xCoord": 83,
+        "yCoord": 2,
+        "zoneCode": "O",
+        "shotType": "tip-in",
+        "scoringPlayerId": 8482116,
+        "scoringPlayerTotal": 31,
+        "assist1PlayerId": 8473512,
+        "assist1PlayerTotal": 31,
+        "assist2PlayerId": 8478469,
+        "assist2PlayerTotal": 23,
+        "eventOwnerTeamId": 9,
+        "goalieInNetId": 8480313,
+        "awayScore": 1,
+        "homeScore": 2,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-wsh-stutzle-scores-goal-against-logan-thompson-6391154807112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-wsh-stutzle-marque-un-but-contre-logan-thompson-6391153633112",
+        "highlightClip": 6391154807112,
+        "highlightClipFr": 6391153633112,
+        "discreteClip": 6391154118112,
+        "discreteClipFr": 6391154123112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev1109.json"
+    },
+    {
+      "eventId": 1125,
+      "periodDescriptor": {
+        "number": 3,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "18:28",
+      "timeRemaining": "01:32",
+      "situationCode": "0651",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 805,
+      "details": {
+        "xCoord": -16,
+        "yCoord": -33,
+        "zoneCode": "N",
+        "shotType": "wrist",
+        "scoringPlayerId": 8481656,
+        "scoringPlayerTotal": 22,
+        "assist1PlayerId": 8481580,
+        "assist1PlayerTotal": 24,
+        "eventOwnerTeamId": 15,
+        "awayScore": 1,
+        "homeScore": 3,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-wsh-protas-scores-empty-net-goal-6391154432112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-wsh-protas-wsh-marque-un-but-dans-un-filet-desert-6391154012112",
+        "highlightClip": 6391154432112,
+        "highlightClipFr": 6391154012112,
+        "discreteClip": 6391155205112,
+        "discreteClipFr": 6391154810112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev1125.json"
+    },
+    {
+      "eventId": 1140,
+      "periodDescriptor": {
+        "number": 3,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "19:34",
+      "timeRemaining": "00:26",
+      "situationCode": "0551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 816,
+      "details": {
+        "xCoord": -30,
+        "yCoord": 25,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8484873,
+        "scoringPlayerTotal": 1,
+        "eventOwnerTeamId": 15,
+        "awayScore": 1,
+        "homeScore": 4,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-wsh-hutson-scores-empty-net-goal-6391154021112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-wsh-hutson-wsh-marque-un-but-dans-un-filet-desert-6391154813112",
+        "highlightClip": 6391154021112,
+        "highlightClipFr": 6391154813112,
+        "discreteClip": 6391153830112,
+        "discreteClipFr": 6391153535112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev1140.json"
+    }
+  ],
+  "rosterSpots": [
+    {
+      "teamId": 15,
+      "playerId": 8471214,
+      "firstName": {
+        "default": "Alex",
+        "cs": "Alexandr",
+        "fi": "Aleksandr",
+        "sk": "Alexander"
+      },
+      "lastName": {
+        "default": "Ovechkin",
+        "cs": "Ovečkin",
+        "fi": "Ovetshkin",
+        "sk": "Ovečkin"
+      },
+      "sweaterNumber": 8,
+      "positionCode": "L",
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8471214.png"
+    },
+    {
+      "teamId": 9,
+      "playerId": 8473503,
+      "firstName": {
+        "default": "James"
+      },
+      "lastName": {
+        "default": "Reimer"
+      },
+      "sweaterNumber": 47,
+      "positionCode": "G",
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/OTT/8473503.png"
+    }
+  ],
+  "regPeriods": 3,
+  "summary": {}
+}

@@ -52,6 +52,20 @@ NHL_bot/
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   └── load_season_modern.py           # Класс ModernNhlLoader
 │
+├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
+│   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
+│   ├── create_bot_subscriptions.sql
+│   ├── db_drop_all_tables.sql
+│   └── verify_skater_reports_schema.sql
+│
+├── tests/                              # pytest + unittest (`make test-fast`, `make ci-local`)
+│   ├── _pipeline_fixtures.py           # Обвязка тестов загрузчика: фикстуры, порядок колонок, запрет сети
+│   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
+│   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
+│   ├── test_pipeline_game_rows.py      # Сборка строк пер-игровых таблиц (games, all_goals, …)
+│   ├── test_bot_*.py, test_modeling_*.py, test_db_nhl.py, …
+│   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
+│
 ├── telegram_bot/                       # Telegram-бот
 │   ├── bot.py                          # Точка входа: Application + ConversationHandler
 │   ├── config.py                       # Чтение .env-переменных
@@ -125,6 +139,12 @@ NHL_bot/
 ### Модуль: `pipeline/load_season_modern.py`
 
 Класс `ModernNhlLoader` реализует полный цикл загрузки данных сезона NHL.
+
+Тесты сборки строк — `tests/test_pipeline_season_rows.py` и `tests/test_pipeline_game_rows.py`:
+подменяют единственные сетевые выходы `build_*` (`get_json` / `fetch_paginated`) фикстурами
+`tests/fixtures/nhl_*.json` — урезанными реальными ответами API, снятыми
+`scripts/capture_nhl_fixtures.py`. Сети в тестах нет; порядок колонок каждого
+`INSERT`/`UPSERT` из `run()` зафиксирован в `tests/_pipeline_fixtures.py`.
 
 ### Источники данных (NHL API)
 
