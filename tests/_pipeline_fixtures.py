@@ -39,7 +39,8 @@ MCMICHAEL = 8481580  # only reachable through the player landing endpoint
 
 # Column order of every INSERT/UPSERT in ``ModernNhlLoader.run()``: the build_*
 # tuples are positional, so these lists are the contract the tests assert on.
-# Copied verbatim from run(); reordering a column there must fail a test here.
+# Copied by hand from run() — keep in sync manually; these tests pin build_*
+# tuple order, not run()'s.
 TABLE_COLUMNS: Dict[str, tuple] = {
     "teams": (
         "team_id", "season_id", "name", "division_name", "arena", "conference_name",

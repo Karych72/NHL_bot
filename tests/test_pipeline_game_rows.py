@@ -18,6 +18,7 @@ from tests._pipeline_fixtures import (
     OTT,
     OVECHKIN,
     PINTO,
+    SANDIN,
     SEASON_ID,
     SEASON_LABEL,
     SOURDIF,
@@ -90,7 +91,7 @@ class GameRowsTest(LoaderApiTestCase):
 
         self.assertEqual(field(first, "all_goals", "goal_player_id"), OVECHKIN)
         self.assertEqual(field(first, "all_goals", "total_goals"), 25)
-        self.assertEqual(field(first, "all_goals", "assist_player1_id"), 8480873)
+        self.assertEqual(field(first, "all_goals", "assist_player1_id"), SANDIN)
         self.assertEqual(field(first, "all_goals", "assist_total_1"), 21)
         self.assertEqual(field(first, "all_goals", "team_id"), WSH)
         self.assertEqual(field(first, "all_goals", "game_id"), GAME_ID)
@@ -108,6 +109,30 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertIs(field(first, "all_goals", "is_ppg"), False)
         self.assertIs(field(first, "all_goals", "is_shg"), False)
         self.assertIs(field(first, "all_goals", "winner_goal"), False)
+
+    def test_goal_row_nulls_every_column_the_play_omits(self):
+        pbp = load_fixture("nhl_game_play_by_play.json")
+        first_goal = next(p for p in pbp["plays"] if p.get("typeDescKey") == "goal")
+        stripped = without(first_goal, "timeInPeriod", "eventId", "periodDescriptor")
+        stripped["details"] = without(
+            first_goal["details"],
+            "scoringPlayerId", "scoringPlayerTotal", "assist1PlayerId",
+            "assist1PlayerTotal", "awayScore", "homeScore",
+        )
+        pbp["plays"] = [stripped if p is first_goal else p for p in pbp["plays"]]
+        goal = self._build(pbp=pbp)[1][0]
+
+        # §2.1 end to end: period / time / both scores / event_id were the
+        # columns that used to be 0 or "" — all NULL now. The four situation
+        # flags of §3 are derived from the play, not read off it, so they stay set.
+        situation_flags = ("empty_net", "winner_goal", "is_ppg", "is_shg")
+        self.assertColumnsNone(
+            goal, "all_goals", keep=("team_id", "game_id") + situation_flags
+        )
+        self.assertEqual(field(goal, "all_goals", "team_id"), WSH)
+        self.assertEqual(field(goal, "all_goals", "game_id"), GAME_ID)
+        for flag in situation_flags:
+            self.assertIsInstance(field(goal, "all_goals", flag), bool, flag)
 
     def test_goal_flags_follow_situation_code_and_final_score(self):
         goals = self._build()[1]
@@ -220,7 +245,7 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertEqual(field(rows[SOURDIF], table, "face_off_wins"), 0)
         self.assertEqual(field(rows[SOURDIF], table, "face_off_taken"), 1)
         # Defencemen land in the same table as forwards.
-        self.assertEqual(field(rows[8480873], table, "assists"), 1)
+        self.assertEqual(field(rows[SANDIN], table, "assists"), 1)
 
     def test_boxscore_rows_null_every_field_the_api_omits(self):
         box = load_fixture("nhl_game_boxscore.json")

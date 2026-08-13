@@ -13,6 +13,7 @@ non-NULL defaults of §3 stay non-``None``.
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 import requests
 
@@ -49,9 +50,12 @@ TEAM_SUMMARY_STAT_KEYS = (
     "shotsForPerGame", "shotsAgainstPerGame", "faceoffWinPct",
 )
 SKATER_SUMMARY_STAT_KEYS = (
-    "assists", "goals", "penaltyMinutes", "shots", "gamesPlayed", "hits", "ppGoals",
+    "assists", "goals", "penaltyMinutes", "shots", "gamesPlayed", "ppGoals",
     "ppPoints", "faceoffWinPct", "shootingPct", "gameWinningGoals", "otGoals",
-    "shGoals", "shPoints", "blockedShots", "plusMinus", "points", "shifts",
+    "shGoals", "shPoints", "plusMinus", "points", "shifts",
+    # Read off the summary row only as a fallback when the realtime report has
+    # no such key (load_season_modern.py:609-612).
+    "hits", "blockedShots",
 )
 GOALIE_SUMMARY_STAT_KEYS = (
     "otLosses", "shutouts", "wins", "losses", "saves", "savePct",
@@ -191,8 +195,13 @@ class RosterRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ovi, "rosters", "jersey_number"), 8)
         self.assertEqual(field(ovi, "rosters", "nationality"), "RUS")
         self.assertEqual(field(ovi, "rosters", "current_team_id"), WSH)
-        # Born 1985-09-17, fixtures captured in the 2025/26 season.
-        self.assertGreaterEqual(field(ovi, "rosters", "currentage"), 40)
+        # Born 1985-09-17: exact age today, so an off-by-one around the birthday
+        # in optional_age_from_birthdate fails here.
+        today = date.today()
+        self.assertEqual(
+            field(ovi, "rosters", "currentage"),
+            today.year - 1985 - ((today.month, today.day) < (9, 17)),
+        )
         # §2.7: /v1/roster never exposes these, so "unknown" ≠ False.
         self.assertIsNone(field(ovi, "rosters", "captain"))
         self.assertIsNone(field(ovi, "rosters", "alternate_captain"))

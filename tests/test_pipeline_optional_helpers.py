@@ -1,27 +1,28 @@
 """Loader contract: missing source fields must surface as Python ``None``.
 
-Covers both coercion families of ``docs/pipeline_nulls_and_explicit_null_tz.md``
-§1 at single-value level — ``to_int``'s eager default for key columns, and the
-``optional_*`` / ``safe_pct`` helpers that make PostgreSQL store ``NULL``
-instead of legacy 0 / "00:00" / -9999 sentinels when the NHL API omits a field.
-Row assembly on real payloads lives in ``tests/test_pipeline_*_rows.py``.
+Two levels of ``docs/pipeline_nulls_and_explicit_null_tz.md`` §1–§2 that need no
+captured payload: the single-value coercers (``to_int``'s eager default for key
+columns, and the ``optional_*`` / ``safe_pct`` family that stores ``NULL``
+instead of legacy 0 / "00:00" / -9999 sentinels), plus two hand-written
+play-by-play cases the real fixtures cannot show — a penalty without
+``duration`` and a goal with no player ids at all. Row assembly on real payloads
+lives in ``tests/test_pipeline_*_rows.py``.
 """
 
 from __future__ import annotations
 
-import os
-import sys
 import unittest
 from datetime import date
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-PIPELINE_DIR = os.path.join(REPO_ROOT, "pipeline")
-TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
-for path in (TELEGRAM_BOT, PIPELINE_DIR):
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-import load_season_modern as loader  # noqa: E402
+# The shared module puts pipeline/ and telegram_bot/ on sys.path and re-exports
+# the loader, so this file does not repeat that bootstrap.
+from tests._pipeline_fixtures import (
+    LoaderApiTestCase,
+    field,
+    loader,
+    make_loader,
+    stub_api,
+)
 
 
 class EagerDefaultCoercerTest(unittest.TestCase):
@@ -109,27 +110,16 @@ class OptionalCoercersTest(unittest.TestCase):
         self.assertEqual(loader.safe_pct(8, 10), 80.0)
 
 
-class GoalAggregationTest(unittest.TestCase):
-    """Sentinels removed: aggregations must use ``is not None`` filters."""
+class GoalAggregationTest(LoaderApiTestCase):
+    """Sentinels removed: aggregations must use ``is not None`` filters.
 
-    def _build_loader(self):
-        # ModernNhlLoader.__init__ reads config.* — bypass it via __new__.
-        return loader.ModernNhlLoader.__new__(loader.ModernNhlLoader)
-
-    def _patched_get_json(self, pbp, box):
-        def _get_json(url):
-            if "play-by-play" in url:
-                return pbp
-            if "boxscore" in url:
-                return box
-            raise AssertionError(f"unexpected URL in test: {url}")
-
-        return _get_json
+    Hand-written payloads on purpose: the NHL API does send these shapes
+    (a penalty without ``duration``, a goal with no player ids), but no single
+    captured game contains them, so they cannot come from ``tests/fixtures``.
+    """
 
     def test_goal_with_missing_assist_id_is_null_and_skipped_in_aggregations(self):
-        instance = self._build_loader()
-        instance.season_id = 20252026
-        instance.current_season_label = "25/26"
+        instance = make_loader()
 
         pbp = {
             "periodDescriptor": {"number": 1, "periodType": "REG"},
@@ -207,7 +197,7 @@ class GoalAggregationTest(unittest.TestCase):
             },
         }
 
-        instance.get_json = self._patched_get_json(pbp, box)
+        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box})
         games_meta = [
             {
                 "id": 2025020001,
@@ -225,36 +215,43 @@ class GoalAggregationTest(unittest.TestCase):
 
         self.assertEqual(len(all_goals_rows), 1)
         goal = all_goals_rows[0]
-        # Tuple positions: 0=scorer, 1=scorerTotal, 2=assist1, 3=assist1Total,
-        # 4=assist2, 5=assist2Total, 8=is_ppg, 9=is_shg, 10=team_id.
-        self.assertEqual(goal[0], 8000001)
+        self.assertEqual(field(goal, "all_goals", "goal_player_id"), 8000001)
         self.assertIsNone(
-            goal[2], "missing assist1PlayerId must surface as NULL, not -9999"
+            field(goal, "all_goals", "assist_player1_id"),
+            "missing assist1PlayerId must surface as NULL, not -9999",
         )
         self.assertIsNone(
-            goal[3], "missing assist1PlayerTotal must surface as NULL"
+            field(goal, "all_goals", "assist_total_1"),
+            "missing assist1PlayerTotal must surface as NULL",
         )
-        self.assertEqual(goal[4], 8000003)
-        self.assertTrue(goal[8], "PPG flag must be set when home outnumbers away")
+        self.assertEqual(field(goal, "all_goals", "assist_player2_id"), 8000003)
+        self.assertTrue(
+            field(goal, "all_goals", "is_ppg"),
+            "PPG flag must be set when home outnumbers away",
+        )
 
         # Per-team PIM: the only penalty had no duration → contributes 0 (skipped),
         # not a fabricated 2-minute default.
-        home_team_row = next(r for r in game_team_rows if r[13] == 10)
-        away_team_row = next(r for r in game_team_rows if r[13] == 20)
-        self.assertEqual(home_team_row[2], 0)
-        self.assertEqual(away_team_row[2], 0)
+        by_team = {field(r, "game_team_stats", "team_id"): r for r in game_team_rows}
+        self.assertEqual(field(by_team[10], "game_team_stats", "pim"), 0)
+        self.assertEqual(field(by_team[20], "game_team_stats", "pim"), 0)
 
         # Goalie row: missing toi / saves / decision → NULL.
         self.assertEqual(len(game_goalie_rows), 1)
         gk = game_goalie_rows[0]
-        self.assertIsNone(gk[3], "missing toi must surface as NULL")
-        self.assertIsNone(gk[8], "missing saves must surface as NULL")
-        self.assertIsNone(gk[15], "missing decision must surface as NULL")
+        self.assertIsNone(
+            field(gk, "game_goalie_stats", "timeonice"), "missing toi must surface as NULL"
+        )
+        self.assertIsNone(
+            field(gk, "game_goalie_stats", "saves"), "missing saves must surface as NULL"
+        )
+        self.assertIsNone(
+            field(gk, "game_goalie_stats", "decision"),
+            "missing decision must surface as NULL",
+        )
 
     def test_no_minus_9999_in_goal_rows(self):
-        instance = self._build_loader()
-        instance.season_id = 20252026
-        instance.current_season_label = "25/26"
+        instance = make_loader()
         pbp = {
             "periodDescriptor": {"number": 1, "periodType": "REG"},
             "plays": [
@@ -279,7 +276,7 @@ class GoalAggregationTest(unittest.TestCase):
                 "awayTeam": {"forwards": [], "defense": [], "goalies": []},
             },
         }
-        instance.get_json = self._patched_get_json(pbp, box)
+        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box})
         _, all_goals_rows, *_ = instance.build_game_rows(
             [
                 {
@@ -292,9 +289,17 @@ class GoalAggregationTest(unittest.TestCase):
                 }
             ]
         )
-        for col in (0, 1, 2, 3, 4, 5):
-            self.assertNotEqual(all_goals_rows[0][col], -9999)
-            self.assertIsNone(all_goals_rows[0][col])
+        for column in (
+            "goal_player_id",
+            "total_goals",
+            "assist_player1_id",
+            "assist_total_1",
+            "assist_player2_id",
+            "assist_total_2",
+        ):
+            value = field(all_goals_rows[0], "all_goals", column)
+            self.assertNotEqual(value, -9999, column)
+            self.assertIsNone(value, column)
 
 
 if __name__ == "__main__":

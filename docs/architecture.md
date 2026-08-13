@@ -59,6 +59,8 @@ NHL_bot/
 │   └── verify_skater_reports_schema.sql
 │
 ├── tests/                              # pytest + unittest (`make test-fast`, `make ci-local`)
+│   ├── conftest.py                     # Общие pytest-фикстуры бота и modeling
+│   ├── _modeling_fixtures.py           # Синтетические датасеты для тестов modeling
 │   ├── _pipeline_fixtures.py           # Обвязка тестов загрузчика: фикстуры, порядок колонок, запрет сети
 │   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
 │   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
