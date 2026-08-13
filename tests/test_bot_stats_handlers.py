@@ -66,7 +66,7 @@ def test_pagination_keyboard_offsets_and_prev_floor(
     footer = markup.inline_keyboard[-1]
     if footer_kind == "menu_nav":
         # «« Назад»» на родительское подменю, «В начало» на корень, «Готово»
-        # на выход (Задача 6, критерий 2: родитель, если он есть, а не корень).
+        # на выход: родитель, если он есть, а не корень.
         assert [b.callback_data for b in footer] == [
             str(getattr(dialog_states, parent_attr)),
             str(dialog_states.CHOOSE_STATS),
@@ -96,7 +96,7 @@ def test_pagination_keyboard_omits_nav_row_on_single_page(bot_module, builder_na
 
 # ---------------------------------------------------------------------------
 # «« Назад»» страницы стата игрока/вратаря — родитель выводится из
-# (table, column), а не хранится (Задача 6, §4): callback_data пагинации
+# (table, column), а не хранится: callback_data пагинации
 # (`st:{table}:{column}:{offset}`) не оставляет места для лишнего поля.
 # ---------------------------------------------------------------------------
 
@@ -352,10 +352,10 @@ async def test_callback_reraises_other_bad_request(
 
 
 # ---------------------------------------------------------------------------
-# bot_league_standings — не входит в реестр 40 (`send_message`, не
-# `edit_message_text`/`reply_text`), но создаёт НОВОЕ сообщение с клавиатурой
-# меню (« Главное меню» → CHOOSE_STATS) так же, как места из гипотезы §5.2
-# брифа Задачи 6 — контроллер эту ветку не перечислил, разошлось при проверке.
+# bot_league_standings создаёт НОВОЕ сообщение (`send_message`, не
+# `edit_message_text`) с клавиатурой меню (« Главное меню» → CHOOSE_STATS) —
+# его message_id должен попасть в user_data так же, как у остальных мест,
+# создающих новое сообщение с живой FSM-клавиатурой.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -729,7 +729,7 @@ async def test_digest_custom_date_rejects_bad_format(bot_module, make_message_up
     buttons = [b for row in reply["reply_markup"].inline_keyboard for b in row]
     assert buttons[0].callback_data == stats_handlers.DIGEST_BACK_FROM_DATE_CALLBACK
     # Это НОВОЕ сообщение (reply_text) — его id записан, чтобы /cancel мог
-    # снять клавиатуру с него (Задача 6, §5.2).
+    # снять клавиатуру с него.
     assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
@@ -751,10 +751,10 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
     sent = fake_context.bot.sent_messages[0]
     assert sent["text"] == "text"
     assert sent["chat_id"] == 100
-    # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень
-    # (Задача 6, §4); сообщение новое (send_message) — id записан для /cancel
-    # (§5.2). Единственный реальный матч без кнопок видео гола рендерится
-    # build_menu(..., n_cols=1) — каждая кнопка на своей строке.
+    # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень;
+    # сообщение новое (send_message) — id записан для /cancel. Единственный
+    # реальный матч без кнопок видео гола рендерится build_menu(..., n_cols=1)
+    # — каждая кнопка на своей строке.
     nav_rows = sent["reply_markup"].inline_keyboard[-3:]
     assert [row[0].callback_data for row in nav_rows] == [
         str(dialog_states.DAY_DIGEST),
@@ -766,44 +766,28 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
 
 # ---------------------------------------------------------------------------
 # dispatch_day_digest_messages — the two branches not covered by the
-# bot_digest_custom_date test above: "no real games" (gid == 0) and multi-game
-# (2+ real games). Each builds nav_markup/message differently from the
-# single-game branch, so each gets its own direct assertion on the sent
-# reply_markup and the recorded message id.
+# bot_digest_custom_date test above: "no real games" (gid == 0, built at
+# stats_handlers.py:473) and multi-game (2+ real games, built starting at
+# stats_handlers.py:515). Each is a physically separate code path — its own
+# nav_markup/send_message call — but both attach the same 3-button footer and
+# record the same way, so one parametrized test asserts both.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dispatch_day_digest_no_real_games_nav_targets_digest_menu_and_records_id(
-    bot_module, fake_context
-):
-    """Третья ветка с той же семантикой — «матчей нет» (`gid == 0`): своя
-    сборка `nav_markup`/`send_message`, отдельная от single-game и multi-game
-    веток, поэтому проверяется отдельно."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    games = [(0, "Матчей не найдено", [])]
-
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=True,
-    )
-
-    sent = fake_context.bot.sent_messages[0]
-    nav_row = sent["reply_markup"].inline_keyboard[-1]
-    assert [b.callback_data for b in nav_row] == [
-        str(dialog_states.DAY_DIGEST),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
-    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-@pytest.mark.asyncio
-async def test_dispatch_day_digest_multi_game_nav_targets_digest_menu_and_records_id(
-    bot_module, fake_context
+@pytest.mark.parametrize(
+    "games",
+    [
+        pytest.param([(0, "Матчей не найдено", [])], id="no_real_games"),
+        pytest.param(
+            [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])], id="multi_game"
+        ),
+    ],
+)
+async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
+    bot_module, fake_context, games
 ):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
 
     await stats_handlers.dispatch_day_digest_messages(
         fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=True,

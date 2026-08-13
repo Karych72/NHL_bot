@@ -341,11 +341,10 @@ async def cmd_cancel_in_conversation(update: Update, context: CallbackContext) -
     диалога ни один хендлер её callback_data больше не матчит (тот же класс
     дефекта, что и у просроченной кнопки «« Назад»» ввода даты: кнопка матчится
     только в тех состояниях FSM, где для неё явно зарегистрирован хендлер).
-    Если экран меню создавался НОВЫМ сообщением (`script_bot.stats`/`stats_over`,
-    `stats_handlers.bot_league_standings`/`bot_digest_custom_date`/
-    `dispatch_day_digest_messages`), его id записан под
-    `dialog_states.LAST_MENU_MESSAGE_ID_KEY` — снимаем клавиатуру явно.
-    Отсутствие записи — штатный случай (`/cancel` без открытого меню), не ошибка.
+    Если экран меню создавался НОВЫМ сообщением, его id записан под
+    `dialog_states.LAST_MENU_MESSAGE_ID_KEY` (там же — канонический список
+    мест записи) — снимаем клавиатуру явно. Отсутствие записи — штатный
+    случай (`/cancel` без открытого меню), не ошибка.
     """
     message = _message(update)
     assert context.user_data is not None

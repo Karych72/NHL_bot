@@ -191,6 +191,9 @@ class FakeMessage:
         self.text = text
         self.chat_id = chat_id
         self.replies: List[dict] = []
+        # script_bot.stats() logs message.from_user.first_name; a real
+        # message-triggered Update always carries a from_user.
+        self.from_user = SimpleNamespace(first_name="Test")
 
     async def reply_text(self, text: str, **kwargs: Any) -> SimpleNamespace:
         self.replies.append({"text": text, **kwargs})

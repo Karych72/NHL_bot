@@ -81,14 +81,16 @@ def _stats_menu_nav_row(parent_state: int) -> List[InlineKeyboardButton]:
 
 
 def _record_menu_message(context: CallbackContext, message_id: int) -> None:
-    """Записывает id сообщения с живой FSM-клавиатурой меню в `user_data`.
+    """Записывает id сообщения с живой FSM-клавиатурой меню в `user_data`
+    под ключом `dialog_states.LAST_MENU_MESSAGE_ID_KEY` (см. его комментарий
+    для канонического списка мест, которые сюда пишут и читают).
 
     Вызывается только там, где страница диалога `/stats` создаёт НОВОЕ
     сообщение (`send_message`/`reply_text`, а не `edit_message_text`) — эти
-    места (не более пяти в этом модуле) собраны здесь, чтобы не повторять
-    guard на каждом вызове. `context.user_data` типизирован как `Optional`,
-    но гарантированно не `None` для контекста, порождённого реальным Update
-    от пользователя (единственный вызывающий тут сценарий, в отличие от
+    места в этом модуле собраны через один вызов, чтобы не повторять guard
+    на каждом из них. `context.user_data` типизирован как `Optional`, но
+    гарантированно не `None` для контекста, порождённого реальным Update от
+    пользователя (единственный вызывающий тут сценарий, в отличие от
     `push_digest_job.py`, который сам себе строит контекст без пользователя
     и не проходит в ветки, откуда зовётся эта функция).
     """
@@ -112,7 +114,9 @@ def _player_stat_parent_state(table: str, column: str) -> int:
     """
     if table == "goalies_season_stats":
         return PLAYER_GOALIE
-    if table in ("players_advanced_stats", "players_shot_types") or column == "shootout_pct":
+    if table in ("players_advanced_stats", "players_shot_types") or (
+        table, column
+    ) == ("players_season_stats", "shootout_pct"):
         return PLAYER_ADVANCED_SUBMENU
     return PLAYER_FIELD
 
@@ -644,10 +648,13 @@ def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
 
 
 async def bot_league_standings(update: Update, context: CallbackContext) -> int:
-    """Турнирная таблица: родитель уже корень (LEAGUE_STANDINGS — прямой
-    пункт главного меню), поэтому «« Главное меню»» ведёт в CHOOSE_STATS без
-    изменений. Сообщение новое (`send_message`, не `edit_message_text`) — id
-    записывается в `user_data`, чтобы `/cancel` мог снять клавиатуру."""
+    """Турнирная таблица NHL: отдельное сообщение с кнопкой «« Главное меню»».
+
+    `LEAGUE_STANDINGS` — прямой пункт главного меню, поэтому родитель этой
+    страницы уже корень: кнопка ведёт в `CHOOSE_STATS`. Сообщение новое
+    (`send_message`, не `edit_message_text`), поэтому его id записывается в
+    `user_data`, чтобы `/cancel` мог снять с него клавиатуру.
+    """
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()

@@ -218,8 +218,8 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         kb = sent[0]["reply_markup"].inline_keyboard
         self.assertTrue(any("Матч 1" in row[0].text for row in kb if row))
         ds = importlib.import_module("dialog_states")
-        # Задача 6, §4: «« Назад»» на родительское меню дайджеста (DAY_DIGEST)
-        # ведёт список, «В начало»/«Закрыть меню» — следом.
+        # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
+        # сразу в корень; «В начало»/«Закрыть меню» — следом.
         self.assertEqual(kb[-1][0].callback_data, str(ds.DAY_DIGEST))
         self.assertEqual(kb[-1][1].callback_data, str(ds.CHOOSE_STATS))
         self.assertEqual(kb[-1][2].callback_data, str(ds.END_CONVERSATION))

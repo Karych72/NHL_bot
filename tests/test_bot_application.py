@@ -264,7 +264,47 @@ def test_state_third_message_handler_takes_text_but_not_commands(bot_module, app
 
 
 # ---------------------------------------------------------------------------
-# /cancel внутри диалога — снятие «зомби»-клавиатуры (Задача 6, §5.2)
+# Запись id сообщения меню — источник данных для /cancel ниже. stats()/
+# stats_over() пишут его инлайн (не через stats_handlers._record_menu_message),
+# поэтому не покрыты никаким другим тестом в сьюте: если строка записи
+# потеряется при рефакторинге, /cancel в основном сценарии молча перестанет
+# снимать клавиатуру, а make ci-local останется зелёным без этих тестов.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stats_entry_point_records_new_message_id(
+    bot_module, make_message_update, fake_context
+):
+    script_bot = bot_module("script_bot")
+    dialog_states = bot_module("dialog_states")
+    update = make_message_update("/stats", chat_id=555)
+
+    result = await script_bot.stats(update, fake_context)
+
+    assert result == dialog_states.FIRST
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+
+
+@pytest.mark.asyncio
+async def test_stats_over_records_new_message_id(
+    bot_module, make_callback_update, fake_context
+):
+    script_bot = bot_module("script_bot")
+    dialog_states = bot_module("dialog_states")
+    update = make_callback_update(str(dialog_states.CHOOSE_STATS), chat_id=555)
+
+    result = await script_bot.stats_over(update, fake_context)
+
+    assert result == dialog_states.FIRST
+    sent = fake_context.bot.sent_messages[0]
+    assert sent["chat_id"] == 555
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+
+
+# ---------------------------------------------------------------------------
+# /cancel внутри диалога — снятие «зомби»-клавиатуры: сообщение меню
+# остаётся в чате с виду живым после ConversationHandler.END, хотя ни один
+# хендлер его callback_data больше не матчит.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -350,11 +390,11 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # Страховка от «проверили пустой список»: 17 регистраций колбэков bot.py
     # (15 standalone-команд, cmd_cancel_outside_conversation в группе 0,
     # cmd_cancel_in_conversation в fallbacks), 22 регистрации script_bot.py
-    # (12 функций; Задача 6 добавила в SECOND «« Назад»» на родительские
-    # подменю — bot_player_field/bot_player_goalie/bot_player_advanced_menu/
-    # bot_team_stats по 2 раза каждый, bot_digest_date_menu 5 раз — FIRST×2,
-    # SECOND×2, THIRD×1 — и stats/stats_root_edit по 2 раза, как раньше)
-    # и 42 регистрации stats_handlers.py (не менялось).
+    # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
+    # висят «« Назад»» на родительские подменю: bot_player_field/
+    # bot_player_goalie/bot_player_advanced_menu/bot_team_stats по 2 раза
+    # каждый, bot_digest_date_menu 5 раз — FIRST×2, SECOND×2, THIRD×1)
+    # и 42 регистрации stats_handlers.py.
     assert len(registered) == 81
     assert {h.callback.__module__ for h in registered} == {
         "bot",
