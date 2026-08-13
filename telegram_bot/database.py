@@ -3,12 +3,17 @@
 Provides a single SimpleConnectionPool shared across the bot, context-managed
 connections, and whitelist-based validation for dynamic table/column names so
 that SQL composition via psycopg2.sql is safe even when identifiers come from
-non-literal sources.
+non-literal sources. Also provides ``cached_fetch_all`` — a TTL-memoized
+``fetch_all`` for read-only reference/table/leaderboard queries that only
+change once per data load (see ``ttl_cache``).
 """
 
+import functools
+import inspect
 import logging
+import time
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, ParamSpec, Sequence, Tuple, Union
 
 import psycopg2
 import psycopg2.pool
@@ -187,3 +192,87 @@ def fetch_all(
         for i, col in enumerate(columns):
             result[col].append(row[i])
     return result
+
+
+# ---------------------------------------------------------------------------
+# TTL-кэш read-only справочников / таблиц / лидеров
+# ---------------------------------------------------------------------------
+
+# Данные обновляются не чаще, чем «раз в загрузку»: пайплайн грузится вручную
+# (`make season-sync-*`) либо из cron-скрипта `push_digest_job.py`, который по
+# его собственному докстрингу запускается «раз в день» после загрузки. TTL
+# ниже на два порядка короче этого интервала — гасит повторные обращения в
+# пределах одной пачки пользовательских запросов (навигация по меню/лидербордам),
+# но не откладывает видимость новой загрузки на сколько-нибудь заметное время.
+CACHED_FETCH_ALL_TTL_SECONDS = 300.0  # 5 минут
+
+P = ParamSpec("P")
+
+
+def ttl_cache(func: Callable[P, Dict[str, Any]]) -> Callable[P, Dict[str, Any]]:
+    """Мемоизирует синхронную функцию на CACHED_FETCH_ALL_TTL_SECONDS секунд.
+
+    Аргументы вызова нормализуются через ``inspect.signature(func).bind()``,
+    так что один и тот же логический вызов даёт один и тот же ключ кэша
+    независимо от того, передан ли аргумент позиционно или по имени. Сам ключ
+    строится как ``имя_аргумента=тип:repr(значение)`` для каждого аргумента —
+    ``repr`` у ``psycopg2.sql.Composable`` рекурсивно разворачивает обёрнутое
+    содержимое (а не ``id()``/адрес объекта), поэтому два разных запроса дают
+    разные ключи, а совпадающий запрос — тот же самый; префикс типа отделяет
+    ``str``-запрос от ``sql.Composable`` с тем же текстом. ``params``/``columns``
+    — списки и сами по себе нехешируемы, но их ``repr`` хешируем и отражает
+    содержимое.
+
+    Результат — всегда независимая копия сохранённого в кэше словаря (списки
+    внутри копируются), поэтому вызывающий код может свободно использовать
+    вернувшийся dict, не рискуя испортить запись в кэше для следующего вызова.
+
+    Исключение из *func* не перехватывается и не кэшируется: падать громко
+    важнее, чем сэкономить один поход в БД (Global Constraint 4).
+
+    Только TTL: без LRU-вытеснения и без инвалидации по событию (YAGNI,
+    Global Constraint 1) — это осознанно узкий кэш под конкретную задачу.
+    """
+    signature = inspect.signature(func)
+    cache: Dict[Tuple[str, ...], Tuple[float, Dict[str, Any]]] = {}
+
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Dict[str, Any]:
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        key = tuple(
+            f"{name}={type(value).__name__}:{value!r}"
+            for name, value in bound.arguments.items()
+        )
+
+        now = time.monotonic()
+        cached = cache.get(key)
+        if cached is not None:
+            expires_at, result = cached
+            if now < expires_at:
+                return _copy_fetch_result(result)
+
+        result = func(*args, **kwargs)
+        cache[key] = (now + CACHED_FETCH_ALL_TTL_SECONDS, result)
+        return _copy_fetch_result(result)
+
+    return wrapper
+
+
+def _copy_fetch_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Неглубокая защитная копия результата fetch_all для ttl_cache: копирует
+    списки-значения, чтобы мутация возвращённого dict вызывающим кодом не
+    портила запись, которая всё ещё лежит в кэше."""
+    return {
+        col: (list(values) if isinstance(values, list) else values)
+        for col, values in result.items()
+    }
+
+
+cached_fetch_all = ttl_cache(fetch_all)
+cached_fetch_all.__doc__ = (
+    "TTL-кэшированная обёртка над fetch_all() — см. ttl_cache() и "
+    "CACHED_FETCH_ALL_TTL_SECONDS. Использовать только для справочников/таблиц/"
+    "лидеров, которые меняются раз в загрузку; для данных идущей игры "
+    "оставаться на обычном fetch_all()."
+)

@@ -307,7 +307,7 @@ bot.py
   │       │                  team_table(), team_stats(), game_message()
   │       │
   │       ├── database.py    Пул (SimpleConnectionPool 1–5 conn),
-  │       │                  get_connection(), fetch_all(),
+  │       │                  get_connection(), fetch_all(), cached_fetch_all(),
   │       │                  whitelist-валидация (ALLOWED_TABLES, ALLOWED_COLUMNS)
   │       │
   │       └── template_funcs.py   read_template() + output_text()
@@ -361,6 +361,18 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 ```
 
 Возвращает словарь, где ключи — имена колонок, значения — списки значений. Добавляется ключ `count_rows` с количеством строк.
+
+### TTL-кэш `cached_fetch_all()`
+
+`ttl_cache()` — декоратор-мемоизатор поверх `fetch_all()` (`CACHED_FETCH_ALL_TTL_SECONDS`,
+5 минут); `cached_fetch_all = ttl_cache(fetch_all)` лежит рядом в `database.py`. Прямые
+запросы счёта и событий в `game_message()` и `day_digest()` остаются на `fetch_all()`
+без кэша — это живые данные идущей игры. Вспомогательная форма команды
+(`_last_n_form_record()`) и остальные справочники/таблицы/лидеры в `bot_messages.py`
+кэшируются через `cached_fetch_all()`, потому что меняются раз в загрузку данных.
+Исключение — `game_exists()`: он сам не читает счёт, но управляет тем, какой экран
+пользователь увидит (карточка матча vs. превью до его загрузки), поэтому остаётся на
+`fetch_all()` — гейт живого экрана, а не свежесть числа.
 
 ---
 

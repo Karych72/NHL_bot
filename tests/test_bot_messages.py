@@ -1,7 +1,8 @@
 """Unit tests for message assembly: telegram_bot/template_funcs.py and the
 HTML-rendering paths of telegram_bot/bot_messages.py. No DB, no network —
-bot_messages.fetch_all is patched at the module boundary; template_funcs is
-exercised directly against real template files under telegram_bot/messages/.
+bot_messages.fetch_all and bot_messages.cached_fetch_all are patched at the
+module boundary; template_funcs is exercised directly against real template
+files under telegram_bot/messages/.
 
 Special attention goes to HTML escaping (Telegram parse_mode="HTML"): player
 and team names coming out of the DB can contain `<`, `>`, `&`, quotes, or
@@ -108,8 +109,14 @@ def _game_message_fetch_all(query, params=None, columns=None):
 
 @pytest.fixture
 def game_message_text(bot_module):
+    """game_message() itself only calls fetch_all (:106,111,126,145), but it
+    also calls _last_n_form_record() (:236-237), which since Task 9 goes
+    through cached_fetch_all — patch both to the same stub, so an unmocked
+    query fails loudly (the stub's terminal AssertionError) instead of
+    silently escaping to the real database.get_connection()."""
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all):
+    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
         text, goals_meta = bot_messages.game_message(555)
     return text, goals_meta
 
@@ -174,12 +181,12 @@ def test_game_exists_true_only_when_a_row_is_found(bot_module):
 
 def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all") as mock_fetch:
+    with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
         text = bot_messages.matchup_season_preview("", "NYR")
     assert "Не удалось сопоставить" in text
     mock_fetch.assert_not_called()
 
-    with patch.object(bot_messages, "fetch_all") as mock_fetch:
+    with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
         text = bot_messages.matchup_season_preview("?", "?")
     assert "Не удалось сопоставить" in text
     mock_fetch.assert_not_called()
@@ -188,7 +195,7 @@ def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
 def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
-    with patch.object(bot_messages, "fetch_all", return_value=empty):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
         text = bot_messages.matchup_season_preview("AAA", "BBB")
     assert "нет в базе бота" in text
     assert "<b>AAA</b>" in text and "<b>BBB</b>" in text
@@ -197,7 +204,7 @@ def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
 def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
-    with patch.object(bot_messages, "fetch_all", return_value=empty):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
         text = bot_messages.matchup_season_preview("<i>AB", "CD&EF")
     assert "&lt;i&gt;AB" in text
     assert "CD&amp;EF" in text
@@ -232,7 +239,7 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "fetch_all", side_effect=fake_fetch):
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
         text = bot_messages.matchup_season_preview("AAA", "BBB")
 
     assert "<b>AAA</b> — 7-3-0, 14 очков (70%)" in text
@@ -257,7 +264,7 @@ def _leader_rows(n: int):
 
 def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", return_value=_leader_rows(10)):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(10)):
         text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
@@ -268,7 +275,7 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
 
 def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", return_value=_leader_rows(10)):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(10)):
         _, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
@@ -278,7 +285,7 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", return_value=_leader_rows(3)):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(3)):
         _, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
@@ -288,7 +295,7 @@ def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", return_value=_leader_rows(0)):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(0)):
         text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 50
         )
@@ -299,7 +306,7 @@ def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
 def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {"team": ["BOS"], "points": [55.5], "games_played": [40], "count_rows": 1}
-    with patch.object(bot_messages, "fetch_all", return_value=rows):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
             "Статистика большинства", "power_play_percentage", 0
         )
