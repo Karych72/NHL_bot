@@ -26,7 +26,7 @@ CREATE TABLE goalies_season_stats(
     season_id                           bigint NOT NULL,
     PRIMARY KEY (player_id, season_id),
     -- См. players_season_stats.sql — тот же контракт (rosters.PK = player_id+season_id).
-    -- Проверено на живой БД: 0 сирот.
+    -- Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (player_id, season_id) REFERENCES rosters (player_id, season_id)
 );
 

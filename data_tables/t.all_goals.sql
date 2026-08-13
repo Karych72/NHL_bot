@@ -16,7 +16,7 @@ CREATE TABLE all_goals(
     goals_away            int,
     goals_home            int,
     event_id              int,
-    -- Голы конкретной игры. Проверено на живой БД: 0 сирот.
+    -- Голы конкретной игры. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
 

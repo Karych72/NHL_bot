@@ -19,6 +19,6 @@ CREATE TABLE teams_stats(
     face_off_win_percentage        double precision,
     PRIMARY KEY (team_id, season_id),
     -- Агрегат команды за сезон существует только для команды, известной в этом
-    -- сезоне (teams.PK = team_id+season_id). Проверено на живой БД: 0 сирот.
+    -- сезоне (teams.PK = team_id+season_id). Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (team_id, season_id) REFERENCES teams (team_id, season_id)
 );

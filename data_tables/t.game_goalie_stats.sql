@@ -20,7 +20,7 @@ CREATE TABLE game_goalie_stats(
     short_handed_save_percentage        double precision,
     even_strength_save_percentage       double precision,
     UNIQUE (game_id, player_id),
-    -- Построчная статистика вратаря по конкретной игре. Проверено на живой БД: 0 сирот.
+    -- Построчная статистика вратаря по конкретной игре. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
 

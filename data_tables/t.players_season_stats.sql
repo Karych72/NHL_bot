@@ -37,7 +37,7 @@ CREATE TABLE players_season_stats(
     season_id                               bigint NOT NULL,
     PRIMARY KEY (player_id, season_id),
     -- Сезонная статистика существует только для игрока, известного в этом сезоне
-    -- (rosters.PK = player_id+season_id). Проверено на живой БД: 0 сирот.
+    -- (rosters.PK = player_id+season_id). Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (player_id, season_id) REFERENCES rosters (player_id, season_id)
 );
 

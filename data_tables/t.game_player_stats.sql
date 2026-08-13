@@ -20,11 +20,9 @@ CREATE TABLE game_player_stats(
     plus_minus                  int,
     face_off_pct                double precision,
     UNIQUE (game_id, player_id),
-    -- Построчная статистика игрока по конкретной игре. Проверено на живой БД: 0 сирот.
+    -- Построчная статистика игрока по конкретной игре. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
 
 -- Отдельный индекс на game_id не нужен: UNIQUE (game_id, player_id) уже даёт btree с
--- ведущей колонкой game_id — достаточно и для FK, и для будущих WHERE game_id = %s.
--- Прямых SELECT по game_player_stats из bot/pipeline/modeling сейчас нет
--- (grep по "game_player_stats" вне queries/*.sql и database.py — пусто на 2026-08-12).
+-- ведущей колонкой game_id — достаточно для FK. Таблицу сейчас не читает ни один модуль.

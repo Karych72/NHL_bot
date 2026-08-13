@@ -14,7 +14,7 @@ CREATE TABLE rosters(
     current_team_id         int,
     PRIMARY KEY (player_id, season_id),
     -- current_team_id — команда игрока в этом сезоне (teams.PK = team_id+season_id);
-    -- nullable — свободный агент/без текущей команды. Проверено на живой БД: 0 сирот.
+    -- nullable — свободный агент/без текущей команды. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (current_team_id, season_id) REFERENCES teams (team_id, season_id)
 );
 

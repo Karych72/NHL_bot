@@ -17,7 +17,7 @@ CREATE TABLE game_team_stats(
     snd_period_goals            int,
     trd_period_goals            int,
     UNIQUE (game_id, team_id),
-    -- Построчная статистика команды по конкретной игре. Проверено на живой БД: 0 сирот.
+    -- Построчная статистика команды по конкретной игре. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
 
