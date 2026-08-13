@@ -12,7 +12,6 @@ from telegram.ext import CallbackContext
 
 from bot_messages import (
     LEADERBOARD_PAGE_SIZE,
-    TELEGRAM_MAX_MESSAGE_LENGTH,
     day_digest,
     day_digest_summary_body,
     digest_shown_match_count,
@@ -528,17 +527,14 @@ async def dispatch_day_digest_messages(
         f"{header}{body}\n\n"
         "<i>Нажмите «Матч N» для полной карточки и кнопок видео голов.</i>"
     )
-    if len(intro) > TELEGRAM_MAX_MESSAGE_LENGTH:
-        # Обрезка режет по символам, а не по заголовкам матчей — маркер должен
-        # назвать реальное число попавших в текст матчей, а не молчать о них.
-        total_games = len(real_games)
-        shown_games = digest_shown_match_count(header, body.split("\n"), total_games)
-        footer_note = "\n\n" + truncation_marker(
-            shown_games, total_games, item_word="матчей"
-        )
-        summary_text = truncate_telegram_text(intro, footer_note=footer_note)
-    else:
-        summary_text = intro
+    # Обрезка режет по символам, а не по заголовкам матчей — маркер должен
+    # назвать реальное число попавших в текст матчей, а не молчать о них.
+    # Решение «нужна ли обрезка вообще» остаётся в truncate_telegram_text: на
+    # коротком тексте он вернёт intro как есть и проигнорирует footer_note.
+    total_games = len(real_games)
+    shown_games = digest_shown_match_count(header, body.split("\n"), total_games)
+    footer_note = "\n\n" + truncation_marker(shown_games, total_games, item_word="матчей")
+    summary_text = truncate_telegram_text(intro, footer_note=footer_note)
 
     expand_buttons = [
         InlineKeyboardButton(f"Матч {i + 1}", callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")

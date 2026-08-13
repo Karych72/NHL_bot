@@ -392,6 +392,14 @@ def test_truncation_marker_without_counts_is_plain_telegram_limit_note(bot_modul
     assert bot_messages.truncation_marker() == "<i>Текст обрезан (лимит Telegram).</i>"
 
 
+def test_truncation_marker_rejects_shown_without_total(bot_module):
+    """GC4 («падать громко»): shown без total не имеет однозначного смысла —
+    тихий рендер «Показаны 5 из None.» запрещён, функция должна упасть."""
+    bot_messages = bot_module("bot_messages")
+    with pytest.raises(ValueError, match="total"):
+        bot_messages.truncation_marker(5)
+
+
 # ---------------------------------------------------------------------------
 # truncate_telegram_text()
 # ---------------------------------------------------------------------------
