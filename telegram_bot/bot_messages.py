@@ -289,7 +289,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
 
 
 def game_exists(game_id: int) -> bool:
-    row = cached_fetch_all(
+    row = fetch_all(
         "SELECT 1 AS o FROM games WHERE game_id = %s LIMIT 1",
         (game_id,),
         columns=["o"],

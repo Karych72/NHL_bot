@@ -1,7 +1,8 @@
 """Unit tests for message assembly: telegram_bot/template_funcs.py and the
 HTML-rendering paths of telegram_bot/bot_messages.py. No DB, no network —
-bot_messages.fetch_all is patched at the module boundary; template_funcs is
-exercised directly against real template files under telegram_bot/messages/.
+bot_messages.fetch_all and bot_messages.cached_fetch_all are patched at the
+module boundary; template_funcs is exercised directly against real template
+files under telegram_bot/messages/.
 
 Special attention goes to HTML escaping (Telegram parse_mode="HTML"): player
 and team names coming out of the DB can contain `<`, `>`, `&`, quotes, or
@@ -168,9 +169,9 @@ def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
 
 def test_game_exists_true_only_when_a_row_is_found(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "o": []}):
+    with patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "o": []}):
         assert bot_messages.game_exists(1) is False
-    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 1, "o": [1]}):
+    with patch.object(bot_messages, "fetch_all", return_value={"count_rows": 1, "o": [1]}):
         assert bot_messages.game_exists(1) is True
 
 
