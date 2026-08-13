@@ -53,10 +53,10 @@ make bot
 make bot
 ```
 
-`bot.py::main()` перед стартом polling вызывает `config.validate_env()` —
-падает с сообщением, называющим переменную, если пуст или не задан
-`TELEGRAM_BOT_TOKEN` или любой из `PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`;
-затем выполняется `telegram_bot/bot.py` через интерпретатор из `.venv`.
+Выполняется `telegram_bot/bot.py` через интерпретатор из `.venv`; `bot.py::main()`
+перед стартом polling вызывает `config.validate_env()` — падает с сообщением,
+называющим переменную, если пуст или не задан `TELEGRAM_BOT_TOKEN` или любой из
+`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`.
 
 ### 2.2. С автоматической подготовкой окружения
 

@@ -61,7 +61,7 @@ def bot_module(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Any]:
     return _import
 
 
-# config.validate_env() smokes the raw environment (os.environ), not the
+# config.validate_env() checks the raw environment (os.environ), not the
 # already-defaulted config.PG_*, so any test that drives bot.main() /
 # push_digest_job.main() end-to-end must set all five required variables
 # itself — it cannot rely on whatever `make` happened to supply.

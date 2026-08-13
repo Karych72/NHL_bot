@@ -34,7 +34,10 @@ def validate_env() -> None:
     """
     for name in _REQUIRED_ENV_VARS:
         if not os.getenv(name, "").strip():
-            raise RuntimeError(f"Не задана обязательная переменная окружения: {name}")
+            raise RuntimeError(
+                f"Не задана обязательная переменная окружения: {name}. "
+                "Задайте её в .env или экспортируйте в shell."
+            )
 
 
 def _env(name: str, default: str) -> str:
@@ -43,6 +46,8 @@ def _env(name: str, default: str) -> str:
 
 
 def _env_int(name: str, default: int) -> int:
+    """Отсутствующая/пустая переменная — `default`; кривое значение — `ValueError`
+    с именем переменной, без её значения."""
     raw = os.getenv(name, "")
     if not raw.strip():
         return default
@@ -76,6 +81,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _env_float(name: str, default: float) -> float:
+    """Отсутствующая/пустая переменная — `default`; кривое значение — `ValueError`
+    с именем переменной, без её значения."""
     raw = os.getenv(name, "")
     if not raw.strip():
         return default

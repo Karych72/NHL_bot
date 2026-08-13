@@ -404,7 +404,7 @@ def test_validate_env_raises_on_missing_variable(
 
 @pytest.mark.parametrize("blank_value", ["", "   "])
 def test_validate_env_raises_on_blank_variable(
-    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env, blank_value: str
+    bot_module, set_required_bot_env, blank_value: str
 ) -> None:
     """Пустая строка или строка из пробелов считается отсутствием переменной."""
     config = bot_module("config")
@@ -415,7 +415,7 @@ def test_validate_env_raises_on_blank_variable(
 
 
 def test_validate_env_error_message_does_not_leak_other_values(
-    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
+    bot_module, set_required_bot_env
 ) -> None:
     """Сообщение об ошибке называет переменную, но не значения остальных."""
     config = bot_module("config")
@@ -429,7 +429,7 @@ def test_validate_env_error_message_does_not_leak_other_values(
 
 
 def test_validate_env_passes_when_all_required_variables_are_set(
-    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
+    bot_module, set_required_bot_env
 ) -> None:
     config = bot_module("config")
     set_required_bot_env()

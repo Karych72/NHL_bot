@@ -199,7 +199,6 @@ async def test_main_does_nothing_while_enable_push_digest_is_off(
 ):
     config = bot_module("config")
     set_required_bot_env()
-    monkeypatch.setattr(config, "TOKEN", "123456789:TEST-TOKEN-NOT-A-REAL-SECRET")
     monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", False)
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
