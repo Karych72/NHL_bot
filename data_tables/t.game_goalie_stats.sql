@@ -19,5 +19,11 @@ CREATE TABLE game_goalie_stats(
     power_play_save_percentage          double precision,
     short_handed_save_percentage        double precision,
     even_strength_save_percentage       double precision,
-    UNIQUE (game_id, player_id)
+    UNIQUE (game_id, player_id),
+    -- Построчная статистика вратаря по конкретной игре. Проверено на живой БД: 0 сирот (2026-08-12).
+    FOREIGN KEY (game_id) REFERENCES games (game_id)
 );
+
+-- Отдельный индекс на game_id не нужен: UNIQUE (game_id, player_id) уже даёт btree с
+-- ведущей колонкой game_id, чего достаточно для WHERE game_id = %s
+-- (telegram_bot/queries/get_goalies_game.sql:13-18) и для этого FK.
