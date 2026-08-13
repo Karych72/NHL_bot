@@ -409,7 +409,7 @@ def test_truncate_telegram_text_truncates_and_appends_default_note(bot_module):
     long_text = "x" * 5000
     note = "\n\n" + bot_messages.truncation_marker()
     result = bot_messages.truncate_telegram_text(long_text)
-    cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note) - 3
+    cut = bot_messages._telegram_cut_budget(note)
     assert result == long_text[:cut] + "..." + note
     assert len(result) <= bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH
 
@@ -445,12 +445,12 @@ def test_digest_shown_match_count_drops_lines_that_do_not_fit_budget(bot_module)
     # ровно shown строк должны укладываться в бюджет truncate_telegram_text с
     # footer_note, построенным на этом же shown …
     note = "\n\n" + bot_messages.truncation_marker(shown, 20, item_word="матчей")
-    cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note) - 3
+    cut = bot_messages._telegram_cut_budget(note)
     assert len("Header\n\n" + "\n".join(lines[:shown])) <= cut
 
     # … а на одну строку больше — уже нет (иначе маркер солгал бы про N).
     note_next = "\n\n" + bot_messages.truncation_marker(shown + 1, 20, item_word="матчей")
-    cut_next = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note_next) - 3
+    cut_next = bot_messages._telegram_cut_budget(note_next)
     assert len("Header\n\n" + "\n".join(lines[: shown + 1])) > cut_next
 
 

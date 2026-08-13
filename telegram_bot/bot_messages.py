@@ -1195,6 +1195,28 @@ def truncation_marker(
     return f"<i>Показаны {shown} из {total}{word}.</i>"
 
 
+def _telegram_cut_budget(
+    note: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH
+) -> int:
+    """Сколько символов исходного текста остаётся под обрезку `truncate_telegram_text`
+    при данной сноске `note`.
+
+    Зачем: `digest_shown_match_count` предсказывает результат
+    `truncate_telegram_text` заранее (чтобы посчитать N для маркера), поэтому
+    обе функции обязаны считать бюджет одной и той же формулой — раздельные
+    копии рассинхронизируются при правке одной из них и заставят маркер
+    молча врать про число показанных элементов.
+
+    Аргументы:
+        note: сноска, которая будет дописана после обрезки (с учётом
+            разделителя "\\n\\n", если он нужен).
+        max_len: лимит символов сообщения (по умолчанию
+            `TELEGRAM_MAX_MESSAGE_LENGTH`).
+    """
+    cut = max_len - len(note) - 3
+    return max(cut, 80)
+
+
 def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
     """Сколько заголовков матчей из `lines` уместится в сводке дайджеста после
     обрезки `truncate_telegram_text` по лимиту Telegram.
@@ -1213,9 +1235,7 @@ def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
     shown = len(lines)
     while shown > 0:
         note = "\n\n" + truncation_marker(shown, total, item_word="матчей")
-        cut = TELEGRAM_MAX_MESSAGE_LENGTH - len(note) - 3
-        if cut < 80:
-            cut = 80
+        cut = _telegram_cut_budget(note)
         prefix_len = len(header) + len("\n".join(lines[:shown]))
         if prefix_len <= cut:
             return shown
@@ -1244,7 +1264,5 @@ def truncate_telegram_text(
     if len(text) <= max_len:
         return text
     note = footer_note if footer_note is not None else ("\n\n" + truncation_marker())
-    cut = max_len - len(note) - 3
-    if cut < 80:
-        cut = 80
+    cut = _telegram_cut_budget(note, max_len)
     return text[:cut] + "..." + note
