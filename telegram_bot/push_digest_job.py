@@ -178,9 +178,7 @@ async def main() -> None:
     Ни polling, ни ``JobQueue`` скрипту не нужны — отключены явно; ``async with``
     инициализирует и корректно гасит HTTP-клиент бота.
     """
-    if not config.TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN пуст — выход.")
-        sys.exit(1)
+    config.validate_env()
     if not config.ENABLE_PUSH_DIGEST:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return

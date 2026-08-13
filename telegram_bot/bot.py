@@ -617,7 +617,9 @@ def build_application(token: str) -> Application:
 
 
 def main() -> None:
-    """Точка входа `python bot.py`: long polling до сигнала остановки."""
+    """Точка входа `python bot.py`: проверка окружения, затем long polling
+    до сигнала остановки."""
+    config.validate_env()
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
