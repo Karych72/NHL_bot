@@ -102,9 +102,9 @@ async def stats(update: Update, context: CallbackContext) -> int:
         parse_mode="HTML",
     )
     # Новое сообщение (`reply_text`, не `edit_message_text`): id записывается,
-    # чтобы /cancel мог снять клавиатуру, если диалог оборвётся до «Готово»
-    # (Задача 6, §5.2). Все последующие экраны FIRST/SECOND/THIRD правят этот
-    # же message_id через edit_message_text — записывать его повторно не нужно.
+    # чтобы /cancel мог снять клавиатуру, если диалог оборвётся до «Готово».
+    # Все последующие экраны FIRST/SECOND/THIRD правят этот же message_id
+    # через edit_message_text — записывать его повторно не нужно.
     assert context.user_data is not None
     context.user_data[LAST_MENU_MESSAGE_ID_KEY] = sent.message_id
     assert message.from_user is not None

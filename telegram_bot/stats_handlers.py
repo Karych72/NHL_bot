@@ -69,9 +69,9 @@ def _stats_menu_nav_row(parent_state: int) -> List[InlineKeyboardButton]:
     """Нижний ряд навигации страницы стата: родитель / корень / выход.
 
     `parent_state` — callback_data родительского экрана (подменю, из которого
-    открыли эту страницу): «« Назад» ведёт туда, а не сразу в корень
-    (критерий 2 Задачи 6). Родитель для страниц статов игроков/вратарей
-    выводится из (table, column) — см. `_player_stat_parent_state`.
+    открыли эту страницу): «« Назад» ведёт туда, а не сразу в корень.
+    Родитель для страниц статов игроков/вратарей выводится из
+    (table, column) — см. `_player_stat_parent_state`.
     """
     return [
         InlineKeyboardButton("« Назад", callback_data=str(parent_state)),
@@ -90,7 +90,7 @@ def _record_menu_message(context: CallbackContext, message_id: int) -> None:
     но гарантированно не `None` для контекста, порождённого реальным Update
     от пользователя (единственный вызывающий тут сценарий, в отличие от
     `push_digest_job.py`, который сам себе строит контекст без пользователя
-    и не проходит в ветки, откуда зовётся эта функция — см. Задача 6, §5.2).
+    и не проходит в ветки, откуда зовётся эта функция).
     """
     assert context.user_data is not None
     context.user_data[LAST_MENU_MESSAGE_ID_KEY] = message_id
@@ -460,8 +460,8 @@ async def dispatch_day_digest_messages(
             await asyncio.sleep(inter_message_sleep_sec)
 
     # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), а не сразу
-    # корень (критерий 2 Задачи 6): «Сегодня»/«Вчера»/ввод даты открываются
-    # из bot_digest_date_menu, туда и ведёт «« Назад»».
+    # корень: «Сегодня»/«Вчера»/ввод даты открываются из bot_digest_date_menu,
+    # туда и ведёт «« Назад»».
     nav_buttons = [
         InlineKeyboardButton("« Назад", callback_data=str(DAY_DIGEST)),
         InlineKeyboardButton("В начало", callback_data=str(CHOOSE_STATS)),
@@ -647,8 +647,7 @@ async def bot_league_standings(update: Update, context: CallbackContext) -> int:
     """Турнирная таблица: родитель уже корень (LEAGUE_STANDINGS — прямой
     пункт главного меню), поэтому «« Главное меню»» ведёт в CHOOSE_STATS без
     изменений. Сообщение новое (`send_message`, не `edit_message_text`) — id
-    записывается в `user_data`, чтобы `/cancel` мог снять клавиатуру
-    (Задача 6, §5.2)."""
+    записывается в `user_data`, чтобы `/cancel` мог снять клавиатуру."""
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
@@ -730,7 +729,7 @@ async def bot_digest_custom_date(update: Update, context: CallbackContext) -> in
     except ValueError:
         # Новое сообщение (не edit_message_text) со своей копией «« Назад»» —
         # id записывается в user_data, чтобы /cancel мог снять клавиатуру
-        # с этой конкретной (последней) копии (Задача 6, §5.2).
+        # с этой конкретной (последней) копии.
         sent = await message.reply_text(
             "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel.",
             reply_markup=_digest_back_from_date_keyboard(),

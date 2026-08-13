@@ -765,10 +765,37 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
 
 
 # ---------------------------------------------------------------------------
-# dispatch_day_digest_messages — multi-game branch (2+ real games): same
-# «« Назад»»/«В начало»/«Закрыть меню» footer, separate code path (rows.append
-# instead of the single-message shortcut above) — exercised directly.
+# dispatch_day_digest_messages — the two branches not covered by the
+# bot_digest_custom_date test above: "no real games" (gid == 0) and multi-game
+# (2+ real games). Each builds nav_markup/message differently from the
+# single-game branch, so each gets its own direct assertion on the sent
+# reply_markup and the recorded message id.
 # ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_no_real_games_nav_targets_digest_menu_and_records_id(
+    bot_module, fake_context
+):
+    """Третья ветка с той же семантикой — «матчей нет» (`gid == 0`): своя
+    сборка `nav_markup`/`send_message`, отдельная от single-game и multi-game
+    веток, поэтому проверяется отдельно."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    games = [(0, "Матчей не найдено", [])]
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=True,
+    )
+
+    sent = fake_context.bot.sent_messages[0]
+    nav_row = sent["reply_markup"].inline_keyboard[-1]
+    assert [b.callback_data for b in nav_row] == [
+        str(dialog_states.DAY_DIGEST),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_multi_game_nav_targets_digest_menu_and_records_id(
