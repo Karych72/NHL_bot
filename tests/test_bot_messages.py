@@ -252,45 +252,74 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
 # player_stat_leaderboard_page() / team_stat_leaderboard_page() — pagination
 # ---------------------------------------------------------------------------
 
-def _leader_rows(n: int):
+def _leader_rows(n: int, total: int | None = None):
+    # COUNT(*) OVER () отдаёт одно и то же total в каждой строке страницы;
+    # при n == 0 (пустая выборка) окно тоже не возвращает строк — total: [].
+    if total is None:
+        total = n
     return {
         "lastname": [f"Player{i}" for i in range(n)],
         "roster_position": ["C"] * n,
         "points": [100 - i for i in range(n)],
         "team": ["WSH"] * n,
+        "total": [total] * n,
         "count_rows": n,
     }
 
 
 def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(10)):
+    with patch.object(
+        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
+    ):
         text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
     assert has_prev is False
     assert has_next is True
     assert "Player0" in text
+    assert "Показаны 1–10 из 25" in text
 
 
 def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(10)):
-        _, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+    with patch.object(
+        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
+    ):
+        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
     assert has_prev is True
     assert has_next is True
+    assert "Показаны 11–20 из 25" in text
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(3)):
-        _, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+    with patch.object(
+        bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=13)
+    ):
+        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
     assert has_prev is True
     assert has_next is False
+    assert "Показаны 11–13 из 13" in text
+
+
+def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
+    """`has_next` смотрит на total, а не на «страница пришла полной»: последняя
+    полная страница (offset + n == total) не должна рисовать кнопку «вперёд»
+    на пустой диапазон — маркер тут же говорит «показаны 741–750 из 750»."""
+    bot_messages = bot_module("bot_messages")
+    with patch.object(
+        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=10)
+    ):
+        text, _, has_next = bot_messages.player_stat_leaderboard_page(
+            "Топ", "players_season_stats", "points", 0
+        )
+    assert has_next is False
+    assert "Показаны 1–10 из 10" in text
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
@@ -301,11 +330,15 @@ def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
         )
     assert "Нет данных в этом диапазоне." in text
     assert has_next is False
+    assert "Показаны" not in text
 
 
 def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     bot_messages = bot_module("bot_messages")
-    rows = {"team": ["BOS"], "points": [55.5], "games_played": [40], "count_rows": 1}
+    rows = {
+        "team": ["BOS"], "points": [55.5], "games_played": [40],
+        "total": [12], "count_rows": 1,
+    }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
             "Статистика большинства", "power_play_percentage", 0
@@ -313,13 +346,50 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     assert "Статистика большинства" in text
     assert "BOS" in text
     assert has_prev is False
+    assert has_next is True
+    assert "Показаны 1 из 12" in text
+
+
+def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "team": [f"T{i}" for i in range(10)],
+        "points": [float(i) for i in range(10)],
+        "games_played": [40] * 10,
+        "total": [10] * 10,
+        "count_rows": 10,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
     assert has_next is False
+    assert "Показаны 1–10 из 10" in text
 
 
 def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
     bot_messages = bot_module("bot_messages")
     with pytest.raises(ValueError, match="unknown leaderboard kind"):
         bot_messages.stat_leaderboard_for_kind("wins", 0)
+
+
+# ---------------------------------------------------------------------------
+# truncation_marker() — единственный хелпер сноски об усечении (Задача 11)
+# ---------------------------------------------------------------------------
+
+def test_truncation_marker_with_counts_names_shown_and_total(bot_module):
+    bot_messages = bot_module("bot_messages")
+    marker = bot_messages.truncation_marker(5, 20, item_word="строк")
+    assert marker == "<i>Показаны 5 из 20 строк.</i>"
+
+
+def test_truncation_marker_accepts_range_string_as_shown(bot_module):
+    bot_messages = bot_module("bot_messages")
+    marker = bot_messages.truncation_marker("11–20", 750, item_word="строк")
+    assert marker == "<i>Показаны 11–20 из 750 строк.</i>"
+
+
+def test_truncation_marker_without_counts_is_plain_telegram_limit_note(bot_module):
+    bot_messages = bot_module("bot_messages")
+    assert bot_messages.truncation_marker() == "<i>Текст обрезан (лимит Telegram).</i>"
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +403,11 @@ def test_truncate_telegram_text_leaves_short_text_untouched(bot_module):
 
 
 def test_truncate_telegram_text_truncates_and_appends_default_note(bot_module):
+    """Дефолтная сноска (без footer_note) приходит из truncation_marker() — тот же
+    хелпер, что и все остальные ветки усечения, а не свой строковый литерал."""
     bot_messages = bot_module("bot_messages")
     long_text = "x" * 5000
-    note = "\n\n<i>Текст обрезан (лимит Telegram). Подробности — кнопками «Матч N» ниже.</i>"
+    note = "\n\n" + bot_messages.truncation_marker()
     result = bot_messages.truncate_telegram_text(long_text)
     cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note) - 3
     assert result == long_text[:cut] + "..." + note
@@ -350,6 +422,41 @@ def test_truncate_telegram_text_uses_custom_footer_note(bot_module):
     cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(footer_note) - 3
     assert result == long_text[:cut] + "..." + footer_note
     assert len(result) <= bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH
+
+
+# ---------------------------------------------------------------------------
+# digest_shown_match_count() — сколько заголовков матчей уместилось после
+# обрезки truncate_telegram_text по лимиту Telegram
+# ---------------------------------------------------------------------------
+
+def test_digest_shown_match_count_returns_full_total_when_everything_fits(bot_module):
+    bot_messages = bot_module("bot_messages")
+    lines = ["Матч 1", "Матч 2", "Матч 3"]
+    assert bot_messages.digest_shown_match_count("Header\n\n", lines, 3) == 3
+
+
+def test_digest_shown_match_count_drops_lines_that_do_not_fit_budget(bot_module):
+    bot_messages = bot_module("bot_messages")
+    long_line = "X" * 500
+    lines = [long_line] * 20  # 20 * 500 = 10000 символов, заведомо больше 4096
+    shown = bot_messages.digest_shown_match_count("Header\n\n", lines, 20)
+    assert 0 < shown < 20
+
+    # ровно shown строк должны укладываться в бюджет truncate_telegram_text с
+    # footer_note, построенным на этом же shown …
+    note = "\n\n" + bot_messages.truncation_marker(shown, 20, item_word="матчей")
+    cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note) - 3
+    assert len("Header\n\n" + "\n".join(lines[:shown])) <= cut
+
+    # … а на одну строку больше — уже нет (иначе маркер солгал бы про N).
+    note_next = "\n\n" + bot_messages.truncation_marker(shown + 1, 20, item_word="матчей")
+    cut_next = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(note_next) - 3
+    assert len("Header\n\n" + "\n".join(lines[: shown + 1])) > cut_next
+
+
+def test_digest_shown_match_count_empty_lines_returns_zero(bot_module):
+    bot_messages = bot_module("bot_messages")
+    assert bot_messages.digest_shown_match_count("Header\n\n", [], 0) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -427,3 +534,73 @@ def test_player_stats_with_count_rejects_unwhitelisted_table(bot_module):
     bot_messages = bot_module("bot_messages")
     with pytest.raises(ValueError, match="Table not allowed"):
         bot_messages.player_stats_with_count("Title", "users_secret", "points")
+
+
+def test_player_stats_with_count_returns_total_from_window_function(bot_module):
+    bot_messages = bot_module("bot_messages")
+    with patch.object(
+        bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
+    ):
+        _, n, total = bot_messages.player_stats_with_count(
+            "Title", "players_season_stats", "points"
+        )
+    assert n == 3
+    assert total == 42
+
+
+def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(0)):
+        _, n, total = bot_messages.player_stats_with_count(
+            "Title", "players_season_stats", "points", offset=500
+        )
+    assert n == 0
+    assert total == 0
+
+
+# ---------------------------------------------------------------------------
+# team_stats_with_count() — same total-from-window-function contract
+# ---------------------------------------------------------------------------
+
+def test_team_stats_with_count_returns_total_from_window_function(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "team": ["BOS"], "points": [55.5], "games_played": [40],
+        "total": [7], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
+    assert n == 1
+    assert total == 7
+
+
+def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = {"team": [], "points": [], "games_played": [], "total": [], "count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
+    assert n == 0
+    assert total == 0
+
+
+# ---------------------------------------------------------------------------
+# season_team_abbrev_help_text() — маркер на молчаливо обрезанный список
+# ---------------------------------------------------------------------------
+
+def test_season_team_abbrev_help_text_marks_dropped_teams_when_over_budget(bot_module):
+    bot_messages = bot_module("bot_messages")
+    abbrevs = [f"AB{i:03d}" for i in range(250)]  # шире бюджета в 3500 символов
+    rows = {"ab": abbrevs, "count_rows": len(abbrevs)}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text = bot_messages.season_team_abbrev_help_text()
+    assert "Показаны" in text
+    assert f"из {len(abbrevs)} команд" in text
+
+
+def test_season_team_abbrev_help_text_no_marker_when_everything_fits(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = {"ab": ["BOS", "TOR", "NYR"], "count_rows": 3}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text = bot_messages.season_team_abbrev_help_text()
+    assert "Показаны" not in text
+    assert "BOS" in text

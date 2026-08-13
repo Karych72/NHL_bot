@@ -12,8 +12,10 @@ from telegram.ext import CallbackContext
 
 from bot_messages import (
     LEADERBOARD_PAGE_SIZE,
+    TELEGRAM_MAX_MESSAGE_LENGTH,
     day_digest,
     day_digest_summary_body,
+    digest_shown_match_count,
     game_exists,
     game_message,
     matchup_season_preview,
@@ -22,6 +24,7 @@ from bot_messages import (
     team_stat_leaderboard_page,
     team_table,
     truncate_telegram_text,
+    truncation_marker,
 )
 from dialog_states import (
     CHOOSE_STATS,
@@ -525,7 +528,17 @@ async def dispatch_day_digest_messages(
         f"{header}{body}\n\n"
         "<i>Нажмите «Матч N» для полной карточки и кнопок видео голов.</i>"
     )
-    summary_text = truncate_telegram_text(intro)
+    if len(intro) > TELEGRAM_MAX_MESSAGE_LENGTH:
+        # Обрезка режет по символам, а не по заголовкам матчей — маркер должен
+        # назвать реальное число попавших в текст матчей, а не молчать о них.
+        total_games = len(real_games)
+        shown_games = digest_shown_match_count(header, body.split("\n"), total_games)
+        footer_note = "\n\n" + truncation_marker(
+            shown_games, total_games, item_word="матчей"
+        )
+        summary_text = truncate_telegram_text(intro, footer_note=footer_note)
+    else:
+        summary_text = intro
 
     expand_buttons = [
         InlineKeyboardButton(f"Матч {i + 1}", callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")
@@ -577,10 +590,10 @@ async def callback_tonight_game(update: Update, context: CallbackContext) -> Non
     if game_exists(game_id):
         await send_game_card_message(context, chat_id, game_id)
         return
-    text = truncate_telegram_text(
-        matchup_season_preview(away_a, home_a),
-        footer_note="\n\n(Текст обрезан — лимит Telegram.)",
-    )
+    # Проза без счётных элементов — сноска без чисел, но текст берётся из
+    # того же единственного хелпера (truncate_telegram_text по умолчанию),
+    # а не из литерала, продублированного здесь и в bot.py.
+    text = truncate_telegram_text(matchup_season_preview(away_a, home_a))
     await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 

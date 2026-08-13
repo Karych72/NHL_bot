@@ -258,10 +258,9 @@ async def cmd_tonight(update: Update, context: CallbackContext) -> None:
         )
         return
     games = slate_games_sorted(payload)
-    text = truncate_telegram_text(
-        tonight_reply_intro(payload),
-        footer_note="\n\n(Текст обрезан — лимит Telegram.)",
-    )
+    # Проза без счётных элементов — сноска без чисел приходит из хелпера
+    # по умолчанию (truncate_telegram_text), а не из литерала здесь.
+    text = truncate_telegram_text(tonight_reply_intro(payload))
     await message.reply_text(
         text,
         parse_mode="HTML",
