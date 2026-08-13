@@ -380,7 +380,12 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
         self.assertEqual(field(gk, table, "even_strength_save_percentage"), 92.08)
         # §3: the API has had no ties stat since 2005, 0 is a known business fact.
         self.assertEqual(field(gk, table, "ties"), 0)
-        # §2.5: neither report carries goalie ice time.
+        # Current behaviour, and a contradiction worth naming: the loader hard-codes
+        # both ice-time columns to None (load_season_modern.py:684, 706) claiming the
+        # reports have no ice time — but goalie/summary does send ``timeOnIce``
+        # (206703 seconds in this very fixture, i.e. "3445:03"), so the column loads
+        # as NULL although the data is right there. Only time_on_ice_per_game is
+        # genuinely absent from both reports (it would be timeOnIce / gamesPlayed).
         self.assertIsNone(field(gk, table, "time_on_ice"))
         self.assertIsNone(field(gk, table, "time_on_ice_per_game"))
 
