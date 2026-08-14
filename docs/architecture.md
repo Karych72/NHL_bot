@@ -92,6 +92,8 @@ NHL_bot/
 
 Конфигурация считывается модулем `telegram_bot/config.py`. Pipeline повторно использует тот же модуль, добавляя его директорию в `sys.path`.
 
+Модульные дефолты `PG_*` рассчитаны на лоадер и `make db-*` — сам импорт `config.py` на отсутствии переменных не падает. Для бота действует отдельная явная проверка `config.validate_env()`, вызываемая из точек входа (`bot.py`, `push_digest_job.py`): отсутствие или пустое значение любой из `TELEGRAM_BOT_TOKEN`/`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE` — падение на старте с сообщением, называющим переменную (без её значения).
+
 ### Makefile-цели
 
 | Цель | Описание |
@@ -103,7 +105,7 @@ NHL_bot/
 | `make season-sync DATE_FROM=… DATE_TO=…` | Запуск ETL-загрузчика `load_season_modern.py` для произвольного окна дат |
 | `make season-load-full` | Полная перезагрузка текущего сезона (от `SEASON_START` до сегодня) |
 | `make season-sync-week` / `-month` / `-today` | Синхронизация за последние 7 / 30 / 0 дней |
-| `make bot` | Запуск Telegram-бота (проверяет наличие токена) |
+| `make bot` | Запуск Telegram-бота (`bot.py::main()` проверяет обязательные переменные окружения) |
 | `make run-bot` | `setup` + `env-example` + `bot` |
 | `make run-local` | Запуск бота без pipeline (для работы с уже загруженными данными) |
 

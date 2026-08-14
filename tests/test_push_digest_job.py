@@ -181,22 +181,24 @@ class _ForbiddenApplication:
 
 
 @pytest.mark.asyncio
-async def test_main_exits_nonzero_without_token(push_job, bot_module, monkeypatch):
-    monkeypatch.setattr(bot_module("config"), "TOKEN", "")
+async def test_main_raises_and_never_builds_application_without_token(
+    push_job, monkeypatch, set_required_bot_env
+):
+    """``main()`` падает на ``validate_env()`` до сборки ``Application``, если
+    токена нет — раньше это было мягкое ``sys.exit(1)`` внутри самого скрипта."""
+    set_required_bot_env(TELEGRAM_BOT_TOKEN="")
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
         await push_job.main()
-
-    assert exc.value.code == 1
 
 
 @pytest.mark.asyncio
 async def test_main_does_nothing_while_enable_push_digest_is_off(
-    push_job, bot_module, monkeypatch
+    push_job, bot_module, monkeypatch, set_required_bot_env
 ):
     config = bot_module("config")
-    monkeypatch.setattr(config, "TOKEN", "123456789:TEST-TOKEN-NOT-A-REAL-SECRET")
+    set_required_bot_env()
     monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", False)
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
@@ -205,7 +207,7 @@ async def test_main_does_nothing_while_enable_push_digest_is_off(
 
 @pytest.mark.asyncio
 async def test_main_runs_both_broadcasts_on_a_context_bound_to_its_application(
-    push_job, bot_module, monkeypatch
+    push_job, bot_module, monkeypatch, set_required_bot_env
 ):
     """Обвязка ``main()``: builder → ``Application`` → ``CallbackContext``.
 
@@ -214,6 +216,7 @@ async def test_main_runs_both_broadcasts_on_a_context_bound_to_its_application(
     ``initialize()`` — так не выполняется, и тест не ходит в api.telegram.org.
     """
     config = bot_module("config")
+    set_required_bot_env()
     monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
     monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", True)
 

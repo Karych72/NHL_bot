@@ -1,8 +1,43 @@
+"""Общая конфигурация: токен бота, доступ к PostgreSQL, параметры пайплайна.
+
+Модуль импортируют и бот, и лоадер (`pipeline/`), и modeling, и тесты — поэтому
+сам импорт не должен требовать токена или падать на дефолтах `PG_*`. Строгая
+проверка обязательных переменных для бота — `validate_env()`, вызывается явно
+из точек входа (`bot.py`, `push_digest_job.py`), а не на уровне импорта.
+"""
+
 import os
 import getpass
 from datetime import date
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+# Переменные, без которых боту (в отличие от лоадера) стартовать нельзя —
+# см. validate_env().
+_REQUIRED_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "PG_HOST", "PG_PORT", "PG_USER", "PG_DATABASE")
+
+
+def validate_env() -> None:
+    """Проверяет, что боту заданы все обязательные переменные окружения.
+
+    Зачем: `TOKEN` и `PG_*` ниже по файлу тихо подставляют дефолты — это нужно
+    лоадеру и тестам, у которых токена нет и быть не должно, но для самого
+    бота отсутствующий токен или адрес БД должен быть падением на старте,
+    а не поздней рантайм-ошибкой у пользователя. Смотрит на «сырое»
+    окружение (`os.environ`), а не на уже задефолченные `PG_*` ниже —
+    иначе отсутствие переменной было бы неотличимо от дефолта.
+
+    Raises:
+        RuntimeError: названа первая отсутствующая или пустая переменная из
+            `TELEGRAM_BOT_TOKEN`/`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`.
+            Значение переменной в сообщение не попадает.
+    """
+    for name in _REQUIRED_ENV_VARS:
+        if not os.getenv(name, "").strip():
+            raise RuntimeError(
+                f"Не задана обязательная переменная окружения: {name}. "
+                "Задайте её в .env или экспортируйте в shell."
+            )
 
 
 def _env(name: str, default: str) -> str:
@@ -11,11 +46,17 @@ def _env(name: str, default: str) -> str:
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default))
-    try:
-        return int(raw) if raw else default
-    except ValueError:
+    """Отсутствующая/пустая переменная — `default`; кривое значение — `ValueError`
+    с именем переменной, без её значения."""
+    raw = os.getenv(name, "")
+    if not raw.strip():
         return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"Некорректное значение переменной окружения {name}: ожидается целое число"
+        ) from None
 
 
 PG_PORT = _env("PG_PORT", "5432")
@@ -40,13 +81,17 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _env_float(name: str, default: float) -> float:
+    """Отсутствующая/пустая переменная — `default`; кривое значение — `ValueError`
+    с именем переменной, без её значения."""
     raw = os.getenv(name, "")
     if not raw.strip():
         return default
     try:
         return float(raw)
     except ValueError:
-        return default
+        raise ValueError(
+            f"Некорректное значение переменной окружения {name}: ожидается число"
+        ) from None
 
 
 ENABLE_PUSH_DIGEST = _env_bool("ENABLE_PUSH_DIGEST", False)

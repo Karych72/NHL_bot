@@ -61,6 +61,34 @@ def bot_module(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Any]:
     return _import
 
 
+# config.validate_env() checks the raw environment (os.environ), not the
+# already-defaulted config.PG_*, so any test that drives bot.main() /
+# push_digest_job.main() end-to-end must set all five required variables
+# itself — it cannot rely on whatever `make` happened to supply.
+_REQUIRED_BOT_ENV = {
+    "TELEGRAM_BOT_TOKEN": "123456789:TEST-TOKEN-NOT-A-REAL-SECRET",
+    "PG_HOST": "localhost",
+    "PG_PORT": "5432",
+    "PG_USER": "nhl_bot_test",
+    "PG_DATABASE": "nhl_bot_test",
+}
+
+
+@pytest.fixture
+def set_required_bot_env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Factory: set every variable ``config.validate_env()`` requires.
+
+    ``**overrides`` swaps individual values (e.g. to an empty string) for
+    tests targeting one specific missing/blank variable.
+    """
+
+    def _set(**overrides: str) -> None:
+        for name, value in {**_REQUIRED_BOT_ENV, **overrides}.items():
+            monkeypatch.setenv(name, value)
+
+    return _set
+
+
 # ---------------------------------------------------------------------------
 # Fake DB connection — boundary mock for database.get_connection/fetch_all
 # ---------------------------------------------------------------------------

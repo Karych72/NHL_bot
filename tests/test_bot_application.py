@@ -346,10 +346,11 @@ async def test_cancel_in_conversation_without_recorded_id_skips_keyboard_edit(
 # ---------------------------------------------------------------------------
 
 def test_main_starts_polling_on_application_built_from_config_token(
-    bot_module, monkeypatch: pytest.MonkeyPatch
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
 ) -> None:
     bot = bot_module("bot")
     config = bot_module("config")
+    set_required_bot_env()
     monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
 
     polled: List[Application] = []
@@ -362,6 +363,108 @@ def test_main_starts_polling_on_application_built_from_config_token(
     assert len(polled) == 1
     assert polled[0].bot.token == FAKE_TOKEN
     assert sorted(polled[0].handlers) == [bot.STANDALONE_GROUP, 0]
+
+
+def test_main_raises_and_never_polls_when_token_missing(
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
+) -> None:
+    """`bot.main()` падает до сборки `Application`, если токена нет."""
+    bot = bot_module("bot")
+    set_required_bot_env(TELEGRAM_BOT_TOKEN="")
+
+    polled: List[Application] = []
+    monkeypatch.setattr(
+        Application, "run_polling", lambda self, *args, **kwargs: polled.append(self)
+    )
+
+    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
+        bot.main()
+
+    assert polled == []
+
+
+# ---------------------------------------------------------------------------
+# config.validate_env()
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "missing_var", ["TELEGRAM_BOT_TOKEN", "PG_HOST", "PG_PORT", "PG_USER", "PG_DATABASE"]
+)
+def test_validate_env_raises_on_missing_variable(
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env, missing_var: str
+) -> None:
+    """Отсутствующая (не заданная вовсе) переменная — падение с её именем."""
+    config = bot_module("config")
+    set_required_bot_env()
+    monkeypatch.delenv(missing_var, raising=False)
+
+    with pytest.raises(RuntimeError, match=missing_var):
+        config.validate_env()
+
+
+@pytest.mark.parametrize("blank_value", ["", "   "])
+def test_validate_env_raises_on_blank_variable(
+    bot_module, set_required_bot_env, blank_value: str
+) -> None:
+    """Пустая строка или строка из пробелов считается отсутствием переменной."""
+    config = bot_module("config")
+    set_required_bot_env(PG_DATABASE=blank_value)
+
+    with pytest.raises(RuntimeError, match="PG_DATABASE"):
+        config.validate_env()
+
+
+def test_validate_env_error_message_does_not_leak_other_values(
+    bot_module, set_required_bot_env
+) -> None:
+    """Сообщение об ошибке называет переменную, но не значения остальных."""
+    config = bot_module("config")
+    secret_token = "123456789:SUPER-SECRET-VALUE"
+    set_required_bot_env(TELEGRAM_BOT_TOKEN=secret_token, PG_HOST="")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        config.validate_env()
+
+    assert secret_token not in str(exc_info.value)
+
+
+def test_validate_env_passes_when_all_required_variables_are_set(
+    bot_module, set_required_bot_env
+) -> None:
+    config = bot_module("config")
+    set_required_bot_env()
+
+    config.validate_env()  # не должно бросить исключение
+
+
+# ---------------------------------------------------------------------------
+# config._env_int / config._env_float на кривом значении
+# ---------------------------------------------------------------------------
+
+def test_env_int_raises_on_garbage_value_without_leaking_it(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = bot_module("config")
+    monkeypatch.setenv("SEASON_ID", "not-a-number")
+
+    with pytest.raises(ValueError) as exc_info:
+        config._env_int("SEASON_ID", 20252026)
+
+    assert "SEASON_ID" in str(exc_info.value)
+    assert "not-a-number" not in str(exc_info.value)
+
+
+def test_env_float_raises_on_garbage_value_without_leaking_it(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = bot_module("config")
+    monkeypatch.setenv("PUSH_SEND_INTERVAL_SEC", "not-a-number")
+
+    with pytest.raises(ValueError) as exc_info:
+        config._env_float("PUSH_SEND_INTERVAL_SEC", 0.05)
+
+    assert "PUSH_SEND_INTERVAL_SEC" in str(exc_info.value)
+    assert "not-a-number" not in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
