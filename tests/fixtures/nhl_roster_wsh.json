@@ -1,0 +1,89 @@
+{
+  "forwards": [
+    {
+      "id": 8471214,
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8471214.png",
+      "firstName": {
+        "default": "Alex",
+        "cs": "Alexandr",
+        "fi": "Aleksandr",
+        "sk": "Alexander"
+      },
+      "lastName": {
+        "default": "Ovechkin",
+        "cs": "Ovečkin",
+        "fi": "Ovetshkin",
+        "sk": "Ovečkin"
+      },
+      "sweaterNumber": 8,
+      "positionCode": "L",
+      "shootsCatches": "R",
+      "heightInInches": 75,
+      "weightInPounds": 238,
+      "heightInCentimeters": 191,
+      "weightInKilograms": 108,
+      "birthDate": "1985-09-17",
+      "birthCity": {
+        "default": "Moscow",
+        "cs": "Moskva",
+        "de": "Moskau",
+        "fi": "Moskova",
+        "fr": "Moscou",
+        "sk": "Moskva",
+        "sv": "Moskva"
+      },
+      "birthCountry": "RUS"
+    }
+  ],
+  "defensemen": [
+    {
+      "id": 8480873,
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8480873.png",
+      "firstName": {
+        "default": "Rasmus"
+      },
+      "lastName": {
+        "default": "Sandin"
+      },
+      "sweaterNumber": 38,
+      "positionCode": "D",
+      "shootsCatches": "L",
+      "heightInInches": 71,
+      "weightInPounds": 189,
+      "heightInCentimeters": 180,
+      "weightInKilograms": 86,
+      "birthDate": "2000-03-07",
+      "birthCity": {
+        "default": "Uppsala"
+      },
+      "birthCountry": "SWE"
+    }
+  ],
+  "goalies": [
+    {
+      "id": 8480313,
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8480313.png",
+      "firstName": {
+        "default": "Logan"
+      },
+      "lastName": {
+        "default": "Thompson"
+      },
+      "sweaterNumber": 48,
+      "positionCode": "G",
+      "shootsCatches": "R",
+      "heightInInches": 76,
+      "weightInPounds": 207,
+      "heightInCentimeters": 193,
+      "weightInKilograms": 94,
+      "birthDate": "1997-02-25",
+      "birthCity": {
+        "default": "Calgary"
+      },
+      "birthCountry": "CAN",
+      "birthStateProvince": {
+        "default": "AB"
+      }
+    }
+  ]
+}

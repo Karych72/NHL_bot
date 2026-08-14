@@ -1,0 +1,40 @@
+[
+  {
+    "careerShootoutGameDecidingGoals": 0,
+    "careerShootoutGamesPlayed": 0,
+    "careerShootoutGoals": 0,
+    "careerShootoutShootingPct": null,
+    "careerShootoutShots": 0,
+    "lastName": "Sourdif",
+    "playerId": 8482088,
+    "positionCode": "C",
+    "seasonId": 20252026,
+    "shootoutGameDecidingGoals": 0,
+    "shootoutGamesPlayed": 8,
+    "shootoutGoals": 0,
+    "shootoutShootingPct": null,
+    "shootoutShots": 0,
+    "shootsCatches": "R",
+    "skaterFullName": "Justin Sourdif",
+    "teamAbbrevs": "WSH"
+  },
+  {
+    "careerShootoutGameDecidingGoals": 16,
+    "careerShootoutGamesPlayed": 169,
+    "careerShootoutGoals": 37,
+    "careerShootoutShootingPct": 0.28906,
+    "careerShootoutShots": 128,
+    "lastName": "Ovechkin",
+    "playerId": 8471214,
+    "positionCode": "L",
+    "seasonId": 20252026,
+    "shootoutGameDecidingGoals": 0,
+    "shootoutGamesPlayed": 8,
+    "shootoutGoals": 0,
+    "shootoutShootingPct": 0.0,
+    "shootoutShots": 3,
+    "shootsCatches": "R",
+    "skaterFullName": "Alex Ovechkin",
+    "teamAbbrevs": "WSH"
+  }
+]

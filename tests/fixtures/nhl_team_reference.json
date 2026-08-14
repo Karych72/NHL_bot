@@ -1,0 +1,18 @@
+[
+  {
+    "id": 9,
+    "franchiseId": 30,
+    "fullName": "Ottawa Senators",
+    "leagueId": 133,
+    "rawTricode": "OTT",
+    "triCode": "OTT"
+  },
+  {
+    "id": 15,
+    "franchiseId": 24,
+    "fullName": "Washington Capitals",
+    "leagueId": 133,
+    "rawTricode": "WSH",
+    "triCode": "WSH"
+  }
+]

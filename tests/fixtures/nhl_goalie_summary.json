@@ -1,0 +1,27 @@
+[
+  {
+    "assists": 1,
+    "gamesPlayed": 58,
+    "gamesStarted": 58,
+    "goalieFullName": "Logan Thompson",
+    "goals": 0,
+    "goalsAgainst": 140,
+    "goalsAgainstAverage": 2.43828,
+    "lastName": "Thompson",
+    "losses": 21,
+    "otLosses": 6,
+    "penaltyMinutes": 0,
+    "playerId": 8480313,
+    "points": 1,
+    "savePct": 0.91178,
+    "saves": 1447,
+    "seasonId": 20252026,
+    "shootsCatches": "R",
+    "shotsAgainst": 1587,
+    "shutouts": 4,
+    "teamAbbrevs": "WSH",
+    "ties": null,
+    "timeOnIce": 206703,
+    "wins": 31
+  }
+]
