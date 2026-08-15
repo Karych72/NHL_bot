@@ -2,10 +2,10 @@
 
 Остальные tests/test_bot_*.py рвут стек посередине: тесты хендлеров подменяют
 функции ``bot_messages``, тесты сообщений — ``fetch_all``. Здесь подменяется
-ровно одна точка, соединение с БД (фикстура ``fake_db_router``), а всё между
-хендлером и psycopg2 работает по-настоящему: разбор callback_data, композиция
-SQL, маппинг строк на колонки, jinja-шаблоны, сборка клавиатур. Postgres не
-нужен, сети нет.
+только граница БД (фикстура ``fake_db_router``: соединение psycopg2 и TTL-обёртка
+над ним), а всё между хендлером и этой границей работает по-настоящему: разбор
+callback_data, композиция SQL, маппинг строк на колонки, jinja-шаблоны, сборка
+клавиатур. Postgres не нужен, сети нет.
 
 Кнопку для следующего шага сценарий берёт из клавиатуры, которую вернул
 предыдущий шаг, и сверяет её callback_data с паттерном регистрации хендлера —
@@ -35,10 +35,11 @@ def _callback_data(markup: Any) -> List[str]:
 
 # short_name, games_played, points, procent_points, wins, losses, ot,
 # division_name, conference_name
+# Метрополитен идёт вперемешку: сортировку делает бот, а не порядок выдачи БД.
 _STANDINGS_ROWS = [
+    ("Islanders", 20, 19, 47.5, 8, 8, 3, "Metropolitan", "Eastern"),
     ("Rangers", 20, 28, 70.0, 13, 5, 2, "Metropolitan", "Eastern"),
     ("Devils", 20, 22, 55.0, 10, 7, 2, "Metropolitan", "Eastern"),
-    ("Islanders", 20, 19, 47.5, 8, 8, 3, "Metropolitan", "Eastern"),
     ("Bruins", 20, 25, 62.5, 12, 6, 1, "Atlantic", "Eastern"),
     ("Avalanche", 20, 27, 67.5, 13, 6, 1, "Central", "Western"),
     ("Kings", 20, 24, 60.0, 11, 6, 2, "Pacific", "Western"),
@@ -73,20 +74,31 @@ async def test_table_command_renders_divisions_with_rows_sorted_by_points(
     assert text.index("Rangers") < text.index("Devils") < text.index("Islanders")
     # Колонки моноширинной таблицы: имя дополнено до 14, очки/игры до 3, %очк до 6.
     assert "Rangers         28  20  70.00" in text
+    assert "reply_markup" not in reply, "у /table вне диалога клавиатуры нет"
 
 
 @pytest.mark.asyncio
-async def test_table_command_sends_plain_message_without_keyboard(
-    bot_module, fake_db_router, make_message_update, fake_context
+async def test_stats_menu_standings_branch_sends_table_with_menu_button(
+    bot_module, fake_db_router, make_callback_update, fake_context
 ):
-    bot = bot_module("bot")
+    """Та же таблица, но веткой диалога `/stats`, а не командой.
+
+    Отдельный сценарий, потому что путь отличается всем, кроме рендера: новое
+    сообщение вместо `reply_text`, кнопка возврата в корень меню и запись id
+    сообщения в `user_data` — с неё `/cancel` снимает клавиатуру.
+    """
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
     fake_db_router(_TABLE_ROUTES)
-    update = make_message_update("/table")
+    update = make_callback_update(str(dialog_states.LEAGUE_STANDINGS))
 
-    await bot.cmd_table(update, fake_context)
+    state = await stats_handlers.bot_league_standings(update, fake_context)
 
-    (reply,) = update.message.replies
-    assert "reply_markup" not in reply
+    (sent,) = fake_context.bot.sent_messages
+    assert state == dialog_states.FIRST
+    assert "<b>METROPOLITAN DIVISION</b>" in sent["text"]
+    assert _callback_data(sent["reply_markup"]) == [str(dialog_states.CHOOSE_STATS)]
+    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -110,23 +122,6 @@ _LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaders_page)]
 
 
 @pytest.mark.asyncio
-async def test_leaders_command_offers_three_categories(
-    bot_module, fake_db_router, make_message_update, fake_context
-):
-    bot = bot_module("bot")
-    fake_db_router(_LEADERS_ROUTES)
-    update = make_message_update("/leaders")
-
-    await bot.cmd_leaders(update, fake_context)
-
-    (reply,) = update.message.replies
-    assert "Лидеры сезона" in reply["text"]
-    assert _callback_data(reply["reply_markup"]) == [
-        "pl:pick:points", "pl:pick:goals", "pl:pick:assists",
-    ]
-
-
-@pytest.mark.asyncio
 async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     bot_module, fake_db_router, make_message_update, make_callback_update, fake_context
 ):
@@ -136,6 +131,7 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
 
     menu = make_message_update("/leaders")
     await bot.cmd_leaders(menu, fake_context)
+    assert "Лидеры сезона" in menu.message.replies[0]["text"]
     points_button = _flat_buttons(menu.message.replies[0]["reply_markup"])[0]
     assert re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, points_button.callback_data)
 
@@ -226,17 +222,34 @@ _GAMES = {
     },
 }
 
-# winner_id, home_team_id, away_team_id, is_overtime, is_shootouts — выборка
-# формы. Маршрут один на обе команды: _last_n_form_record сам считает исход
-# каждой игры относительно своего team_id, поэтому одни и те же пять строк
-# дают разную форму хозяевам и гостям.
-_FORM_ROWS = [
-    (1, 1, 3, False, False),
-    (1, 1, 4, False, False),
-    (1, 1, 5, False, False),
-    (2, 2, 6, False, False),
-    (3, 2, 7, True, False),
-]
+# Выборка формы: winner_id, home_team_id, away_team_id, is_overtime,
+# is_shootouts. Запрос уходит по одному разу на команду и фильтруется по её
+# team_id (`WHERE home_team_id = %s OR away_team_id = %s`), поэтому маршрут
+# отвечает по team_id из параметров: иначе команде засчитывались бы игры,
+# которых она не играла.
+_FORM_BY_TEAM = {
+    1: [  # NYR — 3-1-1
+        (1, 1, 3, False, False),
+        (1, 1, 4, False, False),
+        (1, 5, 1, False, False),
+        (6, 1, 6, False, False),
+        (7, 7, 1, True, False),
+    ],
+    2: [  # BOS — 1-3-1
+        (2, 2, 8, False, False),
+        (9, 2, 9, False, False),
+        (10, 10, 2, False, False),
+        (11, 2, 11, False, False),
+        (12, 12, 2, False, True),
+    ],
+    11: [(11, 11, 13, False, False)],  # TOR — 1-0-0
+    12: [(14, 14, 12, False, False)],  # MTL — 0-1-0
+}
+
+
+def _form_rows(params):
+    _season_id, team_id, _same_team_id, _limit = params
+    return _FORM_BY_TEAM[team_id]
 
 
 def _by_game(key):
@@ -253,7 +266,7 @@ _GAME_CARD_ROUTES = [
     ("SELECT home_team_id, away_team_id FROM games", _by_game("teams")),
     ("SELECT * FROM get_goals_game", _by_game("goals")),
     ("SELECT * FROM get_goalies_game", _by_game("goalies")),
-    ("ORDER BY day DESC NULLS LAST", _FORM_ROWS),
+    ("ORDER BY day DESC NULLS LAST", _form_rows),
 ]
 
 _DIGEST_ROUTES = [
@@ -267,11 +280,11 @@ _DIGEST_ROUTES = [
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_game_command_renders_full_card_from_six_queries(
+async def test_game_command_renders_full_card(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
-    fake_db_router(_GAME_CARD_ROUTES)
+    cursor = fake_db_router(_GAME_CARD_ROUTES)
     update = make_message_update(f"/game {GAME_ONE}")
     fake_context.args = [str(GAME_ONE)]
 
@@ -279,6 +292,8 @@ async def test_game_command_renders_full_card_from_six_queries(
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
+    # Шесть разных запросов, семь обращений: форма спрашивается на каждую команду.
+    assert len(cursor.executed) == 7
     assert sent["parse_mode"] == "HTML"
     assert "<b>NYR BOS 3:2</b> (1:0, 1:1, 1:1)" in text
     assert "<b>BOS</b> 1-3-1 — <b>NYR</b> 3-1-1" in text

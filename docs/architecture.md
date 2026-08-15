@@ -239,8 +239,9 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `run_polling()`. Состав и порядок регистрации закреплены в `tests/test_bot_application.py`.
 Основной механизм диалога — `ConversationHandler` с состояниями FSM.
 Сквозные сценарии «запрос → ответ» (`/table`, `/leaders` с пагинацией, `/game`, `/day_games`)
-закреплены в `tests/test_bot_integration.py`: подменяется только соединение с БД
-(фикстура `fake_db_router` в `tests/conftest.py`), остальной стек — от разбора
+и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
+подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
+соединение psycopg2 и TTL-обёртка над ним), остальной стек — от разбора
 `callback_data` до сборки клавиатур — работает по-настоящему.
 
 Все колбэки в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
