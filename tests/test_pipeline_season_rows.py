@@ -52,7 +52,7 @@ TEAM_SUMMARY_STAT_KEYS = (
 SKATER_SUMMARY_STAT_KEYS = (
     "assists", "goals", "penaltyMinutes", "shots", "gamesPlayed", "ppGoals",
     "ppPoints", "faceoffWinPct", "shootingPct", "gameWinningGoals", "otGoals",
-    "shGoals", "shPoints", "plusMinus", "points", "shifts",
+    "shGoals", "shPoints", "plusMinus", "points",
     # Read off the summary row only as a fallback when the realtime report has
     # no such key (load_season_modern.py:609-612).
     "hits", "blockedShots",
@@ -60,7 +60,7 @@ SKATER_SUMMARY_STAT_KEYS = (
 GOALIE_SUMMARY_STAT_KEYS = (
     "otLosses", "shutouts", "wins", "losses", "saves", "savePct",
     "goalsAgainstAverage", "gamesPlayed", "gamesStarted", "shotsAgainst",
-    "goalsAgainst",
+    "goalsAgainst", "timeOnIce",
 )
 PUCK_POSSESSION_KEYS = (
     "satPct", "usatPct", "goalsPct", "offensiveZoneStartPct", "defensiveZoneStartPct",
@@ -253,7 +253,10 @@ class RosterRowsTest(LoaderApiTestCase):
         self.assertEqual(field(mcmichael, "rosters", "name"), "Connor McMichael")
         self.assertEqual(field(mcmichael, "rosters", "jersey_number"), 77)
         self.assertEqual(field(mcmichael, "rosters", "nationality"), "CAN")
-        self.assertEqual(field(mcmichael, "rosters", "current_team_id"), 19)
+        # Landing's currentTeamId is the player's team "now" (STL in this
+        # fixture, captured in the off-season), not his team for this
+        # season_id (WSH) — the row can't tell those apart, so it's NULL.
+        self.assertIsNone(field(mcmichael, "rosters", "current_team_id"))
 
         # A player already on the roster keeps the richer roster row.
         self.assertEqual(field(rows[OVECHKIN], "rosters", "jersey_number"), 8)
@@ -318,10 +321,8 @@ class SkaterSeasonStatsTest(LoaderApiTestCase):
         self.assertEqual(field(ovi, table, "nz_faceoff_pct"), 33.33)
         # The faceoff report itself sends null for a zone he never started in.
         self.assertIsNone(field(ovi, table, "dz_faceoff_pct"))
-        # Current behaviour, not a wish: the loader reads ``shifts`` off the
-        # summary row, and skater/summary stopped carrying it — the value lives
-        # in the timeonice report (1615 here), so the column loads as NULL.
-        self.assertIsNone(field(ovi, table, "shifts"))
+        # shifts lives in the timeonice report, not summary (which dropped it).
+        self.assertEqual(field(ovi, table, "shifts"), 1615)
 
     def test_row_nulls_columns_whose_report_row_or_field_is_absent(self):
         # Sourdif keeps his summary row (he played the season) but it carries no
@@ -389,14 +390,11 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
         self.assertEqual(field(gk, table, "even_strength_save_percentage"), 92.08)
         # §3: the API has had no ties stat since 2005, 0 is a known business fact.
         self.assertEqual(field(gk, table, "ties"), 0)
-        # Current behaviour, and a contradiction worth naming: the loader hard-codes
-        # both ice-time columns to None (load_season_modern.py:684, 706) claiming the
-        # reports have no ice time — but goalie/summary does send ``timeOnIce``
-        # (206703 seconds in this very fixture, i.e. "3445:03"), so the column loads
-        # as NULL although the data is right there. Only time_on_ice_per_game is
-        # genuinely absent from both reports (it would be timeOnIce / gamesPlayed).
-        self.assertIsNone(field(gk, table, "time_on_ice"))
-        self.assertIsNone(field(gk, table, "time_on_ice_per_game"))
+        # goalie/summary sends timeOnIce directly (206703 seconds here);
+        # time_on_ice_per_game is derived from timeOnIce / gamesPlayed
+        # (206703 / 58), since no report carries it as a field.
+        self.assertEqual(field(gk, table, "time_on_ice"), "3445:03")
+        self.assertEqual(field(gk, table, "time_on_ice_per_game"), "59:24")
 
     def test_row_keeps_real_zero_when_the_api_sends_one(self):
         summary = load_fixture("nhl_goalie_summary.json")

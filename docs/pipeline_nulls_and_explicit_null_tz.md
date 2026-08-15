@@ -81,7 +81,8 @@ PIM по командам считается суммой событий-пен�
 | Все TOI-строки (`time_on_ice`, `*_time_on_ice`, `*_time_on_ice_per_game`) | **`"00:00"`** | **`NULL`**, если в `timeonice` отчёте нет поля или там `0` |
 | Все целочисленные счётчики | **0** | **`NULL`** при отсутствии (реальный 0 сохраняется) |
 | Все процентные метрики (`shootout_pct`, `face_off_pct`, `savePct`, …) | **0.0** | **`NULL`** при отсутствии |
-| `goalies_season_stats.time_on_ice` / `time_on_ice_per_game` | жёстко **`"00:00"`** (поля нет в summary/savesByStrength) | **`NULL`** с комментарием |
+| `goalies_season_stats.time_on_ice` | жёстко **`"00:00"`**, затем `NULL` (комментарий ошибочно утверждал, что поля нет в источнике) | заполняется из `goalie/summary.timeOnIce` |
+| `goalies_season_stats.time_on_ice_per_game` | жёстко **`"00:00"`**, затем `NULL` | вычисляется делением `timeOnIce` на `gamesPlayed`; **`NULL`**, если `gamesPlayed` не пришёл или равен `0` |
 | `goalies_season_stats.power_play_save_percentage` и аналоги | **0.0** при `pp_shots == 0` | **`NULL`** через `safe_pct` |
 
 ### 2.6. `players_advanced_stats` / `players_shot_types`
@@ -116,7 +117,7 @@ PIM по командам считается суммой событий-пен�
 | Поле / контекст | Значение | Обоснование |
 |-----------------|----------|-------------|
 | Любые ключи: `player_id`, `team_id`, `season_id`, `game_id` | `to_int(...)` (0 при ошибке) | DDL объявляет их `NOT NULL` / PK; «без id» — это сломанная запись, её бы отбраковала БД. |
-| `games.is_overtime`, `games.is_shootouts` | bool, выводятся из PBP | детерминированно вычисляются из `periodDescriptor` / `shootoutInUse`, а не из API-поля. |
+| `games.is_overtime`, `games.is_shootouts` | bool, выводятся из PBP | детерминированно вычисляются из `periodDescriptor` / `gameOutcome.lastPeriodType`, а не из API-поля напрямую. `shootoutInUse` — флаг регламента сезона, не исход конкретной игры, и для `is_shootouts` не используется. |
 | `all_goals.empty_net`, `winner_goal`, `is_ppg`, `is_shg` | bool, выводятся из `situationCode` / `goalModifier` | если строка ситуации пустая, считаем «не PPG / не SHG / не EN» по факту разбора. Колонки nullable в DDL, но семантика «не определили → не было». |
 | `game_team_stats.pim`, `hits`, `blocked`, `takeaways`, `giveaways`, `*_period_goals` | агрегаты из PBP (могут быть 0) | сумма событий PBP — реальный 0 неотличим от «событий не было». |
 | `game_player_stats.power_play_assists`, `face_off_wins`, `face_off_taken`, `short_handed_goals`, `short_handed_assists` | агрегаты из PBP | то же: 0 = «не было». |
