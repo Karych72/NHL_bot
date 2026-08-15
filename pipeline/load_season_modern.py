@@ -689,7 +689,7 @@ class ModernNhlLoader:
             )
             out.append(
                 (
-                    optional_seconds_to_mmss(r.get("timeOnIce")),
+                    optional_seconds_to_mmss(toi_seconds),
                     optional_int(r.get("otLosses")),
                     optional_int(r.get("shutouts")),
                     # The NHL has not had regular-season ties since 2005; the API

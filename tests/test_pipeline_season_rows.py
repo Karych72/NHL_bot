@@ -403,6 +403,18 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
         self.assertEqual(field(gk, "goalies_season_stats", "shutouts"), 0)
         self.assertEqual(field(gk, "goalies_season_stats", "wins"), 0)
 
+    def test_time_on_ice_per_game_is_null_without_games_played(self):
+        # timeOnIce present but gamesPlayed absent: time_on_ice must still
+        # fill in, time_on_ice_per_game has nothing to divide by → NULL.
+        summary = load_fixture("nhl_goalie_summary.json")
+        gk = self._rows(
+            summary=[without(summary[0], "gamesPlayed")]
+        )[THOMPSON]
+
+        self.assertEqual(field(gk, "goalies_season_stats", "time_on_ice"), "3445:03")
+        self.assertIsNone(field(gk, "goalies_season_stats", "time_on_ice_per_game"))
+        self.assertIsNone(field(gk, "goalies_season_stats", "games"))
+
     def test_row_nulls_every_column_the_reports_do_not_cover(self):
         summary = load_fixture("nhl_goalie_summary.json")
         gk = self._rows(

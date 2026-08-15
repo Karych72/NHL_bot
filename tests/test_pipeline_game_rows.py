@@ -88,8 +88,13 @@ class GameRowsTest(LoaderApiTestCase):
     def test_is_shootouts_true_for_a_game_actually_decided_in_the_shootout(self):
         pbp = dict(load_fixture("nhl_game_play_by_play.json"))
         pbp["gameOutcome"] = {"lastPeriodType": "SO"}
+        # A real shootout game's periodDescriptor agrees with gameOutcome: it
+        # reports period 5 / "SO", not the fixture's regulation-game "REG".
+        pbp["periodDescriptor"] = {"number": 5, "periodType": "SO"}
         row = self._build(pbp=pbp)[0][0]
         self.assertIs(field(row, "games", "is_shootouts"), True)
+        # A shootout game did go through overtime first — is_ot stays True.
+        self.assertIs(field(row, "games", "is_overtime"), True)
 
     def test_goal_row_keeps_sent_values_including_zero_and_nulls_absent_ones(self):
         goals = self._build()[1]

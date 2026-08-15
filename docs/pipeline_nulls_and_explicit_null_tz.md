@@ -82,7 +82,8 @@ PIM по командам считается суммой событий-пен�
 | Все целочисленные счётчики | **0** | **`NULL`** при отсутствии (реальный 0 сохраняется) |
 | Все процентные метрики (`shootout_pct`, `face_off_pct`, `savePct`, …) | **0.0** | **`NULL`** при отсутствии |
 | `goalies_season_stats.time_on_ice` | жёстко **`"00:00"`**, затем `NULL` (комментарий ошибочно утверждал, что поля нет в источнике) | заполняется из `goalie/summary.timeOnIce` |
-| `goalies_season_stats.time_on_ice_per_game` | жёстко **`"00:00"`**, затем `NULL` | вычисляется делением `timeOnIce` на `gamesPlayed`; **`NULL`**, если `gamesPlayed` не пришёл или равен `0` |
+| `goalies_season_stats.time_on_ice_per_game` | жёстко **`"00:00"`**, затем `NULL` | вычисляется делением `timeOnIce` на `gamesPlayed`; **`NULL`**, если `timeOnIce` или `gamesPlayed` не пришёл или равен `0` |
+| `players_season_stats.shifts` | читался из `skater/summary`, где такого поля нет → всегда `NULL` | читается из `skater/timeonice` (`optional_int`): реальный 0 сохраняется, отсутствие поля — `NULL` |
 | `goalies_season_stats.power_play_save_percentage` и аналоги | **0.0** при `pp_shots == 0` | **`NULL`** через `safe_pct` |
 
 ### 2.6. `players_advanced_stats` / `players_shot_types`
@@ -99,7 +100,14 @@ PIM по командам считается суммой событий-пен�
 | `jersey_number` | **0** | **`NULL`** при отсутствии |
 | `currentage` | **0** при пустой / невалидной `birthDate` | **`NULL`** |
 | `captain`, `alternate_captain`, `rookie` | **`False`** | **`NULL`** — поля не приходят с используемых эндпоинтов, статус «неизвестно» отличается от «точно нет» |
-| `current_team_id` | уже было **`NULL`** для landing | без изменений |
+| `current_team_id` | landing писал `currentTeamId` («команда сейчас», Задача 28) | **`NULL`** — сезонную команду из лендинга не получить |
+
+Пользовательский эффект `current_team_id = NULL`: `telegram_bot/bot_messages.py:622`
+джойнит `teams` по этой колонке (`LEFT JOIN teams t ON t.team_id = r.current_team_id
+...`), поэтому у игроков, добираемых лендинг-фоллбэком (`load_season_modern.py:454-462`
+— тех, кого нет ни в roster-эндпоинте, ни в обоих summary-отчётах), название команды в
+списках/карточках будет пустым. До Задачи 28 там выводилась не пустая, а чужая команда —
+пустое честнее.
 
 ### 2.8. `teams` / `teams_stats`
 

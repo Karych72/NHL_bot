@@ -123,7 +123,6 @@ class GoalAggregationTest(LoaderApiTestCase):
 
         pbp = {
             "periodDescriptor": {"number": 1, "periodType": "REG"},
-            "shootoutInUse": False,
             "plays": [
                 {
                     "typeDescKey": "goal",
