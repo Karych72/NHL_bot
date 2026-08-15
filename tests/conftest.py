@@ -13,7 +13,7 @@ import importlib
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import pytest
 
@@ -146,6 +146,86 @@ def fake_db_connection(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeCur
             yield connection
 
         monkeypatch.setattr(module, "get_connection", _fake_get_connection)
+        return cursor
+
+    return _patch
+
+
+# ---------------------------------------------------------------------------
+# Routed fake DB — boundary mock for whole-scenario runs
+# ---------------------------------------------------------------------------
+
+def _query_text(query: Any) -> str:
+    """Текст запроса, по которому фикстура узнаёт его среди маршрутов.
+
+    ``psycopg2.sql.Composable`` не приводится к строке без подключения
+    (``as_string()`` требует connection), но его ``repr`` рекурсивно
+    разворачивает вложенные ``SQL``/``Identifier`` и содержит все текстовые
+    куски запроса — этого хватает, чтобы опознать запрос по подстроке. Тот же
+    приём уже используется для ключей кэша в ``database.ttl_cache``.
+    """
+    return query if isinstance(query, str) else repr(query)
+
+
+class RoutedCursor(FakeCursor):
+    """Курсор, отвечающий на каждый запрос сценария своими строками.
+
+    Один сценарий бота делает несколько разных запросов (карточка матча — шесть),
+    поэтому единственного набора строк, как у ``FakeCursor``, ему мало. Маршрут —
+    пара «подстрока запроса → строки»; побеждает первый подошедший, так что более
+    узкую подстроку надо ставить раньше. Вместо списка строк маршрут принимает и
+    функцию от ``params`` — так отвечают запросы, у которых ответ зависит от
+    аргумента (страница лидеров по ``LIMIT``/``OFFSET``, карточка по ``game_id``).
+
+    Запрос, не подошедший ни к одному маршруту, роняет тест: молчаливый пустой
+    ответ дал бы зелёный тест на пустых данных (Global Constraint 4).
+    """
+
+    def __init__(self, routes: Sequence[Tuple[str, Any]]) -> None:
+        super().__init__()
+        self.routes = list(routes)
+
+    def execute(self, query: Any, params: Any = None) -> None:
+        text = _query_text(query)
+        self.executed.append((text, params))
+        for fragment, rows in self.routes:
+            if fragment in text:
+                self.rows = list(rows(params) if callable(rows) else rows)
+                return
+        raise AssertionError(f"Запрос не описан ни одним маршрутом фикстуры: {text}")
+
+
+@pytest.fixture
+def fake_db_router(
+    bot_module: Callable[[str], Any], monkeypatch: pytest.MonkeyPatch
+) -> Callable[[Sequence[Tuple[str, Any]]], RoutedCursor]:
+    """Подменить БД на маршрутизирующий фейк для всего стека бота.
+
+    Патчится ровно одна точка — ``database.get_connection``, поэтому между
+    хендлером и psycopg2 работает настоящий код: композиция SQL, маппинг строк,
+    шаблоны, сборка клавиатур. Возвращает курсор, чтобы тест мог утверждать по
+    ``cursor.executed`` (текст запроса и параметры, дошедшие до БД).
+
+    ``bot_messages.cached_fetch_all`` заодно заменяется свежей обёрткой
+    ``ttl_cache(fetch_all)``: она собирается один раз на импорте модуля, и без
+    подмены TTL-кэш протекал бы между тестами (тот же приём, что ``cleared_cache``
+    в tests/test_bot_database.py).
+    """
+
+    def _patch(routes: Sequence[Tuple[str, Any]]) -> RoutedCursor:
+        database = bot_module("database")
+        bot_messages = bot_module("bot_messages")
+        cursor = RoutedCursor(routes)
+        connection = FakeConnection(cursor)
+
+        @contextmanager
+        def _fake_get_connection():
+            yield connection
+
+        monkeypatch.setattr(database, "get_connection", _fake_get_connection)
+        monkeypatch.setattr(
+            bot_messages, "cached_fetch_all", database.ttl_cache(database.fetch_all)
+        )
         return cursor
 
     return _patch
