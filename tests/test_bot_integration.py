@@ -183,15 +183,18 @@ GAME_ONE = 2026020001
 GAME_TWO = 2026020002
 
 # get_game_stats: goals, pim, blocks, hits, shots, is_overtime, is_shootouts,
-# field, team_name — первая строка домашняя, вторая гостевая.
+# field, team_name — первая строка домашняя, вторая гостевая. Пара
+# (is_overtime=False, is_shootouts=True) — то, что лежит в БД сегодня, см.
+# комментарий к _FORM_BY_TEAM; на карточку матча она не влияет, потому что
+# game_message читает is_shootouts только при is_overtime.
 # get_goals_game: scorer, scorer_position, assist_1, assist_2, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
 # get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home.
 _GAMES = {
     GAME_ONE: {
         "stats": [
-            (3, 8, 12, 20, 31, False, False, "home", "NYR"),
-            (2, 6, 10, 18, 27, False, False, "away", "BOS"),
+            (3, 8, 12, 20, 31, False, True, "home", "NYR"),
+            (2, 6, 10, 18, 27, False, True, "away", "BOS"),
         ],
         "teams": [(1, 2)],
         "goals": [
@@ -208,8 +211,8 @@ _GAMES = {
     },
     GAME_TWO: {
         "stats": [
-            (1, 4, 9, 15, 24, False, False, "home", "TOR"),
-            (0, 2, 11, 19, 30, False, False, "away", "MTL"),
+            (1, 4, 9, 15, 24, False, True, "home", "TOR"),
+            (0, 2, 11, 19, 30, False, True, "away", "MTL"),
         ],
         "teams": [(11, 12)],
         "goals": [
@@ -227,23 +230,31 @@ _GAMES = {
 # team_id (`WHERE home_team_id = %s OR away_team_id = %s`), поэтому маршрут
 # отвечает по team_id из параметров: иначе команде засчитывались бы игры,
 # которых она не играла.
+#
+# is_shootouts = True у всех строк — это НЕ произвол фикстуры, а текущее
+# состояние БД (дефект Д1 Задачи 28: загрузчик пишет туда `shootoutInUse`,
+# флаг регламента сезона, истинный и для игры, доигранной в основное время).
+# Из-за него `_last_n_form_record` уходит в ветку `elif ot or so` на каждом
+# незачётном исходе, и форма читается как «В-0-ПО»: ожидания ниже фиксируют
+# то, что видит пользователь сегодня. При исправлении Д1 править здесь же —
+# см. «Область» Задачи 28 в плане.
 _FORM_BY_TEAM = {
-    1: [  # NYR — 3-1-1
-        (1, 1, 3, False, False),
-        (1, 1, 4, False, False),
-        (1, 5, 1, False, False),
-        (6, 1, 6, False, False),
-        (7, 7, 1, True, False),
+    1: [  # NYR — 3 победы, 2 поражения; рендерится как 3-0-2
+        (1, 1, 3, False, True),
+        (1, 1, 4, False, True),
+        (1, 5, 1, False, True),
+        (6, 1, 6, False, True),
+        (7, 7, 1, True, True),
     ],
-    2: [  # BOS — 1-3-1
-        (2, 2, 8, False, False),
-        (9, 2, 9, False, False),
-        (10, 10, 2, False, False),
-        (11, 2, 11, False, False),
+    2: [  # BOS — 1 победа, 4 поражения; рендерится как 1-0-4
+        (2, 2, 8, False, True),
+        (9, 2, 9, False, True),
+        (10, 10, 2, False, True),
+        (11, 2, 11, False, True),
         (12, 12, 2, False, True),
     ],
-    11: [(11, 11, 13, False, False)],  # TOR — 1-0-0
-    12: [(14, 14, 12, False, False)],  # MTL — 0-1-0
+    11: [(11, 11, 13, False, True)],  # TOR — 1-0-0
+    12: [(14, 14, 12, False, True)],  # MTL — 0-0-1
 }
 
 
@@ -296,7 +307,8 @@ async def test_game_command_renders_full_card(
     assert len(cursor.executed) == 7
     assert sent["parse_mode"] == "HTML"
     assert "<b>NYR BOS 3:2</b> (1:0, 1:1, 1:1)" in text
-    assert "<b>BOS</b> 1-3-1 — <b>NYR</b> 3-1-1" in text
+    # 3-0-2 / 1-0-4, а не 3-1-1 / 1-3-1: см. комментарий к _FORM_BY_TEAM (Д1).
+    assert "<b>BOS</b> 1-0-4 — <b>NYR</b> 3-0-2" in text
     assert "1:0 Panarin [LW](Fox) (ББ) P1 5:12" in text
     assert "2:1 Zibanejad [C](Panarin, Fox) (МБ) P2 35:20" in text
     assert "3:2 Panarin [LW] ★ P3 58:03" in text
@@ -378,7 +390,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     digest = make_message_update("/day_games")
     await bot.cmd_day_games(digest, fake_context)
     second_match = _flat_buttons(fake_context.bot.sent_messages[0]["reply_markup"])[1]
-    assert second_match.callback_data.startswith(stats_handlers.DIGEST_EXPAND_PREFIX)
+    assert re.match(stats_handlers.DIGEST_EXPAND_CALLBACK_PATTERN, second_match.callback_data)
 
     update = make_callback_update(second_match.callback_data)
     await stats_handlers.callback_expand_digest_game(update, fake_context)

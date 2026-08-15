@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 LEADERS_PICK_CALLBACK_PATTERN = r"^pl:pick:(points|goals|assists)$"
 LEADERBOARD_PAGE_CALLBACK_PATTERN = r"^pl:(points|goals|assists):(\d+)$"
 DIGEST_EXPAND_PREFIX = "dg:"
+DIGEST_EXPAND_CALLBACK_PATTERN = rf"^{DIGEST_EXPAND_PREFIX}\d+$"
 DIGEST_BACK_FROM_DATE_CALLBACK = "digest:back"
 # /tonight: кнопка матча tn:<game_id>:<away>:<home>
 TONIGHT_GAME_CALLBACK_PATTERN = r"^tn:\d+:[^:]+:[^:]+$"

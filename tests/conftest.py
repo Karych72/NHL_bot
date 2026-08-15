@@ -4,7 +4,10 @@ Bot fixtures import ``telegram_bot/*.py`` modules by their bare in-repo name
 (mirroring how the bot process itself runs, with ``telegram_bot/`` as cwd and
 on sys.path) and fake the two boundaries its handlers touch: the psycopg2
 connection behind ``database.py``, and the PTB ``Update``/``CallbackContext``
-objects passed into every handler.
+objects passed into every handler. The DB boundary comes in two flavours:
+``fake_db_connection`` answers every query with one fixed row set, while
+``fake_db_router`` routes per query for whole-scenario runs and additionally
+swaps ``bot_messages.cached_fetch_all`` for a fresh, cache-empty wrapper.
 """
 
 from __future__ import annotations
@@ -275,8 +278,13 @@ class FakeCallbackQuery:
         self.data = data
         # PTB 21.x: CallbackQuery.message is a MaybeInaccessibleMessage, which
         # carries `.chat` but no `.chat_id` — handlers read `message.chat.id`.
+        #
+        # message_id заведомо не пересекается с нумерацией FakeBot.send_message
+        # (1, 2, 3…): хендлеры, записывающие id меню в user_data, должны класть
+        # туда id ОТПРАВЛЕННОГО сообщения, а не того, по кнопке которого кликнули,
+        # и при совпадающих номерах тест этой подмены не заметил бы.
         self.message = SimpleNamespace(
-            chat=SimpleNamespace(id=chat_id), message_id=1
+            chat=SimpleNamespace(id=chat_id), message_id=900
         )
         self.answers: List[Optional[str]] = []
         self.edited_texts: List[dict] = []

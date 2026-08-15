@@ -104,6 +104,7 @@ from script_bot import (
 )
 from stats_handlers import (
     DIGEST_BACK_FROM_DATE_CALLBACK,
+    DIGEST_EXPAND_CALLBACK_PATTERN,
     LEADERS_PICK_CALLBACK_PATTERN,
     LEADERBOARD_PAGE_CALLBACK_PATTERN,
     STAT_PAGE_CALLBACK_PATTERN,
@@ -589,7 +590,7 @@ def build_standalone_handlers() -> List[BaseHandler]:
         CommandHandler("unsubscribe_team", cmd_unsubscribe_team),
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
-        CallbackQueryHandler(callback_expand_digest_game, pattern=r"^dg:\d+$"),
+        CallbackQueryHandler(callback_expand_digest_game, pattern=DIGEST_EXPAND_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_tonight_game, pattern=TONIGHT_GAME_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),
         CallbackQueryHandler(
