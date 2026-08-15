@@ -358,8 +358,6 @@ class ModernNhlLoader:
         last_name = optional_str((payload.get("lastName") or {}).get("default")) or ""
         full_name = f"{first_name} {last_name}".strip() or None
         last_only = optional_str(last_name) or full_name
-        tid = to_int(payload.get("currentTeamId"), 0)
-        team_id = tid if tid > 0 else None
         pos = optional_str(payload.get("position"))
         return (
             player_id,
@@ -374,7 +372,7 @@ class ModernNhlLoader:
             None,  # alternate_captain — not exposed by landing
             None,  # rookie — not exposed by landing
             pos,
-            team_id,
+            None,  # current_team_id — landing's currentTeamId is "now", not season_id's team
         )
 
     def supplement_rosters_from_reports(
@@ -634,7 +632,7 @@ class ModernNhlLoader:
                     optional_int(blocked_value),
                     optional_int(r.get("plusMinus")),
                     optional_int(r.get("points")),
-                    optional_int(r.get("shifts")),
+                    optional_int(toi.get("shifts")),
                     optional_seconds_to_mmss(toi.get("timeOnIcePerGame")),
                     optional_seconds_to_mmss(toi.get("evTimeOnIcePerGame")),
                     optional_seconds_to_mmss(toi.get("shTimeOnIcePerGame")),
@@ -679,9 +677,19 @@ class ModernNhlLoader:
             pp_shots = optional_int(sbs.get("ppShotsAgainst"))
             sh_shots = optional_int(sbs.get("shShotsAgainst"))
             ev_shots = optional_int(sbs.get("evShotsAgainst"))
+            # goalie/summary sends timeOnIce (seconds) directly; timeOnIcePerGame
+            # is not a field in any joined report, so derive it from timeOnIce /
+            # gamesPlayed (NULL when either half is missing).
+            toi_seconds = optional_float(r.get("timeOnIce"))
+            games_played = optional_int(r.get("gamesPlayed"))
+            time_on_ice_per_game = (
+                optional_seconds_to_mmss(toi_seconds / games_played)
+                if toi_seconds and games_played
+                else None
+            )
             out.append(
                 (
-                    None,  # time_on_ice — not available in summary/savesByStrength
+                    optional_seconds_to_mmss(toi_seconds),
                     optional_int(r.get("otLosses")),
                     optional_int(r.get("shutouts")),
                     # The NHL has not had regular-season ties since 2005; the API
@@ -699,11 +707,11 @@ class ModernNhlLoader:
                     pp_shots,
                     optional_pct_from_ratio(r.get("savePct")),
                     optional_float(r.get("goalsAgainstAverage")),
-                    optional_int(r.get("gamesPlayed")),
+                    games_played,
                     optional_int(r.get("gamesStarted")),
                     optional_int(r.get("shotsAgainst")),
                     optional_int(r.get("goalsAgainst")),
-                    None,  # time_on_ice_per_game — not in summary/savesByStrength
+                    time_on_ice_per_game,
                     safe_pct(pp_saves, pp_shots),
                     safe_pct(sh_saves, sh_shots),
                     safe_pct(ev_saves, ev_shots),
@@ -742,7 +750,11 @@ class ModernNhlLoader:
 
             period_desc = pbp.get("periodDescriptor") or {}
             is_ot = str(period_desc.get("periodType")) == "OT" or to_int(period_desc.get("number")) > 3
-            is_shootout = bool(pbp.get("shootoutInUse"))
+            # ``shootoutInUse`` is a season-format flag, true for every game whose
+            # regulation could go to a shootout — not whether this one did. The
+            # actual outcome is ``gameOutcome.lastPeriodType``.
+            game_outcome = pbp.get("gameOutcome") or {}
+            is_shootout = str(game_outcome.get("lastPeriodType")) == "SO"
 
             games_rows.append(
                 (
