@@ -65,6 +65,7 @@ NHL_bot/
 │   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
 │   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
 │   ├── test_pipeline_game_rows.py      # Сборка строк пер-игровых таблиц (games, all_goals, …)
+│   ├── test_bot_integration.py         # Сквозные сценарии бота: /table, /leaders, /game, /day_games
 │   ├── test_bot_*.py, test_modeling_*.py, test_db_nhl.py, …
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
@@ -237,6 +238,11 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `ConversationHandler` меню `/stats` и `/cancel` вне диалога в группе 0; `main()` запускает
 `run_polling()`. Состав и порядок регистрации закреплены в `tests/test_bot_application.py`.
 Основной механизм диалога — `ConversationHandler` с состояниями FSM.
+Сквозные сценарии «запрос → ответ» (`/table`, `/leaders` с пагинацией, `/game`, `/day_games`)
+и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
+подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
+соединение psycopg2 и TTL-обёртка над ним), остальной стек — от разбора
+`callback_data` до сборки клавиатур — работает по-настоящему.
 
 Все колбэки в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
 вызовы Bot API идут под `await`: в 21.x PTB делает `await callback(update, context)`.
