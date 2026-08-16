@@ -11,3 +11,6 @@ all_data/
 
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
+
+# git worktrees, создаваемые SDD-скиллом
+.claude/worktrees/

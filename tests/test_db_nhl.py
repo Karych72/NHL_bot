@@ -213,11 +213,15 @@ class TestNhlLoadedData(unittest.TestCase):
                 self.assertEqual(n, 0, f"orphan game_id in {tbl}")
 
     def test_rosters_team_ids_exist(self):
+        # current_team_id is legally NULL (player landing fallback doesn't know
+        # the season's team — see docs/pipeline_nulls_and_explicit_null_tz.md
+        # §2.7). The composite FK (MATCH SIMPLE) allows that; this check must
+        # too, or it false-fails on correctly loaded data.
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT COUNT(*) FROM rosters r
-                WHERE NOT EXISTS (
+                WHERE r.current_team_id IS NOT NULL AND NOT EXISTS (
                     SELECT 1 FROM teams t
                     WHERE t.team_id = r.current_team_id AND t.season_id = r.season_id
                 )
