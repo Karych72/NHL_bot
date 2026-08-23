@@ -26,7 +26,7 @@ RATE_LIMIT_ANSWER_TEXT = "Слишком много нажатий подряд,
 _hits: Dict[int, List[float]] = {}
 
 
-def _prune_expired(now: float) -> None:
+def _prune_expired(cutoff: float) -> None:
     """Убирает из `_hits` пользователей, у которых все нажатия истекли.
 
     Проход по всему словарю — здесь же, при каждом вызове перехватчика,
@@ -36,7 +36,6 @@ def _prune_expired(now: float) -> None:
     пользователя — append-only и по возрастанию, поэтому последняя метка
     (`hits[-1]`) — самая свежая: если и она истекла, весь список устарел.
     """
-    cutoff = now - CALLBACK_RATE_WINDOW_SEC
     expired_users = [user_id for user_id, hits in _hits.items() if hits[-1] <= cutoff]
     for user_id in expired_users:
         del _hits[user_id]
@@ -62,9 +61,9 @@ async def enforce_callback_rate_limit(update: Update, context: CallbackContext) 
         return
 
     now = time.monotonic()
-    _prune_expired(now)
-
     cutoff = now - CALLBACK_RATE_WINDOW_SEC
+    _prune_expired(cutoff)
+
     user_id = update.effective_user.id
     hits = [hit for hit in _hits.get(user_id, []) if hit > cutoff]
 
