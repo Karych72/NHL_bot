@@ -12,12 +12,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
-from telegram import Chat, Message, Update, User
 from telegram.ext import ApplicationHandlerStop
 
 
@@ -46,24 +44,6 @@ def _throttled_update(make_callback_update: Callable[..., Any], user_id: int = 1
     update = make_callback_update("st:players_season_stats:points:0")
     update.effective_user = SimpleNamespace(id=user_id)
     return update
-
-
-def _real_text_update(user_id: int = 1) -> Update:
-    """Настоящий `telegram.Update` с текстовым сообщением — как `_text_update`
-    в `tests/test_bot_application.py`. В отличие от `make_message_update`
-    (упрощённый тестовый дублёр без `callback_query`), у настоящего `Update`
-    это поле всегда объявлено (по умолчанию `None`), как и предполагает
-    прямой доступ `update.callback_query` в `throttle.py`."""
-    return Update(
-        update_id=1,
-        message=Message(
-            message_id=1,
-            date=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            chat=Chat(id=1, type=Chat.PRIVATE),
-            from_user=User(id=user_id, first_name="T", is_bot=False),
-            text="/help",
-        ),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +118,9 @@ async def test_rate_limit_is_tracked_per_user(
 
 @pytest.mark.asyncio
 async def test_update_without_callback_query_is_ignored(
-    throttle_module, clock, fake_context
+    throttle_module, clock, make_message_update, fake_context
 ) -> None:
-    update = _real_text_update()
+    update = make_message_update("/help")
 
     # Не должно ни падать, ни поднимать ApplicationHandlerStop.
     await throttle_module.enforce_callback_rate_limit(update, fake_context)
