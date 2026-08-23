@@ -1,6 +1,10 @@
 # Local stack: PostgreSQL + bot. Copy .env.example → .env and set TELEGRAM_BOT_TOKEN.
 # Apply schema/functions on first run: make db-init with PG_* pointed at localhost:5432,
 # or run the Makefile DDL targets against host port 5432 after `docker compose up -d db`.
+# `name:` pins the compose project (and therefore the pgdata volume name) so it does not
+# depend on the directory the command is run from (e.g. a task worktree vs. the main checkout).
+name: nhl_bot
+
 services:
   db:
     image: postgres:16.6-alpine
@@ -11,6 +15,8 @@ services:
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
@@ -31,3 +37,6 @@ services:
       PG_DATABASE: postgres
     working_dir: /app/telegram_bot
     command: ["python", "bot.py"]
+
+volumes:
+  pgdata:
