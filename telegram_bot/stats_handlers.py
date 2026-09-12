@@ -1,3 +1,11 @@
+"""Клавиатуры пагинации и callback-хендлеры статистики: диалог `/stats`, дайджест дня,
+лидерборд `/leaders`, standalone-меню `/advanced` и кнопка матча `/tonight`.
+
+Часть `telegram_bot/`, который читает БД (заполненную `pipeline/`) и рисует меню поверх
+неё: здесь — листание длинных таблиц статистики через inline-кнопки и отправка карточек
+матчей и дайджестов, не помещающихся в одно сообщение целиком.
+"""
+
 import asyncio
 import html
 import logging
@@ -131,6 +139,16 @@ def conversation_player_stat_keyboard(
     has_prev: bool,
     has_next: bool,
 ) -> InlineKeyboardMarkup:
+    """Клавиатура страницы статистики игрока/вратаря внутри диалога `/stats`.
+
+    Кнопки «← prev»/«next →» несут callback_data `st:{table}:{column}:{offset}`,
+    которую разбирает `callback_stats_player_page`; нижний ряд — «« Назад»» на
+    родительское подменю (`_player_stat_parent_state`), «В начало» и «Готово».
+
+    Args:
+        has_prev, has_next: есть ли соседняя страница — определяют, рисовать
+            ли кнопку в эту сторону.
+    """
     rows: List[List[InlineKeyboardButton]] = []
     nav: List[InlineKeyboardButton] = []
     if has_prev:
@@ -160,6 +178,13 @@ def conversation_team_stat_keyboard(
     has_prev: bool,
     has_next: bool,
 ) -> InlineKeyboardMarkup:
+    """Клавиатура страницы командной статистики внутри диалога `/stats`.
+
+    Как `conversation_player_stat_keyboard`, но родитель всегда один —
+    `TEAM_STATS` (единственное подменю команд), поэтому `table` в callback_data
+    не передаётся. Кнопки листания несут `tm:{column}:{offset}`, которую
+    разбирает `callback_stats_team_page`.
+    """
     rows: List[List[InlineKeyboardButton]] = []
     nav: List[InlineKeyboardButton] = []
     if has_prev:
@@ -217,6 +242,16 @@ def _make_paginated_team_stat_open_handler(column: str):
 
 
 async def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
+    """Листает страницу статистики игрока/вратаря по callback_data
+    `st:<table>:<column>:<offset>`, перерисовывая сообщение на месте.
+
+    Неизвестная пара (table, column) не роняет диалог: хендлер просто отвечает
+    на callback и остаётся в том же состоянии. `BadRequest` «message is not
+    modified» — штатный повтор нажатия текущей страницы, глушится молча.
+
+    Returns:
+        Всегда `SECOND` — хендлер зарегистрирован и в `FIRST`, и в `SECOND`.
+    """
     query = update.callback_query
     if not query or not query.data:
         return SECOND
@@ -242,6 +277,13 @@ async def callback_stats_player_page(update: Update, context: CallbackContext) -
 
 
 async def callback_stats_team_page(update: Update, context: CallbackContext) -> int:
+    """Листает страницу командной статистики по callback_data
+    `tm:<column>:<offset>`, перерисовывая сообщение на месте — симметрично
+    `callback_stats_player_page`.
+
+    Returns:
+        Всегда `SECOND`.
+    """
     query = update.callback_query
     if not query or not query.data:
         return SECOND
@@ -272,6 +314,13 @@ def standalone_player_stat_keyboard(
     has_prev: bool,
     has_next: bool,
 ) -> InlineKeyboardMarkup:
+    """Клавиатура страницы статистики игрока в standalone-режиме (`/advanced`,
+    кнопки `sa:...`), вне диалога `/stats`.
+
+    От `conversation_player_stat_keyboard` отличается тем, что нет состояний
+    FSM: вместо родительской навигации — одна кнопка «Готово» (`sa:close`),
+    снимающая клавиатуру у сообщения.
+    """
     rows: List[List[InlineKeyboardButton]] = []
     nav: List[InlineKeyboardButton] = []
     if has_prev:
@@ -298,6 +347,11 @@ def standalone_player_stat_keyboard(
 
 
 async def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает нажатия кнопок `sa:...` вне диалога `/stats`: `sa:close`
+    снимает клавиатуру у сообщения, `sa:<table>:<column>:<offset>` листает
+    страницу статистики так же, как `callback_stats_player_page`, но без
+    состояний FSM.
+    """
     query = update.callback_query
     if not query or not query.data:
         return
@@ -562,6 +616,12 @@ async def dispatch_day_digest_messages(
 
 
 async def callback_tonight_game(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает нажатие кнопки матча `/tonight` (`tn:<game_id>:<away>:<home>`).
+
+    Если матч уже есть в базе — шлёт полную карточку (`send_game_card_message`);
+    иначе шлёт текстовое превью сезонных встреч команд (`matchup_season_preview`)
+    — матч из расписания NHL API мог ещё не попасть в БД.
+    """
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("tn:"):
         return
@@ -595,6 +655,9 @@ async def callback_tonight_game(update: Update, context: CallbackContext) -> Non
 
 
 async def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает кнопку «Матч N» сжатой сводки дайджеста (`dg:<game_id>`) —
+    досылает полную карточку конкретного матча отдельным сообщением.
+    """
     query = update.callback_query
     if not query or not query.data or not query.data.startswith(DIGEST_EXPAND_PREFIX):
         return
@@ -610,6 +673,11 @@ async def callback_expand_digest_game(update: Update, context: CallbackContext) 
 
 
 async def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает нажатие кнопки меню `/advanced` (`adv:<key>`): `adv:close`
+    снимает клавиатуру, иначе ключ ищется в `ADV_STANDALONE_TO_STAT`/
+    `SHOT_STANDALONE_TO_STAT` и открывается первая страница этой статистики —
+    дальше она листается уже как `sa:...` (см. `standalone_player_stat_keyboard`).
+    """
     query = update.callback_query
     if not query or not query.data:
         return
@@ -630,6 +698,10 @@ async def callback_standalone_adv(update: Update, context: CallbackContext) -> N
 
 
 def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура меню `/advanced`: продвинутая статистика (SAT/USAT/GF%/OZ
+    Start%/Shootout%) и голы по типам бросков. Каждая кнопка — `adv:<key>`,
+    который разбирает `callback_standalone_adv`.
+    """
     rows = [
         [
             InlineKeyboardButton("SAT %", callback_data="adv:sat"),
@@ -682,6 +754,12 @@ async def bot_league_standings(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
+    """Кнопка «Сегодня» меню дайджеста дня (диалог `/stats`): собирает и
+    рассылает дайджест за текущую календарную дату.
+
+    Returns:
+        `SECOND` — там же обрабатываются «« Назад»»/кнопки разворота матчей.
+    """
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
@@ -697,6 +775,12 @@ async def bot_digest_calendar_today(update: Update, context: CallbackContext) ->
 
 
 async def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> int:
+    """Кнопка «Вчера» меню дайджеста дня — то же самое, что
+    `bot_digest_calendar_today`, но за вчерашнюю календарную дату.
+
+    Returns:
+        `SECOND`.
+    """
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
@@ -725,6 +809,12 @@ def _digest_back_from_date_keyboard() -> InlineKeyboardMarkup:
 
 
 async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) -> int:
+    """Кнопка «Другая дата» меню дайджеста дня: просит прислать дату отдельным
+    сообщением в формате `YYYY-MM-DD` и переводит диалог в ожидание текста.
+
+    Returns:
+        `THIRD` — там зарегистрирован `bot_digest_custom_date`.
+    """
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -738,6 +828,14 @@ async def bot_digest_pick_date_prompt(update: Update, context: CallbackContext) 
 
 
 async def bot_digest_custom_date(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает текст с датой, присланный в состоянии `THIRD` (после
+    `bot_digest_pick_date_prompt`). При неверном формате переспрашивает новым
+    сообщением (id пишется в `user_data` под `LAST_MENU_MESSAGE_ID_KEY`) и
+    остаётся в `THIRD`; при корректной дате собирает и рассылает дайджест.
+
+    Returns:
+        `THIRD` при ошибке формата, иначе `SECOND`.
+    """
     message = update.message
     assert message is not None
     raw = (message.text or "").strip()
@@ -765,6 +863,9 @@ async def bot_digest_custom_date(update: Update, context: CallbackContext) -> in
 
 
 def leaders_category_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора категории `/leaders` (Очки/Голы/Передачи); каждая
+    кнопка — `pl:pick:<kind>`, разбирает `callback_leaders_pick`.
+    """
     return InlineKeyboardMarkup(
         [
             [
@@ -779,6 +880,11 @@ def leaders_category_keyboard() -> InlineKeyboardMarkup:
 def leaderboard_nav_keyboard(
     kind: str, offset: int, has_prev: bool, has_next: bool
 ) -> InlineKeyboardMarkup:
+    """Клавиатура страницы лидерборда `/leaders`: ряд «← prev»/«next →» с
+    callback_data `pl:<kind>:<offset>` (разбирает `callback_leaderboard_page`),
+    под ним — ряд смены категории, переиспользованный из
+    `leaders_category_keyboard`.
+    """
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     if has_prev:
@@ -803,6 +909,9 @@ def leaderboard_nav_keyboard(
 
 
 async def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает выбор категории `/leaders` (`pl:pick:<kind>`) — открывает
+    первую страницу соответствующего лидерборда на месте (`edit_message_text`).
+    """
     query = update.callback_query
     if not query or not query.data:
         return
@@ -825,6 +934,9 @@ async def callback_leaders_pick(update: Update, context: CallbackContext) -> Non
 
 
 async def callback_leaderboard_page(update: Update, context: CallbackContext) -> None:
+    """Листает лидерборд `/leaders` по callback_data `pl:<kind>:<offset>` —
+    симметрично `callback_leaders_pick`, но с готовым смещением страницы.
+    """
     query = update.callback_query
     if not query or not query.data:
         return
