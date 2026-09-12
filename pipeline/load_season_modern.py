@@ -330,12 +330,24 @@ class ModernNhlLoader:
                     rows_by_player[player_id] = row
         return list(rows_by_player.values())
 
-    def _abbrev_to_team_id(self) -> Dict[str, int]:
+    def _abbrev_to_team_id(self, team_rows: List[tuple]) -> Dict[str, int]:
+        """Map triCode -> team_id using only teams playing *this* season.
+
+        ``team_meta_by_id`` (``load_team_reference``) is the full historical
+        franchise reference and can list two team_ids under one triCode after a
+        rename (e.g. Utah Hockey Club id=59 renamed Utah Mammoth id=68 for
+        2025/26 — both carry triCode "UTA"). Building this map from it risked
+        picking the stale id, which isn't in this season's ``teams`` table and
+        violates ``rosters_current_team_id_season_id_fkey``. *team_rows* is the
+        season-scoped output of ``build_teams_and_stats``, so its triCodes are
+        unambiguous for this ``season_id``.
+        """
         out: Dict[str, int] = {}
-        for tid, meta in self.team_meta_by_id.items():
-            tri = meta.get("triCode") or meta.get("rawTricode")
-            if tri and tid:
-                out[str(tri).upper()] = tid
+        for team in team_rows:
+            team_id = to_int(team[0])
+            tri = team[6]
+            if tri and team_id:
+                out[str(tri).upper()] = team_id
         return out
 
     def _team_id_from_stats_team_abbrevs(
@@ -380,15 +392,18 @@ class ModernNhlLoader:
         roster_rows: List[tuple],
         skater_summary_rows: List[dict],
         goalie_summary_rows: List[dict],
+        team_rows: List[tuple],
         extra_player_ids: Optional[Set[int]] = None,
     ) -> List[tuple]:
         """Add roster rows for anyone in season stats but missing from team roster endpoints.
 
         Official ``/v1/roster/{tri}/{season}`` lists the current active roster only; skater and
         goalie summary reports list everyone with games in the season (call-ups, short stints).
-        Remaining gaps (rare) are filled via the player landing endpoint.
+        Remaining gaps (rare) are filled via the player landing endpoint. *team_rows* (this
+        season's ``teams`` rows) scopes the triCode -> team_id lookup to teams that will actually
+        exist in the ``teams`` table for this season_id (see ``_abbrev_to_team_id``).
         """
-        abbrev_map = self._abbrev_to_team_id()
+        abbrev_map = self._abbrev_to_team_id(team_rows)
         rows_by_player: Dict[int, tuple] = {}
         for row in roster_rows:
             pid = to_int(row[0])
@@ -1136,6 +1151,7 @@ class ModernNhlLoader:
             roster_rows,
             skater_summary_rows,
             goalie_summary_rows,
+            teams_rows,
             {to_int(r[0]) for r in advanced_rows},
         )
 

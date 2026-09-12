@@ -12,7 +12,7 @@
 ## Docker
 
 - Сборка образа бота из корня репозитория: `docker build -t nhl-bot .`
-- Локальный стек PostgreSQL + бот: скопировать `.env.example` в `.env`, задать `TELEGRAM_BOT_TOKEN`, затем `docker compose up`. Сервис `db` пробрасывает порт `5432`; в compose для бота выставлены `PG_HOST=db` и `PG_USER=postgres` (см. `docker-compose.yml`). Перед первым запуском бота примените DDL/SQL-функции к этой БД с хоста, например `make db-init` с `PG_HOST=localhost` (когда контейнер `db` уже слушает порт).
+- Локальный стек PostgreSQL + бот: скопировать `.env.example` в `.env`, задать `TELEGRAM_BOT_TOKEN`, затем `docker compose up`. Имя compose-проекта закреплено полем `name: nhl_bot` в `docker-compose.yml`, поэтому named volume `nhl_bot_pgdata` под PGDATA не зависит от каталога, из которого запущена команда (основной чекаут или таск-воркtree). Сервис `db` пробрасывает порт `5432`; в compose для бота выставлены `PG_HOST=db` и `PG_USER=postgres` (см. `docker-compose.yml`). Перед первым запуском бота примените DDL/SQL-функции к этой БД с хоста: `make PG_HOST=localhost PG_USER=postgres db-init` (когда контейнер `db` уже слушает порт). Переменные нужно передавать именно аргументами `make`, а не переменными окружения перед командой — Makefile делает `include .env` и `export`, и если в `.env` уже задан свой `PG_USER` (например, от локального нативного PostgreSQL), значение из `.env` перекрывает переменную окружения, но не аргумент командной строки `make`.
 - В образ не копируется `.env`; при `docker compose up` используется `env_file: .env`.
 
 ## Тесты и качество

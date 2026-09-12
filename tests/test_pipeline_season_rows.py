@@ -178,10 +178,13 @@ class RosterRowsTest(LoaderApiTestCase):
         instance.load_team_reference()
         return instance
 
-    def _wsh_roster(self, instance):
+    def _teams_and_wsh_roster(self, instance):
         teams_rows, _ = instance.build_teams_and_stats()
         wsh_only = [r for r in teams_rows if field(r, "teams", "team_id") == WSH]
-        return instance.build_rosters(wsh_only)
+        return teams_rows, instance.build_rosters(wsh_only)
+
+    def _wsh_roster(self, instance):
+        return self._teams_and_wsh_roster(instance)[1]
 
     def test_roster_row_from_team_roster_endpoint(self):
         rows = by_player(self._wsh_roster(self._loader()), "rosters")
@@ -228,11 +231,12 @@ class RosterRowsTest(LoaderApiTestCase):
 
     def test_supplement_adds_report_only_and_landing_only_players(self):
         instance = self._loader()
-        roster_rows = self._wsh_roster(instance)
+        teams_rows, roster_rows = self._teams_and_wsh_roster(instance)
         supplemented = instance.supplement_rosters_from_reports(
             roster_rows,
             load_fixture("nhl_skater_summary.json"),
             load_fixture("nhl_goalie_summary.json"),
+            teams_rows,
             {MCMICHAEL},
         )
         rows = by_player(supplemented, "rosters")
@@ -260,6 +264,51 @@ class RosterRowsTest(LoaderApiTestCase):
 
         # A player already on the roster keeps the richer roster row.
         self.assertEqual(field(rows[OVECHKIN], "rosters", "jersey_number"), 8)
+
+    def test_supplement_prefers_season_team_over_stale_duplicate_tricode(self):
+        """Regression for the 2025/26 load failure (rosters_current_team_id_season_id_fkey).
+
+        A franchise rename can leave two ``team_id``s sharing one triCode in the full
+        historical team reference (Utah Hockey Club id=59 renamed Utah Mammoth id=68 for
+        2025/26, both triCode "UTA"). The triCode -> team_id map used to be built from that
+        full reference (``team_meta_by_id``), so it could resolve to the id that is NOT in
+        this season's ``teams`` table, violating the FK. Reproduced here with a duplicated
+        WSH entry appended after the real one: with the old dict-comprehension map, the
+        later "WSH" entry would win the lookup even though only the real team_id (15) is
+        actually present in this season's ``teams`` rows.
+        """
+        team_reference = load_fixture("nhl_team_reference.json")
+        wsh_meta = next(t for t in team_reference if t["triCode"] == "WSH")
+        stale_id = 9999
+        team_reference_with_duplicate = team_reference + [dict(wsh_meta, id=stale_id)]
+
+        instance = make_loader()
+        stub_api(
+            instance,
+            json_routes={
+                STANDINGS: load_fixture("nhl_standings_now.json"),
+                ROSTER: load_fixture("nhl_roster_wsh.json"),
+                LANDING: load_fixture("nhl_player_landing.json"),
+            },
+            paginated_routes={
+                TEAM_REFERENCE: team_reference_with_duplicate,
+                TEAM_SUMMARY: load_fixture("nhl_team_summary.json"),
+            },
+        )
+        instance.load_team_reference()
+        teams_rows, roster_rows = self._teams_and_wsh_roster(instance)
+        # The stale duplicate must not appear among this season's actual teams.
+        self.assertNotIn(stale_id, [field(r, "teams", "team_id") for r in teams_rows])
+
+        supplemented = instance.supplement_rosters_from_reports(
+            roster_rows,
+            load_fixture("nhl_skater_summary.json"),
+            load_fixture("nhl_goalie_summary.json"),
+            teams_rows,
+            {MCMICHAEL},
+        )
+        sourdif = by_player(supplemented, "rosters")[SOURDIF]
+        self.assertEqual(field(sourdif, "rosters", "current_team_id"), WSH)
 
 
 class SkaterSeasonStatsTest(LoaderApiTestCase):
