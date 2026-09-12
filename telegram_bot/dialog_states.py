@@ -1,11 +1,9 @@
 """Состояния FSM диалога `/stats` (числовые константы `ConversationHandler`)
 и сборка сеток inline-клавиатур.
 
-Часть `telegram_bot/`: числа отсюда — единственный контракт между
-`script_bot.py` (рисует экраны меню), `stats_handlers.py` (принимает
-callback'и и решает, в какое состояние вернуться) и `bot.py`, который
-импортирует их (`bot.py:47`) и строит из них карту «состояние →
-хендлеры» ConversationHandler'а (`bot.py:470` и далее).
+Числа отсюда — контракт между `script_bot.py` (рисует меню),
+`stats_handlers.py` (обрабатывает callback'и) и `build_conversation_handler`
+в `bot.py`, который строит из них карту «состояние → хендлеры».
 """
 
 from typing import List, Optional

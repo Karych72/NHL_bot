@@ -245,9 +245,10 @@ async def callback_stats_player_page(update: Update, context: CallbackContext) -
     """Листает страницу статистики игрока/вратаря по callback_data
     `st:<table>:<column>:<offset>`, перерисовывая сообщение на месте.
 
-    Неизвестная пара (table, column) не роняет диалог: хендлер просто отвечает
-    на callback и остаётся в том же состоянии. `BadRequest` «message is not
-    modified» — штатный повтор нажатия текущей страницы, глушится молча.
+    Неизвестная пара (table, column) не роняет диалог: хендлер отвечает на
+    callback и возвращает `SECOND`, ничего не перерисовывая. `BadRequest`
+    «message is not modified» — штатный повтор нажатия текущей страницы,
+    глушится молча.
 
     Returns:
         Всегда `SECOND` — хендлер зарегистрирован и в `FIRST`, и в `SECOND`.
@@ -758,7 +759,8 @@ async def bot_digest_calendar_today(update: Update, context: CallbackContext) ->
     рассылает дайджест за текущую календарную дату.
 
     Returns:
-        `SECOND` — там же обрабатываются «« Назад»»/кнопки разворота матчей.
+        `SECOND` — там же обрабатываются «« Назад»» и «В начало»; кнопки
+        «Матч N» (`dg:`) — глобальный хендлер вне диалога.
     """
     query = update.callback_query
     assert query is not None and query.message is not None
