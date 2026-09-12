@@ -1,3 +1,11 @@
+"""Сборка текстов и HTML-разметки для сообщений бота: карточки матчей,
+дайджест дня, лидерборды игроков/команд, турнирная таблица.
+
+Часть `telegram_bot/`, которая читает БД (заполненную `pipeline/`) и
+превращает строки в готовый Telegram-текст; сама отправка, листание
+страниц и клавиатуры живут в `stats_handlers.py`/`script_bot.py`.
+"""
+
 import html
 from collections import defaultdict
 from decimal import Decimal
@@ -289,6 +297,9 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
 
 
 def game_exists(game_id: int) -> bool:
+    """Проверяет, есть ли матч с таким `game_id` в таблице `games` — быстрый
+    guard перед построением карточки матча (`game_message`), чтобы не тратить
+    остальные запросы на несуществующий id."""
     row = fetch_all(
         "SELECT 1 AS o FROM games WHERE game_id = %s LIMIT 1",
         (game_id,),
@@ -937,6 +948,11 @@ def _build_standings_table_body(
 
 
 def team_table() -> str:
+    """Турнирная таблица всех команд текущего сезона (`config.SEASON_ID`):
+    секции по конференциям/дивизионам, отсортированные по очкам, плюс секции
+    Wild Card — HTML-текст с шапкой сезона и даты (шаблон
+    `messages/league_table.txt`) для команды `/table` (`bot.py`) и пункта
+    «Турнирная таблица» диалога `/stats` (`stats_handlers.py`)."""
     stats = cached_fetch_all(
         "SELECT short_name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "

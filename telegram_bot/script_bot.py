@@ -67,6 +67,10 @@ NAV_FIELD = "nav:field"
 
 
 def stats_main_keyboard_rows() -> list:
+    """Кнопки корневого меню `/stats`: дайджест дня, турнирная таблица,
+    статистика игроков, статистика команд — все, кроме турнирной таблицы,
+    ведут в своё подменю; «Турнирная таблица» шлёт готовую таблицу отдельным
+    сообщением (`bot_league_standings` в `stats_handlers.py`)."""
     return [
         InlineKeyboardButton("Статистика дня", callback_data=str(DAY_DIGEST)),
         InlineKeyboardButton("Турнирная таблица", callback_data=str(LEAGUE_STANDINGS)),
@@ -76,6 +80,8 @@ def stats_main_keyboard_rows() -> list:
 
 
 def stats_main_markup() -> InlineKeyboardMarkup:
+    """Оборачивает `stats_main_keyboard_rows` в клавиатуру из одной колонки —
+    общий вид корневого меню для `/stats`, `stats_root_edit` и `stats_over`."""
     return InlineKeyboardMarkup(build_menu(stats_main_keyboard_rows(), n_cols=1))
 
 
@@ -129,6 +135,11 @@ async def stats_over(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_team_stats(update: Update, context: CallbackContext) -> int:
+    """Подменю статистики команд: % набранных очков, большинство, меньшинство.
+
+    Кнопки несут состояния FSM (TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
+    TEAM_POWER_KILL), «« Назад»» ведёт в корень меню (CHOOSE_STATS).
+    """
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -148,6 +159,8 @@ async def bot_team_stats(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_player_stats(update: Update, context: CallbackContext) -> int:
+    """Выбор типа игроков: полевые (PLAYER_FIELD) или вратари (PLAYER_GOALIE).
+    «« Назад»» ведёт в корень меню (CHOOSE_STATS)."""
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -166,6 +179,10 @@ async def bot_player_stats(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_player_field(update: Update, context: CallbackContext) -> int:
+    """Подменю лидеров среди полевых игроков (очки, голы, ассисты, хиты,
+    +-, время на льду, штраф, блоки) плюс переход в расширенную статистику
+    (PLAYER_ADVANCED_SUBMENU). «« Назад»» ведёт на выбор типа игроков (NAV_PLAYERS).
+    """
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -194,6 +211,10 @@ async def bot_player_field(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
+    """Расширенная статистика полевых: Corsi/Fenwick/Goals For %, старт в
+    зоне атаки, реализация буллитов и голы по типам броска — каждая кнопка
+    своё состояние FSM. «« Назад»» ведёт на статистику полевых (NAV_FIELD).
+    """
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -222,6 +243,8 @@ async def bot_player_advanced_menu(update: Update, context: CallbackContext) -> 
 
 
 async def bot_player_goalie(update: Update, context: CallbackContext) -> int:
+    """Подменю лидеров-вратарей: победы, % отражённых бросков, сухари.
+    «« Назад»» ведёт на выбор типа игроков (NAV_PLAYERS)."""
     query = update.callback_query
     assert query is not None
     await query.answer()
@@ -267,10 +290,14 @@ async def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
 
 
 async def nav_back_to_players(update: Update, context: CallbackContext) -> int:
+    """Хендлер строкового callback_data `NAV_PLAYERS` («« Назад»» из подменю
+    полевых/вратарей) — просто перерисовывает `bot_player_stats`."""
     return await bot_player_stats(update, context)
 
 
 async def nav_back_to_field(update: Update, context: CallbackContext) -> int:
+    """Хендлер строкового callback_data `NAV_FIELD` («« Назад»» из расширенной
+    статистики полевых) — перерисовывает `bot_player_field`."""
     return await bot_player_field(update, context)
 
 
