@@ -335,9 +335,14 @@ def make_callback_update() -> Callable[..., SimpleNamespace]:
 
 @pytest.fixture
 def make_message_update() -> Callable[..., SimpleNamespace]:
-    """Factory: build a fake Update carrying a plain-text ``message``."""
+    """Factory: build a fake Update carrying a plain-text ``message``.
+
+    ``callback_query=None`` mirrors real ``telegram.Update``, where the field
+    is always declared (defaulting to ``None``) even on a message-only update —
+    see ``throttle.enforce_callback_rate_limit``, which reads it unconditionally.
+    """
 
     def _make(text: Optional[str], chat_id: int = 100) -> SimpleNamespace:
-        return SimpleNamespace(message=FakeMessage(text, chat_id=chat_id))
+        return SimpleNamespace(message=FakeMessage(text, chat_id=chat_id), callback_query=None)
 
     return _make

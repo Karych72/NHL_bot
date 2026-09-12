@@ -71,6 +71,7 @@ NHL_bot/
 │
 ├── telegram_bot/                       # Telegram-бот
 │   ├── bot.py                          # Точка входа: Application + ConversationHandler
+│   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
 │   ├── dialog_states.py                # FSM-состояния и callback ID
@@ -234,10 +235,12 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 ### Точка входа: `bot.py`
 
 Использует `python-telegram-bot` 21.x (asyncio). `build_application(token)` создаёт `Application`,
-регистрирует standalone-команды и inline-кнопки в группе `STANDALONE_GROUP = -1`, затем
-`ConversationHandler` меню `/stats` и `/cancel` вне диалога в группе 0; `main()` запускает
-`run_polling()`. Состав и порядок регистрации закреплены в `tests/test_bot_application.py`.
-Основной механизм диалога — `ConversationHandler` с состояниями FSM.
+первым делом регистрирует троттлинг callback-кнопок (`throttle.py`) в группе
+`THROTTLE_GROUP = STANDALONE_GROUP - 1 = -2`, затем standalone-команды и inline-кнопки в группе
+`STANDALONE_GROUP = -1`, затем `ConversationHandler` меню `/stats` и `/cancel` вне диалога в
+группе 0; `main()` запускает `run_polling()`. Состав и порядок регистрации закреплены в
+`tests/test_bot_application.py`. Основной механизм диалога — `ConversationHandler` с состояниями FSM.
+
 Сквозные сценарии «запрос → ответ» (`/table`, `/leaders` с пагинацией, `/game`, `/day_games`)
 и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
 подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
@@ -259,6 +262,20 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 (`video_replay.download_goal_video`, до ~2 минут) вызывается из `stats_handlers`
 через `asyncio.to_thread`. Запросы psycopg2 и `nhl_scoreboard.fetch_score_now`
 пока идут в loop'е синхронно.
+
+### Троттлинг callback-кнопок: `throttle.py`
+
+Задача 10: гасит N+1 нагрузку на PostgreSQL от спама кнопками пагинации — последний слой
+после TTL-кэша Задачи 9 (`database.cached_fetch_all`). Один `TypeHandler(Update, ...)`
+(`enforce_callback_rate_limit`), зарегистрированный в `THROTTLE_GROUP`, видит апдейт раньше
+любого адресного хендлера. Per-user скользящее окно: `CALLBACK_RATE_LIMIT = 8` нажатий за
+`CALLBACK_RATE_WINDOW_SEC = 3.0` секунд, ключ — `update.effective_user.id`. При превышении —
+`callback_query.answer()` с текстом и `ApplicationHandlerStop`: апдейт не доходит ни до
+`ConversationHandler`, ни до standalone-хендлеров. Троттлятся только апдейты с
+`callback_query`; команды и текст проходят без ограничений. Состояние — только в памяти
+процесса (module-level `dict`, без Redis); истёкшие записи вычищаются по ходу вызова, без
+отдельного планировщика. Тесты — `tests/test_bot_throttle.py` (поведение окна) и
+`tests/test_bot_application.py` (регистрация, группа).
 
 ### FSM (Finite State Machine)
 
@@ -319,6 +336,10 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
 ```
 bot.py
+  │
+  ├── throttle.py             Троттлинг callback-кнопок:
+  │                           enforce_callback_rate_limit() — TypeHandler
+  │                           в THROTTLE_GROUP, ниже STANDALONE_GROUP
   │
   ├── config.py              Чтение переменных окружения
   │

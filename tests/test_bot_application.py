@@ -21,6 +21,7 @@ from telegram.ext import (
     CommandHandler,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -68,12 +69,31 @@ def application(bot_module) -> Application:
 # Группы и порядок
 # ---------------------------------------------------------------------------
 
-def test_application_uses_exactly_two_handler_groups(bot_module, application) -> None:
+def test_application_uses_exactly_three_handler_groups(bot_module, application) -> None:
     bot = bot_module("bot")
-    assert sorted(application.handlers) == [bot.STANDALONE_GROUP, 0]
-    # Группы просматриваются по возрастанию: standalone обязан идти раньше
-    # диалога, иначе открытое меню /stats съедало бы команды верхнего уровня.
-    assert bot.STANDALONE_GROUP < 0
+    # list(), не sorted(): порядок обхода `Application.process_update` — это
+    # порядок ключей словаря `application.handlers`, а не результат сортировки
+    # в тесте. Он фиксируется один раз при первом `add_handler` новой группы
+    # (`self.handlers = dict(sorted(...))` в PTB) и с тех пор сохраняется —
+    # проверяем именно его, иначе тест утверждает состав групп, а не то, что
+    # троттлинг реально видит апдейт раньше standalone и диалога.
+    assert list(application.handlers) == [bot.THROTTLE_GROUP, bot.STANDALONE_GROUP, 0]
+    # Группы просматриваются по возрастанию: троттлинг обязан идти раньше
+    # standalone, а standalone — раньше диалога, иначе открытое меню /stats
+    # съедало бы команды верхнего уровня, а спам кнопками не был бы остановлен
+    # до того, как дойдёт до адресного хендлера.
+    assert bot.THROTTLE_GROUP < bot.STANDALONE_GROUP < 0
+
+
+def test_throttle_group_registers_single_type_handler(bot_module, application) -> None:
+    """Задача 10: перехватчик троттлинга — TypeHandler(Update, ...) в
+    THROTTLE_GROUP, единственный хендлер в этой группе."""
+    bot = bot_module("bot")
+    throttle = bot_module("throttle")
+    [handler] = application.handlers[bot.THROTTLE_GROUP]
+    assert isinstance(handler, TypeHandler)
+    assert handler.type is Update
+    assert handler.callback is throttle.enforce_callback_rate_limit
 
 
 def test_default_group_is_conversation_then_cancel(bot_module, application) -> None:
@@ -362,7 +382,7 @@ def test_main_starts_polling_on_application_built_from_config_token(
 
     assert len(polled) == 1
     assert polled[0].bot.token == FAKE_TOKEN
-    assert sorted(polled[0].handlers) == [bot.STANDALONE_GROUP, 0]
+    assert list(polled[0].handlers) == [bot.THROTTLE_GROUP, bot.STANDALONE_GROUP, 0]
 
 
 def test_main_raises_and_never_polls_when_token_missing(
