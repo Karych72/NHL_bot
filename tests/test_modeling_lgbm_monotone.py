@@ -9,12 +9,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-HAS_LIGHTGBM = importlib.util.find_spec("lightgbm") is not None
-pytestmark = pytest.mark.skipif(
-    not HAS_LIGHTGBM,
-    reason="lightgbm not installed (see requirements-modeling.txt)",
-)
-
 from modeling.config import ConfigError
 from modeling.metrics import log_loss
 from modeling.train_common import build_monotone_constraints, validate_num_threads
@@ -27,6 +21,17 @@ from modeling.train_lgbm import (
     train_single_lgbm,
 )
 
+# NOTE: pytestmark below does NOT guard the imports above — pytest evaluates
+# module-level code (including these imports) at collection time regardless
+# of marks, and modeling/train_lgbm.py imports lightgbm unconditionally at
+# module level. So without lightgbm installed, this file fails to *collect*
+# (ImportError), it does not skip; the mark only skips already-collected
+# test items when lightgbm *is* present. Import order here is cosmetic.
+HAS_LIGHTGBM = importlib.util.find_spec("lightgbm") is not None
+pytestmark = pytest.mark.skipif(
+    not HAS_LIGHTGBM,
+    reason="lightgbm not installed (see requirements-modeling.txt)",
+)
 
 RNG = np.random.default_rng(0)
 

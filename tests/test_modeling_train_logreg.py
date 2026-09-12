@@ -194,17 +194,25 @@ class TestNoLeakage(unittest.TestCase):
 
         scaler_mean = pipe.named_steps["standardscaler"].mean_[0]
         expected_mean = X_train["x"].mean()
-        # The name promises "not combined" but fit() only ever saw X_train,
-        # so that alone can't distinguish train-only stats from combined ones.
-        # Make the distinction explicit: had val leaked in, the mean would be
-        # near the combined mean, far from the train-only one (train ~U(0,1),
-        # val ~U(10,20), so the two means are nowhere close).
+        # Honest scope of this test: pipe.fit() above is called with X_train
+        # only — nothing in this test ever passes X_val into fit/predict —
+        # so assertAlmostEqual below is a tautology about StandardScaler
+        # itself (fit(X_train) always yields X_train's own mean), not a
+        # regression guard on build_logreg_pipeline. It cannot fail on a
+        # leakage bug because there is no code path here that could combine
+        # train and val before fit. Leakage-after-fit *is* covered, by
+        # test_imputer_and_scaler_stats_from_train_only above (which does
+        # call predict_proba(X_val) and checks mean_ is unchanged).
+        # The assertGreater below is not a code check either — it only
+        # confirms this fixture's train/val distributions are far enough
+        # apart to be a non-degenerate setup, in case a real train-vs-val
+        # comparison is ever added here.
         combined_mean = pd.concat([X_train["x"], X_val["x"]]).mean()
         self.assertAlmostEqual(scaler_mean, expected_mean, places=10)
         self.assertGreater(
-            abs(scaler_mean - combined_mean),
-            abs(scaler_mean - expected_mean) + 1.0,
-            "scaler mean should be far closer to train-only mean than to the train+val combined mean",
+            abs(expected_mean - combined_mean),
+            1.0,
+            "fixture sanity check: train mean should differ substantially from the train+val combined mean",
         )
 
 

@@ -4,5 +4,3 @@ line-length = 120
 # ``load_season_modern`` imports shared ``telegram_bot.config`` after ``sys.path`` fix-up.
 [lint.per-file-ignores]
 "pipeline/load_season_modern.py" = ["E402"]
-# Imports after the lightgbm-availability skipif fix-up (module-level `pytestmark`).
-"tests/test_modeling_lgbm_monotone.py" = ["E402"]
