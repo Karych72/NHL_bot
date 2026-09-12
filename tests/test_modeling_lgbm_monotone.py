@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 import unittest
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from modeling.config import ConfigError
 from modeling.metrics import log_loss
@@ -21,18 +19,13 @@ from modeling.train_lgbm import (
     train_single_lgbm,
 )
 
-# NOTE: pytestmark below does NOT guard the imports above — pytest evaluates
-# module-level code (including these imports) at collection time regardless
-# of marks, and modeling/train_lgbm.py imports lightgbm unconditionally at
-# module level. So without lightgbm installed, this file fails to *collect*
-# (ImportError), it does not skip; the mark only skips already-collected
-# test items when lightgbm *is* present. Import order here is cosmetic.
-HAS_LIGHTGBM = importlib.util.find_spec("lightgbm") is not None
-pytestmark = pytest.mark.skipif(
-    not HAS_LIGHTGBM,
-    reason="lightgbm not installed (see requirements-modeling.txt)",
-)
-
+# lightgbm is a required, pinned dependency for modeling tests (see
+# requirements-modeling.txt, installed together via `make modeling-dev`/
+# `setup-dev`; DEVELOPMENT.md documents that tests/test_modeling_*.py don't
+# collect without it — same as sklearn/pandas). No skip guard here, matching
+# every other tests/test_modeling_*.py: this file requires lightgbm like the
+# rest require sklearn, openly, via modeling/train_lgbm.py's own unconditional
+# `import lightgbm`.
 RNG = np.random.default_rng(0)
 
 

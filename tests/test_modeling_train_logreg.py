@@ -183,7 +183,7 @@ class TestNoLeakage(unittest.TestCase):
             err_msg="StandardScaler mean changed after predict_proba on val block",
         )
 
-    def test_mean_matches_train_not_combined(self) -> None:
+    def test_scaler_mean_equals_train_only_mean(self) -> None:
         rng = np.random.default_rng(13)
         X_train = pd.DataFrame({"x": rng.uniform(0, 1, 80)})
         y_train = rng.integers(0, 2, 80).astype(float)
