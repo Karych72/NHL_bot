@@ -97,6 +97,81 @@ class TestModelingDatasetBuild(unittest.TestCase):
         g3_team1 = rolling[(rolling["game_id"] == 3) & (rolling["team_id"] == 1)].iloc[0]
         self.assertLess(float(g3_team1["goals_for_roll_mean_5"]), 50.0)
 
+    def test_zero_pp_opportunities_null_percentage_becomes_zero(self):
+        hist = _history_df().copy()
+        hist.loc[(hist["game_id"] == 1) & (hist["team_id"] == 10), "power_play_percentage"] = None
+        team_facts, _ = build_team_game_facts(hist)
+        row10 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 10)].iloc[0]
+        row20 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 20)].iloc[0]
+        self.assertEqual(float(row10["power_play_percentage_for"]), 0.0)
+        self.assertEqual(float(row20["power_play_percentage_against"]), 0.0)
+
+    def test_power_play_percentage_above_100_is_clipped(self):
+        hist = _history_df().copy()
+        hist.loc[(hist["game_id"] == 1) & (hist["team_id"] == 10), "power_play_percentage"] = 200
+        team_facts, _ = build_team_game_facts(hist)
+        row10 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 10)].iloc[0]
+        row20 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 20)].iloc[0]
+        self.assertEqual(float(row10["power_play_percentage_for"]), 100.0)
+        self.assertEqual(float(row20["power_play_percentage_against"]), 100.0)
+
+    def test_rolling_and_snapshot_reset_at_season_boundary(self):
+        def row(game_id, day, season_id, home, away, team, goals):
+            return {
+                "game_id": game_id,
+                "day": day,
+                "season_id": season_id,
+                "home_team_id": home,
+                "away_team_id": away,
+                "team_id": team,
+                "goals": goals,
+                "shots": 20,
+                "pim": 5,
+                "power_play_percentage": 20.0,
+                "power_play_goals": 0,
+                "power_play_opportunities": 3,
+                "face_off_win_percentage": 50.0,
+                "blocked": 10,
+                "takeaways": 3,
+                "giveaways": 5,
+                "hits": 10,
+            }
+
+        hist = pd.DataFrame(
+            [
+                # 2021/22 season: team 10 racks up an outlier goal total that
+                # must not leak into the next season's rolling window.
+                row(1, "2021-10-01", 20212022, 10, 20, 10, 99),
+                row(1, "2021-10-01", 20212022, 10, 20, 20, 1),
+                # 2022/23 season: team 10's first game — no history this season yet.
+                row(2, "2022-10-01", 20222023, 10, 30, 10, 1),
+                row(2, "2022-10-01", 20222023, 10, 30, 30, 0),
+                # 2022/23 season: team 10's second game.
+                row(3, "2022-10-05", 20222023, 10, 40, 10, 2),
+                row(3, "2022-10-05", 20222023, 10, 40, 40, 0),
+            ]
+        )
+        team_facts, _ = build_team_game_facts(hist)
+        rolling = compute_team_rolling_features(team_facts, [5])
+
+        first_of_season = rolling[(rolling["game_id"] == 2) & (rolling["team_id"] == 10)].iloc[0]
+        self.assertEqual(int(first_of_season["prior_games_count"]), 0)
+        self.assertTrue(pd.isna(first_of_season["goals_for_roll_mean_5"]))
+
+        second_of_season = rolling[(rolling["game_id"] == 3) & (rolling["team_id"] == 10)].iloc[0]
+        self.assertEqual(float(second_of_season["goals_for_roll_mean_5"]), 1.0)
+
+        # Same check through the as-of snapshot path (build_match_feature_snapshots /
+        # _snapshot_side): the merge_asof leak fixed independently of the rolling fix.
+        targets = pd.DataFrame(
+            [
+                {"game_id": 2, "day": "2022-10-01", "season_id": 20222023, "home_team_id": 10, "away_team_id": 30},
+            ]
+        )
+        snapshots = build_match_feature_snapshots(targets, rolling)
+        self.assertTrue(pd.isna(snapshots.loc[0, "home_hist_game_id"]))
+        self.assertTrue(pd.isna(snapshots.loc[0, "home_goals_for_roll_mean_5"]))
+
     def test_assemble_excludes_goals_target_wide_features(self):
         snapshots = pd.DataFrame(
             [

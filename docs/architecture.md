@@ -88,6 +88,14 @@ NHL_bot/
 │       ├── get_game_stats.sql
 │       ├── get_goals_game.sql
 │       └── get_goalies_game.sql
+│
+├── modeling/                            # Датасет-билдер и обучение моделей (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
+│   ├── cli.py                           # `python -m modeling.cli build-dataset|train`
+│   └── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
+│
+└── artifacts/                           # Не коммитятся, кроме artifacts/reports/
+    ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД, в .gitignore
+    └── reports/                         # Скрипты и CSV-выгрузки отчётов (коммитятся; к датасету отношения не имеют)
 ```
 
 ---
@@ -794,3 +802,4 @@ make season-sync-month    # обновить данные за последни�
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
 4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в cron-скрипте `push_digest_job.py`, — поэтому extra `[job-queue]` (APScheduler) не ставится.
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.
+6. **Датасет-билдер — мультисезонная сборка (Задача 30, 2026-09-12):** `python -m modeling.cli build-dataset` кладёт `dataset_{train,predict}.csv` и `metadata_*.json` плоско в `artifacts/datasets/` (дефолт CLI) — не коммитятся, `--season-ids` фиксирует, какие сезоны вошли, в `data_snapshot_id` метаданных (пустое значение пишет `seasons=all` и не восстанавливается из артефакта, поэтому прогон всегда с явным списком). Rolling-окна (`features.py::compute_team_rolling_features`) и as-of снэпшоты (`features.py::_snapshot_side`, `merge_asof`) группируются по `(team_id, season_id)`, а не только по `team_id` — без этого признаки первой игры нового сезона утекали статистику из прошлого. Из-за сброса окон на границе каждого сезона `apply_cold_start_policy` (train, `min_prior_games=5`) отбрасывает больше строк, чем при однолетней сборке: на 5 сезонах/6560 играх — 6049 строк (511 отброшено, а не только в начале первого сезона). Подробности и контракт — `docs/modeling_dataset_builder.md`.

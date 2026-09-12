@@ -71,6 +71,10 @@ Technical enforcement:
 - as-of merge uses backward snapshots with exact-day matches disabled
 - validation fails if `home_hist_day` or `away_hist_day` is not strictly earlier than target day
 - validation fails if `home_hist_game_id == game_id` or `away_hist_game_id == game_id`
+- rolling windows and as-of snapshots are grouped by `(team_id, season_id)`, not `team_id`
+  alone (`features.py::compute_team_rolling_features`, `::_snapshot_side`) — a team's first
+  game of a new season starts with an empty window and never snapshots a row from the prior
+  season (fixed 2026-09-12, Task 30)
 
 ## Schema Parity and Versioning
 
@@ -106,7 +110,9 @@ Any violation raises an exception and marks the run as failed.
 
 ## CLI Usage
 
-Train:
+Train (multi-season — always pass `--season-ids` explicitly; an empty value builds over
+every season in the DB and writes `seasons=all` into `data_snapshot_id`, so which seasons
+actually went in cannot be recovered from the artifact afterwards):
 
 ```bash
 python -m modeling.cli build-dataset \
@@ -114,7 +120,8 @@ python -m modeling.cli build-dataset \
   --output-dir artifacts/datasets \
   --feature-set-version v1 \
   --rolling-windows 5,10,20 \
-  --min-prior-games 5
+  --min-prior-games 5 \
+  --season-ids 20212022,20222023,20232024,20242025,20252026
 ```
 
 Predict (strict parity against train metadata):
@@ -181,6 +188,12 @@ Implemented tests:
 - `test_cold_start_policy`
 - `test_features_hash_detects_cold_start_drift`
 - `test_validate_fails_on_nan_keys`
+- `test_rolling_and_snapshot_reset_at_season_boundary` — rolling windows and as-of
+  snapshots do not cross a season boundary (Task 30)
+- `test_zero_pp_opportunities_null_percentage_becomes_zero`,
+  `test_power_play_percentage_above_100_is_clipped` — `power_play_percentage` NULL
+  (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to
+  valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
 
 File: `tests/test_modeling_train_input.py`
 
