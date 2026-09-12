@@ -164,8 +164,9 @@ class TestNhlLoadedData(unittest.TestCase):
         # DB is multi-season by design (Task 13): don't require every row to match
         # config.SEASON_ID, just that the configured season is actually loaded.
         # (season_id being non-NULL is already a DDL constraint, not worth re-testing;
-        # orphan season_id vs teams is covered by test_home_away_teams_exist_for_season
-        # via the games->teams FK on (team_id, season_id).)
+        # orphan season_id vs teams is covered by test_home_away_teams_exist_for_season's
+        # own NOT EXISTS query below — not by the games->teams FK itself, which is
+        # MATCH SIMPLE and lets a row with home/away/winner all NULL bypass it.)
         sid = config.SEASON_ID
         with self.conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM games WHERE season_id = %s", (sid,))
