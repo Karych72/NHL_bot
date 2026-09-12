@@ -161,14 +161,23 @@ class TestNhlLoadedData(unittest.TestCase):
         self.assertGreater(n, 0, "No games in DB; run the loader for your date window")
 
     def test_games_season_id_matches_config(self):
+        # DB загружается на несколько сезонов сразу (Задача 13 — «3–5 прошлых
+        # сезонов»), так что не все строки games обязаны иметь один и тот же
+        # season_id — старая версия этой проверки предполагала модель «одна
+        # БД = один сезон» и падала на мультисезонной загрузке. Осмысленный
+        # инвариант здесь: season_id никогда не NULL (каждая игра отнесена
+        # к какому-то сезону), а сезон из config.SEASON_ID — тот, с которым
+        # сейчас работают бот и загрузчик — реально представлен в games.
         sid = config.SEASON_ID
         with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM games WHERE season_id IS DISTINCT FROM %s",
-                (sid,),
-            )
-            bad = cur.fetchone()[0]
-        self.assertEqual(bad, 0, "games.season_id must match config.SEASON_ID for loaded rows")
+            cur.execute("SELECT COUNT(*) FROM games WHERE season_id IS NULL")
+            null_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM games WHERE season_id = %s", (sid,))
+            config_count = cur.fetchone()[0]
+        self.assertEqual(null_count, 0, "games.season_id must never be NULL")
+        self.assertGreater(
+            config_count, 0, f"config.SEASON_ID={sid} must be represented in games"
+        )
 
     def test_home_away_teams_exist_for_season(self):
         with self.conn.cursor() as cur:
@@ -231,6 +240,11 @@ class TestNhlLoadedData(unittest.TestCase):
         self.assertEqual(n, 0, "rosters.current_team_id must exist in teams for same season_id")
 
     def test_season_stats_align_with_config_season(self):
+        # Как и test_games_season_id_matches_config выше: на мультисезонной
+        # БД эти таблицы копят строки по всем загруженным сезонам, а не
+        # только по config.SEASON_ID. Проверяем то же самое — season_id
+        # осмыслен (не NULL) и сезон из конфига в таблице представлен —
+        # вместо требования, чтобы вся таблица была одним сезоном.
         sid = config.SEASON_ID
         with self.conn.cursor() as cur:
             for tbl in (
@@ -239,12 +253,16 @@ class TestNhlLoadedData(unittest.TestCase):
                 "players_advanced_stats",
                 "players_shot_types",
             ):
-                cur.execute(
-                    f"SELECT COUNT(*) FROM {tbl} WHERE season_id IS DISTINCT FROM %s",
-                    (sid,),
+                cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE season_id IS NULL")
+                null_count = cur.fetchone()[0]
+                self.assertEqual(null_count, 0, f"{tbl}.season_id must never be NULL")
+                cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE season_id = %s", (sid,))
+                config_count = cur.fetchone()[0]
+                self.assertGreater(
+                    config_count,
+                    0,
+                    f"config.SEASON_ID={sid} must be represented in {tbl}",
                 )
-                n = cur.fetchone()[0]
-                self.assertEqual(n, 0, f"{tbl}.season_id must match SEASON_ID")
 
     def test_teams_and_stats_row_counts_match(self):
         sid = config.SEASON_ID
