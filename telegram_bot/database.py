@@ -176,6 +176,9 @@ def validate_column(name: str) -> str:
     """Проверяет имя столбца по allowlist `ALLOWED_COLUMNS` — тот же барьер,
     что и `validate_table`, но для столбцов.
 
+    Returns:
+        `name` без изменений, если оно есть в allowlist.
+
     Raises:
         ValueError: имени нет в `ALLOWED_COLUMNS`.
     """

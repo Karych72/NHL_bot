@@ -948,10 +948,11 @@ def _build_standings_table_body(
 
 
 def team_table() -> str:
-    """Турнирная таблица всех команд текущего сезона (`config.SEASON_ID`),
-    сгруппированная по конференциям/дивизионам и отсортированная по очкам —
-    HTML-текст для команды `/table` (`bot.py`) и пункта «Турнирная таблица»
-    диалога `/stats` (`stats_handlers.py`)."""
+    """Турнирная таблица всех команд текущего сезона (`config.SEASON_ID`):
+    секции по конференциям/дивизионам, отсортированные по очкам, плюс секции
+    Wild Card — HTML-текст с шапкой сезона и даты (шаблон
+    `messages/league_table.txt`) для команды `/table` (`bot.py`) и пункта
+    «Турнирная таблица» диалога `/stats` (`stats_handlers.py`)."""
     stats = cached_fetch_all(
         "SELECT short_name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "

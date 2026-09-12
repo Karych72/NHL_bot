@@ -10,7 +10,8 @@ from database import fetch_all, get_connection
 
 def upsert_morning_digest(chat_id: int, timezone: Optional[str] = None) -> None:
     """Включает подписку чата на утренний дайджест (`bot_subscriptions`,
-    kind='morning_digest'): обновляет активную запись, если она есть, иначе
+    kind='morning_digest'): обновляет существующую запись независимо от её
+    текущего состояния, реактивируя погашенную (active = TRUE), иначе
     вставляет новую — идемпотентно при повторном вызове.
 
     Args:
@@ -76,8 +77,9 @@ def resolve_team_id_by_abbrev(abbrev: str) -> Optional[int]:
 
 def upsert_team_scores(chat_id: int, team_id: int) -> None:
     """Включает подписку чата на счёт матчей команды `team_id`
-    (kind='team_scores'): обновляет активную запись пары (chat_id, team_id),
-    если она есть, иначе вставляет новую — идемпотентно."""
+    (kind='team_scores'): обновляет существующую запись пары (chat_id,
+    team_id) независимо от её состояния, реактивируя погашенную, иначе
+    вставляет новую — идемпотентно."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(

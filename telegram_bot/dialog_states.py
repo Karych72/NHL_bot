@@ -2,8 +2,10 @@
 и сборка сеток inline-клавиатур.
 
 Часть `telegram_bot/`: числа отсюда — единственный контракт между
-`script_bot.py` (рисует экраны меню) и `stats_handlers.py` (принимает
-callback'и и решает, в какое состояние вернуться).
+`script_bot.py` (рисует экраны меню), `stats_handlers.py` (принимает
+callback'и и решает, в какое состояние вернуться) и `bot.py`, который
+импортирует их (`bot.py:47`) и строит из них карту «состояние →
+хендлеры» ConversationHandler'а (`bot.py:470` и далее).
 """
 
 from typing import List, Optional

@@ -68,7 +68,9 @@ NAV_FIELD = "nav:field"
 
 def stats_main_keyboard_rows() -> list:
     """Кнопки корневого меню `/stats`: дайджест дня, турнирная таблица,
-    статистика игроков, статистика команд — каждая ведёт в своё подменю."""
+    статистика игроков, статистика команд — все, кроме турнирной таблицы,
+    ведут в своё подменю; «Турнирная таблица» шлёт готовую таблицу отдельным
+    сообщением (`bot_league_standings` в `stats_handlers.py`)."""
     return [
         InlineKeyboardButton("Статистика дня", callback_data=str(DAY_DIGEST)),
         InlineKeyboardButton("Турнирная таблица", callback_data=str(LEAGUE_STANDINGS)),
