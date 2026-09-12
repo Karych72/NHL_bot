@@ -1,3 +1,11 @@
+"""Состояния FSM диалога `/stats` (числовые константы `ConversationHandler`)
+и сборка сеток inline-клавиатур.
+
+Часть `telegram_bot/`: числа отсюда — единственный контракт между
+`script_bot.py` (рисует экраны меню) и `stats_handlers.py` (принимает
+callback'и и решает, в какое состояние вернуться).
+"""
+
 from typing import List, Optional
 
 FIRST, SECOND, THIRD = range(3)
@@ -28,6 +36,13 @@ def build_menu(
     header_buttons: Optional[list] = None,
     footer_buttons: Optional[list] = None,
 ) -> List[list]:
+    """Раскладывает плоский список кнопок в сетку для `InlineKeyboardMarkup`
+    по `n_cols` в ряд, добавляя необязательные строки сверху/снизу.
+
+    Args:
+        header_buttons: ряд кнопок перед сеткой (напр. заголовок раздела).
+        footer_buttons: ряды кнопок после сетки (обычно «« Назад»»/«Готово»).
+    """
     menu = [buttons[i:i + n_cols] for i in range(0, len(buttons), n_cols)]
     if header_buttons:
         menu.insert(0, header_buttons)
