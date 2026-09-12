@@ -1,9 +1,10 @@
 """Точка входа Telegram-бота: сборка `Application` и регистрация хендлеров.
 
 Роль в пайплайне: `bot.py` собирает python-telegram-bot 21.x `Application`,
-вешает на него standalone-команды/кнопки и `ConversationHandler` меню `/stats`
-и запускает long polling. Сами обработчики живут в `script_bot.py` (навигация)
-и `stats_handlers.py` (выборки из БД); здесь — только команды верхнего уровня.
+вешает на него троттлинг callback-кнопок (`throttle.py`), standalone-команды/
+кнопки и `ConversationHandler` меню `/stats`, затем запускает long polling.
+Сами обработчики живут в `script_bot.py` (навигация) и `stats_handlers.py`
+(выборки из БД); здесь — только команды верхнего уровня и сборка `Application`.
 """
 
 import asyncio
@@ -21,11 +22,13 @@ from telegram.ext import (
     CommandHandler,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
 import config
 import subscription_repo
+from throttle import enforce_callback_rate_limit
 from bot_messages import (
     day_digest,
     leaders_menu_intro,
@@ -160,6 +163,11 @@ from stats_handlers import (
 logger = logging.getLogger(__name__)
 
 STANDALONE_GROUP = -1
+
+# Троттлинг callback-кнопок (throttle.py) обязан видеть апдейт раньше любого
+# адресного хендлера, включая standalone-команды/кнопки, — иначе спам успеет
+# дойти до БД до того, как перехватчик его остановит.
+THROTTLE_GROUP = STANDALONE_GROUP - 1
 
 # Лимит Bot API на число кнопок в одном inline-сообщении.
 _TELEGRAM_INLINE_BUTTON_CAP = 100
@@ -607,8 +615,15 @@ def build_application(token: str) -> Application:
     Зачем: единственная точка сборки, которую тест может построить с фиктивным
     токеном и проверить состав и порядок хендлеров, не поднимая polling.
     `token` — токен бота (в проде `config.TOKEN`).
+
+    Первой регистрируется троттлинг-хендлер (`throttle.py`) в группе
+    `THROTTLE_GROUP`, ниже `STANDALONE_GROUP`: он просматривает апдейт раньше
+    остальных и при превышении лимита обрывает его через
+    `ApplicationHandlerStop`, не давая дойти до standalone-хендлеров и
+    `ConversationHandler`.
     """
     application = Application.builder().token(token).build()
+    application.add_handler(TypeHandler(Update, enforce_callback_rate_limit), group=THROTTLE_GROUP)
     for handler in build_standalone_handlers():
         application.add_handler(handler, group=STANDALONE_GROUP)
     application.add_handler(build_conversation_handler())
