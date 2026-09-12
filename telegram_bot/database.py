@@ -110,6 +110,9 @@ ALLOWED_COLUMNS = frozenset({
 # ---------------------------------------------------------------------------
 
 def get_pool() -> psycopg2.pool.SimpleConnectionPool:
+    """Возвращает общий пул соединений с БД (1–5 штук), создавая его лениво
+    при первом вызове или заново, если он ещё не создан либо был закрыт
+    (`close_pool()`). Параметры соединения берутся из `config`."""
     global _pool
     if _pool is None or _pool.closed:
         _pool = psycopg2.pool.SimpleConnectionPool(
@@ -140,6 +143,9 @@ def get_connection():
 
 
 def close_pool() -> None:
+    """Закрывает все соединения общего пула (`_pool.closeall()`) и сбрасывает
+    его в `None`, так что следующий `get_pool()` создаст пул заново. Повторный
+    вызов на уже закрытом или ещё не созданном пуле — no-op."""
     global _pool
     if _pool is not None and not _pool.closed:
         _pool.closeall()
@@ -152,12 +158,30 @@ def close_pool() -> None:
 # ---------------------------------------------------------------------------
 
 def validate_table(name: str) -> str:
+    """Проверяет имя таблицы по allowlist `ALLOWED_TABLES` — защита от SQL-
+    инъекции при подстановке динамических идентификаторов через `psycopg2.sql`.
+
+    Returns:
+        `name` без изменений, если оно есть в allowlist.
+
+    Raises:
+        ValueError: имени нет в `ALLOWED_TABLES`.
+    """
     if name not in ALLOWED_TABLES:
         raise ValueError(f"Table not allowed: {name!r}")
     return name
 
 
 def validate_column(name: str) -> str:
+    """Проверяет имя столбца по allowlist `ALLOWED_COLUMNS` — тот же барьер,
+    что и `validate_table`, но для столбцов.
+
+    Returns:
+        `name` без изменений, если оно есть в allowlist.
+
+    Raises:
+        ValueError: имени нет в `ALLOWED_COLUMNS`.
+    """
     if name not in ALLOWED_COLUMNS:
         raise ValueError(f"Column not allowed: {name!r}")
     return name
