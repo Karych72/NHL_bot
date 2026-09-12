@@ -26,7 +26,7 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt -r requirements-modeling.txt
 
       - name: Ruff
-        run: python -m ruff check telegram_bot modeling pipeline
+        run: python -m ruff check telegram_bot modeling pipeline tests
 
       - name: Mypy
         run: python -m mypy telegram_bot modeling pipeline

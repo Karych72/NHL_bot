@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import ast
-import io
 import json
 import logging
-import re
 import subprocess
 import sys
 import tempfile
@@ -19,16 +17,13 @@ import yaml
 
 from modeling.config import (
     ConfigError,
-    ModelingConfig,
     ResolvedConfig,
     apply_overrides,
     build_run_id,
     configure_run_logger,
     derive_seed,
-    load_config,
     parse_override,
     resolve_config,
-    resolved_config_to_yaml,
 )
 from modeling.dataset_builder.schema import features_hash
 

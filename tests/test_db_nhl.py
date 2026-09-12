@@ -160,15 +160,20 @@ class TestNhlLoadedData(unittest.TestCase):
             n = cur.fetchone()[0]
         self.assertGreater(n, 0, "No games in DB; run the loader for your date window")
 
-    def test_games_season_id_matches_config(self):
+    def test_games_config_season_id_present(self):
+        # DB is multi-season by design (Task 13): don't require every row to match
+        # config.SEASON_ID, just that the configured season is actually loaded.
+        # (season_id being non-NULL is already a DDL constraint, not worth re-testing;
+        # orphan season_id vs teams is covered by test_home_away_teams_exist_for_season's
+        # own NOT EXISTS query below — not by the games->teams FK itself, which is
+        # MATCH SIMPLE and lets a row with home/away/winner all NULL bypass it.)
         sid = config.SEASON_ID
         with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM games WHERE season_id IS DISTINCT FROM %s",
-                (sid,),
-            )
-            bad = cur.fetchone()[0]
-        self.assertEqual(bad, 0, "games.season_id must match config.SEASON_ID for loaded rows")
+            cur.execute("SELECT COUNT(*) FROM games WHERE season_id = %s", (sid,))
+            config_count = cur.fetchone()[0]
+        self.assertGreater(
+            config_count, 0, f"config.SEASON_ID={sid} must be represented in games"
+        )
 
     def test_home_away_teams_exist_for_season(self):
         with self.conn.cursor() as cur:
@@ -230,7 +235,14 @@ class TestNhlLoadedData(unittest.TestCase):
             n = cur.fetchone()[0]
         self.assertEqual(n, 0, "rosters.current_team_id must exist in teams for same season_id")
 
-    def test_season_stats_align_with_config_season(self):
+    def test_season_stats_season_id_not_orphaned_and_config_season_present(self):
+        # Multi-season DB (Task 13): each table may hold several seasons, so we
+        # don't require a single season across the table. Instead: (1) no row's
+        # season_id is orphaned vs teams — these tables reach teams only via
+        # rosters, whose season_id has no DB-level FK to teams (current_team_id
+        # FK is nullable, see test_rosters_team_ids_exist), so a bad/typo'd
+        # season_id here is a real, DB-undetected corruption class; (2) the
+        # configured season is actually represented.
         sid = config.SEASON_ID
         with self.conn.cursor() as cur:
             for tbl in (
@@ -240,11 +252,20 @@ class TestNhlLoadedData(unittest.TestCase):
                 "players_shot_types",
             ):
                 cur.execute(
-                    f"SELECT COUNT(*) FROM {tbl} WHERE season_id IS DISTINCT FROM %s",
-                    (sid,),
+                    f"""
+                    SELECT COUNT(*) FROM {tbl} x
+                    WHERE NOT EXISTS (SELECT 1 FROM teams t WHERE t.season_id = x.season_id)
+                    """
                 )
-                n = cur.fetchone()[0]
-                self.assertEqual(n, 0, f"{tbl}.season_id must match SEASON_ID")
+                orphans = cur.fetchone()[0]
+                self.assertEqual(orphans, 0, f"{tbl}.season_id not present in teams")
+                cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE season_id = %s", (sid,))
+                config_count = cur.fetchone()[0]
+                self.assertGreater(
+                    config_count,
+                    0,
+                    f"config.SEASON_ID={sid} must be represented in {tbl}",
+                )
 
     def test_teams_and_stats_row_counts_match(self):
         sid = config.SEASON_ID
