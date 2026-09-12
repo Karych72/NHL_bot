@@ -23,19 +23,23 @@ def build_team_game_facts(
     data["day"] = pd.to_datetime(data["day"]).dt.normalize()
 
     # power_play_percentage is stored NULL when a team had 0 PP opportunities
-    # (0/0 undefined for display — docs/pipeline_nulls_and_explicit_null_tz.md:68).
-    # As a numeric feature 0.0 is the correct value: zero opportunities converted
-    # at a 0% rate. Left as NaN it fails the dataset builder's fail-fast NaN check.
-    data["power_play_percentage"] = data["power_play_percentage"].fillna(0.0)
+    # (0/0 undefined for display — docs/pipeline_nulls_and_explicit_null_tz.md:68;
+    # safe_pct in pipeline/load_season_modern.py also returns None for missing
+    # numerator/denominator, a distinct "unknown" case that must stay NaN and hit
+    # the fail-fast NaN check below rather than being silently zeroed). Narrowed
+    # to the documented 0-opportunities case only: as of 2026-09-12 all 168 NULL
+    # rows in game_team_stats have power_play_opportunities == 0.
+    data.loc[data["power_play_opportunities"] == 0, "power_play_percentage"] = 0.0
 
     # A handful of games (3 of 13120 rows as of 2026-09-12, all season 20232024:
     # game_id 2023020627/2023020788/2023021236) have power_play_percentage above
     # 100 — the play-by-play-derived opportunity count in
     # pipeline/load_season_modern.py undercounts distinct power plays relative to
     # power-play goals scored within them in rare cases. Fixing that counting is
-    # out of scope here; clip to the meaningful [0, 100] bound so the rate feature
+    # out of scope here; clip to the meaningful upper bound so the rate feature
     # stays interpretable instead of failing the dataset builder's range check.
-    data["power_play_percentage"] = data["power_play_percentage"].clip(lower=0.0, upper=100.0)
+    # No lower bound: no code path produces a negative percentage.
+    data["power_play_percentage"] = data["power_play_percentage"].clip(upper=100.0)
 
     counts = data.groupby("game_id")["team_id"].size().rename("team_rows").reset_index()
     broken = counts[counts["team_rows"] != 2]

@@ -99,12 +99,45 @@ class TestModelingDatasetBuild(unittest.TestCase):
 
     def test_zero_pp_opportunities_null_percentage_becomes_zero(self):
         hist = _history_df().copy()
-        hist.loc[(hist["game_id"] == 1) & (hist["team_id"] == 10), "power_play_percentage"] = None
+        mask = (hist["game_id"] == 1) & (hist["team_id"] == 10)
+        hist.loc[mask, "power_play_percentage"] = None
+        hist.loc[mask, "power_play_opportunities"] = 0
         team_facts, _ = build_team_game_facts(hist)
         row10 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 10)].iloc[0]
         row20 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 20)].iloc[0]
         self.assertEqual(float(row10["power_play_percentage_for"]), 0.0)
         self.assertEqual(float(row20["power_play_percentage_against"]), 0.0)
+
+    def test_pp_percentage_null_with_opportunities_stays_nan(self):
+        # power_play_opportunities is left at the fixture default (5, not 0): a
+        # NULL percentage here is "unknown" (missing source data), not "0
+        # opportunities", and must not be silently zeroed — see
+        # test_pp_percentage_null_with_opportunities_fails_fast_validation for the
+        # downstream consequence (fail-fast, not a fabricated feature value).
+        hist = _history_df().copy()
+        hist.loc[(hist["game_id"] == 1) & (hist["team_id"] == 10), "power_play_percentage"] = None
+        team_facts, _ = build_team_game_facts(hist)
+        row10 = team_facts[(team_facts["game_id"] == 1) & (team_facts["team_id"] == 10)].iloc[0]
+        self.assertTrue(pd.isna(row10["power_play_percentage_for"]))
+
+    def test_pp_percentage_null_with_opportunities_fails_fast_validation(self):
+        hist = _history_df().copy()
+        hist.loc[(hist["game_id"] == 1) & (hist["team_id"] == 10), "power_play_percentage"] = None
+        team_facts, _ = build_team_game_facts(hist)
+        rolling = compute_team_rolling_features(team_facts, [5])
+        # Target day 2026-01-02 (exact-match excluded) as-of-snapshots team 10's
+        # most recent strictly-prior game, which is game 1 — the one with the
+        # unknown (NULL, non-zero-opportunities) percentage.
+        targets = pd.DataFrame(
+            [{"game_id": 102, "day": "2026-01-02", "season_id": 20252026, "home_team_id": 10, "away_team_id": 20}]
+        )
+        snapshots = build_match_feature_snapshots(targets, rolling)
+        snapshots["feature_set_version"] = "v1"
+        snapshots["dataset_built_at"] = "2026-01-02T00:00:00Z"
+        snapshots["low_history_confidence"] = 0
+        snapshots["quality_warnings"] = ""
+        with self.assertRaisesRegex(ValueError, "home_power_play_percentage_for"):
+            validate_or_raise("predict", snapshots, feature_columns=feature_columns_from_df(snapshots))
 
     def test_power_play_percentage_above_100_is_clipped(self):
         hist = _history_df().copy()
@@ -139,10 +172,17 @@ class TestModelingDatasetBuild(unittest.TestCase):
 
         hist = pd.DataFrame(
             [
-                # 2021/22 season: team 10 racks up an outlier goal total that
-                # must not leak into the next season's rolling window.
+                # 2021/22 season: team 10 plays two games with an outlier goal
+                # total that must not leak into the next season's rolling window
+                # or as-of snapshot. Two games (not one) so team 10's most recent
+                # 2021/22 game itself has a non-NaN goals_for_roll_mean_5 (mean of
+                # game 1's 99) — otherwise the as-of assertion below would pass
+                # even without the merge_asof season fix, since the single most
+                # recent prior-season row would itself be NaN.
                 row(1, "2021-10-01", 20212022, 10, 20, 10, 99),
                 row(1, "2021-10-01", 20212022, 10, 20, 20, 1),
+                row(4, "2021-10-03", 20212022, 10, 25, 10, 50),
+                row(4, "2021-10-03", 20212022, 10, 25, 25, 0),
                 # 2022/23 season: team 10's first game — no history this season yet.
                 row(2, "2022-10-01", 20222023, 10, 30, 10, 1),
                 row(2, "2022-10-01", 20222023, 10, 30, 30, 0),

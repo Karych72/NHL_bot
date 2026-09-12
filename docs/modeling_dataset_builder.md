@@ -45,6 +45,15 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Cold-start policy:
     - train: drop
     - predict: allow with flag (or drop, from config)
+  - Since rolling windows and as-of snapshots reset at each season boundary
+    (`features.py`, Task 30), the first game of every season now has
+    `prior_games_count == 0` and NaN `*_roll_mean_*`. Train drops these rows via
+    cold-start; **predict with the default `allow_with_flag` policy does not** — it
+    keeps them and flags `low_history_confidence`, so a predict build for a
+    season's first games fails `validate.py`'s NaN check (`numeric_nan_inf`)
+    unless `--cold-start-policy-predict drop` is used or these games are handled
+    upstream. This is the correct downstream consequence of the season-boundary
+    fix, not a defect in it — see Task 15 in `plan/engineering/work_plan_2026-08-08.md`.
 
 - `modeling/dataset_builder/schema.py`
   - Feature manifest generation (name, dtype, position).

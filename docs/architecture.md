@@ -89,12 +89,13 @@ NHL_bot/
 │       ├── get_goals_game.sql
 │       └── get_goalies_game.sql
 │
-├── modeling/                            # Датасет-билдер и обучение моделей (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
+├── modeling/                            # ML-пайплайн: датасет-билдер + обучение, 17 модулей (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
 │   ├── cli.py                           # `python -m modeling.cli build-dataset|train`
-│   └── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
+│   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
+│   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py, config.py, artifacts.py, и др.
 │
-└── artifacts/                           # Не коммитятся, кроме artifacts/reports/
-    ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД, в .gitignore
+└── artifacts/                           # datasets/ — в .gitignore; reports/ — коммитится (см. .gitignore)
+    ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД
     └── reports/                         # Скрипты и CSV-выгрузки отчётов (коммитятся; к датасету отношения не имеют)
 ```
 
