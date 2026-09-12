@@ -121,8 +121,6 @@ class TestTrainInputFailures(unittest.TestCase):
             self.assertIn("dtype", str(ctx.exception))
 
     def test_invalid_metadata_json(self) -> None:
-        manifest = _minimal_manifest()
-        meta = _minimal_metadata_rows(manifest=manifest)
         rows = (
             "game_id,day,f_a,f_b,y_home_win,y_over_5_5,feature_set_version,dataset_built_at,source_snapshot_id\n"
             "1,2024-01-01,0.1,0.2,1,0,v1,2024-01-01Z,snap\n"

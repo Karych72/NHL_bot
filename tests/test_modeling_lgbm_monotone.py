@@ -200,7 +200,9 @@ class TestGridSelection(unittest.TestCase):
         )
 
         best_lr = min(losses, key=lambda item: item[1])[0]["learning_rate"]
-        chosen_lr = next(params["learning_rate"] for params, loss in losses if loss == min(l for _, l in losses))
+        chosen_lr = next(
+            params["learning_rate"] for params, loss in losses if loss == min(lv for _, lv in losses)
+        )
         self.assertEqual(best_lr, chosen_lr)
         self.assertIsNotNone(booster)
 

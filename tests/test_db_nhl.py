@@ -160,7 +160,7 @@ class TestNhlLoadedData(unittest.TestCase):
             n = cur.fetchone()[0]
         self.assertGreater(n, 0, "No games in DB; run the loader for your date window")
 
-    def test_games_season_id_matches_config(self):
+    def test_games_config_season_id_present(self):
         # DB is multi-season by design (Task 13): don't require every row to match
         # config.SEASON_ID, just that the configured season is actually loaded.
         # (season_id being non-NULL is already a DDL constraint, not worth re-testing;
@@ -235,7 +235,7 @@ class TestNhlLoadedData(unittest.TestCase):
             n = cur.fetchone()[0]
         self.assertEqual(n, 0, "rosters.current_team_id must exist in teams for same season_id")
 
-    def test_season_stats_align_with_config_season(self):
+    def test_season_stats_season_id_not_orphaned_and_config_season_present(self):
         # Multi-season DB (Task 13): each table may hold several seasons, so we
         # don't require a single season across the table. Instead: (1) no row's
         # season_id is orphaned vs teams — these tables reach teams only via

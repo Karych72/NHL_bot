@@ -19,12 +19,9 @@ from __future__ import annotations
 
 import ast
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Callable
 from unittest.mock import patch
 
 import numpy as np
@@ -38,7 +35,6 @@ from sklearn.preprocessing import StandardScaler
 # Imports under test
 # ---------------------------------------------------------------------------
 from modeling.train_logreg import (
-    FORBIDDEN_TEAM_ID_COLUMNS,
     FitResult,
     assert_no_team_id_columns,
     build_logreg_pipeline,
@@ -168,9 +164,9 @@ class TestNoLeakage(unittest.TestCase):
         # Train block: all values in [0, 1]
         X_train = pd.DataFrame(rng.uniform(0, 1, (100, 3)), columns=["a", "b", "c"])
         y_train = rng.integers(0, 2, 100).astype(float)
-        # Val block: values in [100, 200] — very different distribution
+        # Val block: values in [100, 200] — very different distribution.
+        # predict_proba() only needs X, no labels, so no y_val here.
         X_val = pd.DataFrame(rng.uniform(100, 200, (50, 3)), columns=["a", "b", "c"])
-        y_val = rng.integers(0, 2, 50).astype(float)
 
         pipe = build_logreg_pipeline(C=1.0, random_seed=0)
         pipe.fit(X_train, y_train)
@@ -198,7 +194,18 @@ class TestNoLeakage(unittest.TestCase):
 
         scaler_mean = pipe.named_steps["standardscaler"].mean_[0]
         expected_mean = X_train["x"].mean()
+        # The name promises "not combined" but fit() only ever saw X_train,
+        # so that alone can't distinguish train-only stats from combined ones.
+        # Make the distinction explicit: had val leaked in, the mean would be
+        # near the combined mean, far from the train-only one (train ~U(0,1),
+        # val ~U(10,20), so the two means are nowhere close).
+        combined_mean = pd.concat([X_train["x"], X_val["x"]]).mean()
         self.assertAlmostEqual(scaler_mean, expected_mean, places=10)
+        self.assertGreater(
+            abs(scaler_mean - combined_mean),
+            abs(scaler_mean - expected_mean) + 1.0,
+            "scaler mean should be far closer to train-only mean than to the train+val combined mean",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +285,9 @@ class TestTieBreak(unittest.TestCase):
         X_val, y_val = _make_Xy(50, 4, rng)
 
         grid = [0.1, 1.0, 10.0]
-        constant_loss_fn: Callable[[np.ndarray, np.ndarray], float] = lambda _y, _p: 0.5
+
+        def constant_loss_fn(_y: np.ndarray, _p: np.ndarray) -> float:
+            return 0.5
 
         chosen_C, _, _ = select_C_by_inner_val(
             X_train, y_train, X_val, y_val,

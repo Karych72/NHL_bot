@@ -133,7 +133,7 @@ all-tests: test-fast test-db
 	@echo "=== all-tests завершён ==="
 
 lint:
-	@$(PY) -m ruff check telegram_bot modeling pipeline
+	@$(PY) -m ruff check telegram_bot modeling pipeline tests
 
 typecheck:
 	@$(PY) -m mypy telegram_bot modeling pipeline

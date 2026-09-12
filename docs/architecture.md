@@ -101,7 +101,7 @@ NHL_bot/
 | `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота (обязательно) | — |
 | `PG_HOST` | Хост PostgreSQL | `localhost` |
 | `PG_PORT` | Порт PostgreSQL | `5432` |
-| `PG_USER` | Пользователь PostgreSQL | текущий пользователь ОС |
+| `PG_USER` | Пользователь PostgreSQL | `postgres` |
 | `PG_DATABASE` | Имя базы данных | `postgres` |
 | `DATE_FROM` | Начало диапазона дат для загрузки игр | `2025-10-01` |
 | `DATE_TO` | Конец диапазона дат для загрузки игр | текущая дата |

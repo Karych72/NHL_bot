@@ -15,7 +15,6 @@ import yaml
 
 from modeling.config import ConfigError, build_run_id, load_config, load_metadata_json
 from modeling.train_runner import (
-    RunResult,
     dry_run_training,
     format_dry_run_report,
     resolve_run_id,
@@ -25,7 +24,6 @@ from modeling.train_runner import (
     validate_run_id_override,
 )
 from modeling.acceptance import evaluate_baseline_gate, TaskModelHoldout
-from modeling.train_runner import _TaskModelOutcome
 from tests._modeling_fixtures import write_synthetic_train_dataset
 from tests.test_modeling_no_db_access import forbidden_imports_in_module
 
