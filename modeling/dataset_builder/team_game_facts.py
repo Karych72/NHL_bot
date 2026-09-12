@@ -20,6 +20,11 @@ def build_team_game_facts(
     data["team_id"] = data["team_id"].astype("int64")
     data["home_team_id"] = data["home_team_id"].astype("int64")
     data["away_team_id"] = data["away_team_id"].astype("int64")
+    # season_id is a groupby/filter key in features.py (compute_team_rolling_features's
+    # groupby(["team_id", "season_id"]), _snapshot_side's right["__r_season_id"] ==
+    # season_id) — cast alongside the other key columns so a NULL season_id can't
+    # silently upcast the column to float64 and change grouping/filter behavior.
+    data["season_id"] = data["season_id"].astype("int64")
     data["day"] = pd.to_datetime(data["day"]).dt.normalize()
 
     # power_play_percentage is stored NULL when a team had 0 PP opportunities
