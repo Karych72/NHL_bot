@@ -17,7 +17,6 @@ from modeling.acceptance import (
     BaselineGateResult,
     TaskModelHoldout,
     apply_acceptance_to_training_outcomes,
-    apply_status_to_summary,
     evaluate_baseline_gate,
     holdout_metrics_from_json,
     pick_winning_family,
@@ -28,7 +27,7 @@ from modeling.train_runner import update_latest_symlink
 from modeling.config import load_config, load_metadata_json
 from modeling.train_runner import RunResult, _TaskModelOutcome, run_training
 from tests._modeling_fixtures import write_synthetic_train_dataset
-from tests.test_modeling_metrics import _metric_block, _sample_metrics_json
+from tests.test_modeling_metrics import _metric_block
 from tests.test_modeling_no_db_access import forbidden_imports_in_module
 
 ROOT = Path(__file__).resolve().parent.parent

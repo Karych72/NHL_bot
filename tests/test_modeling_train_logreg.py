@@ -19,12 +19,9 @@ from __future__ import annotations
 
 import ast
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Callable
 from unittest.mock import patch
 
 import numpy as np
@@ -38,7 +35,6 @@ from sklearn.preprocessing import StandardScaler
 # Imports under test
 # ---------------------------------------------------------------------------
 from modeling.train_logreg import (
-    FORBIDDEN_TEAM_ID_COLUMNS,
     FitResult,
     assert_no_team_id_columns,
     build_logreg_pipeline,
@@ -168,9 +164,9 @@ class TestNoLeakage(unittest.TestCase):
         # Train block: all values in [0, 1]
         X_train = pd.DataFrame(rng.uniform(0, 1, (100, 3)), columns=["a", "b", "c"])
         y_train = rng.integers(0, 2, 100).astype(float)
-        # Val block: values in [100, 200] — very different distribution
+        # Val block: values in [100, 200] — very different distribution.
+        # predict_proba() only needs X, no labels, so no y_val here.
         X_val = pd.DataFrame(rng.uniform(100, 200, (50, 3)), columns=["a", "b", "c"])
-        y_val = rng.integers(0, 2, 50).astype(float)
 
         pipe = build_logreg_pipeline(C=1.0, random_seed=0)
         pipe.fit(X_train, y_train)
@@ -187,7 +183,7 @@ class TestNoLeakage(unittest.TestCase):
             err_msg="StandardScaler mean changed after predict_proba on val block",
         )
 
-    def test_mean_matches_train_not_combined(self) -> None:
+    def test_scaler_mean_equals_train_only_mean(self) -> None:
         rng = np.random.default_rng(13)
         X_train = pd.DataFrame({"x": rng.uniform(0, 1, 80)})
         y_train = rng.integers(0, 2, 80).astype(float)
@@ -198,7 +194,26 @@ class TestNoLeakage(unittest.TestCase):
 
         scaler_mean = pipe.named_steps["standardscaler"].mean_[0]
         expected_mean = X_train["x"].mean()
+        # Honest scope of this test: pipe.fit() above is called with X_train
+        # only — nothing in this test ever passes X_val into fit/predict —
+        # so assertAlmostEqual below is a tautology about StandardScaler
+        # itself (fit(X_train) always yields X_train's own mean), not a
+        # regression guard on build_logreg_pipeline. It cannot fail on a
+        # leakage bug because there is no code path here that could combine
+        # train and val before fit. Leakage-after-fit *is* covered, by
+        # test_imputer_and_scaler_stats_from_train_only above (which does
+        # call predict_proba(X_val) and checks mean_ is unchanged).
+        # The assertGreater below is not a code check either — it only
+        # confirms this fixture's train/val distributions are far enough
+        # apart to be a non-degenerate setup, in case a real train-vs-val
+        # comparison is ever added here.
+        combined_mean = pd.concat([X_train["x"], X_val["x"]]).mean()
         self.assertAlmostEqual(scaler_mean, expected_mean, places=10)
+        self.assertGreater(
+            abs(expected_mean - combined_mean),
+            1.0,
+            "fixture sanity check: train mean should differ substantially from the train+val combined mean",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +293,9 @@ class TestTieBreak(unittest.TestCase):
         X_val, y_val = _make_Xy(50, 4, rng)
 
         grid = [0.1, 1.0, 10.0]
-        constant_loss_fn: Callable[[np.ndarray, np.ndarray], float] = lambda _y, _p: 0.5
+
+        def constant_loss_fn(_y: np.ndarray, _p: np.ndarray) -> float:
+            return 0.5
 
         chosen_C, _, _ = select_C_by_inner_val(
             X_train, y_train, X_val, y_val,

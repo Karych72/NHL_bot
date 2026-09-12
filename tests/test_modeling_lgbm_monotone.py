@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 import unittest
 
 import numpy as np
 import pandas as pd
-import pytest
-
-HAS_LIGHTGBM = importlib.util.find_spec("lightgbm") is not None
-pytestmark = pytest.mark.skipif(
-    not HAS_LIGHTGBM,
-    reason="lightgbm not installed (see requirements-modeling.txt)",
-)
 
 from modeling.config import ConfigError
 from modeling.metrics import log_loss
@@ -27,7 +19,13 @@ from modeling.train_lgbm import (
     train_single_lgbm,
 )
 
-
+# lightgbm is a required, pinned dependency for modeling tests (see
+# requirements-modeling.txt, installed together via `make modeling-dev`/
+# `setup-dev`; DEVELOPMENT.md documents that tests/test_modeling_*.py don't
+# collect without it — same as sklearn/pandas). No skip guard here, matching
+# every other tests/test_modeling_*.py: this file requires lightgbm like the
+# rest require sklearn, openly, via modeling/train_lgbm.py's own unconditional
+# `import lightgbm`.
 RNG = np.random.default_rng(0)
 
 
@@ -200,7 +198,9 @@ class TestGridSelection(unittest.TestCase):
         )
 
         best_lr = min(losses, key=lambda item: item[1])[0]["learning_rate"]
-        chosen_lr = next(params["learning_rate"] for params, loss in losses if loss == min(l for _, l in losses))
+        chosen_lr = next(
+            params["learning_rate"] for params, loss in losses if loss == min(lv for _, lv in losses)
+        )
         self.assertEqual(best_lr, chosen_lr)
         self.assertIsNotNone(booster)
 
