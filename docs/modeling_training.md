@@ -43,7 +43,10 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 geometry actually fits the available history is checked at split-build time by a
 data-volume guard in `modeling/splits.py` (`build_walk_forward_splits`, Задача 14):
 it fails loudly with both the required and the actual row counts instead of silently
-building an empty/degenerate split. `configs/modeling_default.yaml` carries the
+building an empty/degenerate split. The guard checks only a necessary lower bound on
+row counts, not the actual distribution of games across calendar months, so a geometry
+that passes it can still fail later in `_windows_calendar_month` / `_window_from_tail`.
+`configs/modeling_default.yaml` carries the
 multiseason geometry (`300`/`300`/`5` windows); `configs/modeling_smoke.yaml` is sized
 for a single season or smaller (`50`/`50`/`3` windows) for fast local/CI smoke runs.
 Each file's YAML comment above `split:` derives the guard's minimum row count for its

@@ -117,44 +117,48 @@ class TestConfigFailFast(unittest.TestCase):
 
     Actual data-volume adequacy is no longer enforced here — it moved to the
     guard in ``build_walk_forward_splits`` (see ``TestMinimumHistoryGuard``
-    below). These tests only assert that a non-positive value is rejected.
+    below). These tests only assert that non-positive values — zero and
+    negative alike — are rejected.
     """
 
     def test_n_test_windows_below_minimum_raises(self) -> None:
-        with self.assertRaises(ValidationError):
-            SplitConfig.model_validate(
-                {
-                    "method": SplitMethod.month,
-                    "n_test_windows": 0,
-                    "inner_val_games": 300,
-                    "calibration_games": 300,
-                    "holdout": {"fraction": 0.15},
-                }
-            )
+        for value in (0, -1):
+            with self.subTest(n_test_windows=value), self.assertRaises(ValidationError):
+                SplitConfig.model_validate(
+                    {
+                        "method": SplitMethod.month,
+                        "n_test_windows": value,
+                        "inner_val_games": 300,
+                        "calibration_games": 300,
+                        "holdout": {"fraction": 0.15},
+                    }
+                )
 
     def test_inner_val_games_below_minimum_raises(self) -> None:
-        with self.assertRaises(ValidationError):
-            SplitConfig.model_validate(
-                {
-                    "method": SplitMethod.month,
-                    "n_test_windows": 5,
-                    "inner_val_games": 0,
-                    "calibration_games": 300,
-                    "holdout": {"fraction": 0.15},
-                }
-            )
+        for value in (0, -1):
+            with self.subTest(inner_val_games=value), self.assertRaises(ValidationError):
+                SplitConfig.model_validate(
+                    {
+                        "method": SplitMethod.month,
+                        "n_test_windows": 5,
+                        "inner_val_games": value,
+                        "calibration_games": 300,
+                        "holdout": {"fraction": 0.15},
+                    }
+                )
 
     def test_calibration_games_below_minimum_raises(self) -> None:
-        with self.assertRaises(ValidationError):
-            SplitConfig.model_validate(
-                {
-                    "method": SplitMethod.month,
-                    "n_test_windows": 5,
-                    "inner_val_games": 300,
-                    "calibration_games": 0,
-                    "holdout": {"fraction": 0.15},
-                }
-            )
+        for value in (0, -1):
+            with self.subTest(calibration_games=value), self.assertRaises(ValidationError):
+                SplitConfig.model_validate(
+                    {
+                        "method": SplitMethod.month,
+                        "n_test_windows": 5,
+                        "inner_val_games": 300,
+                        "calibration_games": value,
+                        "holdout": {"fraction": 0.15},
+                    }
+                )
 
 
 class TestInsufficientHistory(unittest.TestCase):
@@ -206,6 +210,35 @@ class TestMinimumHistoryGuard(unittest.TestCase):
         self.assertIn("100", message)
 
 
+class TestGuardIsNecessaryNotSufficient(unittest.TestCase):
+    """Задача 14: clearing the row-count guard does not mean the geometry fits.
+
+    Covers the late ``_window_from_tail`` check, which the guard must NOT
+    subsume — it is the check that actually protects the scenario motivating
+    this task — and doubles as evidence for the "necessary but not sufficient"
+    claim made in ``modeling/splits.py``, both YAML configs and
+    ``docs/modeling_training.md``.
+
+    Season-shaped calendar: 200 days x 6 games = 1200 rows over 7 calendar
+    months. holdout = ceil(200 * 0.15) = 30 days = 180 rows, leaving 1020
+    walk-forward rows across 6 months. The default profile needs 606
+    walk-forward rows, so the guard passes; but the earliest of its 5 test
+    months has only 186 rows before it against inner_val(300) +
+    calibration(300) = 600, so ``_window_from_tail`` raises instead.
+    """
+
+    def test_guard_passes_then_window_from_tail_raises(self) -> None:
+        keys = _synthetic_calendar_keys(n_days=200, games_per_day=6)
+        config = _default_split_config()
+        with self.assertRaises(SplitError) as ctx:
+            build_walk_forward_splits(keys, config)
+        message = str(ctx.exception)
+        # Distinguishing text of _window_from_tail: the test must not start
+        # passing silently on the guard's own message instead.
+        self.assertIn("window k=1: need 600 rows before test, have 186", message)
+        self.assertNotIn("walk-forward rows after holdout cut", message)
+
+
 class TestEmbargoComment(unittest.TestCase):
     def test_splits_module_documents_embargo_policy(self) -> None:
         source = Path("modeling/splits.py").read_text(encoding="utf-8")
@@ -228,7 +261,19 @@ class TestMetadataParity(unittest.TestCase):
 class TestSmokeProfileFitsSingleSeason(unittest.TestCase):
     """Задача 14: configs/modeling_smoke.yaml's geometry must actually build
     windows on a single-season-sized dataset (~1211 rows -- the pre-Задача 30
-    `season_20252026/` size), not just pass the guard's row-count check."""
+    `season_20252026/` size), not just pass the guard's row-count check.
+
+    Scope, stated exactly: the calendar here is one game per day, so it covers
+    ~40 calendar months rather than a real season's ~7, and `before_test` for
+    k=1 comes out far above the 100 rows the smoke geometry needs. It therefore
+    proves that the profile builds complete, non-degenerate windows -- not that
+    it survives a real season's month *shape*. A denser season-shaped fixture
+    (200 days x 6 games) cannot be used here: it trips a pre-existing defect in
+    `_window_from_tail`, which slices `before_test` by row count while
+    `_validate_splits` requires day-strict block boundaries -- see the fix
+    report for Задача 14. Calendar-shape behaviour is covered instead by
+    `TestGuardIsNecessaryNotSufficient`.
+    """
 
     def test_smoke_profile_builds_expected_windows(self) -> None:
         raw = yaml.safe_load(Path("configs/modeling_smoke.yaml").read_text(encoding="utf-8"))

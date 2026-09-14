@@ -368,13 +368,8 @@ def _windows_fixed_games(
         )
     block_size = config.outer_block_games
     total_block_span = block_size * config.n_test_windows
-    if len(wf_positions) < total_block_span:
-        raise SplitError(
-            "not enough history for "
-            f"{config.n_test_windows} outer windows with current split parameters "
-            f"(need at least {total_block_span} walk-forward rows, have {len(wf_positions)})"
-        )
-
+    # No row-count check here: _check_minimum_history already guarantees
+    # len(wf_positions) >= total_block_span + 1 for this method.
     windows: list[OuterWindow] = []
     base = len(wf_positions) - total_block_span
     for k in range(1, config.n_test_windows + 1):

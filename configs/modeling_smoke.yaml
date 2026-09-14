@@ -39,17 +39,21 @@ split:
 
 models:
   logreg:
+    # Smoke grids: one value per axis (the middle/default of the production
+    # list in configs/modeling_default.yaml). A smoke run checks that the
+    # pipeline goes end to end, not which hyperparameters win -- the full
+    # sweep there is 3^7 x n_test_windows x tasks fits.
     grids:
-      C: [0.01, 0.1, 1.0, 10.0]
+      C: [1.0]
   lgbm:
     grids:
-      num_leaves: [15, 31, 63]
-      min_data_in_leaf: [20, 50, 100]
-      feature_fraction: [0.7, 0.9, 1.0]
-      bagging_fraction: [0.7, 0.9, 1.0]
-      lambda_l1: [0.0, 0.1, 1.0]
-      lambda_l2: [0.0, 0.1, 1.0]
-      learning_rate: [0.03, 0.05, 0.1]
+      num_leaves: [31]
+      min_data_in_leaf: [50]
+      feature_fraction: [0.9]
+      bagging_fraction: [0.9]
+      lambda_l1: [0.1]
+      lambda_l2: [0.1]
+      learning_rate: [0.05]
     monotone:
       home_win:
         diff_goal_diff_roll_mean_5: 1
@@ -71,7 +75,10 @@ models:
 
 calibration:
   method: isotonic
-  min_samples: 500
+  # Must not exceed split.calibration_games (50) -- above it every smoke window
+  # would skip calibration entirely (modeling/calibrate.py:196) and the path
+  # would never be exercised.
+  min_samples: 50
 
 evaluation:
   ece_bins: 10

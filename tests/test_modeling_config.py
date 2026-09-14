@@ -174,25 +174,31 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         self.assertIn("random_seed", msg)
 
     def test_n_test_windows_below_minimum(self) -> None:
-        # Задача 14, ruling Р2: floor is now sanitary-only (positive); the
-        # real data-volume adequacy check lives in the build_walk_forward_splits
-        # guard, not here.
-        data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["n_test_windows"] = 0
-        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("n_test_windows", msg)
+        # Задача 14, ruling Р2: floor is now sanitary-only (positive — zero and
+        # negative are both rejected); the real data-volume adequacy check
+        # lives in the build_walk_forward_splits guard, not here.
+        for value in (0, -1):
+            with self.subTest(n_test_windows=value):
+                data = yaml.safe_load(_minimal_yaml_text())
+                data["split"]["n_test_windows"] = value
+                msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+                self.assertIn("n_test_windows", msg)
 
     def test_inner_val_games_below_minimum(self) -> None:
-        data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["inner_val_games"] = 0
-        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("inner_val_games", msg)
+        for value in (0, -1):
+            with self.subTest(inner_val_games=value):
+                data = yaml.safe_load(_minimal_yaml_text())
+                data["split"]["inner_val_games"] = value
+                msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+                self.assertIn("inner_val_games", msg)
 
     def test_calibration_games_below_minimum(self) -> None:
-        data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["calibration_games"] = 0
-        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("calibration_games", msg)
+        for value in (0, -1):
+            with self.subTest(calibration_games=value):
+                data = yaml.safe_load(_minimal_yaml_text())
+                data["split"]["calibration_games"] = value
+                msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+                self.assertIn("calibration_games", msg)
 
     def test_both_tasks_disabled(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
