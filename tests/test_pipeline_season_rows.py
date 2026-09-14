@@ -553,5 +553,73 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
         self.assertColumnsNone(sourdif, table, keep=("player_id", "season_id"))
 
 
+class SeasonReferenceRowsTest(LoaderApiTestCase):
+    """Задача 19b: ``run()`` must union extra_player_ids across every FK'd report.
+
+    ``build_season_reference_rows`` is what ``run()`` calls to assemble these rows
+    (see its docstring) — the bug lived in that call site, not inside
+    ``supplement_rosters_from_reports`` itself, so a test of the method alone
+    (``test_supplement_adds_report_only_and_landing_only_players`` above) cannot
+    see it.
+    """
+
+    REPORTS = {
+        "skater/summary": "nhl_skater_summary.json",
+        "skater/timeonice": "nhl_skater_timeonice.json",
+        "skater/faceoffpercentages": "nhl_skater_faceoff_percentages.json",
+        "skater/shootout": "nhl_skater_shootout.json",
+        "skater/realtime": "nhl_skater_realtime.json",
+        "goalie/summary": "nhl_goalie_summary.json",
+        "goalie/savesByStrength": "nhl_goalie_saves_by_strength.json",
+        "skater/goalsForAgainst": "nhl_skater_goals_for_against.json",
+        "skater/puckPossessions": "nhl_skater_puck_possessions.json",
+        "skater/shottype": "nhl_skater_shottype.json",
+    }
+
+    def test_shot_type_only_player_reaches_rosters(self):
+        # McMichael is on neither the trimmed roster response nor any summary
+        # report — only the shottype report (mixed in here) and player landing
+        # know about him (see MCMICHAEL's docstring in _pipeline_fixtures.py).
+        shottype = load_fixture("nhl_skater_shottype.json")
+        mcmichael_shot_row = dict(shottype[0], playerId=MCMICHAEL)
+        routes = {frag: load_fixture(name) for frag, name in self.REPORTS.items()}
+        routes["skater/shottype"] = shottype + [mcmichael_shot_row]
+
+        instance = make_loader()
+        stub_api(
+            instance,
+            json_routes={
+                STANDINGS: load_fixture("nhl_standings_now.json"),
+                ROSTER: load_fixture("nhl_roster_wsh.json"),
+                LANDING: load_fixture("nhl_player_landing.json"),
+            },
+            paginated_routes={
+                TEAM_REFERENCE: load_fixture("nhl_team_reference.json"),
+                TEAM_SUMMARY: load_fixture("nhl_team_summary.json"),
+                **routes,
+            },
+        )
+        instance.load_team_reference()
+
+        (
+            _teams_rows,
+            _teams_stats_rows,
+            roster_rows,
+            _skater_rows,
+            _goalie_rows,
+            _advanced_rows,
+            shot_type_rows,
+        ) = instance.build_season_reference_rows()
+
+        shot_type_player_ids = {
+            field(r, "players_shot_types", "player_id") for r in shot_type_rows
+        }
+        roster_player_ids = {field(r, "rosters", "player_id") for r in roster_rows}
+        self.assertIn(MCMICHAEL, shot_type_player_ids)
+        # The FK players_shot_types(player_id, season_id) -> rosters requires
+        # every shottype player_id to have a matching rosters row.
+        self.assertTrue(shot_type_player_ids.issubset(roster_player_ids))
+
+
 if __name__ == "__main__":
     unittest.main()
