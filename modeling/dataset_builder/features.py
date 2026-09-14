@@ -1,4 +1,9 @@
-"""Rolling and match-level feature building with strict as-of joins."""
+"""Rolling and match-level feature building with strict as-of joins.
+
+Rolling windows and as-of history snapshots are grouped by (team_id, season_id),
+not team_id alone: a team's first game of a new season starts with an empty
+window, never carrying rolling stats or a snapshot row from the prior season.
+"""
 
 from __future__ import annotations
 
@@ -23,11 +28,21 @@ def compute_team_rolling_features(
     team_game_facts: pd.DataFrame,
     rolling_windows: Sequence[int],
 ) -> pd.DataFrame:
+    """Compute per-team rolling/context features, reset at each season boundary.
+
+    Args:
+        team_game_facts: long team-game rows (one row per team per game) with
+            at least team_id, season_id, day, game_id and the ROLLING_BASE_FIELDS.
+        rolling_windows: window sizes (in games) for the trailing means.
+
+    Windows, prior-game counts and rest-day features are grouped by
+    (team_id, season_id) so a team's stats never leak across a season change.
+    """
     if team_game_facts.empty:
         return team_game_facts.copy()
 
-    data = team_game_facts.sort_values(["team_id", "day", "game_id"]).copy()
-    grp = data.groupby("team_id", sort=False)
+    data = team_game_facts.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
+    grp = data.groupby(["team_id", "season_id"], sort=False)
 
     data["prev_day"] = grp["day"].shift(1)
     intra_day_prev = (data["day"] == data["prev_day"]) & data["prev_day"].notna()
@@ -47,9 +62,9 @@ def compute_team_rolling_features(
         for field in ROLLING_BASE_FIELDS:
             shifted = grp[field].shift(1)
             shifted = shifted.mask(intra_day_prev)
-            rolled = shifted.groupby(data["team_id"], sort=False).transform(
-                lambda s: s.rolling(window=window, min_periods=1).mean()
-            )
+            rolled = shifted.groupby(
+                [data["team_id"], data["season_id"]], sort=False
+            ).transform(lambda s: s.rolling(window=window, min_periods=1).mean())
             data[f"{field}_roll_mean_{window}"] = rolled.astype("float64")
 
     goals_for_rm = (
@@ -83,18 +98,26 @@ def _snapshot_side(
     side_team_col: str,
     prefix: str,
 ) -> pd.DataFrame:
-    left = targets[["game_id", "day", side_team_col]].copy()
+    """As-of snapshot of one side's (home/away) most recent prior-game features.
+
+    The as-of match (`merge_asof`, backward, no exact-day matches) is scoped to
+    (team_id, season_id) pairs, not team_id alone: a team's first game of a new
+    season must never snapshot a row from the previous season.
+    """
+    left = targets[["game_id", "day", "season_id", side_team_col]].copy()
     left = left.rename(columns={side_team_col: "team_id"})
-    left = left.sort_values(["team_id", "day", "game_id"]).copy()
-    right = team_features.sort_values(["team_id", "day", "game_id"]).copy()
+    left = left.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
+    right = team_features.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
     right["hist_day"] = right["day"]
     rightCols = [c for c in right.columns if c != "day"]
     right = right.rename(columns={c: f"__r_{c}" for c in rightCols})
 
     merged_parts = []
-    for team_id, left_team in left.groupby("team_id", sort=False):
+    for (team_id, season_id), left_team in left.groupby(["team_id", "season_id"], sort=False):
         left_team = left_team.sort_values(["day", "game_id"])
-        right_team = right[right["__r_team_id"] == team_id].sort_values(["day", "__r_game_id"])
+        right_team = right[
+            (right["__r_team_id"] == team_id) & (right["__r_season_id"] == season_id)
+        ].sort_values(["day", "__r_game_id"])
         if right_team.empty:
             part = left_team.copy()
             merged_parts.append(part)
@@ -109,7 +132,7 @@ def _snapshot_side(
         merged_parts.append(part)
 
     merged = pd.concat(merged_parts, ignore_index=True)
-    merged = merged.drop(columns=["__r_team_id"], errors="ignore")
+    merged = merged.drop(columns=["__r_team_id", "__r_season_id", "season_id"], errors="ignore")
     rename_out: dict[str, str] = {}
     for col in list(merged.columns):
         if col in ("game_id", "day", "team_id"):
