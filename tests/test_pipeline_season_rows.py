@@ -310,6 +310,39 @@ class RosterRowsTest(LoaderApiTestCase):
         sourdif = by_player(supplemented, "rosters")[SOURDIF]
         self.assertEqual(field(sourdif, "rosters", "current_team_id"), WSH)
 
+    def test_supplement_raises_when_landing_payload_has_no_player_id(self):
+        """Задача 19 (финальное ревью, Important 4).
+
+        A landing payload without ``playerId`` must fail loudly here (Global
+        Constraint 4, "падать громко") rather than silently drop the player: a
+        dropped roster row still fails later, but as a much less legible FK
+        violation on ``players_shot_types`` / ``players_advanced_stats``.
+        """
+        instance = make_loader()
+        stub_api(
+            instance,
+            json_routes={
+                STANDINGS: load_fixture("nhl_standings_now.json"),
+                ROSTER: load_fixture("nhl_roster_wsh.json"),
+                LANDING: without(load_fixture("nhl_player_landing.json"), "playerId"),
+            },
+            paginated_routes={
+                TEAM_REFERENCE: load_fixture("nhl_team_reference.json"),
+                TEAM_SUMMARY: load_fixture("nhl_team_summary.json"),
+            },
+        )
+        instance.load_team_reference()
+        teams_rows, roster_rows = self._teams_and_wsh_roster(instance)
+
+        with self.assertRaises(RuntimeError):
+            instance.supplement_rosters_from_reports(
+                roster_rows,
+                load_fixture("nhl_skater_summary.json"),
+                load_fixture("nhl_goalie_summary.json"),
+                teams_rows,
+                {MCMICHAEL},
+            )
+
 
 class SkaterSeasonStatsTest(LoaderApiTestCase):
     REPORTS = {
@@ -601,20 +634,15 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         )
         instance.load_team_reference()
 
-        (
-            _teams_rows,
-            _teams_stats_rows,
-            roster_rows,
-            _skater_rows,
-            _goalie_rows,
-            _advanced_rows,
-            shot_type_rows,
-        ) = instance.build_season_reference_rows()
+        season_reference_rows = instance.build_season_reference_rows()
 
         shot_type_player_ids = {
-            field(r, "players_shot_types", "player_id") for r in shot_type_rows
+            field(r, "players_shot_types", "player_id")
+            for r in season_reference_rows.shot_type_rows
         }
-        roster_player_ids = {field(r, "rosters", "player_id") for r in roster_rows}
+        roster_player_ids = {
+            field(r, "rosters", "player_id") for r in season_reference_rows.roster_rows
+        }
         self.assertIn(MCMICHAEL, shot_type_player_ids)
         # The FK players_shot_types(player_id, season_id) -> rosters requires
         # every shottype player_id to have a matching rosters row.

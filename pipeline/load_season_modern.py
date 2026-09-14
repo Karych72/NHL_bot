@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 import psycopg2
 import requests
@@ -165,6 +165,24 @@ def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Option
     except (ValueError, TypeError):
         return None
     return round((num / denom) * 100, 2)
+
+
+class SeasonReferenceRows(NamedTuple):
+    """Rows built by ``build_season_reference_rows`` for ``run()`` to upsert.
+
+    Named fields instead of a positional ``Tuple[List[tuple], ...]`` of seven
+    identically-typed elements: mypy cannot tell those apart positionally, so a
+    swapped pair (e.g. ``advanced_rows``/``shot_type_rows``) would pass
+    ``make ci-local`` and silently write one table's rows into another.
+    """
+
+    teams_rows: List[tuple]
+    teams_stats_rows: List[tuple]
+    roster_rows: List[tuple]
+    skater_rows: List[tuple]
+    goalie_rows: List[tuple]
+    advanced_rows: List[tuple]
+    shot_type_rows: List[tuple]
 
 
 class ModernNhlLoader:
@@ -500,8 +518,11 @@ class ModernNhlLoader:
                 url = f"https://api-web.nhle.com/v1/player/{pid}/landing"
                 payload = self.get_json(url)
                 landing_row = self._roster_tuple_from_landing(payload)
-                if landing_row:
-                    rows_by_player[pid] = landing_row
+                if landing_row is None:
+                    raise RuntimeError(
+                        f"player landing for {pid} has no playerId: keys={sorted(payload)}"
+                    )
+                rows_by_player[pid] = landing_row
 
         return list(rows_by_player.values())
 
@@ -1191,20 +1212,15 @@ class ModernNhlLoader:
         with conn.cursor() as cur:
             execute_values(cur, full.as_string(conn), rows, page_size=page_size)
 
-    def build_season_reference_rows(
-        self,
-    ) -> Tuple[
-        List[tuple], List[tuple], List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]
-    ]:
+    def build_season_reference_rows(self) -> SeasonReferenceRows:
         """Build this season's teams/roster/stats rows and fill roster gaps.
 
         Assembled here (rather than inline in ``run()``) so a test can call it
         directly: the roster-supplement bug this method exists to prevent
         (Задача 19b) only shows up when ``extra_player_ids`` is built from the
         *caller's* row sets, and a unit test of ``supplement_rosters_from_reports``
-        alone can't see that. Returns
-        ``(teams_rows, teams_stats_rows, roster_rows, skater_rows, goalie_rows,
-        advanced_rows, shot_type_rows)`` for ``run()`` to upsert.
+        alone can't see that. Returns a ``SeasonReferenceRows`` (named fields,
+        not a positional tuple — see its docstring) for ``run()`` to upsert.
 
         ``extra_player_ids`` is the union of every report's player ids
         (``advanced_rows`` and ``shot_type_rows``, both keyed on ``r[0]``) — both
@@ -1228,29 +1244,28 @@ class ModernNhlLoader:
             teams_rows,
             extra_player_ids,
         )
-        return (
-            teams_rows,
-            teams_stats_rows,
-            roster_rows,
-            skater_rows,
-            goalie_rows,
-            advanced_rows,
-            shot_type_rows,
+        return SeasonReferenceRows(
+            teams_rows=teams_rows,
+            teams_stats_rows=teams_stats_rows,
+            roster_rows=roster_rows,
+            skater_rows=skater_rows,
+            goalie_rows=goalie_rows,
+            advanced_rows=advanced_rows,
+            shot_type_rows=shot_type_rows,
         )
 
     def run(self):
         logger.info("Loading team reference...")
         self.load_team_reference()
 
-        (
-            teams_rows,
-            teams_stats_rows,
-            roster_rows,
-            skater_rows,
-            goalie_rows,
-            advanced_rows,
-            shot_type_rows,
-        ) = self.build_season_reference_rows()
+        season_reference_rows = self.build_season_reference_rows()
+        teams_rows = season_reference_rows.teams_rows
+        teams_stats_rows = season_reference_rows.teams_stats_rows
+        roster_rows = season_reference_rows.roster_rows
+        skater_rows = season_reference_rows.skater_rows
+        goalie_rows = season_reference_rows.goalie_rows
+        advanced_rows = season_reference_rows.advanced_rows
+        shot_type_rows = season_reference_rows.shot_type_rows
 
         logger.info(
             "Date window %s .. %s (season_id=%s, games.season=%s)",

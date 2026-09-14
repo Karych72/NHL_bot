@@ -93,7 +93,8 @@ db-tables-local:
 
 # Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL
 # functions, apply migrations. db-drop only drops DDL_TABLES — bot_subscriptions and
-# schema_migrations survive it (see DEVELOPMENT.md § «Миграции схемы БД»).
+# schema_migrations survive it, so a migration touching a DDL_TABLES table must also be
+# mirrored (idempotently) into its t.*.sql — see DEVELOPMENT.md § «Миграции схемы БД».
 db-reset: db-drop db-tables db-functions db-migrate
 	@echo "=== db-reset complete ==="
 
@@ -138,7 +139,7 @@ db-migrate:
 db-migrate-down:
 	@echo "=== Rolling back last migration ==="
 	@$(PSQL) -v ON_ERROR_STOP=1 -q -c "SET client_min_messages=warning; $(MIGRATIONS_TABLE_DDL)"
-	@set -e; version=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1"); \
+	@set -e; version=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"); \
 	if [ -z "$$version" ]; then \
 		echo "No applied migrations, nothing to roll back."; \
 	else \

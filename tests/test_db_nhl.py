@@ -75,8 +75,16 @@ def _pk_columns(cur, table: str):
     return [r[0] for r in cur.fetchall()]
 
 
-def _unique_partial_index_predicate(cur, table: str, index_name: str):
-    """WHERE-predicate text of a UNIQUE partial index, or None if the index is missing."""
+def _unique_partial_index_predicate_row(cur, table: str, index_name: str):
+    """Raw fetchone() for a UNIQUE index's WHERE-predicate lookup.
+
+    Returns ``None`` when no such unique index exists at all; a 1-tuple
+    ``(predicate_text_or_None,)`` when it does — the inner ``None`` means the
+    index exists but is not partial (``pg_get_expr(NULL, ...)`` on a
+    non-partial index's null ``indpred``). Callers must distinguish these two
+    ``None``s (missing index vs. non-partial index) rather than collapsing
+    both into one "missing" message.
+    """
     cur.execute(
         """
         SELECT pg_get_expr(i.indpred, i.indrelid)
@@ -91,8 +99,7 @@ def _unique_partial_index_predicate(cur, table: str, index_name: str):
         """,
         (table, index_name),
     )
-    row = cur.fetchone()
-    return row[0] if row is not None else None
+    return cur.fetchone()
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -164,21 +171,32 @@ class TestNhlSchema(unittest.TestCase):
                 )
             self.assertEqual(_pk_columns(cur, "bot_subscriptions"), ["id"])
 
-            digest_pred = _unique_partial_index_predicate(
+            digest_row = _unique_partial_index_predicate_row(
                 cur, "bot_subscriptions", "bot_subscriptions_digest_unique"
             )
-            if digest_pred is None:
-                self.fail(
-                    "bot_subscriptions_digest_unique missing — run: make db-migrate"
-                )
-            self.assertIn("morning_digest", digest_pred)
+            self.assertIsNotNone(
+                digest_row,
+                "bot_subscriptions_digest_unique missing — run: make db-migrate",
+            )
+            self.assertIsNotNone(
+                digest_row[0],
+                "bot_subscriptions_digest_unique exists but is not partial — "
+                "run: make db-migrate",
+            )
+            self.assertIn("morning_digest", digest_row[0])
 
-            team_pred = _unique_partial_index_predicate(
+            team_row = _unique_partial_index_predicate_row(
                 cur, "bot_subscriptions", "bot_subscriptions_team_unique"
             )
-            if team_pred is None:
-                self.fail("bot_subscriptions_team_unique missing — run: make db-migrate")
-            self.assertIn("team_scores", team_pred)
+            self.assertIsNotNone(
+                team_row, "bot_subscriptions_team_unique missing — run: make db-migrate"
+            )
+            self.assertIsNotNone(
+                team_row[0],
+                "bot_subscriptions_team_unique exists but is not partial — "
+                "run: make db-migrate",
+            )
+            self.assertIn("team_scores", team_row[0])
 
             if not _base_table_exists(cur, "schema_migrations"):
                 self.fail("public.schema_migrations missing — run: make db-migrate")
