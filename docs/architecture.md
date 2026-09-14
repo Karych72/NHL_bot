@@ -26,6 +26,7 @@ NHL_bot/
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
 │   ├── t.game_team_stats.sql
+│   ├── t.game_three_stars.sql
 │   ├── t.games.sql
 │   ├── t.goalies_season_stats.sql
 │   ├── t.players_season_stats.sql
@@ -34,7 +35,9 @@ NHL_bot/
 │   ├── t.teams_stats.sql
 │   └── migrations/                     # Точечные изменения схемы: NNNN_slug.{up,down}.sql (make db-migrate)
 │       ├── 0001_bot_subscriptions.up.sql
-│       └── 0001_bot_subscriptions.down.sql
+│       ├── 0001_bot_subscriptions.down.sql
+│       ├── 0002_game_three_stars.up.sql
+│       └── 0002_game_three_stars.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
@@ -616,6 +619,12 @@ UNIQUE(`game_id`, `player_id`). Содержит: `time_on_ice`, `goals`, `assis
 #### `game_goalie_stats` — Статистика вратаря за матч
 
 UNIQUE(`game_id`, `player_id`). Содержит: `timeOnIce`, `shots`, `saves`, `save_percentage`, `decision` (boolean: победа), детализация по ситуациям (PP/SH/EV).
+
+#### `game_three_stars` — Три звезды матча
+
+UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/третья звезда), `player_id` и
+`team_id` — без FK (та же причина, что у остальных пер-игровых таблиц: нет `season_id`,
+а звезда может не оказаться в `rosters` того сезона).
 
 ### PL/pgSQL функции
 
