@@ -27,10 +27,11 @@ def synthetic_calendar_keys(
     """Daily game calendar with ``day`` and ``game_id`` columns.
 
     ``games_per_day`` is either a constant (every day has the same number of
-    games — the shape every pre-Задача 32 split test used) or a sequence of
-    counts cycled day by day, to build an irregular real-calendar-shaped
-    fixture (NHL game days have 3-11 games, never a constant). The cycled
-    form is what exposes a block boundary landing inside a day.
+    games) or a sequence of counts cycled day by day, to build an irregular
+    real-calendar-shaped fixture (NHL game days have 3-11 games, never a
+    constant). The cycled form is what exposes a block boundary landing
+    inside a day — the scenario Задача 32 added, absent from every split
+    fixture that predates it.
     """
     days = pd.date_range(start=start, periods=n_days, freq="D")
     counts: Sequence[int] = (

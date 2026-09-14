@@ -20,9 +20,11 @@ from modeling.splits import (
 from tests._modeling_fixtures import synthetic_calendar_keys
 
 # Real NHL game days carry 3-11 games, never a constant -- this cycle mimics
-# that irregularity (avg ~7, matching the real calendar's ~7.2). Every
-# pre-Задача 32 split test used games_per_day=1, so a block boundary always
-# happened to land exactly on a day boundary and never exercised the bug.
+# that irregularity (avg ~7, matching the real calendar's ~7.2). Before
+# Задача 32, no test calendar that actually reached `_validate_splits` had
+# more than one game per day: `TestGuardIsNecessaryNotSufficient` below does
+# use games_per_day=6, but it is built to fail earlier, in
+# `_window_from_tail`, and never reaches the day-order check.
 IRREGULAR_GAMES_PER_DAY = [7, 3, 11, 5, 9, 4, 8, 6, 10]
 
 
@@ -323,11 +325,14 @@ class TestFixedGamesMethod(unittest.TestCase):
 
 class TestIrregularGamesPerDayBothMethods(unittest.TestCase):
     """Задача 32: real calendars have several games on the same day, unevenly
-    (3-11, see ``IRREGULAR_GAMES_PER_DAY``) -- unlike every other fixture in
-    this module, which uses ``games_per_day=1`` and therefore never lands a
-    block boundary inside a day. Before the fix, both methods raised
-    ``SplitError`` ("train must end before inner_val") on this exact calendar
-    because the old check compared calendar days, not positions.
+    (3-11, see ``IRREGULAR_GAMES_PER_DAY``). Every other fixture in this
+    module that reaches ``_validate_splits`` uses ``games_per_day=1`` and so
+    never lands a block boundary inside a day (the one exception,
+    ``TestGuardIsNecessaryNotSufficient``'s ``games_per_day=6``, is built to
+    raise earlier, in ``_window_from_tail``, and never gets there). Before
+    the fix, both methods here raised ``SplitError`` ("train must end before
+    inner_val") on this exact calendar because the old check compared
+    calendar days, not positions.
     """
 
     def test_month_method_builds_on_irregular_calendar(self) -> None:
@@ -392,25 +397,22 @@ class TestOrderCheckCatchesRealViolation(unittest.TestCase):
     rewrite did not degrade into a no-op that accepts any position order.
     """
 
-    def test_overlapping_positions_raise_split_error(self) -> None:
+    def test_position_violations_raise_split_error(self) -> None:
         days = pd.Series(pd.date_range("2020-01-01", periods=10, freq="D"))
-        # earlier block's max position (7) is >= later block's min position
-        # (6): a genuine ordering violation (block reuses/precedes rows the
-        # "later" block already claims).
-        earlier_idx = np.array([3, 4, 7])
-        later_idx = np.array([6, 8, 9])
-        with self.assertRaises(SplitError) as ctx:
-            _assert_strictly_before(days, earlier_idx, later_idx, "synthetic violation")
-        self.assertIn("synthetic violation", str(ctx.exception))
-
-    def test_reversed_blocks_raise_split_error(self) -> None:
-        days = pd.Series(pd.date_range("2020-01-01", periods=10, freq="D"))
-        # "earlier" block is entirely chronologically after "later" -- the
-        # starkest possible violation.
-        earlier_idx = np.array([8, 9])
-        later_idx = np.array([0, 1])
-        with self.assertRaises(SplitError):
-            _assert_strictly_before(days, earlier_idx, later_idx, "reversed blocks")
+        cases = (
+            # earlier block's max position (7) is >= later block's min
+            # position (6): a genuine ordering violation (block
+            # reuses/precedes rows the "later" block already claims).
+            ("overlapping positions", np.array([3, 4, 7]), np.array([6, 8, 9])),
+            # "earlier" block is entirely chronologically after "later" --
+            # the starkest possible violation.
+            ("reversed blocks", np.array([8, 9]), np.array([0, 1])),
+        )
+        for label, earlier_idx, later_idx in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(SplitError) as ctx:
+                    _assert_strictly_before(days, earlier_idx, later_idx, label)
+                self.assertIn(label, str(ctx.exception))
 
     def test_correctly_ordered_positions_do_not_raise(self) -> None:
         days = pd.Series(pd.date_range("2020-01-01", periods=10, freq="D"))
