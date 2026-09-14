@@ -6,8 +6,10 @@ All helpers build in-memory / tmp_path data only — no PostgreSQL, no real
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 
@@ -20,14 +22,25 @@ def synthetic_calendar_keys(
     *,
     start: str = "2018-10-01",
     n_days: int = 1200,
-    games_per_day: int = 1,
+    games_per_day: int | Sequence[int] = 1,
 ) -> pd.DataFrame:
-    """Daily game calendar with ``day`` and ``game_id`` columns."""
+    """Daily game calendar with ``day`` and ``game_id`` columns.
+
+    ``games_per_day`` is either a constant (every day has the same number of
+    games — the shape every pre-Задача 32 split test used) or a sequence of
+    counts cycled day by day, to build an irregular real-calendar-shaped
+    fixture (NHL game days have 3-11 games, never a constant). The cycled
+    form is what exposes a block boundary landing inside a day.
+    """
     days = pd.date_range(start=start, periods=n_days, freq="D")
+    counts: Sequence[int] = (
+        [games_per_day] * n_days if isinstance(games_per_day, int) else games_per_day
+    )
+    counts_cycle = itertools.cycle(counts)
     rows: list[dict[str, object]] = []
     game_id = 1
     for day in days:
-        for _ in range(games_per_day):
+        for _ in range(next(counts_cycle)):
             rows.append({"day": day, "game_id": game_id})
             game_id += 1
     return pd.DataFrame(rows)

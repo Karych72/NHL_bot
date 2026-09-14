@@ -6,6 +6,14 @@ information leak across block boundaries. See
 ``plan/classifier/nhl_classifier_modeling_plan_UPDATE.md``, section
 "### 4. Временные сплиты без утечки".
 
+Block-order validation (``_assert_strictly_before``) compares **positions** in
+the sorted timeline, not calendar days, so a day with several games may
+legitimately straddle a block boundary. This is safe only because every
+rolling/as-of feature is scoped to ``(team_id, season_id)`` with ``shift(1)``
+/ backward as-of and never looks across teams or at the whole league (Задача
+32, ``modeling/dataset_builder/features.py``). See that function's docstring
+for the exact condition.
+
 Index convention
 ----------------
 All ``*_idx`` fields are **positional integer indices** into the input keys
@@ -182,9 +190,14 @@ def build_walk_forward_splits(
     Guarantees
     ----------
     - Stable sort by ``(day, game_id)``; input row order is ignored.
-    - Expanding train: ``train_k`` is strictly before ``inner_val_k``.
+    - Expanding train: ``train_k`` is strictly before ``inner_val_k`` **by
+      position** in the sorted timeline (not by calendar day — a day with
+      several games may straddle the ``train``/``inner_val`` boundary; see
+      ``_assert_strictly_before`` for why that is safe under the current
+      feature set, and when it would stop being safe).
     - ``inner_val_k``, ``calibration_k``, ``test_k`` are consecutive,
-      non-overlapping blocks within each window; holdout is after all ``test_k``.
+      non-overlapping blocks within each window (by position); holdout is
+      after all ``test_k`` (by position).
     - ``test_k`` blocks do not overlap across windows (by ``game_id``).
     - For ``method=month``, ``inner_val_k`` and ``calibration_k`` may overlap
       across windows: each window takes the tail of games immediately before its
@@ -530,12 +543,44 @@ def _assert_strictly_before(
     later_idx: np.ndarray,
     message: str,
 ) -> None:
+    """Assert every row of ``earlier_idx`` precedes every row of ``later_idx``.
+
+    Compares **positions** in the ``(day, game_id)``-sorted timeline (see the
+    module docstring, "Index convention"), not calendar days. On a real NHL
+    calendar several games share a day and blocks are cut by row count, so a
+    block boundary can legitimately fall inside a day — the old day-strict
+    check rejected that and could not build a split on any calendar with
+    more than one game per day (Задача 32).
+
+    This is safe under the current feature set only because every
+    rolling/as-of feature is computed within ``(team_id, season_id)`` with
+    ``shift(1)`` / ``direction="backward"`` and never looks across teams or
+    at the whole league (``modeling/dataset_builder/features.py``): two
+    games on the same day are four different teams with disjoint histories,
+    so their landing in adjacent blocks discloses nothing. If a cross-team or
+    league-wide feature is ever added, a same-day gap between blocks can leak
+    information and this check stops being sufficient on its own.
+
+    Parameters
+    ----------
+    days:
+        Full sorted ``day`` series; used only to render dates in the raised
+        error message, not for the comparison itself.
+    earlier_idx, later_idx:
+        Positional indices, into the same sorted timeline, of the two blocks
+        being compared. An empty block is not a violation and is skipped.
+    message:
+        Prefix for the raised ``SplitError``.
+    """
     if len(earlier_idx) == 0 or len(later_idx) == 0:
         return
-    if days.iloc[earlier_idx].max() >= days.iloc[later_idx].min():
+    earlier_max_pos = int(np.max(earlier_idx))
+    later_min_pos = int(np.min(later_idx))
+    if earlier_max_pos >= later_min_pos:
         raise SplitError(
-            f"{message} (max earlier day {days.iloc[earlier_idx].max()} "
-            f">= min later day {days.iloc[later_idx].min()})"
+            f"{message} (max earlier position {earlier_max_pos} "
+            f"[day {days.iloc[earlier_max_pos].date()}] >= min later position "
+            f"{later_min_pos} [day {days.iloc[later_min_pos].date()}])"
         )
 
 
