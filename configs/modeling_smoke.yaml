@@ -10,23 +10,27 @@ tasks:
   over_5_5:
     enabled: true
 
-# Working multiseason profile. Guard (modeling/splits.py, Задача 14) requires
+# Smoke profile: geometry sized for a single-season (or smaller) dataset,
+# order of magnitude ~1200 rows and below (before Задача 30, the only local
+# dataset was `season_20252026/`, 1211 games). Not for production training --
+# use configs/modeling_default.yaml once multiseason history is available.
+#
+# Guard (modeling/splits.py, Задача 14) requires
 # wf_rows >= inner_val_games + calibration_games + n_test_windows*1 + 1
-#         = 300 + 300 + 5 + 1 = 606
-# and total rows >= holdout + 606, i.e. N >= ceil(606 / (1 - holdout.fraction))
-#         = ceil(606 / 0.85) = 713 rows minimum (guard's necessary lower bound
-# on raw row counts only -- NOT sufficient: the earliest of the n_test_windows
-# selected calendar months also needs a real inner_val+calibration pool
-# strictly before it, which depends on how games are distributed across
-# months, not just the total row count; that is checked separately, later,
-# by _window_from_tail). Checked against the actual dataset (Задача 30,
-# 2026-09-12): 6049 rows / 5 seasons, comfortably above both bounds -- fits.
-# For a single-season/smoke-sized dataset use configs/modeling_smoke.yaml.
+#         = 50 + 50 + 3 + 1 = 104
+# and total rows >= holdout + 104, i.e. N >= ceil(104 / (1 - holdout.fraction))
+#         = ceil(104 / 0.85) = 123 rows minimum (guard's necessary lower bound
+# on raw row counts only -- see configs/modeling_default.yaml for the same
+# caveat: real calendar-month feasibility is checked separately, later, by
+# _window_from_tail). A real single season (~1211 rows, ~7 calendar months)
+# leaves ~4 months (~700 rows) before the earliest of the 3 test months,
+# comfortably above the 101 rows (inner_val 50 + calibration 50 + train>=1)
+# that window needs.
 split:
   method: month
-  n_test_windows: 5
-  inner_val_games: 300
-  calibration_games: 300
+  n_test_windows: 3
+  inner_val_games: 50
+  calibration_games: 50
   holdout:
     fraction: 0.15
     date_range:

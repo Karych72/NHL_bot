@@ -22,7 +22,9 @@ This installs packages from [`requirements-modeling.txt`](../requirements-modeli
 
 ## 2. Configuration
 
-Default config: [`configs/modeling_default.yaml`](../configs/modeling_default.yaml), validated by typed models in [`modeling/config.py`](../modeling/config.py).
+Default (multiseason) config: [`configs/modeling_default.yaml`](../configs/modeling_default.yaml).
+Smoke (single-season-or-smaller) config: [`configs/modeling_smoke.yaml`](../configs/modeling_smoke.yaml).
+Both are validated by typed models in [`modeling/config.py`](../modeling/config.py); pick one via `--config`.
 
 ### Key YAML sections
 
@@ -31,11 +33,21 @@ Default config: [`configs/modeling_default.yaml`](../configs/modeling_default.ya
 | `random_seed` | Single seed for all subsystems (training, bootstrap, LightGBM, Platt calibration) |
 | `compute.num_threads`, `compute.log_level` | Thread limit for sklearn/LightGBM and log level for `run.log` |
 | `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
-| `split.*` | Walk-forward geometry: method, `n_test_windows` (≥ 5), `inner_val_games`, `calibration_games`, holdout (`fraction` or `date_range`) |
+| `split.*` | Walk-forward geometry: method, `n_test_windows`, `inner_val_games`, `calibration_games`, holdout (`fraction` or `date_range`) |
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
 | `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
 | `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
+
+`split.*` bounds in `SplitConfig` are sanitary-only (positive integers); whether a
+geometry actually fits the available history is checked at split-build time by a
+data-volume guard in `modeling/splits.py` (`build_walk_forward_splits`, Задача 14):
+it fails loudly with both the required and the actual row counts instead of silently
+building an empty/degenerate split. `configs/modeling_default.yaml` carries the
+multiseason geometry (`300`/`300`/`5` windows); `configs/modeling_smoke.yaml` is sized
+for a single season or smaller (`50`/`50`/`3` windows) for fast local/CI smoke runs.
+Each file's YAML comment above `split:` derives the guard's minimum row count for its
+own numbers.
 
 ### Priority: YAML vs `metadata_train.json`
 

@@ -174,20 +174,23 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         self.assertIn("random_seed", msg)
 
     def test_n_test_windows_below_minimum(self) -> None:
+        # Задача 14, ruling Р2: floor is now sanitary-only (positive); the
+        # real data-volume adequacy check lives in the build_walk_forward_splits
+        # guard, not here.
         data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["n_test_windows"] = 4
+        data["split"]["n_test_windows"] = 0
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("n_test_windows", msg)
 
     def test_inner_val_games_below_minimum(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["inner_val_games"] = 299
+        data["split"]["inner_val_games"] = 0
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("inner_val_games", msg)
 
     def test_calibration_games_below_minimum(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["calibration_games"] = 100
+        data["split"]["calibration_games"] = 0
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("calibration_games", msg)
 

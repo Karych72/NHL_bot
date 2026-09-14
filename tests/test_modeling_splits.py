@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
+import yaml
 from pydantic import ValidationError
 
 from modeling.config import ConfigError, HoldoutConfig, SplitConfig, SplitMethod
@@ -112,12 +113,19 @@ class TestStableSorting(unittest.TestCase):
 
 
 class TestConfigFailFast(unittest.TestCase):
+    """Sanity (positive-only) floors on split.* (Задача 14, ruling Р2).
+
+    Actual data-volume adequacy is no longer enforced here — it moved to the
+    guard in ``build_walk_forward_splits`` (see ``TestMinimumHistoryGuard``
+    below). These tests only assert that a non-positive value is rejected.
+    """
+
     def test_n_test_windows_below_minimum_raises(self) -> None:
         with self.assertRaises(ValidationError):
             SplitConfig.model_validate(
                 {
                     "method": SplitMethod.month,
-                    "n_test_windows": 4,
+                    "n_test_windows": 0,
                     "inner_val_games": 300,
                     "calibration_games": 300,
                     "holdout": {"fraction": 0.15},
@@ -130,7 +138,7 @@ class TestConfigFailFast(unittest.TestCase):
                 {
                     "method": SplitMethod.month,
                     "n_test_windows": 5,
-                    "inner_val_games": 299,
+                    "inner_val_games": 0,
                     "calibration_games": 300,
                     "holdout": {"fraction": 0.15},
                 }
@@ -143,7 +151,7 @@ class TestConfigFailFast(unittest.TestCase):
                     "method": SplitMethod.month,
                     "n_test_windows": 5,
                     "inner_val_games": 300,
-                    "calibration_games": 299,
+                    "calibration_games": 0,
                     "holdout": {"fraction": 0.15},
                 }
             )
@@ -156,6 +164,46 @@ class TestInsufficientHistory(unittest.TestCase):
         with self.assertRaises(SplitError) as ctx:
             build_walk_forward_splits(keys, config)
         self.assertIn("not enough history", str(ctx.exception).lower())
+
+
+class TestMinimumHistoryGuard(unittest.TestCase):
+    """Задача 14: top-level data-volume guard fails fast with numbers, not a
+    silent empty/degenerate split. Checks both ``method: month`` and
+    ``method: fixed_games`` (SplitError message must contain both the
+    required and the actual row counts)."""
+
+    def test_month_method_guard_reports_required_and_actual_rows(self) -> None:
+        keys = _synthetic_calendar_keys(n_days=100, games_per_day=1)
+        config = _default_split_config()  # month, n_test_windows=5, 300/300, holdout 0.15
+        with self.assertRaises(SplitError) as ctx:
+            build_walk_forward_splits(keys, config)
+        message = str(ctx.exception)
+        # holdout = ceil(100 * 0.15) = 15
+        # required_wf = inner_val(300) + calibration(300) + n_test_windows(5) * test(>=1) + train(>=1) = 606
+        # required_total = holdout(15) + required_wf(606) = 621; actual = 100 rows total
+        self.assertIn("621", message)
+        self.assertIn("100", message)
+
+    def test_fixed_games_method_guard_reports_required_and_actual_rows(self) -> None:
+        keys = _synthetic_calendar_keys(n_days=100, games_per_day=1)
+        config = SplitConfig.model_validate(
+            {
+                "method": SplitMethod.fixed_games,
+                "n_test_windows": 5,
+                "inner_val_games": 300,
+                "calibration_games": 300,
+                "outer_block_games": 700,
+                "holdout": {"fraction": 0.15},
+            }
+        )
+        with self.assertRaises(SplitError) as ctx:
+            build_walk_forward_splits(keys, config)
+        message = str(ctx.exception)
+        # holdout = ceil(100 * 0.15) = 15
+        # required_wf = n_test_windows(5) * outer_block_games(700) + train(>=1) = 3501
+        # required_total = holdout(15) + required_wf(3501) = 3516; actual = 100 rows total
+        self.assertIn("3516", message)
+        self.assertIn("100", message)
 
 
 class TestEmbargoComment(unittest.TestCase):
@@ -175,6 +223,26 @@ class TestMetadataParity(unittest.TestCase):
                 {"features_hash": "bbb"},
             )
         self.assertIn("features_hash", str(ctx.exception))
+
+
+class TestSmokeProfileFitsSingleSeason(unittest.TestCase):
+    """Задача 14: configs/modeling_smoke.yaml's geometry must actually build
+    windows on a single-season-sized dataset (~1211 rows -- the pre-Задача 30
+    `season_20252026/` size), not just pass the guard's row-count check."""
+
+    def test_smoke_profile_builds_expected_windows(self) -> None:
+        raw = yaml.safe_load(Path("configs/modeling_smoke.yaml").read_text(encoding="utf-8"))
+        config = SplitConfig.model_validate(raw["split"])
+        keys = _synthetic_calendar_keys(n_days=1211, games_per_day=1)
+
+        splits = build_walk_forward_splits(keys, config)
+
+        self.assertEqual(len(splits.windows), config.n_test_windows)
+        for window in splits.windows:
+            self.assertGreaterEqual(window.inner_val_size, config.inner_val_games)
+            self.assertGreaterEqual(window.calibration_size, config.calibration_games)
+            self.assertGreater(window.test_size, 0)
+            self.assertGreater(window.train_size, 0)
 
 
 class TestFixedGamesMethod(unittest.TestCase):

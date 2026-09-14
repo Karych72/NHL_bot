@@ -207,8 +207,7 @@ def build_walk_forward_splits(
     wf_mask[list(holdout_idx)] = False
     wf_positions = np.flatnonzero(wf_mask)
 
-    if len(wf_positions) == 0:
-        raise SplitError("no rows remain for walk-forward after holdout cut")
+    _check_minimum_history(len(sorted_keys), len(holdout_idx), len(wf_positions), config)
 
     if config.method == SplitMethod.month:
         windows = _windows_calendar_month(sorted_keys, wf_positions, config)
@@ -260,6 +259,72 @@ def _holdout_indices(days: pd.Series, holdout: HoldoutConfig) -> np.ndarray:
     if len(holdout_idx) == 0:
         raise SplitError("holdout date_range matched zero rows")
     return holdout_idx
+
+
+def _check_minimum_history(
+    total_rows: int,
+    holdout_size: int,
+    wf_rows: int,
+    config: SplitConfig,
+) -> None:
+    """Fail fast when the dataset is too small for the configured geometry.
+
+    Why: a fixed config (e.g. 300/300/5-windows) is tuned for multiseason
+    history and silently produces empty or nonsensical windows on a single
+    season instead of an explicit error (Задача 14,
+    ``docs/project_review_2026-06-29.md`` §B2). This is a top-level,
+    data-driven pre-check ahead of window carving; it does not replace the
+    detailed per-window ``SplitError``s in ``_windows_calendar_month``,
+    ``_window_from_tail`` and ``_windows_fixed_games`` below, which still run
+    and can still fail on real calendar-month shape even when this guard
+    passes (this guard only checks a necessary lower bound on row counts,
+    not the actual distribution of games across calendar months).
+
+    Minimum walk-forward rows, by method:
+    - ``fixed_games``: outer blocks are disjoint, so windows multiply in
+      full — ``n_test_windows * outer_block_games + train(>=1)``.
+    - ``month``: ``inner_val``/``calibration`` are a shared tail reused by
+      later (chronologically overlapping) windows — only the earliest
+      selected test month needs a dedicated ``inner_val + calibration``
+      pool before it. Only ``test`` (>=1 row/window, disjoint by
+      construction) multiplies by ``n_test_windows`` --
+      ``inner_val_games + calibration_games + n_test_windows * 1 + train(>=1)``.
+
+    Parameters
+    ----------
+    total_rows:
+        Total input rows (after sorting), before the holdout cut.
+    holdout_size:
+        Rows carved out for the holdout block.
+    wf_rows:
+        Rows remaining for walk-forward windows (``total_rows - holdout_size``).
+    config:
+        Split geometry to validate.
+    """
+    train_min = 1
+    if config.method == SplitMethod.fixed_games:
+        assert config.outer_block_games is not None
+        per_window_desc = f"outer_block_games={config.outer_block_games}"
+        required_wf = config.n_test_windows * config.outer_block_games + train_min
+    else:
+        per_window_desc = (
+            f"inner_val_games={config.inner_val_games} + calibration_games="
+            f"{config.calibration_games} + {config.n_test_windows} windows x test>=1"
+        )
+        required_wf = (
+            config.inner_val_games
+            + config.calibration_games
+            + config.n_test_windows * 1
+            + train_min
+        )
+    required_total = holdout_size + required_wf
+    if wf_rows < required_wf:
+        raise SplitError(
+            "not enough history for the configured split geometry: need >= "
+            f"{required_total} rows total (holdout {holdout_size} + {per_window_desc} "
+            f"+ train>={train_min} = {required_wf} walk-forward rows), have "
+            f"{total_rows} rows total ({wf_rows} walk-forward rows after holdout cut)"
+        )
 
 
 def _windows_calendar_month(
