@@ -39,8 +39,11 @@ DDL_TABLES := \
 	data_tables/t.all_goals.sql
 FN_FILES  := $(wildcard telegram_bot/queries/*.sql)
 # Migrations: data_tables/migrations/NNNN_slug.{up,down}.sql, applied in ascending
-# version order and tracked in schema_migrations (see DEVELOPMENT.md).
+# version order and tracked in schema_migrations (see DEVELOPMENT.md). Ordering is a
+# plain string sort ($(sort ...) here, `ORDER BY version` in SQL) — NNNN must stay the
+# same width (zero-padded) across all migrations or the order breaks.
 MIGRATION_FILES := $(sort $(wildcard data_tables/migrations/*.up.sql))
+MIGRATIONS_TABLE_DDL := CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
 # NHL regular season start for full reloads (override: make season-load-full SEASON_START=2024-10-01)
 SEASON_START ?= 2025-10-01
@@ -88,7 +91,9 @@ db-tables:
 db-tables-local:
 	$(MAKE) db-tables PG_USER="$$(id -un)"
 
-# Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL functions.
+# Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL
+# functions, apply migrations. db-drop only drops DDL_TABLES — bot_subscriptions and
+# schema_migrations survive it (see DEVELOPMENT.md § «Миграции схемы БД»).
 db-reset: db-drop db-tables db-functions db-migrate
 	@echo "=== db-reset complete ==="
 
@@ -100,7 +105,7 @@ db-init: db-reset
 
 db-init-local: db-reset-local
 
-# Apply CREATE TABLE scripts only (fails if tables already exist).
+# Apply DDL (fails if tables already exist), then SQL functions, then migrations. No DROP.
 db-sync: db-tables db-functions db-migrate
 	@echo "=== db-sync complete ==="
 
@@ -114,7 +119,7 @@ verify-skater-schema:
 # same transaction as its schema_migrations row. Already-applied versions are skipped.
 db-migrate:
 	@echo "=== Applying migrations ==="
-	@$(PSQL) -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+	@$(PSQL) -v ON_ERROR_STOP=1 -q -c "SET client_min_messages=warning; $(MIGRATIONS_TABLE_DDL)"
 	@set -e; for f in $(MIGRATION_FILES); do \
 		version=$$(basename $$f .up.sql | cut -d_ -f1); \
 		applied=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT 1 FROM schema_migrations WHERE version = '$$version'"); \
@@ -132,7 +137,7 @@ db-migrate:
 # *.down.sql for an applied version is a hard failure.
 db-migrate-down:
 	@echo "=== Rolling back last migration ==="
-	@$(PSQL) -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+	@$(PSQL) -v ON_ERROR_STOP=1 -q -c "SET client_min_messages=warning; $(MIGRATIONS_TABLE_DDL)"
 	@set -e; version=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1"); \
 	if [ -z "$$version" ]; then \
 		echo "No applied migrations, nothing to roll back."; \

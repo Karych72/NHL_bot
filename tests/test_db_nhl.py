@@ -75,6 +75,26 @@ def _pk_columns(cur, table: str):
     return [r[0] for r in cur.fetchall()]
 
 
+def _unique_partial_index_predicate(cur, table: str, index_name: str):
+    """WHERE-predicate text of a UNIQUE partial index, or None if the index is missing."""
+    cur.execute(
+        """
+        SELECT pg_get_expr(i.indpred, i.indrelid)
+        FROM pg_index i
+        JOIN pg_class ic ON ic.oid = i.indexrelid
+        JOIN pg_class tc ON tc.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = tc.relnamespace
+        WHERE n.nspname = 'public'
+          AND tc.relname = %s
+          AND ic.relname = %s
+          AND i.indisunique
+        """,
+        (table, index_name),
+    )
+    row = cur.fetchone()
+    return row[0] if row is not None else None
+
+
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
@@ -144,6 +164,24 @@ class TestNhlSchema(unittest.TestCase):
                 )
             self.assertEqual(_pk_columns(cur, "bot_subscriptions"), ["id"])
 
+            digest_pred = _unique_partial_index_predicate(
+                cur, "bot_subscriptions", "bot_subscriptions_digest_unique"
+            )
+            if digest_pred is None:
+                self.fail(
+                    "bot_subscriptions_digest_unique missing — run: make db-migrate"
+                )
+            self.assertIn("morning_digest", digest_pred)
+
+            team_pred = _unique_partial_index_predicate(
+                cur, "bot_subscriptions", "bot_subscriptions_team_unique"
+            )
+            if team_pred is None:
+                self.fail("bot_subscriptions_team_unique missing — run: make db-migrate")
+            self.assertIn("team_scores", team_pred)
+
+            if not _base_table_exists(cur, "schema_migrations"):
+                self.fail("public.schema_migrations missing — run: make db-migrate")
             cur.execute("SELECT 1 FROM schema_migrations WHERE version = '0001'")
             self.assertIsNotNone(
                 cur.fetchone(),
