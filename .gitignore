@@ -9,6 +9,10 @@ all_data/
 .DS_Store
 .idea/
 
+# датасет-билдер: CSV + metadata пересобираются из БД, не коммитятся
+# (artifacts/reports/ — скрипты отчётов, коммитятся отдельно)
+artifacts/datasets/
+
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
 
