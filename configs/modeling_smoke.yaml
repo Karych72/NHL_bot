@@ -37,12 +37,14 @@ split:
       from: null
       to: null
 
+# Smoke grids: one value per axis -- the middle (for logreg's 4-value list, the
+# sklearn default) of the corresponding production list in
+# configs/modeling_default.yaml, where logreg.C has 4 values and each of the
+# seven lgbm axes has 3, i.e. 3^7 = 2187 lgbm fits per task per window.
+# A smoke run checks that the pipeline goes end to end, not which
+# hyperparameters win. models.lgbm.monotone is kept as in production.
 models:
   logreg:
-    # Smoke grids: one value per axis (the middle/default of the production
-    # list in configs/modeling_default.yaml). A smoke run checks that the
-    # pipeline goes end to end, not which hyperparameters win -- the full
-    # sweep there is 3^7 x n_test_windows x tasks fits.
     grids:
       C: [1.0]
   lgbm:

@@ -268,11 +268,13 @@ class TestSmokeProfileFitsSingleSeason(unittest.TestCase):
     k=1 comes out far above the 100 rows the smoke geometry needs. It therefore
     proves that the profile builds complete, non-degenerate windows -- not that
     it survives a real season's month *shape*. A denser season-shaped fixture
-    (200 days x 6 games) cannot be used here: it trips a pre-existing defect in
-    `_window_from_tail`, which slices `before_test` by row count while
-    `_validate_splits` requires day-strict block boundaries -- see the fix
-    report for Задача 14. Calendar-shape behaviour is covered instead by
-    `TestGuardIsNecessaryNotSufficient`.
+    (200 days x 6 games) cannot be used here: `_window_from_tail` slices
+    `before_test` by row count while `_validate_splits` requires day-strict
+    block boundaries, so with several games per day a block edge lands inside a
+    calendar day and the build raises "train must end before inner_val". That
+    defect predates Задача 14 and is tracked as Задача 32 in
+    `plan/engineering/work_plan_2026-08-08.md`. Calendar-shape behaviour is
+    covered instead by `TestGuardIsNecessaryNotSufficient`.
     """
 
     def test_smoke_profile_builds_expected_windows(self) -> None:
