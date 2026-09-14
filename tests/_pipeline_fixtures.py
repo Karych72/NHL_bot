@@ -5,6 +5,8 @@ by ``scripts/capture_nhl_fixtures.py`` (see its docstring for URL + capture
 date), the DB column order each ``build_*`` tuple must line up with, and a
 ``ModernNhlLoader`` stand-in whose only network exits (``get_json`` /
 ``fetch_paginated``) answer from those fixtures while real HTTP raises.
+``LoaderApiTestCase`` also redirects the per-game disk cache
+(``loader.RAW_CACHE_DIR``) to a throwaway directory per test.
 """
 
 from __future__ import annotations
@@ -12,7 +14,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 from unittest import mock
 
@@ -202,6 +206,18 @@ class LoaderApiTestCase(unittest.TestCase):
         patcher = mock.patch.object(requests.Session, "request", _blocked_request)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+        # ``fetch_game_json`` (used by ``build_game_rows``) writes finished
+        # games to ``loader.RAW_CACHE_DIR``, which defaults to the real
+        # ``all_data/raw/`` at the repo root. Redirect every test to its own
+        # throwaway directory so tests never touch that real directory and
+        # never leak a cached fixture into another test reusing the same
+        # (season_id, game_id).
+        cache_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(cache_dir.cleanup)
+        cache_patcher = mock.patch.object(loader, "RAW_CACHE_DIR", Path(cache_dir.name))
+        cache_patcher.start()
+        self.addCleanup(cache_patcher.stop)
 
     def assertColumnsNone(self, row: tuple, table: str, keep: Iterable[str] = ()) -> None:
         """Assert every column of *table* except *keep* is ``None`` in *row*.

@@ -29,6 +29,7 @@ from tests._pipeline_fixtures import (
     by_player,
     field,
     load_fixture,
+    loader,
     make_loader,
     stub_api,
     without,
@@ -323,6 +324,81 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ullmark, table, "team_id"), OTT)
         self.assertEqual(field(ullmark, table, "save_percentage"), 91.3)
         self.assertEqual(field(ullmark, table, "even_strength_save_percentage"), 89.47)
+
+
+class GameJsonCacheTest(LoaderApiTestCase):
+    """``ModernNhlLoader.fetch_game_json`` — the raw per-game response cache.
+
+    ``LoaderApiTestCase.setUp`` already redirects ``loader.RAW_CACHE_DIR`` to a
+    throwaway temp directory per test, so writes here never touch the repo's
+    real ``all_data/raw/``.
+    """
+
+    def test_second_build_game_rows_run_makes_no_gamecenter_calls(self):
+        """Acceptance: a second run over an already-final game hits the network
+        zero times for gamecenter/* — the first run's cache write serves it."""
+        instance = make_loader()
+        pbp = load_fixture("nhl_game_play_by_play.json")
+        box = load_fixture("nhl_game_boxscore.json")
+        calls = []
+
+        def counting_get_json(url):
+            calls.append(url)
+            return pbp if "play-by-play" in url else box
+
+        instance.get_json = counting_get_json
+        games_meta = load_fixture("nhl_games_meta.json")
+
+        instance.build_game_rows(games_meta)
+        self.assertEqual(len(calls), 2)  # one play-by-play + one boxscore call
+
+        calls.clear()
+        instance.build_game_rows(games_meta)
+        self.assertEqual(calls, [])  # fully served from disk, no network at all
+
+    def test_non_final_game_state_is_not_cached(self):
+        """A game whose payload reports a non-final ``gameState`` (still in
+        progress) is never written to disk — every call goes to the network."""
+        instance = make_loader()
+        pbp = dict(load_fixture("nhl_game_play_by_play.json"))
+        pbp["gameState"] = "LIVE"
+        calls = []
+
+        def counting_get_json(url):
+            calls.append(url)
+            return pbp
+
+        instance.get_json = counting_get_json
+
+        instance.fetch_game_json(GAME_ID, "play-by-play")
+        instance.fetch_game_json(GAME_ID, "play-by-play")
+
+        self.assertEqual(len(calls), 2)  # not cached: network hit both times
+        self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
+
+    def test_season_reports_are_not_routed_through_the_cache(self):
+        """Season-wide reports (team reference + standings) are untouched by
+        the per-game cache: ``load_team_reference`` hits the network on every
+        call, cached run or not."""
+        instance = make_loader()
+        calls = {"get_json": 0, "fetch_paginated": 0}
+
+        def counting_get_json(url):
+            calls["get_json"] += 1
+            return {"standings": []}
+
+        def counting_fetch_paginated(url, page_size=500):
+            calls["fetch_paginated"] += 1
+            return []
+
+        instance.get_json = counting_get_json
+        instance.fetch_paginated = counting_fetch_paginated
+
+        instance.load_team_reference()
+        instance.load_team_reference()
+
+        self.assertEqual(calls["get_json"], 2)
+        self.assertEqual(calls["fetch_paginated"], 2)
 
 
 if __name__ == "__main__":
