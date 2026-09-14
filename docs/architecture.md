@@ -202,7 +202,8 @@ NHL Stats API                          NHL Web API
               │       → games_meta (завершённые игры за DATE_FROM..DATE_TO)
               │
               ├── 7. build_game_rows(games_meta)
-              │       Для каждой игры: play-by-play + boxscore
+              │       Для каждой игры: play-by-play + boxscore через
+              │       fetch_game_json() (диск-кэш, см. ниже)
               │       → games_rows, all_goals_rows, game_team_rows,
               │         game_player_rows, game_goalie_rows
               │
@@ -221,6 +222,17 @@ NHL Stats API                          NHL Web API
 - **Retry-логика:** до 10 попыток, экспоненциальный backoff, обработка HTTP 429 (Rate Limit) через заголовок `Retry-After`.
 - **Таймаут запросов:** 30 секунд.
 - **Транзакционность:** все INSERT выполняются в одной транзакции; при ошибке — `ROLLBACK`.
+
+### Кэш сырых пер-игровых ответов
+
+`ModernNhlLoader.fetch_game_json(game_id, endpoint)` — единственная точка, через которую
+`build_game_rows` читает `gamecenter/{id}/play-by-play` и `gamecenter/{id}/boxscore`.
+Финальная игра неизменна, поэтому её ответ кэшируется на диске без TTL и инвалидации:
+`all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz` (каталог `all_data/` — в `.gitignore`,
+в репозиторий не коммитится). Файл есть → читаем с диска; файла нет → идём в сеть и, если
+`gameState` ответа финальный (`OFF`/`FINAL`), пишем в кэш. Чтение сквозное, без флага
+включения. Сезонные отчёты (`skater/summary`, `standings/now` и другие эндпоинты `build_*`)
+через этот метод не идут и кэшу не подлежат — они обновляются каждый прогон.
 
 ### Агрегация play-by-play
 

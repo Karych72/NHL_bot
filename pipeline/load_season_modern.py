@@ -1,5 +1,8 @@
 import argparse
+import gzip
+import json
 import logging
+import os
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -18,6 +21,19 @@ if str(TELEGRAM_BOT_DIR) not in sys.path:
 import config
 
 logger = logging.getLogger(__name__)
+
+# Disk cache for per-game NHL API responses (play-by-play / boxscore) — see
+# ``ModernNhlLoader.fetch_game_json``. A finished game's payload never changes,
+# so it is cached indefinitely once written; season-wide report endpoints
+# (standings, summaries) are never routed through this cache.
+RAW_CACHE_DIR = Path(__file__).resolve().parents[1] / "all_data" / "raw"
+
+# NHL API ``gameState`` values that mark a game as finished and therefore safe
+# to cache forever. Anything else (LIVE, CRIT, FUT, PRE, ...) is not cached.
+FINAL_GAME_STATES = {"OFF", "FINAL"}
+
+# gamecenter endpoint name -> cache file suffix.
+_GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box"}
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +760,42 @@ class ModernNhlLoader:
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
         return self.fetch_paginated(url, page_size=1000)
 
+    def fetch_game_json(self, game_id: int, endpoint: str) -> dict:
+        """Fetch one per-game gamecenter endpoint, caching finished games on disk.
+
+        A finished game's ``play-by-play``/``boxscore`` payload never changes,
+        so once a game is over its response is written to
+        ``all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz`` and every
+        later call reads it straight from disk instead of hitting the network
+        — no TTL, no invalidation. "Finished" is judged from the payload's own
+        ``gameState`` field (``FINAL_GAME_STATES``), not from the caller.
+        Season-wide report endpoints (standings, summaries, ...) never go
+        through this method and are always fetched live via ``get_json``.
+
+        Args:
+            game_id: NHL game id, as used in the gamecenter URL.
+            endpoint: ``"play-by-play"`` or ``"boxscore"`` — selects the URL
+                and the cache file suffix.
+        """
+        suffix = _GAME_ENDPOINT_SUFFIXES[endpoint]
+        cache_path = RAW_CACHE_DIR / str(self.season_id) / f"{game_id}.{suffix}.json.gz"
+        if cache_path.exists():
+            with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
+                return json.load(fh)
+
+        payload = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/{endpoint}")
+        if payload.get("gameState") in FINAL_GAME_STATES:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write to a sibling temp file and rename into place: a write
+            # truncated by Ctrl-C / a full disk must never leave a
+            # cache_path that exists() but holds broken JSON — with no TTL
+            # or invalidation, that file would be "valid" forever.
+            tmp_path = cache_path.with_name(cache_path.name + ".tmp")
+            with gzip.open(tmp_path, "wt", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp_path, cache_path)
+        return payload
+
     def build_game_rows(self, games_meta: List[dict]) -> Tuple[List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]]:
         games_rows: List[tuple] = []
         all_goals_rows: List[tuple] = []
@@ -760,8 +812,8 @@ class ModernNhlLoader:
             away_score = to_int(game.get("visitingScore"))
             winner = home_id if home_score > away_score else away_id
 
-            pbp = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play")
-            box = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore")
+            pbp = self.fetch_game_json(game_id, "play-by-play")
+            box = self.fetch_game_json(game_id, "boxscore")
 
             period_desc = pbp.get("periodDescriptor") or {}
             is_ot = str(period_desc.get("periodType")) == "OT" or to_int(period_desc.get("number")) > 3
