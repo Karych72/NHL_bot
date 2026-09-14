@@ -146,10 +146,11 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 Модель данных и ограничения уникальности — в docstring
 [`push_subscriptions.py`](../telegram_bot/push_subscriptions.py).
 
-Создание таблицы:
+Создание таблицы (миграция `data_tables/migrations/0001_bot_subscriptions.up.sql`,
+см. `DEVELOPMENT.md` § миграции):
 
 ```bash
-make db-bot-subscriptions
+make db-migrate
 ```
 
 Поля: `chat_id`, `kind` (`morning_digest` | `team_scores`), `team_id` (для команды),

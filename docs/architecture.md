@@ -31,7 +31,10 @@ NHL_bot/
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
 │   ├── t.teams.sql
-│   └── t.teams_stats.sql
+│   ├── t.teams_stats.sql
+│   └── migrations/                     # Точечные изменения схемы: NNNN_slug.{up,down}.sql (make db-migrate)
+│       ├── 0001_bot_subscriptions.up.sql
+│       └── 0001_bot_subscriptions.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
@@ -54,7 +57,6 @@ NHL_bot/
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
-│   ├── create_bot_subscriptions.sql
 │   ├── db_drop_all_tables.sql
 │   └── verify_skater_reports_schema.sql
 │
@@ -127,8 +129,11 @@ NHL_bot/
 |---|---|
 | `make setup` | Создаёт `.venv` (с учётом архитектуры arm64/x86_64), устанавливает зависимости |
 | `make env-example` | Копирует `.env.example` → `.env`, если файл не существует |
-| `make db-init` / `db-reset` | Применяет DDL из `data_tables/*.sql` и PL/pgSQL из `telegram_bot/queries/*.sql` (DROP → CREATE) |
+| `make db-init` / `db-reset` | DROP → CREATE: DDL из `data_tables/*.sql`, затем PL/pgSQL из `telegram_bot/queries/*.sql`, затем `data_tables/migrations/*.up.sql` |
 | `make db-init-local` / `db-reset-local` | То же, но с текущим пользователем ОС вместо `postgres` |
+| `make db-sync` | Без DROP: DDL → функции → миграции (порядок как выше) |
+| `make db-migrate` | Применяет непримененные `data_tables/migrations/*.up.sql` по возрастанию версии, фиксируя каждую в `schema_migrations` |
+| `make db-migrate-down` | Откатывает последнюю применённую миграцию (`*.down.sql` + удаление строки из `schema_migrations`) |
 | `make season-sync DATE_FROM=… DATE_TO=…` | Запуск ETL-загрузчика `load_season_modern.py` для произвольного окна дат |
 | `make season-load-full` | Полная перезагрузка текущего сезона (от `SEASON_START` до сегодня) |
 | `make season-sync-week` / `-month` / `-today` | Синхронизация за последние 7 / 30 / 0 дней |

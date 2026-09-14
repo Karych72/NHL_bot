@@ -1,5 +1,6 @@
--- Подписки бота на push (утренний дайджест, счёт команды).
--- Применение: psql с теми же PG_* что у бота, см. docs/telegram_bot.md § «Подписки».
+-- Миграция 0001: подписки бота на push (утренний дайджест, счёт команды).
+-- Ранее — scripts/create_bot_subscriptions.sql (make db-bot-subscriptions), перенесено
+-- в механизм миграций (make db-migrate). Применение и откат: см. DEVELOPMENT.md.
 
 CREATE TABLE IF NOT EXISTS bot_subscriptions (
     id BIGSERIAL PRIMARY KEY,

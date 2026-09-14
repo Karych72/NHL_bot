@@ -38,7 +38,7 @@
 После игры команды (или по расписанию раз в день) слать краткое сообщение
 подписчикам с ``kind='team_scores'`` и совпадающим ``team_id``.
 
-Реализация: таблица ``scripts/create_bot_subscriptions.sql``, цель ``make db-bot-subscriptions``,
-слой данных ``subscription_repo.py``, рассылка ``push_digest_job.py`` (батчи, паузы, ``429``,
-``Forbidden``), команды в ``bot.py`` (см. ``docs/telegram_bot.md`` §7).
+Реализация: миграция ``data_tables/migrations/0001_bot_subscriptions.up.sql`` (``make
+db-migrate``), слой данных ``subscription_repo.py``, рассылка ``push_digest_job.py``
+(батчи, паузы, ``429``, ``Forbidden``), команды в ``bot.py`` (см. ``docs/telegram_bot.md`` §7).
 """

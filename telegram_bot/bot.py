@@ -375,8 +375,7 @@ async def cmd_cancel_outside_conversation(update: Update, context: CallbackConte
 async def _subscriptions_db_error_reply(update: Update) -> None:
     """Ответ на недоступную таблицу подписок — одинаковый для всех четырёх команд."""
     await _message(update).reply_text(
-        "Подписки недоступны: выполните `make db-bot-subscriptions` "
-        "или SQL из файла scripts/create_bot_subscriptions.sql на вашей БД PostgreSQL."
+        "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
     )
 
 

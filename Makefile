@@ -38,6 +38,12 @@ DDL_TABLES := \
 	data_tables/t.game_goalie_stats.sql \
 	data_tables/t.all_goals.sql
 FN_FILES  := $(wildcard telegram_bot/queries/*.sql)
+# Migrations: data_tables/migrations/NNNN_slug.{up,down}.sql, applied in ascending
+# version order and tracked in schema_migrations (see DEVELOPMENT.md). Ordering is a
+# plain string sort ($(sort ...) here, `ORDER BY version` in SQL) — NNNN must stay the
+# same width (zero-padded) across all migrations or the order breaks.
+MIGRATION_FILES := $(sort $(wildcard data_tables/migrations/*.up.sql))
+MIGRATIONS_TABLE_DDL := CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
 # NHL regular season start for full reloads (override: make season-load-full SEASON_START=2024-10-01)
 SEASON_START ?= 2025-10-01
@@ -47,7 +53,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-bot-subscriptions season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -85,8 +91,11 @@ db-tables:
 db-tables-local:
 	$(MAKE) db-tables PG_USER="$$(id -un)"
 
-# Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL functions.
-db-reset: db-drop db-tables db-functions
+# Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL
+# functions, apply migrations. db-drop only drops DDL_TABLES — bot_subscriptions and
+# schema_migrations survive it, so a migration touching a DDL_TABLES table must also be
+# mirrored (idempotently) into its t.*.sql — see DEVELOPMENT.md § «Миграции схемы БД».
+db-reset: db-drop db-tables db-functions db-migrate
 	@echo "=== db-reset complete ==="
 
 db-reset-local:
@@ -97,8 +106,8 @@ db-init: db-reset
 
 db-init-local: db-reset-local
 
-# Apply CREATE TABLE scripts only (fails if tables already exist).
-db-sync: db-tables db-functions
+# Apply DDL (fails if tables already exist), then SQL functions, then migrations. No DROP.
+db-sync: db-tables db-functions db-migrate
 	@echo "=== db-sync complete ==="
 
 db-sync-local:
@@ -107,9 +116,42 @@ db-sync-local:
 verify-skater-schema:
 	@$(PSQL) -v ON_ERROR_STOP=1 -f scripts/verify_skater_reports_schema.sql
 
-db-bot-subscriptions:
-	@echo "=== Creating bot_subscriptions (push / digest opt-in) ==="
-	@$(PSQL) -v ON_ERROR_STOP=1 -f scripts/create_bot_subscriptions.sql
+# Apply all unapplied data_tables/migrations/*.up.sql (ascending version), each in the
+# same transaction as its schema_migrations row. Already-applied versions are skipped.
+db-migrate:
+	@echo "=== Applying migrations ==="
+	@$(PSQL) -v ON_ERROR_STOP=1 -q -c "SET client_min_messages=warning; $(MIGRATIONS_TABLE_DDL)"
+	@set -e; for f in $(MIGRATION_FILES); do \
+		version=$$(basename $$f .up.sql | cut -d_ -f1); \
+		applied=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT 1 FROM schema_migrations WHERE version = '$$version'"); \
+		if [ "$$applied" = "1" ]; then \
+			echo "  $$version already applied, skipping"; \
+		else \
+			echo "  applying $$version ($$f)"; \
+			$(PSQL) -v ON_ERROR_STOP=1 --single-transaction -f $$f -c "INSERT INTO schema_migrations (version) VALUES ('$$version')"; \
+		fi; \
+	done
+	@echo "Migrations applied."
+
+# Roll back the single most recently applied migration (its *.down.sql + schema_migrations
+# row, one transaction). No applied migrations is a clean no-op, not an error; a missing
+# *.down.sql for an applied version is a hard failure.
+db-migrate-down:
+	@echo "=== Rolling back last migration ==="
+	@$(PSQL) -v ON_ERROR_STOP=1 -q -c "SET client_min_messages=warning; $(MIGRATIONS_TABLE_DDL)"
+	@set -e; version=$$($(PSQL) -t -A -v ON_ERROR_STOP=1 -c "SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"); \
+	if [ -z "$$version" ]; then \
+		echo "No applied migrations, nothing to roll back."; \
+	else \
+		downfile=$$(ls data_tables/migrations/$${version}_*.down.sql 2>/dev/null | head -1); \
+		if [ -z "$$downfile" ]; then \
+			echo "Missing down migration for applied version $$version: data_tables/migrations/$${version}_*.down.sql" >&2; \
+			exit 1; \
+		fi; \
+		echo "  rolling back $$version ($$downfile)"; \
+		$(PSQL) -v ON_ERROR_STOP=1 --single-transaction -f $$downfile -c "DELETE FROM schema_migrations WHERE version = '$$version'"; \
+		echo "Rollback complete."; \
+	fi
 
 test-skater-bot:
 	@$(PY) -m unittest tests.test_skater_reports_bot -v
