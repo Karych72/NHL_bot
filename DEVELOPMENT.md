@@ -23,6 +23,25 @@
 - Проверки на уже загруженных данных: `make test-db-data` (`RUN_DB_DATA_TESTS=1`); нужна БД с данными (например, после `make season-sync-month`). В CI не запускается — там БД пустая (только схема). `test_games_config_season_id_present` и `test_season_stats_season_id_not_orphaned_and_config_season_present` рассчитаны на мультисезонную БД: они не требуют, чтобы вся таблица была одним сезоном, а проверяют, что сезон из `config.SEASON_ID` в таблице представлен, и (для четырёх stats-таблиц) что ни у одной строки `season_id` не ссылается на сезон, отсутствующий в `teams`.
 - Ломающие изменения в `data_tables/*.sql` или `telegram_bot/queries/*.sql` сопровождаем понятным порядком применения (как в `Makefile`: `DDL_TABLES`, затем функции).
 
+## Миграции схемы БД
+
+Точечные изменения схемы (не пересоздание таблицы целиком через `data_tables/t.*.sql`)
+идут через `data_tables/migrations/`: пары файлов `NNNN_slug.up.sql` / `NNNN_slug.down.sql`,
+`NNNN` — версия с ведущими нулями (`0001`, `0002`, …). Применённые версии учитываются
+в таблице `schema_migrations`, которую создаёт сам раннер.
+
+- **Добавить миграцию:** взять следующий номер по порядку, создать пару
+  `data_tables/migrations/NNNN_slug.up.sql` (само изменение) и `NNNN_slug.down.sql`
+  (обратное действие), обе с шапкой-комментарием. Применяется `make db-migrate` —
+  уже применённые версии пропускаются, up и вставка строки в `schema_migrations`
+  коммитятся одной транзакцией.
+- **Откатить последнюю миграцию:** `make db-migrate-down` — выполняет её `*.down.sql`
+  и удаляет строку из `schema_migrations`, тоже одной транзакцией. Без применённых
+  миграций — не ошибка, просто сообщение. Откатывается только одна, последняя,
+  миграция за вызов.
+- `db-sync` и `db-reset` (и их `-local` варианты) уже включают `db-migrate` после
+  `db-functions` — отдельно звать его нужно только вне этих целей.
+
 ## Структура проекта
 
 | Область | Назначение |
@@ -30,7 +49,7 @@
 | `pipeline/` | Загрузка NHL API → PostgreSQL |
 | `telegram_bot/` | Telegram-бот; запросы к БД — в том числе `telegram_bot/queries/*.sql` |
 | `modeling/` | Сборка датасетов, CLI |
-| `data_tables/` | DDL таблиц |
+| `data_tables/` | DDL таблиц; `data_tables/migrations/` — точечные изменения схемы (`make db-migrate`) |
 | `docs/` | Описание пайплайнов и архитектуры |
 | `plan/` | Черновики планов (не дублируем договорённости из этого файла без обновления) |
 
@@ -47,4 +66,4 @@
 Файл `.github/workflows/ci.yml` (runner `ubuntu-24.04`, Python 3.11), два job:
 
 - **`quality`** — установка `requirements.txt`, `requirements-dev.txt` и `requirements-modeling.txt` (иначе `tests/test_modeling_*.py` не собираются — нет `sklearn`/`lightgbm`/…), затем **Ruff** (`telegram_bot`, `modeling`, `pipeline`), **mypy** (те же каталоги, настройка в `mypy.ini`), `compileall`, **pytest** без `tests/test_db_nhl.py`. Без БД, гоняется на каждый PR быстро.
-- **`db-tests`** — поднимает service-контейнер `postgres:16.6-alpine` (trust-аутентификация, без пароля, как в `docker-compose.yml`), затем `make setup`, `make db-sync` (применяет `DDL_TABLES`, потом SQL-функции — тот же порядок, что `make db-init`) и `make test-db` (схемные проверки `tests/test_db_nhl.py`). Данные в этой БД не загружаются, поэтому `test-db-data` тут не вызывается.
+- **`db-tests`** — поднимает service-контейнер `postgres:16.6-alpine` (trust-аутентификация, без пароля, как в `docker-compose.yml`), затем `make setup`, `make db-sync` (применяет `DDL_TABLES`, потом SQL-функции, потом `data_tables/migrations/*.up.sql` — тот же порядок, что `make db-init`) и `make test-db` (схемные проверки `tests/test_db_nhl.py`). Данные в этой БД не загружаются, поэтому `test-db-data` тут не вызывается.

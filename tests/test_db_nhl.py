@@ -135,6 +135,21 @@ class TestNhlSchema(unittest.TestCase):
                 f"expected bigint season_id, got {row[0]!r}",
             )
 
+    def test_bot_subscriptions_migration_applied(self):
+        with self.conn.cursor() as cur:
+            if not _base_table_exists(cur, "bot_subscriptions"):
+                self.fail(
+                    "public.bot_subscriptions missing — run: make db-migrate "
+                    "(data_tables/migrations/0001_bot_subscriptions.up.sql)"
+                )
+            self.assertEqual(_pk_columns(cur, "bot_subscriptions"), ["id"])
+
+            cur.execute("SELECT 1 FROM schema_migrations WHERE version = '0001'")
+            self.assertIsNotNone(
+                cur.fetchone(),
+                "schema_migrations missing version 0001 — run: make db-migrate",
+            )
+
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
