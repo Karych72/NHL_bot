@@ -263,10 +263,14 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
    за `SEASON_ID` в окне дат через
    `https://api.nhle.com/stats/rest/en/game?cayenneExp=...`.
 10. **`build_game_rows()`** — для каждой игры два запроса:
-    `/v1/gamecenter/{game_id}/play-by-play` и `/v1/gamecenter/{game_id}/boxscore`.
-    Из них собираются `games`, `game_team_stats`, `game_player_stats`,
+    `/v1/gamecenter/{game_id}/play-by-play` и `/v1/gamecenter/{game_id}/boxscore`,
+    через единственную точку доступа `ModernNhlLoader.fetch_game_json(game_id,
+    endpoint)`. Из них собираются `games`, `game_team_stats`, `game_player_stats`,
     `game_goalie_stats`, `all_goals`. Каждые 50 игр в логе пишется прогресс
-    `Processed games: N/total`.
+    `Processed games: N/total`. Ответ завершённой игры (`gameState` в `OFF`/
+    `FINAL`) кладётся на диск и на повторных запусках читается оттуда без
+    обращения к сети — подробности и последствия для повторного запуска
+    в §6.5.
 11. **Запись в Postgres**: одна транзакция (`autocommit = False`):
     1. `DELETE FROM all_goals|game_player_stats|game_team_stats|game_goalie_stats|games WHERE game_id = ANY(window_ids)` — удаление текущей версии данных по этим играм;
     2. `UPSERT` в сезонные таблицы (`ON CONFLICT … DO UPDATE`);
@@ -292,8 +296,8 @@ Date window 2025-10-01 .. 2026-03-29 (season_id=20252026, games.season=25/26)
 | `https://api.nhle.com/stats/rest/en/goalie/{summary,savesByStrength}?cayenneExp=…` | Сезонные отчёты по вратарям. |
 | `https://api-web.nhle.com/v1/player/{playerId}/landing` | Дополняющий лукап для редких игроков, отсутствующих в роли тима и сезонных отчётах. |
 | `https://api.nhle.com/stats/rest/en/game?cayenneExp=…` | Список завершённых игр в окне дат. |
-| `https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play` | Полное PBP игры (голы, пенальти, faceoffs, hits, …). |
-| `https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore` | Бокс-скор: per-player и per-team метрики игры. |
+| `https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play` | Полное PBP игры (голы, пенальти, faceoffs, hits, …). Завершённые игры — с диск-кэшем, см. §6.5. |
+| `https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore` | Бокс-скор: per-player и per-team метрики игры. Завершённые игры — с диск-кэшем, см. §6.5. |
 
 Обработка сети (`get_json` в лоадере): до 10 попыток на запрос с задержкой
 1 с между ошибками; на `429 Too Many Requests` ждём `Retry-After` (или 2с,
@@ -334,8 +338,36 @@ NHL-отчёты могут вернуть одного игрока дважд�
 - per-game таблицы пересоздаются после `DELETE` тех же `game_id`.
 
 Это значит: если за день ничего не поменялось в API — запись будет
-идентичной. Если NHL поправил данные постфактум (типичная ситуация на
-свежие игры) — повторный запуск это подхватит.
+идентичной. Для **сезонных** отчётов (стандинги, `team/summary`,
+`skater/*`, `goalie/*` и т. д.) повторный запуск подхватит и правку,
+которую NHL внёс в данные постфактум: эти эндпоинты каждый раз идут
+в сеть через `get_json`/`fetch_paginated`, кэша у них нет (см. §6.2, §6.3).
+
+Для **пер-игровых** `play-by-play`/`boxscore` это больше не так. С Задачи 31
+`fetch_game_json` (см. §6.1 п.10) кладёт ответ завершённой игры
+(`gameState` в `OFF`/`FINAL`) на диск —
+`all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz` — и каждый следующий
+запуск читает его оттуда без обращения к сети, TTL и автоинвалидации нет.
+Штатные `make season-sync-week` / `make season-sync-today` (`Makefile:173-182`)
+на пересекающемся окне для уже кэшированных игр повторно перечитают именно
+замороженный файл: если NHL поправил `play-by-play`/`boxscore` постфактум —
+эта правка **не** попадёт в БД, пока кэш-файл не удалён руками. `gameState`
+становится `OFF`/`FINAL` сразу после финальной сирены, то есть кэш
+фиксирует ответ ровно в момент, когда вероятность последующей правки
+NHL максимальна.
+
+Инвалидация — вручную, удалением файла(ов) кэша перед перезапуском лоадера:
+
+```bash
+# Точечно: одна игра одного сезона
+rm all_data/raw/{season_id}/{game_id}.pbp.json.gz all_data/raw/{season_id}/{game_id}.box.json.gz
+
+# Окном: весь сезон целиком (следующий прогон перекачает все игры окна заново)
+rm -rf all_data/raw/{season_id}
+```
+
+После удаления обычный перезапуск (`make season-sync ...` с окном, которое
+включает эту игру) снова сходит в сеть и перезапишет кэш свежим ответом.
 
 **Порядок ON CONFLICT** в UPSERT-ах сохраняет именно ключевые колонки:
 `(team_id, season_id)` или `(player_id, season_id)`. Никаких суррогатных
