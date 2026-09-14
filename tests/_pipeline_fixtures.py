@@ -212,7 +212,10 @@ class LoaderApiTestCase(unittest.TestCase):
         # ``all_data/raw/`` at the repo root. Redirect every test to its own
         # throwaway directory so tests never touch that real directory and
         # never leak a cached fixture into another test reusing the same
-        # (season_id, game_id).
+        # (season_id, game_id). The directory is one per *test method*, not
+        # per ``make_loader()`` instance: a test that builds the same game
+        # twice with two different payload variants in one method would
+        # silently get the first variant back from cache on the second call.
         cache_dir = tempfile.TemporaryDirectory()
         self.addCleanup(cache_dir.cleanup)
         cache_patcher = mock.patch.object(loader, "RAW_CACHE_DIR", Path(cache_dir.name))

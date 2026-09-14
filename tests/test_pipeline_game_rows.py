@@ -352,6 +352,12 @@ class GameJsonCacheTest(LoaderApiTestCase):
         instance.build_game_rows(games_meta)
         self.assertEqual(len(calls), 2)  # one play-by-play + one boxscore call
 
+        # Acceptance: cache placement is exactly
+        # all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz.
+        season_cache_dir = loader.RAW_CACHE_DIR / str(SEASON_ID)
+        self.assertTrue((season_cache_dir / f"{GAME_ID}.pbp.json.gz").exists())
+        self.assertTrue((season_cache_dir / f"{GAME_ID}.box.json.gz").exists())
+
         calls.clear()
         instance.build_game_rows(games_meta)
         self.assertEqual(calls, [])  # fully served from disk, no network at all
@@ -399,6 +405,34 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
         self.assertEqual(calls["get_json"], 2)
         self.assertEqual(calls["fetch_paginated"], 2)
+
+    def test_successful_cache_write_leaves_no_tmp_file_behind(self):
+        """The write goes through a sibling ``.tmp`` file renamed into place —
+        a successful write leaves only the final ``.json.gz``, nothing named
+        ``*.tmp``."""
+        instance = make_loader()
+        instance.get_json = lambda url: load_fixture("nhl_game_play_by_play.json")
+
+        instance.fetch_game_json(GAME_ID, "play-by-play")
+
+        cache_dir = loader.RAW_CACHE_DIR / str(SEASON_ID)
+        self.assertEqual({p.name for p in cache_dir.iterdir()}, {f"{GAME_ID}.pbp.json.gz"})
+
+    def test_interrupted_cache_write_does_not_leave_a_broken_cache_file(self):
+        """A write that blows up partway (Ctrl-C / full disk — modeled here by
+        an unserializable payload value) must never leave ``cache_path``
+        existing with truncated content: with no TTL or invalidation, such a
+        file would be read back as valid forever."""
+        instance = make_loader()
+        pbp = dict(load_fixture("nhl_game_play_by_play.json"))
+        pbp["poison"] = object()  # not JSON-serializable -> json.dump raises
+        instance.get_json = lambda url: pbp
+
+        with self.assertRaises(TypeError):
+            instance.fetch_game_json(GAME_ID, "play-by-play")
+
+        cache_path = loader.RAW_CACHE_DIR / str(SEASON_ID) / f"{GAME_ID}.pbp.json.gz"
+        self.assertFalse(cache_path.exists())
 
 
 if __name__ == "__main__":

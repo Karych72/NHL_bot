@@ -2,6 +2,7 @@ import argparse
 import gzip
 import json
 import logging
+import os
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -785,8 +786,14 @@ class ModernNhlLoader:
         payload = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/{endpoint}")
         if payload.get("gameState") in FINAL_GAME_STATES:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with gzip.open(cache_path, "wt", encoding="utf-8") as fh:
+            # Write to a sibling temp file and rename into place: a write
+            # truncated by Ctrl-C / a full disk must never leave a
+            # cache_path that exists() but holds broken JSON — with no TTL
+            # or invalidation, that file would be "valid" forever.
+            tmp_path = cache_path.with_name(cache_path.name + ".tmp")
+            with gzip.open(tmp_path, "wt", encoding="utf-8") as fh:
                 json.dump(payload, fh)
+            os.replace(tmp_path, cache_path)
         return payload
 
     def build_game_rows(self, games_meta: List[dict]) -> Tuple[List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]]:
