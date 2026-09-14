@@ -385,7 +385,7 @@ class GameJsonCacheTest(LoaderApiTestCase):
     def test_season_reports_are_not_routed_through_the_cache(self):
         """Season-wide reports (team reference + standings) are untouched by
         the per-game cache: ``load_team_reference`` hits the network on every
-        call, cached run or not."""
+        call, cached run or not, and writes nothing under ``RAW_CACHE_DIR``."""
         instance = make_loader()
         calls = {"get_json": 0, "fetch_paginated": 0}
 
@@ -405,6 +405,10 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
         self.assertEqual(calls["get_json"], 2)
         self.assertEqual(calls["fetch_paginated"], 2)
+        # The real assertion: nothing landed in the per-game cache directory.
+        # A cache keyed off get_json/fetch_paginated instead of fetch_game_json
+        # would still pass the call-count checks above while breaking this.
+        self.assertEqual(list(loader.RAW_CACHE_DIR.iterdir()), [])
 
     def test_successful_cache_write_leaves_no_tmp_file_behind(self):
         """The write goes through a sibling ``.tmp`` file renamed into place —
