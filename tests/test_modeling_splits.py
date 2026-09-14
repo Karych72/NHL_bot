@@ -5,13 +5,27 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 from pydantic import ValidationError
 
 from modeling.config import ConfigError, HoldoutConfig, SplitConfig, SplitMethod
-from modeling.splits import SplitError, build_walk_forward_splits, validate_metadata_parity
+from modeling.splits import (
+    SplitError,
+    _assert_strictly_before,
+    build_walk_forward_splits,
+    validate_metadata_parity,
+)
 from tests._modeling_fixtures import synthetic_calendar_keys
+
+# Real NHL game days carry 3-11 games, never a constant -- this cycle mimics
+# that irregularity (avg ~7, matching the real calendar's ~7.2). Before
+# Задача 32, no test calendar that actually reached `_validate_splits` had
+# more than one game per day: `TestGuardIsNecessaryNotSufficient` below does
+# use games_per_day=6, but it is built to fail earlier, in
+# `_window_from_tail`, and never reaches the day-order check.
+IRREGULAR_GAMES_PER_DAY = [7, 3, 11, 5, 9, 4, 8, 6, 10]
 
 
 def _default_split_config(**overrides: object) -> SplitConfig:
@@ -307,6 +321,104 @@ class TestFixedGamesMethod(unittest.TestCase):
         )
         splits = build_walk_forward_splits(keys, config)
         self.assertEqual(len(splits.windows), 5)
+
+
+class TestIrregularGamesPerDayBothMethods(unittest.TestCase):
+    """Задача 32: real calendars have several games on the same day, unevenly
+    (3-11, see ``IRREGULAR_GAMES_PER_DAY``). Every other fixture in this
+    module that reaches ``_validate_splits`` uses ``games_per_day=1`` and so
+    never lands a block boundary inside a day (the one exception,
+    ``TestGuardIsNecessaryNotSufficient``'s ``games_per_day=6``, is built to
+    raise earlier, in ``_window_from_tail``, and never gets there). Before
+    the fix, both methods here raised ``SplitError`` ("train must end before
+    inner_val") on this exact calendar because the old check compared
+    calendar days, not positions.
+    """
+
+    def test_month_method_builds_on_irregular_calendar(self) -> None:
+        keys = _synthetic_calendar_keys(n_days=1200, games_per_day=IRREGULAR_GAMES_PER_DAY)
+        config = _default_split_config()
+        splits = build_walk_forward_splits(keys, config)
+
+        self.assertEqual(len(splits.windows), config.n_test_windows)
+        for window in splits.windows:
+            self.assertGreaterEqual(window.inner_val_size, config.inner_val_games)
+            self.assertGreaterEqual(window.calibration_size, config.calibration_games)
+            self.assertGreater(window.test_size, 0)
+            self.assertGreater(window.train_size, 0)
+            # Positional guarantee still holds even though block edges may
+            # fall inside a shared calendar day (asserted separately below).
+            self.assertLess(window.train_idx.max(), window.inner_val_idx.min())
+            self.assertLess(window.inner_val_idx.max(), window.calibration_idx.min())
+            self.assertLess(window.calibration_idx.max(), window.test_idx.min())
+
+    def test_fixed_games_method_builds_on_irregular_calendar(self) -> None:
+        keys = _synthetic_calendar_keys(n_days=1200, games_per_day=IRREGULAR_GAMES_PER_DAY)
+        config = SplitConfig.model_validate(
+            {
+                "method": SplitMethod.fixed_games,
+                "n_test_windows": 5,
+                "inner_val_games": 300,
+                "calibration_games": 300,
+                "outer_block_games": 700,
+                "holdout": {"fraction": 0.15},
+            }
+        )
+        splits = build_walk_forward_splits(keys, config)
+
+        self.assertEqual(len(splits.windows), 5)
+        for window in splits.windows:
+            self.assertLess(window.train_idx.max(), window.inner_val_idx.min())
+            self.assertLess(window.inner_val_idx.max(), window.calibration_idx.min())
+            self.assertLess(window.calibration_idx.max(), window.test_idx.min())
+
+    def test_irregular_calendar_actually_straddles_a_day_boundary(self) -> None:
+        """Guard the fixture itself: prove this calendar shape genuinely puts
+        a block edge inside a shared day, so the two tests above exercise the
+        Задача 32 scenario rather than accidentally aligning on day borders."""
+        keys = _synthetic_calendar_keys(n_days=1200, games_per_day=IRREGULAR_GAMES_PER_DAY)
+        config = _default_split_config()
+        splits = build_walk_forward_splits(keys, config)
+        sorted_keys = keys.sort_values(["day", "game_id"], kind="mergesort").reset_index(drop=True)
+        days = sorted_keys["day"]
+
+        straddles = any(
+            days.iloc[window.train_idx].max() == days.iloc[window.inner_val_idx].min()
+            or days.iloc[window.inner_val_idx].max() == days.iloc[window.calibration_idx].min()
+            or days.iloc[window.calibration_idx].max() == days.iloc[window.test_idx].min()
+            for window in splits.windows
+        )
+        self.assertTrue(straddles, "fixture should straddle a day boundary at least once")
+
+
+class TestOrderCheckCatchesRealViolation(unittest.TestCase):
+    """Задача 32: the positional rewrite of ``_assert_strictly_before`` must
+    still raise ``SplitError`` on a genuine ordering violation -- proof the
+    rewrite did not degrade into a no-op that accepts any position order.
+    """
+
+    def test_position_violations_raise_split_error(self) -> None:
+        days = pd.Series(pd.date_range("2020-01-01", periods=10, freq="D"))
+        cases = (
+            # earlier block's max position (7) is >= later block's min
+            # position (6): a genuine ordering violation (block
+            # reuses/precedes rows the "later" block already claims).
+            ("overlapping positions", np.array([3, 4, 7]), np.array([6, 8, 9])),
+            # "earlier" block is entirely chronologically after "later" --
+            # the starkest possible violation.
+            ("reversed blocks", np.array([8, 9]), np.array([0, 1])),
+        )
+        for label, earlier_idx, later_idx in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(SplitError) as ctx:
+                    _assert_strictly_before(days, earlier_idx, later_idx, label)
+                self.assertIn(label, str(ctx.exception))
+
+    def test_correctly_ordered_positions_do_not_raise(self) -> None:
+        days = pd.Series(pd.date_range("2020-01-01", periods=10, freq="D"))
+        earlier_idx = np.array([0, 1, 2])
+        later_idx = np.array([3, 4, 5])
+        _assert_strictly_before(days, earlier_idx, later_idx, "should not raise")
 
 
 if __name__ == "__main__":
