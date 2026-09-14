@@ -334,7 +334,7 @@ class RosterRowsTest(LoaderApiTestCase):
         instance.load_team_reference()
         teams_rows, roster_rows = self._teams_and_wsh_roster(instance)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "has no playerId"):
             instance.supplement_rosters_from_reports(
                 roster_rows,
                 load_fixture("nhl_skater_summary.json"),
