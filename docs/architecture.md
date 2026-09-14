@@ -713,7 +713,7 @@ Panthers        28.5  70
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         PostgreSQL                                   │
 │                                                                      │
-│  12 таблиц:                     3 PL/pgSQL функции:                 │
+│  13 таблиц:                     3 PL/pgSQL функции:                 │
 │  teams, teams_stats,            get_game_stats()                     │
 │  rosters,                       get_goals_game()                     │
 │  players_season_stats,          get_goalies_game()                   │
@@ -724,6 +724,7 @@ Panthers        28.5  70
 │  game_team_stats,                                                    │
 │  game_player_stats,                                                  │
 │  game_goalie_stats                                                   │
+│  game_three_stars                                                    │
 └──────────────────────────────────┬───────────────────────────────────┘
                                    │  psycopg2 (SimpleConnectionPool)
                                    ▼
