@@ -22,10 +22,10 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Disk cache for per-game NHL API responses (play-by-play / boxscore) — see
-# ``ModernNhlLoader.fetch_game_json``. A finished game's payload never changes,
-# so it is cached indefinitely once written; season-wide report endpoints
-# (standings, summaries) are never routed through this cache.
+# Disk cache for per-game NHL API responses (play-by-play / boxscore / landing)
+# — see ``ModernNhlLoader.fetch_game_json``. A finished game's payload never
+# changes, so it is cached indefinitely once written; season-wide report
+# endpoints (standings, summaries) are never routed through this cache.
 RAW_CACHE_DIR = Path(__file__).resolve().parents[1] / "all_data" / "raw"
 
 # NHL API ``gameState`` values that mark a game as finished and therefore safe
@@ -33,7 +33,7 @@ RAW_CACHE_DIR = Path(__file__).resolve().parents[1] / "all_data" / "raw"
 FINAL_GAME_STATES = {"OFF", "FINAL"}
 
 # gamecenter endpoint name -> cache file suffix.
-_GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box"}
+_GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box", "landing": "landing"}
 
 
 # ---------------------------------------------------------------------------
@@ -787,19 +787,20 @@ class ModernNhlLoader:
     def fetch_game_json(self, game_id: int, endpoint: str) -> dict:
         """Fetch one per-game gamecenter endpoint, caching finished games on disk.
 
-        A finished game's ``play-by-play``/``boxscore`` payload never changes,
-        so once a game is over its response is written to
-        ``all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz`` and every
-        later call reads it straight from disk instead of hitting the network
-        — no TTL, no invalidation. "Finished" is judged from the payload's own
-        ``gameState`` field (``FINAL_GAME_STATES``), not from the caller.
-        Season-wide report endpoints (standings, summaries, ...) never go
-        through this method and are always fetched live via ``get_json``.
+        A finished game's ``play-by-play``/``boxscore``/``landing`` payload
+        never changes, so once a game is over its response is written to
+        ``all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz`` and
+        every later call reads it straight from disk instead of hitting the
+        network — no TTL, no invalidation. "Finished" is judged from the
+        payload's own ``gameState`` field (``FINAL_GAME_STATES``), not from
+        the caller. Season-wide report endpoints (standings, summaries, ...)
+        never go through this method and are always fetched live via
+        ``get_json``.
 
         Args:
             game_id: NHL game id, as used in the gamecenter URL.
-            endpoint: ``"play-by-play"`` or ``"boxscore"`` — selects the URL
-                and the cache file suffix.
+            endpoint: ``"play-by-play"``, ``"boxscore"`` or ``"landing"`` —
+                selects the URL and the cache file suffix.
         """
         suffix = _GAME_ENDPOINT_SUFFIXES[endpoint]
         cache_path = RAW_CACHE_DIR / str(self.season_id) / f"{game_id}.{suffix}.json.gz"
@@ -820,12 +821,30 @@ class ModernNhlLoader:
             os.replace(tmp_path, cache_path)
         return payload
 
-    def build_game_rows(self, games_meta: List[dict]) -> Tuple[List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]]:
+    def build_game_rows(
+        self, games_meta: List[dict]
+    ) -> Tuple[
+        List[tuple], List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]
+    ]:
+        """Build the six per-game row tuples for ``run()`` to insert.
+
+        Iterates *games_meta* (one dict per finished game from
+        ``fetch_final_games``) and, for each game, fetches its
+        play-by-play/boxscore/landing payloads (via ``fetch_game_json``, which
+        caches finished games on disk) and assembles rows for ``games``,
+        ``all_goals``, ``game_team_stats``, ``game_player_stats``,
+        ``game_goalie_stats`` and ``game_three_stars`` — in that order.
+
+        Args:
+            games_meta: finished-game summaries as returned by
+                ``fetch_final_games`` (Stats API ``game`` records).
+        """
         games_rows: List[tuple] = []
         all_goals_rows: List[tuple] = []
         game_team_rows: List[tuple] = []
         game_player_rows: List[tuple] = []
         game_goalie_rows: List[tuple] = []
+        game_three_stars_rows: List[tuple] = []
 
         total = len(games_meta)
         for idx, game in enumerate(games_meta, start=1):
@@ -838,6 +857,7 @@ class ModernNhlLoader:
 
             pbp = self.fetch_game_json(game_id, "play-by-play")
             box = self.fetch_game_json(game_id, "boxscore")
+            landing = self.fetch_game_json(game_id, "landing")
 
             period_desc = pbp.get("periodDescriptor") or {}
             is_ot = str(period_desc.get("periodType")) == "OT" or to_int(period_desc.get("number")) > 3
@@ -1158,10 +1178,45 @@ class ModernNhlLoader:
                         )
                     )
 
+            landing_home = landing.get("homeTeam") or {}
+            landing_away = landing.get("awayTeam") or {}
+            home_abbrev = landing_home.get("abbrev")
+            away_abbrev = landing_away.get("abbrev")
+            three_stars = (landing.get("summary") or {}).get("threeStars") or []
+            for star_entry in three_stars:
+                star_num = star_entry.get("star")
+                star_player_id = star_entry.get("playerId")
+                if star_num is None or star_player_id is None:
+                    raise ValueError(
+                        f"game {game_id}: three-star entry missing star/playerId: "
+                        f"{star_entry!r}"
+                    )
+                team_abbrev = star_entry.get("teamAbbrev")
+                if team_abbrev == home_abbrev:
+                    star_team_id = to_int(landing_home.get("id"))
+                elif team_abbrev == away_abbrev:
+                    star_team_id = to_int(landing_away.get("id"))
+                else:
+                    raise ValueError(
+                        f"game {game_id}: three-star teamAbbrev {team_abbrev!r} matches "
+                        f"neither home ({home_abbrev!r}) nor away ({away_abbrev!r}): "
+                        f"{star_entry!r}"
+                    )
+                game_three_stars_rows.append(
+                    (game_id, int(star_num), int(star_player_id), star_team_id)
+                )
+
             if idx % 50 == 0 or idx == total:
                 logger.info("Processed games: %d/%d", idx, total)
 
-        return games_rows, all_goals_rows, game_team_rows, game_player_rows, game_goalie_rows
+        return (
+            games_rows,
+            all_goals_rows,
+            game_team_rows,
+            game_player_rows,
+            game_goalie_rows,
+            game_three_stars_rows,
+        )
 
     def execute_insert(self, conn, table: str, columns: List[str], rows: List[tuple], page_size: int = 1000):
         if not rows:
@@ -1277,7 +1332,14 @@ class ModernNhlLoader:
         logger.info("Fetching finished games...")
         games_meta = self.fetch_final_games()
         logger.info("Finished games to load: %d", len(games_meta))
-        games_rows, all_goals_rows, game_team_rows, game_player_rows, game_goalie_rows = self.build_game_rows(games_meta)
+        (
+            games_rows,
+            all_goals_rows,
+            game_team_rows,
+            game_player_rows,
+            game_goalie_rows,
+            game_three_stars_rows,
+        ) = self.build_game_rows(games_meta)
 
         logger.info("Writing to PostgreSQL...")
         conn = psycopg2.connect(
@@ -1292,6 +1354,7 @@ class ModernNhlLoader:
                 game_ids = tuple(r[0] for r in games_rows)
                 if game_ids:
                     for tbl in (
+                        "game_three_stars",
                         "all_goals",
                         "game_player_stats",
                         "game_team_stats",
@@ -1620,6 +1683,13 @@ class ModernNhlLoader:
                     "even_strength_save_percentage",
                 ],
                 game_goalie_rows,
+                page_size=5000,
+            )
+            self.execute_insert(
+                conn,
+                "game_three_stars",
+                ["game_id", "star", "player_id", "team_id"],
+                game_three_stars_rows,
                 page_size=5000,
             )
             conn.commit()

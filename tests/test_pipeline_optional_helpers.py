@@ -196,7 +196,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             },
         }
 
-        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box})
+        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box, "landing": {}})
         games_meta = [
             {
                 "id": 2025020001,
@@ -208,9 +208,14 @@ class GoalAggregationTest(LoaderApiTestCase):
             }
         ]
 
-        games_rows, all_goals_rows, game_team_rows, game_player_rows, game_goalie_rows = (
-            instance.build_game_rows(games_meta)
-        )
+        (
+            games_rows,
+            all_goals_rows,
+            game_team_rows,
+            game_player_rows,
+            game_goalie_rows,
+            game_three_stars_rows,
+        ) = instance.build_game_rows(games_meta)
 
         self.assertEqual(len(all_goals_rows), 1)
         goal = all_goals_rows[0]
@@ -275,7 +280,7 @@ class GoalAggregationTest(LoaderApiTestCase):
                 "awayTeam": {"forwards": [], "defense": [], "goalies": []},
             },
         }
-        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box})
+        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box, "landing": {}})
         _, all_goals_rows, *_ = instance.build_game_rows(
             [
                 {
