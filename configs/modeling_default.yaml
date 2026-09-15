@@ -10,6 +10,18 @@ tasks:
   over_5_5:
     enabled: true
 
+# Working multiseason profile. Guard (modeling/splits.py, Задача 14) requires
+# wf_rows >= inner_val_games + calibration_games + n_test_windows*1 + 1
+#         = 300 + 300 + 5 + 1 = 606
+# and total rows >= holdout + 606, i.e. N >= ceil(606 / (1 - holdout.fraction))
+#         = ceil(606 / 0.85) = 713 rows minimum (guard's necessary lower bound
+# on raw row counts only -- NOT sufficient: the earliest of the n_test_windows
+# selected calendar months also needs a real inner_val+calibration pool
+# strictly before it, which depends on how games are distributed across
+# months, not just the total row count; that is checked separately, later,
+# by _window_from_tail). Checked against the actual dataset (Задача 30,
+# 2026-09-12): 6049 rows / 5 seasons, comfortably above both bounds -- fits.
+# For a single-season/smoke-sized dataset use configs/modeling_smoke.yaml.
 split:
   method: month
   n_test_windows: 5
