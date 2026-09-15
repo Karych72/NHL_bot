@@ -130,13 +130,13 @@ def _format_three_star_line(
     name = html.escape(str(lastname or "Unknown"))
     abbr = html.escape(str(abbreviation or ""))
     star_str = html.escape(str(star))
-    is_goalie = (str(position).strip().upper() if position else "") == "G"
+    is_goalie = position == "G"
     tail = ""
     if is_goalie:
         if saves is not None and shots is not None:
             tail = f"{html.escape(str(saves))}/{html.escape(str(shots))}"
             if save_percentage is not None:
-                pct = round(float(save_percentage), 1)
+                pct = round(float(save_percentage), 2)
                 tail += f", {html.escape(str(pct))}%"
     elif goals is not None and assists is not None:
         tail = f"{html.escape(str(goals))}+{html.escape(str(assists))}"

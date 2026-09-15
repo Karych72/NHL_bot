@@ -333,7 +333,7 @@ async def test_game_command_renders_full_card(
     ) in text
     assert "<b>Звёзды матча</b>" in text
     assert "★1 Panarin (NYR) — 2+1" in text
-    assert "★2 Shesterkin (NYR) — 25/27, 92.6%" in text
+    assert "★2 Shesterkin (NYR) — 25/27, 92.59%" in text
     assert "★3 Marchand (BOS) — 1+0" in text
 
 
