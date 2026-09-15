@@ -1182,14 +1182,26 @@ class ModernNhlLoader:
             landing_away = landing.get("awayTeam") or {}
             home_abbrev = landing_home.get("abbrev")
             away_abbrev = landing_away.get("abbrev")
+            home_team_id = landing_home.get("id")
+            away_team_id = landing_away.get("id")
             three_stars = (landing.get("summary") or {}).get("threeStars") or []
-            if three_stars and (home_abbrev is None or away_abbrev is None):
+            if three_stars and (
+                home_abbrev is None
+                or away_abbrev is None
+                or home_team_id is None
+                or away_team_id is None
+            ):
                 # Without both abbrevs every teamAbbrev match below is vacuous:
                 # a star missing its own teamAbbrev (None) would silently match
-                # a missing home/away abbrev (also None) instead of raising.
+                # a missing home/away abbrev (also None) instead of raising. And
+                # without both ids, to_int's silent 0-default (unlike every
+                # other check in this block, which raises) would insert a
+                # team_id of 0 that passes the INSERT (no FK) but fails the
+                # bot's LEFT JOIN and shows up as empty parentheses.
                 raise ValueError(
-                    f"game {game_id}: landing missing home/away team abbrev "
-                    f"(home={home_abbrev!r}, away={away_abbrev!r})"
+                    f"game {game_id}: landing missing home/away team abbrev/id "
+                    f"(home={home_abbrev!r}/{home_team_id!r}, "
+                    f"away={away_abbrev!r}/{away_team_id!r})"
                 )
             for star_entry in three_stars:
                 star_num = star_entry.get("star")
@@ -1207,9 +1219,9 @@ class ModernNhlLoader:
                     )
                 team_abbrev = star_entry.get("teamAbbrev")
                 if team_abbrev == home_abbrev:
-                    star_team_id = to_int(landing_home.get("id"))
+                    star_team_id = to_int(home_team_id)
                 elif team_abbrev == away_abbrev:
-                    star_team_id = to_int(landing_away.get("id"))
+                    star_team_id = to_int(away_team_id)
                 else:
                     raise ValueError(
                         f"game {game_id}: three-star teamAbbrev {team_abbrev!r} matches "

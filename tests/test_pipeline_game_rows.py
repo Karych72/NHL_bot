@@ -73,6 +73,17 @@ class GameRowsTest(LoaderApiTestCase):
         game_team_rows = self._build(**kwargs)[2]
         return {field(r, "game_team_stats", "team_id"): r for r in game_team_rows}
 
+    def _landing_with_first_star(self, **overrides):
+        """The landing fixture with its first ``threeStars`` entry replaced by
+        a copy carrying *overrides* (a key set to ``None`` models the API
+        omitting it: ``dict.get`` returns ``None`` either way)."""
+        landing = load_fixture("nhl_game_landing.json")
+        first_star = dict(landing["summary"]["threeStars"][0])
+        first_star.update(overrides)
+        landing["summary"] = dict(landing["summary"])
+        landing["summary"]["threeStars"] = [first_star] + landing["summary"]["threeStars"][1:]
+        return landing
+
     def test_games_row_from_meta_and_play_by_play(self):
         games_rows = self._build()[0]
         self.assertEqual(len(games_rows), 1)
@@ -354,12 +365,19 @@ class GameRowsTest(LoaderApiTestCase):
         rows = self._build(landing=landing)[5]
         self.assertEqual(rows, [])
 
+    def test_three_stars_away_team_abbrev_resolves_to_away_team_id(self):
+        # The fixture's three stars are all WSH (home) players, so this is the
+        # only test exercising the ``elif team_abbrev == away_abbrev`` branch
+        # (``pipeline/load_season_modern.py``) — a swapped home/away lookup
+        # there would otherwise pass every other test in this file.
+        landing = self._landing_with_first_star(teamAbbrev="OTT")
+        rows = self._build(landing=landing)[5]
+        table = "game_three_stars"
+        first_star_row = next(r for r in rows if field(r, table, "star") == 1)
+        self.assertEqual(field(first_star_row, table, "team_id"), OTT)
+
     def test_three_stars_team_abbrev_not_matching_either_side_raises(self):
-        landing = load_fixture("nhl_game_landing.json")
-        bad_star = dict(landing["summary"]["threeStars"][0])
-        bad_star["teamAbbrev"] = "XXX"
-        landing["summary"] = dict(landing["summary"])
-        landing["summary"]["threeStars"] = [bad_star] + landing["summary"]["threeStars"][1:]
+        landing = self._landing_with_first_star(teamAbbrev="XXX")
 
         with self.assertRaisesRegex(
             ValueError, r"teamAbbrev 'XXX' matches neither home .* nor away"
@@ -367,10 +385,7 @@ class GameRowsTest(LoaderApiTestCase):
             self._build(landing=landing)
 
     def test_three_stars_missing_player_id_raises(self):
-        landing = load_fixture("nhl_game_landing.json")
-        bad_star = without(landing["summary"]["threeStars"][0], "playerId")
-        landing["summary"] = dict(landing["summary"])
-        landing["summary"]["threeStars"] = [bad_star] + landing["summary"]["threeStars"][1:]
+        landing = self._landing_with_first_star(playerId=None)
 
         with self.assertRaisesRegex(
             ValueError, r"missing star/playerId"
@@ -390,12 +405,22 @@ class GameRowsTest(LoaderApiTestCase):
         ):
             self._build(landing=landing)
 
-    def test_three_stars_star_outside_1_3_raises(self):
+    def test_three_stars_raises_when_landing_lacks_team_ids(self):
+        # Without both ids, ``to_int``'s silent 0-default (unlike every other
+        # check in this block, which raises) would otherwise insert a
+        # team_id of 0 that passes the INSERT (no FK) but fails the bot's
+        # LEFT JOIN and shows up as empty parentheses.
         landing = load_fixture("nhl_game_landing.json")
-        bad_star = dict(landing["summary"]["threeStars"][0])
-        bad_star["star"] = 4
-        landing["summary"] = dict(landing["summary"])
-        landing["summary"]["threeStars"] = [bad_star] + landing["summary"]["threeStars"][1:]
+        landing["homeTeam"] = without(landing["homeTeam"], "id")
+        landing["awayTeam"] = without(landing["awayTeam"], "id")
+
+        with self.assertRaisesRegex(
+            ValueError, r"landing missing home/away team abbrev/id"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_star_outside_1_3_raises(self):
+        landing = self._landing_with_first_star(star=4)
 
         with self.assertRaisesRegex(ValueError, r"star outside 1-3"):
             self._build(landing=landing)

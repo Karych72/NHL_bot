@@ -278,6 +278,7 @@ class TestNhlLoadedData(unittest.TestCase):
                 "game_player_stats",
                 "game_goalie_stats",
                 "all_goals",
+                "game_three_stars",
             ):
                 cur.execute(
                     f"""

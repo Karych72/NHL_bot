@@ -663,8 +663,11 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 *Броски:* 32 - 28
 *Штрафное время:* 6 - 8
 *Вратари:* Shesterkin (26/28, 92.86%, 65:00) - Vasilevskiy (29/32, 90.63%, 65:00)
+
 *Звёзды матча*
 ★1 Panarin (NYR) — 2+1
+★2 Kucherov (TBL) — 1+2
+★3 Shesterkin (NYR) — 26/28, 92.86%
 ```
 
 ### `season_leaders_players.txt` — Лидеры сезона
