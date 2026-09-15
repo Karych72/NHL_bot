@@ -704,7 +704,7 @@ Panthers        28.5  70
 │  ├── /team/summary                   ├── /roster/{tri}/{season}    │
 │  ├── /skater/summary                 ├── /gamecenter/{id}/play-by-play
 │  ├── /goalie/summary                 ├── /gamecenter/{id}/boxscore │
-│  └── /game                           └── /gamecenter/{id}/landing
+│  └── /game                           └── /gamecenter/{id}/landing  │
 └─────────────┬───────────────────────────────────────────────────────┘
               │  HTTP GET (requests.Session, retry ×10, backoff)
               ▼
