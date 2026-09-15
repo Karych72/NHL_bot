@@ -92,7 +92,8 @@ NHL_bot/
 │   └── queries/                        # PL/pgSQL функции
 │       ├── get_game_stats.sql
 │       ├── get_goals_game.sql
-│       └── get_goalies_game.sql
+│       ├── get_goalies_game.sql
+│       └── get_three_stars_game.sql
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
 │   ├── cli.py                           # `python -m modeling.cli build-dataset|train`
@@ -640,6 +641,10 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 Возвращает: `shots`, `saves`, `timeonice`, `lastname`, `save_percentage`, `is_home`. Сортировка: `is_home DESC` (домашний вратарь первым).
 
+#### `get_three_stars_game(game_id)` → game_three_stars + rosters + teams + game_player_stats + game_goalie_stats + games
+
+Возвращает: `star`, `lastname`, `player_position`, `abbreviation`, `goals`, `assists` (полевой игрок), `saves`, `shots`, `save_percentage` (вратарь) — по звезде одна строка, статистика не своей роли приходит `NULL` из пустого `LEFT JOIN`. Сортировка: `star`.
+
 ---
 
 ## Jinja2-шаблоны
@@ -713,11 +718,11 @@ Panthers        28.5  70
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         PostgreSQL                                   │
 │                                                                      │
-│  13 таблиц:                     3 PL/pgSQL функции:                 │
+│  13 таблиц:                     4 PL/pgSQL функции:                  │
 │  teams, teams_stats,            get_game_stats()                     │
 │  rosters,                       get_goals_game()                     │
 │  players_season_stats,          get_goalies_game()                   │
-│  players_advanced_stats,                                             │
+│  players_advanced_stats,        get_three_stars_game()               │
 │  players_shot_types,                                                 │
 │  goalies_season_stats,                                               │
 │  games, all_goals,                                                   │

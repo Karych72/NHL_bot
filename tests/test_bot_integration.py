@@ -190,6 +190,8 @@ GAME_TWO = 2026020002
 # get_goals_game: scorer, scorer_position, assist_1, assist_2, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
 # get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home.
+# get_three_stars_game: star, lastname, player_position, abbreviation, goals,
+# assists, saves, shots, save_percentage.
 _GAMES = {
     GAME_ONE: {
         "stats": [
@@ -208,6 +210,11 @@ _GAMES = {
             (27, 25, "60:00", "Shesterkin", 92.59, True),
             (31, 28, "60:00", "Swayman", 90.32, False),
         ],
+        "three_stars": [
+            (1, "Panarin", "LW", "NYR", 2, 1, None, None, None),
+            (2, "Shesterkin", "G", "NYR", None, None, 25, 27, 92.59),
+            (3, "Marchand", "LW", "BOS", 1, 0, None, None, None),
+        ],
     },
     GAME_TWO: {
         "stats": [
@@ -221,6 +228,11 @@ _GAMES = {
         "goalies": [
             (30, 30, "60:00", "Woll", 100.0, True),
             (24, 23, "60:00", "Montembeault", 95.83, False),
+        ],
+        "three_stars": [
+            (1, "Matthews", "C", "TOR", 1, 1, None, None, None),
+            (2, "Woll", "G", "TOR", None, None, 30, 30, 100.0),
+            (3, "Nylander", "RW", "TOR", 0, 1, None, None, None),
         ],
     },
 }
@@ -277,6 +289,7 @@ _GAME_CARD_ROUTES = [
     ("SELECT home_team_id, away_team_id FROM games", _by_game("teams")),
     ("SELECT * FROM get_goals_game", _by_game("goals")),
     ("SELECT * FROM get_goalies_game", _by_game("goalies")),
+    ("SELECT * FROM get_three_stars_game", _by_game("three_stars")),
     ("ORDER BY day DESC NULLS LAST", _form_rows),
 ]
 
@@ -303,8 +316,8 @@ async def test_game_command_renders_full_card(
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
-    # Шесть разных запросов, семь обращений: форма спрашивается на каждую команду.
-    assert len(cursor.executed) == 7
+    # Семь разных запросов, восемь обращений: форма спрашивается на каждую команду.
+    assert len(cursor.executed) == 8
     assert sent["parse_mode"] == "HTML"
     assert "<b>NYR BOS 3:2</b> (1:0, 1:1, 1:1)" in text
     # 3-0-2 / 1-0-4, а не 3-1-1 / 1-3-1: см. комментарий к _FORM_BY_TEAM (Д1).
@@ -318,6 +331,10 @@ async def test_game_command_renders_full_card(
         "<b>Вратари</b>: Shesterkin (25/27, 92.59%, 60:00) - "
         "Swayman (28/31, 90.32%, 60:00)"
     ) in text
+    assert "<b>Звёзды матча</b>" in text
+    assert "★1 Panarin (NYR) — 2+1" in text
+    assert "★2 Shesterkin (NYR) — 25/27, 92.6%" in text
+    assert "★3 Marchand (BOS) — 1+0" in text
 
 
 @pytest.mark.asyncio
