@@ -377,6 +377,29 @@ class GameRowsTest(LoaderApiTestCase):
         ):
             self._build(landing=landing)
 
+    def test_three_stars_raises_when_landing_lacks_team_abbrevs(self):
+        # Without either abbrev, a star missing its own teamAbbrev (None) would
+        # otherwise match a missing home/away abbrev (also None) and silently
+        # resolve to team_id 0 instead of raising.
+        landing = load_fixture("nhl_game_landing.json")
+        landing["homeTeam"] = without(landing["homeTeam"], "abbrev")
+        landing["awayTeam"] = without(landing["awayTeam"], "abbrev")
+
+        with self.assertRaisesRegex(
+            ValueError, r"landing missing home/away team abbrev"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_star_outside_1_3_raises(self):
+        landing = load_fixture("nhl_game_landing.json")
+        bad_star = dict(landing["summary"]["threeStars"][0])
+        bad_star["star"] = 4
+        landing["summary"] = dict(landing["summary"])
+        landing["summary"]["threeStars"] = [bad_star] + landing["summary"]["threeStars"][1:]
+
+        with self.assertRaisesRegex(ValueError, r"star outside 1-3"):
+            self._build(landing=landing)
+
 
 class GameJsonCacheTest(LoaderApiTestCase):
     """``ModernNhlLoader.fetch_game_json`` — the raw per-game response cache.

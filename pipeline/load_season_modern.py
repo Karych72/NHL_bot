@@ -1183,12 +1183,26 @@ class ModernNhlLoader:
             home_abbrev = landing_home.get("abbrev")
             away_abbrev = landing_away.get("abbrev")
             three_stars = (landing.get("summary") or {}).get("threeStars") or []
+            if three_stars and (home_abbrev is None or away_abbrev is None):
+                # Without both abbrevs every teamAbbrev match below is vacuous:
+                # a star missing its own teamAbbrev (None) would silently match
+                # a missing home/away abbrev (also None) instead of raising.
+                raise ValueError(
+                    f"game {game_id}: landing missing home/away team abbrev "
+                    f"(home={home_abbrev!r}, away={away_abbrev!r})"
+                )
             for star_entry in three_stars:
                 star_num = star_entry.get("star")
                 star_player_id = star_entry.get("playerId")
                 if star_num is None or star_player_id is None:
                     raise ValueError(
                         f"game {game_id}: three-star entry missing star/playerId: "
+                        f"{star_entry!r}"
+                    )
+                star_num_int = int(star_num)
+                if star_num_int not in (1, 2, 3):
+                    raise ValueError(
+                        f"game {game_id}: three-star entry has star outside 1-3: "
                         f"{star_entry!r}"
                     )
                 team_abbrev = star_entry.get("teamAbbrev")
@@ -1203,7 +1217,7 @@ class ModernNhlLoader:
                         f"{star_entry!r}"
                     )
                 game_three_stars_rows.append(
-                    (game_id, int(star_num), int(star_player_id), star_team_id)
+                    (game_id, star_num_int, int(star_player_id), star_team_id)
                 )
 
             if idx % 50 == 0 or idx == total:
