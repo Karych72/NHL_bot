@@ -1,0 +1,89 @@
+random_seed: 42
+
+compute:
+  num_threads: 4
+  log_level: INFO
+
+tasks:
+  home_win:
+    enabled: true
+  over_5_5:
+    enabled: true
+
+# Smoke profile: geometry sized for a single-season (or smaller) dataset,
+# order of magnitude ~1200 rows and below (before Задача 30, the only local
+# dataset was `season_20252026/`, 1211 games). Not for production training --
+# use configs/modeling_default.yaml once multiseason history is available.
+#
+# Guard (modeling/splits.py, Задача 14) requires
+# wf_rows >= inner_val_games + calibration_games + n_test_windows*1 + 1
+#         = 50 + 50 + 3 + 1 = 104
+# and total rows >= holdout + 104, i.e. N >= ceil(104 / (1 - holdout.fraction))
+#         = ceil(104 / 0.85) = 123 rows minimum (guard's necessary lower bound
+# on raw row counts only -- see configs/modeling_default.yaml for the same
+# caveat: real calendar-month feasibility is checked separately, later, by
+# _window_from_tail). A real single season (~1211 rows, ~7 calendar months)
+# leaves ~4 months (~700 rows) before the earliest of the 3 test months,
+# comfortably above the 101 rows (inner_val 50 + calibration 50 + train>=1)
+# that window needs.
+split:
+  method: month
+  n_test_windows: 3
+  inner_val_games: 50
+  calibration_games: 50
+  holdout:
+    fraction: 0.15
+    date_range:
+      from: null
+      to: null
+
+# Smoke grids: one value per axis -- the middle (for logreg's 4-value list, the
+# sklearn default) of the corresponding production list in
+# configs/modeling_default.yaml, where logreg.C has 4 values and each of the
+# seven lgbm axes has 3, i.e. 3^7 = 2187 lgbm fits per task per window.
+# A smoke run checks that the pipeline goes end to end, not which
+# hyperparameters win. models.lgbm.monotone is kept as in production.
+models:
+  logreg:
+    grids:
+      C: [1.0]
+  lgbm:
+    grids:
+      num_leaves: [31]
+      min_data_in_leaf: [50]
+      feature_fraction: [0.9]
+      bagging_fraction: [0.9]
+      lambda_l1: [0.1]
+      lambda_l2: [0.1]
+      learning_rate: [0.05]
+    monotone:
+      home_win:
+        diff_goal_diff_roll_mean_5: 1
+        diff_goal_diff_roll_mean_10: 1
+        diff_goal_diff_roll_mean_20: 1
+        diff_gf_roll_mean_5: 1
+        diff_gf_roll_mean_10: 1
+        diff_gf_roll_mean_20: 1
+        diff_ga_roll_mean_5: -1
+        diff_ga_roll_mean_10: -1
+        diff_ga_roll_mean_20: -1
+      over_5_5:
+        sum_gf_roll_mean_5: 1
+        sum_gf_roll_mean_10: 1
+        sum_gf_roll_mean_20: 1
+        sum_ga_roll_mean_5: 1
+        sum_ga_roll_mean_10: 1
+        sum_ga_roll_mean_20: 1
+
+calibration:
+  method: isotonic
+  # Must not exceed split.calibration_games (50) -- above it every smoke window
+  # would skip calibration entirely (modeling/calibrate.py:196) and the path
+  # would never be exercised.
+  min_samples: 50
+
+evaluation:
+  ece_bins: 10
+  bootstrap_samples: 1000
+  bootstrap_block_by_day: true
+  epsilon_clip: 1.0e-15

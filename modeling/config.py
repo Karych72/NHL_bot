@@ -120,12 +120,20 @@ class SplitConfig(_ForbidExtraModel):
     cut from the timeline tail. Positional index arrays are returned in
     chronological order; monotonicity and holdout isolation are validated
     inside the splitter.
+
+    Bounds here are sanitary only (positive integers) — they do not encode a
+    "safe" geometry for any particular dataset size. Whether a geometry
+    actually fits the available history is checked at split-build time by the
+    data-volume guard in ``modeling.splits.build_walk_forward_splits``
+    (Задача 14, ``docs/project_review_2026-06-29.md`` §B2): a fixed config
+    floor cannot distinguish a smoke profile on one season from a
+    multiseason production profile.
     """
 
     method: SplitMethod
-    n_test_windows: int = Field(..., ge=5)
-    inner_val_games: int = Field(..., ge=300)
-    calibration_games: int = Field(..., ge=300)
+    n_test_windows: int = Field(..., ge=1)
+    inner_val_games: int = Field(..., ge=1)
+    calibration_games: int = Field(..., ge=1)
     holdout: HoldoutConfig
     outer_block_games: Optional[int] = Field(default=None, ge=1)
 

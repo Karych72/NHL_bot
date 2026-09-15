@@ -6,6 +6,14 @@ information leak across block boundaries. See
 ``plan/classifier/nhl_classifier_modeling_plan_UPDATE.md``, section
 "### 4. Временные сплиты без утечки".
 
+Block-order validation (``_assert_strictly_before``) compares **positions** in
+the sorted timeline, not calendar days, so a day with several games may
+legitimately straddle a block boundary. This is safe only because every
+rolling/as-of feature is scoped to ``(team_id, season_id)`` with ``shift(1)``
+/ backward as-of and never looks across teams or at the whole league (Задача
+32, ``modeling/dataset_builder/features.py``). See that function's docstring
+for the exact condition.
+
 Index convention
 ----------------
 All ``*_idx`` fields are **positional integer indices** into the input keys
@@ -182,9 +190,14 @@ def build_walk_forward_splits(
     Guarantees
     ----------
     - Stable sort by ``(day, game_id)``; input row order is ignored.
-    - Expanding train: ``train_k`` is strictly before ``inner_val_k``.
+    - Expanding train: ``train_k`` is strictly before ``inner_val_k`` **by
+      position** in the sorted timeline (not by calendar day — a day with
+      several games may straddle the ``train``/``inner_val`` boundary; see
+      ``_assert_strictly_before`` for why that is safe under the current
+      feature set, and when it would stop being safe).
     - ``inner_val_k``, ``calibration_k``, ``test_k`` are consecutive,
-      non-overlapping blocks within each window; holdout is after all ``test_k``.
+      non-overlapping blocks within each window (by position); holdout is
+      after all ``test_k`` (by position).
     - ``test_k`` blocks do not overlap across windows (by ``game_id``).
     - For ``method=month``, ``inner_val_k`` and ``calibration_k`` may overlap
       across windows: each window takes the tail of games immediately before its
@@ -207,8 +220,7 @@ def build_walk_forward_splits(
     wf_mask[list(holdout_idx)] = False
     wf_positions = np.flatnonzero(wf_mask)
 
-    if len(wf_positions) == 0:
-        raise SplitError("no rows remain for walk-forward after holdout cut")
+    _check_minimum_history(len(sorted_keys), len(holdout_idx), len(wf_positions), config)
 
     if config.method == SplitMethod.month:
         windows = _windows_calendar_month(sorted_keys, wf_positions, config)
@@ -262,6 +274,72 @@ def _holdout_indices(days: pd.Series, holdout: HoldoutConfig) -> np.ndarray:
     return holdout_idx
 
 
+def _check_minimum_history(
+    total_rows: int,
+    holdout_size: int,
+    wf_rows: int,
+    config: SplitConfig,
+) -> None:
+    """Fail fast when the dataset is too small for the configured geometry.
+
+    Why: a fixed config (e.g. 300/300/5-windows) is tuned for multiseason
+    history and silently produces empty or nonsensical windows on a single
+    season instead of an explicit error (Задача 14,
+    ``docs/project_review_2026-06-29.md`` §B2). This is a top-level,
+    data-driven pre-check ahead of window carving; it does not replace the
+    detailed per-window ``SplitError``s in ``_windows_calendar_month``,
+    ``_window_from_tail`` and ``_windows_fixed_games`` below, which still run
+    and can still fail on real calendar-month shape even when this guard
+    passes (this guard only checks a necessary lower bound on row counts,
+    not the actual distribution of games across calendar months).
+
+    Minimum walk-forward rows, by method:
+    - ``fixed_games``: outer blocks are disjoint, so windows multiply in
+      full — ``n_test_windows * outer_block_games + train(>=1)``.
+    - ``month``: ``inner_val``/``calibration`` are a shared tail reused by
+      later (chronologically overlapping) windows — only the earliest
+      selected test month needs a dedicated ``inner_val + calibration``
+      pool before it. Only ``test`` (>=1 row/window, disjoint by
+      construction) multiplies by ``n_test_windows`` --
+      ``inner_val_games + calibration_games + n_test_windows * 1 + train(>=1)``.
+
+    Parameters
+    ----------
+    total_rows:
+        Total input rows (after sorting), before the holdout cut.
+    holdout_size:
+        Rows carved out for the holdout block.
+    wf_rows:
+        Rows remaining for walk-forward windows (``total_rows - holdout_size``).
+    config:
+        Split geometry to validate.
+    """
+    train_min = 1
+    if config.method == SplitMethod.fixed_games:
+        assert config.outer_block_games is not None
+        per_window_desc = f"outer_block_games={config.outer_block_games}"
+        required_wf = config.n_test_windows * config.outer_block_games + train_min
+    else:
+        per_window_desc = (
+            f"inner_val_games={config.inner_val_games} + calibration_games="
+            f"{config.calibration_games} + {config.n_test_windows} windows x test>=1"
+        )
+        required_wf = (
+            config.inner_val_games
+            + config.calibration_games
+            + config.n_test_windows * 1
+            + train_min
+        )
+    required_total = holdout_size + required_wf
+    if wf_rows < required_wf:
+        raise SplitError(
+            "not enough history for the configured split geometry: need >= "
+            f"{required_total} rows total (holdout {holdout_size} + {per_window_desc} "
+            f"+ train>={train_min} = {required_wf} walk-forward rows), have "
+            f"{total_rows} rows total ({wf_rows} walk-forward rows after holdout cut)"
+        )
+
+
 def _windows_calendar_month(
     sorted_keys: pd.DataFrame,
     wf_positions: np.ndarray,
@@ -303,13 +381,8 @@ def _windows_fixed_games(
         )
     block_size = config.outer_block_games
     total_block_span = block_size * config.n_test_windows
-    if len(wf_positions) < total_block_span:
-        raise SplitError(
-            "not enough history for "
-            f"{config.n_test_windows} outer windows with current split parameters "
-            f"(need at least {total_block_span} walk-forward rows, have {len(wf_positions)})"
-        )
-
+    # No row-count check here: _check_minimum_history already guarantees
+    # len(wf_positions) >= total_block_span + 1 for this method.
     windows: list[OuterWindow] = []
     base = len(wf_positions) - total_block_span
     for k in range(1, config.n_test_windows + 1):
@@ -470,12 +543,44 @@ def _assert_strictly_before(
     later_idx: np.ndarray,
     message: str,
 ) -> None:
+    """Assert every row of ``earlier_idx`` precedes every row of ``later_idx``.
+
+    Compares **positions** in the ``(day, game_id)``-sorted timeline (see the
+    module docstring, "Index convention"), not calendar days. On a real NHL
+    calendar several games share a day and blocks are cut by row count, so a
+    block boundary can legitimately fall inside a day — the old day-strict
+    check rejected that and could not build a split on any calendar with
+    more than one game per day (Задача 32).
+
+    This is safe under the current feature set only because every
+    rolling/as-of feature is computed within ``(team_id, season_id)`` with
+    ``shift(1)`` / ``direction="backward"`` and never looks across teams or
+    at the whole league (``modeling/dataset_builder/features.py``): two
+    games on the same day are four different teams with disjoint histories,
+    so their landing in adjacent blocks discloses nothing. If a cross-team or
+    league-wide feature is ever added, a same-day gap between blocks can leak
+    information and this check stops being sufficient on its own.
+
+    Parameters
+    ----------
+    days:
+        Full sorted ``day`` series; used only to render dates in the raised
+        error message, not for the comparison itself.
+    earlier_idx, later_idx:
+        Positional indices, into the same sorted timeline, of the two blocks
+        being compared. An empty block is not a violation and is skipped.
+    message:
+        Prefix for the raised ``SplitError``.
+    """
     if len(earlier_idx) == 0 or len(later_idx) == 0:
         return
-    if days.iloc[earlier_idx].max() >= days.iloc[later_idx].min():
+    earlier_max_pos = int(np.max(earlier_idx))
+    later_min_pos = int(np.min(later_idx))
+    if earlier_max_pos >= later_min_pos:
         raise SplitError(
-            f"{message} (max earlier day {days.iloc[earlier_idx].max()} "
-            f">= min later day {days.iloc[later_idx].min()})"
+            f"{message} (max earlier position {earlier_max_pos} "
+            f"[day {days.iloc[earlier_max_pos].date()}] >= min later position "
+            f"{later_min_pos} [day {days.iloc[later_min_pos].date()}])"
         )
 
 
