@@ -2,10 +2,12 @@
 
 Manual, network-bound tool for the loader tests (``tests/test_pipeline_*.py``):
 never imported by a test, never called from ``make``. Every file it writes is a
-real response of the URL printed next to it below, trimmed only by *dropping
+real response of the URL printed next to it below, trimmed mostly by *dropping
 records* — server-side ``cayenneExp`` filters where the endpoint supports them,
-an id whitelist otherwise. Keys and value types are stored exactly as the API
-returned them (a ``null`` stays ``null``, a string stays a string).
+an id whitelist otherwise — plus, for the ``landing`` fixture only, dropping a
+few top-level keys the loader never reads (``tvBroadcasts``, ``summary.scoring``,
+``summary.penalties``). Keys and value types that are kept are stored exactly
+as the API returned them (a ``null`` stays ``null``, a string stays a string).
 
 Fixtures for ``https://api.nhle.com/stats/rest/en/*`` hold the ``data`` list of
 the paginated response — i.e. what ``ModernNhlLoader.fetch_paginated`` returns;

@@ -175,7 +175,7 @@ NHL_bot/
 | API | Базовый URL | Данные |
 |---|---|---|
 | Stats API | `api.nhle.com/stats/rest/en/` | Команды, статистика игроков/вратарей/команд за сезон, список игр |
-| Web API | `api-web.nhle.com/v1/` | Турнирная таблица, составы, play-by-play, boxscore |
+| Web API | `api-web.nhle.com/v1/` | Турнирная таблица, составы, play-by-play, boxscore, landing (звёзды матча) |
 
 ### Поток данных
 
@@ -185,8 +185,8 @@ NHL Stats API                          NHL Web API
      ├─ /team ──────────────────────┐        ├─ /standings/now
      ├─ /team/summary               │        ├─ /roster/{tri}/{season}
      ├─ /skater/summary             │        ├─ /gamecenter/{id}/play-by-play
-     ├─ /goalie/summary             │        └─ /gamecenter/{id}/boxscore
-     └─ /game (finished)            │
+     ├─ /goalie/summary             │        ├─ /gamecenter/{id}/boxscore
+     └─ /game (finished)            │        └─ /gamecenter/{id}/landing
                                     │
               ┌─────────────────────┘
               ▼
@@ -211,10 +211,11 @@ NHL Stats API                          NHL Web API
               │       → games_meta (завершённые игры за DATE_FROM..DATE_TO)
               │
               ├── 7. build_game_rows(games_meta)
-              │       Для каждой игры: play-by-play + boxscore через
-              │       fetch_game_json() (диск-кэш, см. ниже)
+              │       Для каждой игры: play-by-play + boxscore + landing
+              │       через fetch_game_json() (диск-кэш, см. ниже)
               │       → games_rows, all_goals_rows, game_team_rows,
-              │         game_player_rows, game_goalie_rows
+              │         game_player_rows, game_goalie_rows,
+              │         game_three_stars_rows
               │
               └── 8. PostgreSQL (одна транзакция):
                       DELETE per-game для game_id в окне
@@ -235,9 +236,10 @@ NHL Stats API                          NHL Web API
 ### Кэш сырых пер-игровых ответов
 
 `ModernNhlLoader.fetch_game_json(game_id, endpoint)` — единственная точка, через которую
-`build_game_rows` читает `gamecenter/{id}/play-by-play` и `gamecenter/{id}/boxscore`.
+`build_game_rows` читает `gamecenter/{id}/play-by-play`, `gamecenter/{id}/boxscore` и
+`gamecenter/{id}/landing` (звёзды матча).
 Финальная игра неизменна, поэтому её ответ кэшируется на диске без TTL и инвалидации:
-`all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz` (каталог `all_data/` — в `.gitignore`,
+`all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz` (каталог `all_data/` — в `.gitignore`,
 в репозиторий не коммитится). Файл есть → читаем с диска; файла нет → идём в сеть и, если
 `gameState` ответа финальный (`OFF`/`FINAL`), пишем в кэш. Чтение сквозное, без флага
 включения. Сезонные отчёты (`skater/summary`, `standings/now` и другие эндпоинты `build_*`)
@@ -701,8 +703,8 @@ Panthers        28.5  70
 │  ├── /team                           ├── /standings/now            │
 │  ├── /team/summary                   ├── /roster/{tri}/{season}    │
 │  ├── /skater/summary                 ├── /gamecenter/{id}/play-by-play
-│  ├── /goalie/summary                 └── /gamecenter/{id}/boxscore │
-│  └── /game                                                         │
+│  ├── /goalie/summary                 ├── /gamecenter/{id}/boxscore │
+│  └── /game                           └── /gamecenter/{id}/landing
 └─────────────┬───────────────────────────────────────────────────────┘
               │  HTTP GET (requests.Session, retry ×10, backoff)
               ▼
@@ -730,7 +732,7 @@ Panthers        28.5  70
 │  games, all_goals,                                                   │
 │  game_team_stats,                                                    │
 │  game_player_stats,                                                  │
-│  game_goalie_stats                                                   │
+│  game_goalie_stats,                                                  │
 │  game_three_stars                                                    │
 └──────────────────────────────────┬───────────────────────────────────┘
                                    │  psycopg2 (SimpleConnectionPool)
