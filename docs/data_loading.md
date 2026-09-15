@@ -237,7 +237,10 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 
 ### 6.1. Фазы выполнения
 
-Метод `ModernNhlLoader.run()` идёт строго последовательно:
+Метод `ModernNhlLoader.run()` идёт строго последовательно. Шаги 2-8 выполняет
+`build_season_reference_rows()` (возвращает `SeasonReferenceRows`, именованный
+кортеж — Задача 19, финальное ревью), которую `run()` вызывает одним шагом
+между 1 и 9; ниже они расписаны по вызываемым внутри неё методам:
 
 1. **`load_team_reference()`** — справочник команд (`/stats/rest/en/team`) +
    текущая турнирная таблица (`/v1/standings/now`) для названий

@@ -11,10 +11,11 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
-      # Dev-only: avoids password in compose for the default superuser (see docs).
+      # trust avoids a password in compose for the default superuser; safe here only
+      # because the port below is published on loopback, not 0.0.0.0 (see docs).
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
