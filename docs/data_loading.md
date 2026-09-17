@@ -156,7 +156,7 @@ make env-example
 | `game_team_stats` | `UNIQUE (game_id, team_id)` | команда × игра (по 2 строки на игру) |
 | `game_player_stats` | `UNIQUE (game_id, player_id)` | полевой × игра |
 | `game_goalie_stats` | `UNIQUE (game_id, player_id)` | вратарь × игра |
-| `game_three_stars` | `UNIQUE (game_id, star)` | звезда матча × игра (по 3 строки на игру) |
+| `game_three_stars` | `UNIQUE (game_id, star)` | звезда матча × игра (3 строки на игру, кроме 8 игр из 6560 в прогоне по 5 сезонам, где NHL API отдаёт меньше трёх звёзд) |
 | `all_goals` | без PK, есть `event_id` | каждый забитый гол |
 
 Порядок создания зафиксирован в `Makefile` (`DDL_TABLES`): сначала
