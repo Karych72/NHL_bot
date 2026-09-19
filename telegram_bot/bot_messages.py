@@ -56,15 +56,6 @@ def _format_leader_value(value: Union[int, float, Decimal, str, None]) -> str:
     return str(value)
 
 
-def _col_value(column: Optional[List[Any]], i: int) -> Any:
-    """Безопасный доступ к колонке результата `fetch_all`/`cached_fetch_all`:
-    колонки может не быть в словаре вовсе (старые тестовые фикстуры без
-    колонок «хвоста» лидерборда, Задача 18) — тогда результат `None`
-    (дальше отрендерится через `_format_leader_value` как «—»), а не `KeyError`.
-    """
-    return column[i] if column is not None else None
-
-
 def _resolve_secondary_sort(table_name: str, secondary_sort: Optional[str]) -> str:
     if secondary_sort is not None:
         return secondary_sort
@@ -756,25 +747,25 @@ def player_stats_with_count(
     total = int(stats['total'][0]) if stats['count_rows'] else 0
 
     is_goalie = table_name == "goalies_season_stats"
-    roster_positions = stats.get("roster_position")
-    tail_cols = {key: stats.get(key) for key in tail_keys}
+    roster_positions = stats['roster_position']
+    tail_cols = {key: stats[key] for key in tail_keys}
     players = []
     for i in range(stats['count_rows']):
         lastname = stats['lastname'][i] or "Unknown"
-        pos_raw = _col_value(roster_positions, i)
+        pos_raw = roster_positions[i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
         if is_goalie:
             tail = (
-                f"игр: {_format_leader_value(_col_value(tail_cols['tail_games'], i))}, "
-                f"сейвы: {_format_leader_value(_col_value(tail_cols['tail_saves'], i))}/"
-                f"{_format_leader_value(_col_value(tail_cols['tail_shots_against'], i))}, "
-                f"время: {_format_leader_value(_col_value(tail_cols['tail_toi'], i))} "
-                f"({_format_leader_value(_col_value(tail_cols['tail_toi_pg'], i))}/игра)"
+                f"игр: {_format_leader_value(tail_cols['tail_games'][i])}, "
+                f"сейвы: {_format_leader_value(tail_cols['tail_saves'][i])}/"
+                f"{_format_leader_value(tail_cols['tail_shots_against'][i])}, "
+                f"время: {_format_leader_value(tail_cols['tail_toi'][i])} "
+                f"({_format_leader_value(tail_cols['tail_toi_pg'][i])}/игра)"
             )
         else:
             tail = (
-                f"игр: {_format_leader_value(_col_value(tail_cols['tail_games'], i))}, "
-                f"смен: {_format_leader_value(_col_value(tail_cols['tail_shifts'], i))}"
+                f"игр: {_format_leader_value(tail_cols['tail_games'][i])}, "
+                f"смен: {_format_leader_value(tail_cols['tail_shifts'][i])}"
             )
         players.append({
             'rank': offset + i + 1,
@@ -1194,10 +1185,6 @@ def team_stats_with_count(
 
     total = int(stats['total'][0]) if stats['count_rows'] else 0
 
-    wins_col = stats.get('wins')
-    losses_col = stats.get('losses')
-    ot_col = stats.get('ot')
-    record_points_col = stats.get('record_points')
     teams = []
     for i in range(stats['count_rows']):
         teams.append({
@@ -1205,10 +1192,10 @@ def team_stats_with_count(
             'name': (stats['team'][i] or "—").strip(),
             'value': _format_leader_value(stats['points'][i]),
             'games': _format_leader_value(stats['games_played'][i]),
-            'wins': _format_leader_value(_col_value(wins_col, i)),
-            'losses': _format_leader_value(_col_value(losses_col, i)),
-            'ot': _format_leader_value(_col_value(ot_col, i)),
-            'record_points': _format_leader_value(_col_value(record_points_col, i)),
+            'wins': _format_leader_value(stats['wins'][i]),
+            'losses': _format_leader_value(stats['losses'][i]),
+            'ot': _format_leader_value(stats['ot'][i]),
+            'record_points': _format_leader_value(stats['record_points'][i]),
         })
 
     if use_html:
