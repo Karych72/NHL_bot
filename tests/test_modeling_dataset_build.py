@@ -409,6 +409,69 @@ class TestModelingDatasetBuild(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "NaN in key column: home_team_id"):
             validate_or_raise("predict", predict, feature_columns=feature_columns_from_df(predict))
 
+    def test_snapshot_audit_columns_excluded_from_features(self):
+        """Задача 15: hist_*/opponent_team_id/home_team_id/away_team_id snapshot
+        columns are audit-only (see feature_schema.AUDIT_COLUMNS) and must never
+        leak into the feature set, even though build_match_feature_snapshots
+        still emits them for validate.py's anti-leakage checks."""
+        team_facts, _ = build_team_game_facts(_history_df())
+        rolling = compute_team_rolling_features(team_facts, [5])
+        targets = pd.DataFrame(
+            [{"game_id": 100, "day": "2026-01-04", "season_id": 20252026, "home_team_id": 10, "away_team_id": 20}]
+        )
+        snapshots = build_match_feature_snapshots(targets, rolling)
+        audit_cols_present = [
+            "home_hist_day",
+            "home_hist_game_id",
+            "home_opponent_team_id",
+            "home_home_team_id",
+            "home_away_team_id",
+            "away_hist_day",
+            "away_hist_game_id",
+            "away_opponent_team_id",
+            "away_home_team_id",
+            "away_away_team_id",
+        ]
+        for col in audit_cols_present:
+            self.assertIn(col, snapshots.columns, f"fixture assumption broken: {col} missing from snapshot")
+        features = feature_columns_from_df(snapshots)
+        for col in audit_cols_present:
+            self.assertNotIn(col, features, f"{col} leaked into feature_columns_from_df")
+
+
+class TestAlignPredictToManifest(unittest.TestCase):
+    """Задача 15: `_align_predict_to_manifest` casts predict feature dtypes to
+    the train manifest for *any* row count, not only the empty-predict case —
+    see module docstring for why train/predict can legitimately disagree on a
+    snapshot column's pandas dtype."""
+
+    def test_casts_existing_column_dtype_for_non_empty_frame(self):
+        from modeling.dataset_builder.base import _align_predict_to_manifest
+
+        assembled = pd.DataFrame({"game_id": [1, 2], "home_is_home": [1, 0]})
+        self.assertEqual(str(assembled["home_is_home"].dtype), "int64")
+        manifest = [{"name": "home_is_home", "dtype": "float64", "position": "0"}]
+
+        out = _align_predict_to_manifest(assembled, manifest)
+
+        self.assertEqual(str(out["home_is_home"].dtype), "float64")
+        self.assertEqual(len(out), 2)
+
+    def test_does_not_fabricate_missing_column_for_non_empty_frame(self):
+        from modeling.dataset_builder.base import _align_predict_to_manifest
+
+        assembled = pd.DataFrame({"game_id": [1, 2], "f_a": [1.0, 2.0]})
+        manifest = [
+            {"name": "f_a", "dtype": "float64", "position": "0"},
+            {"name": "f_missing", "dtype": "float64", "position": "1"},
+        ]
+
+        out = _align_predict_to_manifest(assembled, manifest)
+
+        self.assertNotIn("f_missing", out.columns)
+        with self.assertRaises(ValueError):
+            assert_feature_parity(out, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

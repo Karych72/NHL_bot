@@ -109,6 +109,32 @@ def build_parser() -> argparse.ArgumentParser:
             "(status in summary.md is still recorded)"
         ),
     )
+
+    predict = sub.add_parser("predict", help="Score a predict dataset with the latest trained model")
+    predict.add_argument("--task", choices=("home_win", "over_5_5"), required=True)
+    predict.add_argument("--model", choices=("logreg", "lgbm"), required=True)
+    predict.add_argument(
+        "--predict-dataset",
+        default="artifacts/datasets/dataset_predict.csv",
+        help="Path to dataset_predict.csv (default: artifacts/datasets/dataset_predict.csv)",
+    )
+    predict.add_argument(
+        "--predict-metadata",
+        default="artifacts/datasets/metadata_predict.json",
+        help="Path to metadata_predict.json (default: artifacts/datasets/metadata_predict.json)",
+    )
+    predict.add_argument(
+        "--artifacts-root",
+        default="artifacts",
+        help="Root containing models/<task>/<model>/latest (default: artifacts)",
+    )
+    predict.add_argument(
+        "--output",
+        help=(
+            "Path to write predictions CSV "
+            "(default: <artifacts-root>/predictions/<task>_<model>_predictions.csv)"
+        ),
+    )
     return parser
 
 
@@ -186,6 +212,34 @@ def _handle_train(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _handle_predict(args: argparse.Namespace) -> int:
+    from modeling.predict_runner import run_predict
+
+    output_path = (
+        Path(args.output)
+        if args.output
+        else Path(args.artifacts_root) / "predictions" / f"{args.task}_{args.model}_predictions.csv"
+    )
+    try:
+        result = run_predict(
+            task=args.task,
+            model=args.model,
+            predict_dataset=Path(args.predict_dataset),
+            predict_metadata=Path(args.predict_metadata),
+            artifacts_root=Path(args.artifacts_root),
+            output_path=output_path,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"predict error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"run_id={result.run_id} task={result.task} model={result.model} rows={len(result.predictions)}")
+    print(f"output: {result.output_path}")
+    if not result.predictions.empty:
+        print(result.predictions.to_string(index=False))
+    return 0
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -218,6 +272,9 @@ def main() -> None:
 
     if args.command == "train":
         raise SystemExit(_handle_train(args))
+
+    if args.command == "predict":
+        raise SystemExit(_handle_predict(args))
 
 
 if __name__ == "__main__":

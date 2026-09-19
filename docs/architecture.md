@@ -91,13 +91,16 @@ NHL_bot/
 │       ├── get_goals_game.sql
 │       └── get_goalies_game.sql
 │
-├── modeling/                            # ML-пайплайн: датасет-билдер + обучение (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
-│   ├── cli.py                           # `python -m modeling.cli build-dataset|train`
+├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
+│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict`
 │   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
+│   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
 │   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py, config.py, artifacts.py, и др.
 │
 └── artifacts/                           # datasets/ — в .gitignore; reports/ — коммитится (см. .gitignore)
     ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД
+    ├── models/                          # <task>/<model>/<run_id>/final/ + symlink latest (см. docs/modeling_training.md); не в .gitignore — не коммитить руками
+    ├── predictions/                     # CLI predict пишет сюда по умолчанию: <task>_<model>_predictions.csv; не в .gitignore — не коммитить руками
     └── reports/                         # Скрипты и CSV-выгрузки отчётов (коммитятся; к датасету отношения не имеют)
 ```
 

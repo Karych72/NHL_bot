@@ -21,6 +21,34 @@ SERVICE_COLUMNS = (
     "low_history_confidence",
     "quality_warnings",
 )
+# Non-feature columns carried through by features.py's as-of snapshot join
+# (``_snapshot_side``), which renames every remaining joined column to
+# ``<home|away>_<name>`` without filtering out identifiers:
+# - ``hist_day`` / ``hist_game_id``: anti-leakage audit columns; validate.py
+#   checks them at build time (``hist_day < target day``, ``hist_game_id !=
+#   game_id``) but they are not model inputs.
+# - ``opponent_team_id`` / ``home_team_id`` / ``away_team_id``: identifiers of
+#   the *snapshot's own historical game* (who the team played, and which side
+#   was home, back then) — not the current target matchup, and not usable as
+#   an ordinal/numeric signal by logreg or LightGBM. Their dtype is also
+#   fragile: float64 when a cold-start row has no snapshot yet, int64 once one
+#   exists, so a small predict slice with no cold-start rows disagrees with
+#   train's dtype and fails ``assert_feature_parity`` — a second, independent
+#   reason they must not be treated as features.
+# None of these are part of ``feature_manifest`` / ``features_hash`` / X, and
+# all are dropped by ``ordered_columns_for_output`` before the CSV is written.
+AUDIT_COLUMNS = (
+    "home_hist_day",
+    "home_hist_game_id",
+    "home_opponent_team_id",
+    "home_home_team_id",
+    "home_away_team_id",
+    "away_hist_day",
+    "away_hist_game_id",
+    "away_opponent_team_id",
+    "away_home_team_id",
+    "away_away_team_id",
+)
 
 
 def _normalize_dtype(value: str) -> str:
@@ -40,6 +68,7 @@ def feature_columns_from_df(df: pd.DataFrame) -> List[str]:
         if column not in KEY_COLUMNS
         and column not in LABEL_COLUMNS
         and column not in SERVICE_COLUMNS
+        and column not in AUDIT_COLUMNS
     ]
 
 
