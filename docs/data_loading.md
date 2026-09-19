@@ -156,6 +156,7 @@ make env-example
 | `game_team_stats` | `UNIQUE (game_id, team_id)` | команда × игра (по 2 строки на игру) |
 | `game_player_stats` | `UNIQUE (game_id, player_id)` | полевой × игра |
 | `game_goalie_stats` | `UNIQUE (game_id, player_id)` | вратарь × игра |
+| `game_three_stars` | `UNIQUE (game_id, star)` | звезда матча × игра (3 строки на игру, кроме 8 игр из 6560 в прогоне по 5 сезонам, где NHL API отдаёт меньше трёх звёзд) |
 | `all_goals` | без PK, есть `event_id` | каждый забитый гол |
 
 Порядок создания зафиксирован в `Makefile` (`DDL_TABLES`): сначала
@@ -265,17 +266,19 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 9. **`fetch_final_games()`** — список **завершённых** игр (`gameStateId=7`)
    за `SEASON_ID` в окне дат через
    `https://api.nhle.com/stats/rest/en/game?cayenneExp=...`.
-10. **`build_game_rows()`** — для каждой игры два запроса:
-    `/v1/gamecenter/{game_id}/play-by-play` и `/v1/gamecenter/{game_id}/boxscore`,
-    через единственную точку доступа `ModernNhlLoader.fetch_game_json(game_id,
-    endpoint)`. Из них собираются `games`, `game_team_stats`, `game_player_stats`,
-    `game_goalie_stats`, `all_goals`. Каждые 50 игр в логе пишется прогресс
+10. **`build_game_rows()`** — для каждой игры **три** запроса:
+    `/v1/gamecenter/{game_id}/play-by-play`, `/v1/gamecenter/{game_id}/boxscore`
+    и `/v1/gamecenter/{game_id}/landing`, через единственную точку доступа
+    `ModernNhlLoader.fetch_game_json(game_id, endpoint)`. Из них собираются
+    `games`, `game_team_stats`, `game_player_stats`, `game_goalie_stats`,
+    `game_three_stars` (только из `landing`, звёзд нет ни в `play-by-play`,
+    ни в `boxscore`), `all_goals`. Каждые 50 игр в логе пишется прогресс
     `Processed games: N/total`. Ответ завершённой игры (`gameState` в `OFF`/
     `FINAL`) кладётся на диск и на повторных запусках читается оттуда без
     обращения к сети — подробности и последствия для повторного запуска
     в §6.5.
 11. **Запись в Postgres**: одна транзакция (`autocommit = False`):
-    1. `DELETE FROM all_goals|game_player_stats|game_team_stats|game_goalie_stats|games WHERE game_id = ANY(window_ids)` — удаление текущей версии данных по этим играм;
+    1. `DELETE FROM game_three_stars|all_goals|game_player_stats|game_team_stats|game_goalie_stats|games WHERE game_id = ANY(window_ids)` — удаление текущей версии данных по этим играм;
     2. `UPSERT` в сезонные таблицы (`ON CONFLICT … DO UPDATE`);
     3. `INSERT` в per-game таблицы;
     4. `COMMIT`. На любом исключении выше — `ROLLBACK` всей транзакции,
@@ -301,6 +304,7 @@ Date window 2025-10-01 .. 2026-03-29 (season_id=20252026, games.season=25/26)
 | `https://api.nhle.com/stats/rest/en/game?cayenneExp=…` | Список завершённых игр в окне дат. |
 | `https://api-web.nhle.com/v1/gamecenter/{game_id}/play-by-play` | Полное PBP игры (голы, пенальти, faceoffs, hits, …). Завершённые игры — с диск-кэшем, см. §6.5. |
 | `https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore` | Бокс-скор: per-player и per-team метрики игры. Завершённые игры — с диск-кэшем, см. §6.5. |
+| `https://api-web.nhle.com/v1/gamecenter/{game_id}/landing` | Три звезды матча (`summary.threeStars`) — их нет ни в `play-by-play`, ни в `boxscore`. Завершённые игры — с диск-кэшем, см. §6.5. |
 
 Обработка сети (`get_json` в лоадере): до 10 попыток на запрос с задержкой
 1 с между ошибками; на `429 Too Many Requests` ждём `Retry-After` (или 2с,
@@ -312,7 +316,7 @@ Date window 2025-10-01 .. 2026-03-29 (season_id=20252026, games.season=25/26)
 | Таблицы | Стратегия | Конфликты |
 |---------|-----------|----------|
 | `teams`, `teams_stats`, `rosters`, `players_season_stats`, `goalies_season_stats`, `players_advanced_stats`, `players_shot_types` | **UPSERT** | `ON CONFLICT (PK) DO UPDATE SET …` для всех не-ключевых колонок. |
-| `games`, `all_goals`, `game_team_stats`, `game_player_stats`, `game_goalie_stats` | **DELETE по `game_id` в окне → INSERT** | дубли по `game_id` из NHL API при пагинации устраняются дедупом по PK перед записью. |
+| `games`, `all_goals`, `game_team_stats`, `game_player_stats`, `game_goalie_stats`, `game_three_stars` | **DELETE по `game_id` в окне → INSERT** | дубли по `game_id` из NHL API при пагинации устраняются дедупом по PK перед записью. |
 
 Дополнительно `execute_upsert` в лоадере **внутри одного INSERT**
 дедуплицирует входной список по `conflict_columns` — иначе пагинированные
@@ -346,15 +350,17 @@ NHL-отчёты могут вернуть одного игрока дважд�
 которую NHL внёс в данные постфактум: эти эндпоинты каждый раз идут
 в сеть через `get_json`/`fetch_paginated`, кэша у них нет (см. §6.2, §6.3).
 
-Для **пер-игровых** `play-by-play`/`boxscore` это больше не так. С Задачи 31
-`fetch_game_json` (см. §6.1 п.10) кладёт ответ завершённой игры
+Для **пер-игровых** `play-by-play`/`boxscore`/`landing` это больше не так. С
+Задачи 31 `fetch_game_json` (см. §6.1 п.10) кладёт ответ завершённой игры
 (`gameState` в `OFF`/`FINAL`) на диск —
-`all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz` — и каждый следующий
-запуск читает его оттуда без обращения к сети, TTL и автоинвалидации нет.
+`all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz` — и каждый
+следующий запуск читает его оттуда без обращения к сети, TTL и
+автоинвалидации нет.
 Штатные `make season-sync-week` / `make season-sync-today` (`Makefile:173-182`)
 на пересекающемся окне для уже кэшированных игр повторно перечитают именно
-замороженный файл: если NHL поправил `play-by-play`/`boxscore` постфактум —
-эта правка **не** попадёт в БД, пока кэш-файл не удалён руками. `gameState`
+замороженный файл: если NHL поправил `play-by-play`/`boxscore`/`landing`
+постфактум — эта правка **не** попадёт в БД, пока кэш-файл не удалён руками.
+`gameState`
 становится `OFF`/`FINAL` сразу после финальной сирены, то есть кэш
 фиксирует ответ ровно в момент, когда вероятность последующей правки
 NHL максимальна.
@@ -362,8 +368,11 @@ NHL максимальна.
 Инвалидация — вручную, удалением файла(ов) кэша перед перезапуском лоадера:
 
 ```bash
-# Точечно: одна игра одного сезона
-rm all_data/raw/{season_id}/{game_id}.pbp.json.gz all_data/raw/{season_id}/{game_id}.box.json.gz
+# Точечно: одна игра одного сезона (все три эндпоинта — иначе замороженным
+# останется тот, который забыли перечислить, включая game_three_stars)
+rm all_data/raw/{season_id}/{game_id}.pbp.json.gz \
+   all_data/raw/{season_id}/{game_id}.box.json.gz \
+   all_data/raw/{season_id}/{game_id}.landing.json.gz
 
 # Окном: весь сезон целиком (следующий прогон перекачает все игры окна заново)
 rm -rf all_data/raw/{season_id}

@@ -1,0 +1,117 @@
+{
+  "id": 2025021079,
+  "season": 20252026,
+  "gameType": 2,
+  "limitedScoring": false,
+  "gameDate": "2026-03-18",
+  "venue": {
+    "default": "Capital One Arena"
+  },
+  "venueLocation": {
+    "default": "Washington"
+  },
+  "startTimeUTC": "2026-03-18T23:30:00Z",
+  "easternUTCOffset": "-04:00",
+  "venueUTCOffset": "-04:00",
+  "venueTimezone": "US/Eastern",
+  "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+  },
+  "gameState": "OFF",
+  "gameScheduleState": "OK",
+  "awayTeam": {
+    "id": 9,
+    "commonName": {
+      "default": "Senators",
+      "fr": "Sénateurs"
+    },
+    "abbrev": "OTT",
+    "placeName": {
+      "default": "Ottawa"
+    },
+    "placeNameWithPreposition": {
+      "default": "Ottawa",
+      "fr": "d'Ottawa"
+    },
+    "score": 1,
+    "sog": 35,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/OTT_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/OTT_dark.svg"
+  },
+  "homeTeam": {
+    "id": 15,
+    "commonName": {
+      "default": "Capitals"
+    },
+    "abbrev": "WSH",
+    "placeName": {
+      "default": "Washington"
+    },
+    "placeNameWithPreposition": {
+      "default": "Washington",
+      "fr": "de Washington"
+    },
+    "score": 4,
+    "sog": 25,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_dark.svg"
+  },
+  "shootoutInUse": true,
+  "maxPeriods": 5,
+  "regPeriods": 3,
+  "otInUse": true,
+  "tiesInUse": false,
+  "summary": {
+    "threeStars": [
+      {
+        "star": 1,
+        "playerId": 8480313,
+        "teamAbbrev": "WSH",
+        "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8480313.png",
+        "name": {
+          "default": "L. Thompson"
+        },
+        "sweaterNo": 48,
+        "position": "G",
+        "goalsAgainstAverage": 1.0,
+        "savePctg": 0.971
+      },
+      {
+        "star": 2,
+        "playerId": 8476880,
+        "teamAbbrev": "WSH",
+        "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8476880.png",
+        "name": {
+          "default": "T. Wilson"
+        },
+        "sweaterNo": 43,
+        "position": "R",
+        "goals": 1,
+        "assists": 0,
+        "points": 1
+      },
+      {
+        "star": 3,
+        "playerId": 8484873,
+        "teamAbbrev": "WSH",
+        "headshot": "https://assets.nhle.com/mugs/nhl/20252026/WSH/8484873.png",
+        "name": {
+          "default": "C. Hutson"
+        },
+        "sweaterNo": 44,
+        "position": "D",
+        "goals": 1,
+        "assists": 0,
+        "points": 1
+      }
+    ]
+  },
+  "clock": {
+    "timeRemaining": "00:00",
+    "secondsRemaining": 0,
+    "running": false,
+    "inIntermission": false
+  }
+}

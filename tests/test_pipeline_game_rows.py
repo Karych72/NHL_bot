@@ -1,12 +1,12 @@
 """Per-game row assembly in ``pipeline/load_season_modern.py``.
 
-Runs ``ModernNhlLoader.build_game_rows`` over the trimmed real play-by-play and
-boxscore of WSH 4:1 OTT (2026-03-18) and checks the five tuples it produces —
-``games``, ``all_goals``, ``game_team_stats``, ``game_player_stats``,
-``game_goalie_stats``. Both directions of
-``docs/pipeline_nulls_and_explicit_null_tz.md`` §2 are asserted on real payloads
-(a value the API sent, a real 0 included, survives; a field it omits is
-``None``), as are the PBP-derived non-NULL defaults of §3.
+Runs ``ModernNhlLoader.build_game_rows`` over the trimmed real play-by-play,
+boxscore and landing payloads of WSH 4:1 OTT (2026-03-18) and checks the six
+tuples it produces — ``games``, ``all_goals``, ``game_team_stats``,
+``game_player_stats``, ``game_goalie_stats``, ``game_three_stars``. Both
+directions of ``docs/pipeline_nulls_and_explicit_null_tz.md`` §2 are asserted
+on real payloads (a value the API sent, a real 0 included, survives; a field
+it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import unittest
 
 from tests._pipeline_fixtures import (
     GAME_ID,
+    HUTSON,
     OTT,
     OVECHKIN,
     PINTO,
@@ -24,6 +25,7 @@ from tests._pipeline_fixtures import (
     SOURDIF,
     THOMPSON,
     ULLMARK,
+    WILSON,
     WSH,
     LoaderApiTestCase,
     by_player,
@@ -37,6 +39,7 @@ from tests._pipeline_fixtures import (
 
 PLAY_BY_PLAY = "play-by-play"
 BOXSCORE = "boxscore"
+LANDING = "landing"
 
 # Every boxscore key ``build_game_rows`` reads for a nullable column.
 SKATER_BOXSCORE_KEYS = (
@@ -50,7 +53,7 @@ GOALIE_BOXSCORE_KEYS = (
 
 
 class GameRowsTest(LoaderApiTestCase):
-    def _build(self, pbp=None, box=None):
+    def _build(self, pbp=None, box=None, landing=None):
         instance = make_loader()
         stub_api(
             instance,
@@ -59,6 +62,9 @@ class GameRowsTest(LoaderApiTestCase):
                     load_fixture("nhl_game_play_by_play.json") if pbp is None else pbp
                 ),
                 BOXSCORE: load_fixture("nhl_game_boxscore.json") if box is None else box,
+                LANDING: (
+                    load_fixture("nhl_game_landing.json") if landing is None else landing
+                ),
             },
         )
         return instance.build_game_rows(load_fixture("nhl_games_meta.json"))
@@ -66,6 +72,17 @@ class GameRowsTest(LoaderApiTestCase):
     def _team_rows(self, **kwargs):
         game_team_rows = self._build(**kwargs)[2]
         return {field(r, "game_team_stats", "team_id"): r for r in game_team_rows}
+
+    def _landing_with_first_star(self, **overrides):
+        """The landing fixture with its first ``threeStars`` entry replaced by
+        a copy carrying *overrides* (a key set to ``None`` models the API
+        omitting it: ``dict.get`` returns ``None`` either way)."""
+        landing = load_fixture("nhl_game_landing.json")
+        first_star = dict(landing["summary"]["threeStars"][0])
+        first_star.update(overrides)
+        landing["summary"] = dict(landing["summary"])
+        landing["summary"]["threeStars"] = [first_star] + landing["summary"]["threeStars"][1:]
+        return landing
 
     def test_games_row_from_meta_and_play_by_play(self):
         games_rows = self._build()[0]
@@ -265,7 +282,7 @@ class GameRowsTest(LoaderApiTestCase):
         home = box["playerByGameStats"]["homeTeam"]
         home["forwards"] = [without(home["forwards"][0], *SKATER_BOXSCORE_KEYS)]
         home["goalies"] = [without(home["goalies"][0], *GOALIE_BOXSCORE_KEYS)]
-        _, _, _, player_rows, goalie_rows = self._build(box=box)
+        _, _, _, player_rows, goalie_rows, _ = self._build(box=box)
 
         # §2.2: nothing left but the keys — no 0 / "00:00" stand-ins. The PBP
         # aggregates of §3 keep their 0: they never came from the boxscore.
@@ -325,6 +342,89 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ullmark, table, "save_percentage"), 91.3)
         self.assertEqual(field(ullmark, table, "even_strength_save_percentage"), 89.47)
 
+    def test_three_stars_rows_from_landing_summary(self):
+        rows = self._build()[5]
+        table = "game_three_stars"
+        self.assertEqual(len(rows), 3)
+
+        by_star = {field(r, table, "star"): r for r in rows}
+        self.assertEqual(set(by_star), {1, 2, 3})
+
+        # All three of WSH 4:1 OTT's stars are Capitals players.
+        self.assertEqual(field(by_star[1], table, "game_id"), GAME_ID)
+        self.assertEqual(field(by_star[1], table, "player_id"), THOMPSON)
+        self.assertEqual(field(by_star[1], table, "team_id"), WSH)
+        self.assertEqual(field(by_star[2], table, "player_id"), WILSON)
+        self.assertEqual(field(by_star[2], table, "team_id"), WSH)
+        self.assertEqual(field(by_star[3], table, "player_id"), HUTSON)
+        self.assertEqual(field(by_star[3], table, "team_id"), WSH)
+
+    def test_three_stars_empty_when_summary_has_no_threeStars(self):
+        landing = load_fixture("nhl_game_landing.json")
+        landing["summary"] = without(landing["summary"], "threeStars")
+        rows = self._build(landing=landing)[5]
+        self.assertEqual(rows, [])
+
+    def test_three_stars_away_team_abbrev_resolves_to_away_team_id(self):
+        # The fixture's three stars are all WSH (home) players, so this is the
+        # only test exercising the ``elif team_abbrev == away_abbrev`` branch
+        # (``pipeline/load_season_modern.py``) — a swapped home/away lookup
+        # there would otherwise pass every other test in this file.
+        landing = self._landing_with_first_star(teamAbbrev="OTT")
+        rows = self._build(landing=landing)[5]
+        table = "game_three_stars"
+        first_star_row = next(r for r in rows if field(r, table, "star") == 1)
+        self.assertEqual(field(first_star_row, table, "team_id"), OTT)
+
+    def test_three_stars_team_abbrev_not_matching_either_side_raises(self):
+        landing = self._landing_with_first_star(teamAbbrev="XXX")
+
+        with self.assertRaisesRegex(
+            ValueError, r"teamAbbrev 'XXX' matches neither home .* nor away"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_missing_player_id_raises(self):
+        landing = self._landing_with_first_star(playerId=None)
+
+        with self.assertRaisesRegex(
+            ValueError, r"missing star/playerId"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_raises_when_landing_lacks_team_abbrevs(self):
+        # Without either abbrev, a star missing its own teamAbbrev (None) would
+        # otherwise match a missing home/away abbrev (also None) and silently
+        # resolve to team_id 0 instead of raising.
+        landing = load_fixture("nhl_game_landing.json")
+        landing["homeTeam"] = without(landing["homeTeam"], "abbrev")
+        landing["awayTeam"] = without(landing["awayTeam"], "abbrev")
+
+        with self.assertRaisesRegex(
+            ValueError, r"landing missing home/away team abbrev"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_raises_when_landing_lacks_team_ids(self):
+        # Without both ids, ``to_int``'s silent 0-default (unlike every other
+        # check in this block, which raises) would otherwise insert a
+        # team_id of 0 that passes the INSERT (no FK) but fails the bot's
+        # LEFT JOIN and shows up as empty parentheses.
+        landing = load_fixture("nhl_game_landing.json")
+        landing["homeTeam"] = without(landing["homeTeam"], "id")
+        landing["awayTeam"] = without(landing["awayTeam"], "id")
+
+        with self.assertRaisesRegex(
+            ValueError, r"landing missing home/away team abbrev/id"
+        ):
+            self._build(landing=landing)
+
+    def test_three_stars_star_outside_1_3_raises(self):
+        landing = self._landing_with_first_star(star=4)
+
+        with self.assertRaisesRegex(ValueError, r"star outside 1-3"):
+            self._build(landing=landing)
+
 
 class GameJsonCacheTest(LoaderApiTestCase):
     """``ModernNhlLoader.fetch_game_json`` — the raw per-game response cache.
@@ -340,23 +440,29 @@ class GameJsonCacheTest(LoaderApiTestCase):
         instance = make_loader()
         pbp = load_fixture("nhl_game_play_by_play.json")
         box = load_fixture("nhl_game_boxscore.json")
+        landing = load_fixture("nhl_game_landing.json")
         calls = []
 
         def counting_get_json(url):
             calls.append(url)
-            return pbp if "play-by-play" in url else box
+            if "play-by-play" in url:
+                return pbp
+            if "boxscore" in url:
+                return box
+            return landing
 
         instance.get_json = counting_get_json
         games_meta = load_fixture("nhl_games_meta.json")
 
         instance.build_game_rows(games_meta)
-        self.assertEqual(len(calls), 2)  # one play-by-play + one boxscore call
+        self.assertEqual(len(calls), 3)  # play-by-play + boxscore + landing
 
         # Acceptance: cache placement is exactly
-        # all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz.
+        # all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz.
         season_cache_dir = loader.RAW_CACHE_DIR / str(SEASON_ID)
         self.assertTrue((season_cache_dir / f"{GAME_ID}.pbp.json.gz").exists())
         self.assertTrue((season_cache_dir / f"{GAME_ID}.box.json.gz").exists())
+        self.assertTrue((season_cache_dir / f"{GAME_ID}.landing.json.gz").exists())
 
         calls.clear()
         instance.build_game_rows(games_meta)
