@@ -670,7 +670,22 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ★3 Shesterkin (NYR) — 26/28, 92.86%
 ```
 
-### `season_leaders_players.txt` — Лидеры сезона
+### `season_leaders_players.txt` — Лидеры сезона (шаблон не используется в проде)
+
+Рендерится только веткой `player_stats_with_count(..., use_html=False)`, на которую в бою нет
+ни одного вызова — только тесты (`bot_player_field`/`/leaders`/`/stats`/`/advanced` всегда
+идут через `use_html=True`). Живой формат строки — HTML из `player_stat_leaderboard_page()` —
+несёт постоянный «хвост» уже загружаемых, но раньше не показанных полей (Задача 18, «включить
+спящие данные»): игры/смены для полевых игроков (players_season_stats и, через `LEFT/INNER
+JOIN players_season_stats`, players_advanced_stats/players_shot_types), игры/сейвы/время на
+льду для вратарей (goalies_season_stats):
+
+```
+1. McDavid [C] — 138 (EDM, игр: 82, смен: 1841)
+1. Vasilevskiy [G] — 39 (TBL, игр: 58, сейвы: 1353/1483, время: 3430:45 (59:09/игра))
+```
+
+Ниже — пример вывода неиспользуемого jinja-шаблона (устаревший формат, шаблон не менялся):
 
 ```
 *Лучшие бомбардиры*
@@ -680,7 +695,17 @@ Kucherov         110  TBL
 ...
 ```
 
-### `team_stats.txt` — Статистика команд
+### `team_stats.txt` — Статистика команд (шаблон не используется в проде)
+
+Та же ситуация: `team_stats_with_count(..., use_html=False)` без продовых вызовов. Живой формат
+строки (`team_stat_leaderboard_page()`) несёт хвост `wins`-`losses`-`ot`/`points` из
+`teams_stats` (Задача 18):
+
+```
+1. Avalanche — 121 (игр: 82, 55-16-11, 121 очк.)
+```
+
+Пример вывода неиспользуемого jinja-шаблона (устаревший формат):
 
 ```
 *Статистика большинства*

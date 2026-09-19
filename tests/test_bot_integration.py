@@ -105,16 +105,19 @@ async def test_stats_menu_standings_branch_sends_table_with_menu_button(
 # Сценарий «лидеры с пагинацией»: /leaders → категория → следующая страница
 # ---------------------------------------------------------------------------
 
-# lastname, position, value, team — 25 игроков, три страницы по 10.
-_LEADERS = [(f"Player{i:02d}", "C", 100 - i, "NYR") for i in range(1, 26)]
+# lastname, position, value, team, games, shifts (Задача 18 — «хвост» строки
+# лидерборда) — 25 игроков, три страницы по 10.
+_LEADERS = [
+    (f"Player{i:02d}", "C", 100 - i, "NYR", 82, 1500 + i) for i in range(1, 26)
+]
 
 
 def _leaders_page(params):
     """Ответ на запрос страницы лидеров: срез по LIMIT/OFFSET плюс COUNT(*) OVER ()."""
     _season_id, limit, offset = params
     return [
-        (lastname, position, value, team, len(_LEADERS))
-        for lastname, position, value, team in _LEADERS[offset:offset + limit]
+        (lastname, position, value, team, games, shifts, len(_LEADERS))
+        for lastname, position, value, team, games, shifts in _LEADERS[offset:offset + limit]
     ]
 
 
@@ -143,8 +146,8 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     assert edited["parse_mode"] == "HTML"
     assert "<b>Топ бомбардиров</b>" in text
     assert "<i>Показаны 1–10 из 25 строк.</i>" in text
-    assert "1. Player01 [C] — 99 (NYR)" in text
-    assert "10. Player10 [C] — 90 (NYR)" in text
+    assert "1. Player01 [C] — 99 (NYR, игр: 82, смен: 1501)" in text
+    assert "10. Player10 [C] — 90 (NYR, игр: 82, смен: 1510)" in text
     assert "11. Player11" not in text
     assert _callback_data(edited["reply_markup"])[0] == "pl:points:10", "первая страница — только «вперёд»"
 
@@ -167,8 +170,8 @@ async def test_leaders_next_page_asks_db_for_offset_ten_and_renders_ranks_eleven
     (edited,) = update.callback_query.edited_texts
     text = edited["text"]
     assert "<i>Показаны 11–20 из 25 строк.</i>" in text
-    assert "11. Player11 [C] — 89 (NYR)" in text
-    assert "20. Player20 [C] — 80 (NYR)" in text
+    assert "11. Player11 [C] — 89 (NYR, игр: 82, смен: 1511)" in text
+    assert "20. Player20 [C] — 80 (NYR, игр: 82, смен: 1520)" in text
     assert "Player10" not in text
     assert _callback_data(edited["reply_markup"])[:2] == ["pl:points:0", "pl:points:20"]
     # Смещение не «нарисовано» в тексте, а действительно ушло в БД параметром.
