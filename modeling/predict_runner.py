@@ -95,7 +95,8 @@ def run_predict(
     )
     check_features_hash_match(model_metadata, dataset_metadata)
 
-    raw_p = predict_raw_proba(model, raw_model, X)
+    model_family = model  # `train_common.predict_raw_proba`'s first arg is named model_family
+    raw_p = predict_raw_proba(model_family, raw_model, X)
     calibrator_fit = calibrator_fit_from_metadata(model_metadata, calibrator)
     calibrated_p = apply_calibrator(calibrator_fit, raw_p)
 
@@ -110,7 +111,7 @@ def run_predict(
     return PredictRunResult(
         task=task,
         model=model,
-        run_id=str(model_metadata.get("run_id")),
+        run_id=model_metadata["run_id"],
         model_dir=model_dir,
         predictions=predictions,
         output_path=output_path,

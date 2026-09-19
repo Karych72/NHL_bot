@@ -236,7 +236,7 @@ def _handle_predict(args: argparse.Namespace) -> int:
     print(f"run_id={result.run_id} task={result.task} model={result.model} rows={len(result.predictions)}")
     print(f"output: {result.output_path}")
     if not result.predictions.empty:
-        print(result.predictions.to_string(index=False))
+        print(result.predictions.head(20).to_string(index=False))
     return 0
 
 

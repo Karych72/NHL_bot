@@ -262,8 +262,11 @@ def check_features_hash_match(
     Raises:
         ValueError: If the two ``features_hash`` values differ, with both values
             in the message.
+        KeyError: If ``model_metadata`` has no ``features_hash`` key — a malformed
+            model artifact is a louder failure than a coincidental ``None == None``
+            match against a similarly-missing key on the predict side.
     """
-    model_hash = model_metadata.get("features_hash")
+    model_hash = model_metadata["features_hash"]
     predict_hash = predict_metadata.get("features_hash")
     if model_hash != predict_hash:
         raise ValueError(

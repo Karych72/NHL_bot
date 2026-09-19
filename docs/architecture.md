@@ -97,11 +97,11 @@ NHL_bot/
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
 │   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py, config.py, artifacts.py, и др.
 │
-└── artifacts/                           # datasets/ — в .gitignore; reports/ — коммитится (см. .gitignore)
+└── artifacts/                           # datasets/, models/, predictions/, reports/*/ — в .gitignore (см. .gitignore)
     ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД
-    ├── models/                          # <task>/<model>/<run_id>/final/ + symlink latest (см. docs/modeling_training.md); не в .gitignore — не коммитить руками
-    ├── predictions/                     # CLI predict пишет сюда по умолчанию: <task>_<model>_predictions.csv; не в .gitignore — не коммитить руками
-    └── reports/                         # Скрипты и CSV-выгрузки отчётов (коммитятся; к датасету отношения не имеют)
+    ├── models/                          # <task>/<model>/<run_id>/final/ + symlink latest (см. docs/modeling_training.md); в .gitignore с Задачи 15
+    ├── predictions/                     # CLI predict пишет сюда по умолчанию: <task>_<model>_predictions.csv; в .gitignore с Задачи 15
+    └── reports/                         # top-level скрипты и CSV-выгрузки отчётов коммитятся (к датасету отношения не имеют); reports/<run_id>/ (train-прогоны) — в .gitignore с Задачи 15
 ```
 
 ---

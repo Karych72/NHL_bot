@@ -267,6 +267,28 @@ feature names deserve which sign, which is out of Задача 15's scope; the r
 demonstration below worked around it with `--set models.lgbm.monotone={}`. Needs its
 own follow-up task.
 
+**Second known config gap, same discovery (Задача 15): calibration is silently
+disabled on the working profile.** `configs/modeling_default.yaml` sets
+`calibration.min_samples: 500` while `split.calibration_games: 300` — every
+calibration block under this profile has exactly 300 rows, always below the
+500-row threshold, so `fit_calibrator` (`modeling/calibrate.py:196`) skips
+calibration on **every** fold and the final artifact for **every** task/model pair,
+storing an identity calibrator (`calibration_skipped: true` in `metadata.json`).
+`configs/modeling_smoke.yaml:80-81` states the rule this violates in its own
+comment: `min_samples` must not exceed `split.calibration_games`, or the
+calibration code path never runs. It looks like the 500 default was never lowered
+when Задача 14 fixed the 300/300/5 split profile. Practical effect, verified on a
+real-data `train` run under `configs/modeling_default.yaml`:
+`artifacts/models/home_win/logreg/latest/metadata.json`
+has `"calibration_skipped": true, "n_calibration": 300` — the baseline-gate
+comparison in that run was therefore made on **raw, uncalibrated** probabilities,
+and the calibrated code path (`load_latest_calibrator` → `calibrator_fit_from_metadata`
+→ `apply_calibrator` with a real fitted estimator) has not actually been exercised
+on real data yet, only the identity branch. Not fixed here — like the monotone gap
+above, lowering `min_samples` is a config decision for its own task, not something
+Задача 15 changes. These two config gaps (monotone names, calibration threshold)
+are candidates for one follow-up task; opening that task is a human decision.
+
 ---
 
 ## Further reading

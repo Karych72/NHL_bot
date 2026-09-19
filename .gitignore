@@ -10,8 +10,15 @@ all_data/
 .idea/
 
 # датасет-билдер: CSV + metadata пересобираются из БД, не коммитятся
-# (artifacts/reports/ — скрипты отчётов, коммитятся отдельно)
+# (artifacts/reports/ — скрипты отчётов, коммитятся отдельно; artifacts/reports/*/
+# ниже — отчёты конкретных train-прогонов (run_id), это другое)
 artifacts/datasets/
+
+# train/predict-артефакты (Задача 15): joblib-бинарники моделей, CSV предсказаний,
+# per-run отчёты — пересобираются локальным прогоном, не коммитятся
+artifacts/models/
+artifacts/predictions/
+artifacts/reports/*/
 
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
