@@ -21,7 +21,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import joblib
 import numpy as np
@@ -306,6 +306,56 @@ def save_calibration_artifact(
     logger.info("Saved calibration metadata → %s", meta_path)
 
 
+def calibrator_fit_from_metadata(metadata: Mapping[str, Any], calibrator: Any) -> CalibratorFit:
+    """Rebuild a :class:`CalibratorFit` from a saved ``metadata.json`` sidecar.
+
+    Shared by :func:`load_calibration_artifact` (the per-fold ``model_raw.joblib``
+    triple) and ``modeling.predict_runner`` (the flat ``final/`` bundle
+    ``train_runner.run_training`` writes — same metadata fields, different file
+    layout, so it cannot reuse ``load_calibration_artifact`` itself). Kept here
+    rather than duplicated so both call sites agree on exactly one thing: what
+    ``calibration_skipped`` means for the estimator that ends up in the returned
+    :class:`CalibratorFit`.
+
+    Args:
+        metadata: Parsed ``metadata.json`` with at least ``method`` (must be one
+            of :data:`_SUPPORTED_METHODS`), and optionally ``calibration_skipped``,
+            ``n_calibration``, ``seed``/``random_seed``.
+        calibrator: The unpickled calibrator estimator (or ``_IdentityCalibrator``
+            sentinel) loaded alongside *metadata*.
+
+    Returns:
+        :class:`CalibratorFit`. When ``calibration_skipped`` is true, the
+        estimator is replaced with a fresh identity marker regardless of what
+        was actually unpickled — only the metadata flag drives
+        :func:`apply_calibrator`'s behaviour.
+
+    Raises:
+        CalibrationError: ``metadata["method"]`` is missing or not one of
+            :data:`_SUPPORTED_METHODS`.
+    """
+    method = metadata.get("method")
+    if method not in _SUPPORTED_METHODS:
+        raise CalibrationError(
+            f"metadata.json missing or invalid calibration method: {method!r}"
+        )
+
+    calibration_skipped = bool(metadata.get("calibration_skipped", False))
+    if calibration_skipped and not isinstance(calibrator, _IdentityCalibrator):
+        logger.warning(
+            "calibration_skipped=true but calibrator is not identity marker; "
+            "trusting metadata flag"
+        )
+
+    return CalibratorFit(
+        method=method,
+        calibration_skipped=calibration_skipped,
+        n_calibration=int(metadata.get("n_calibration", 0)),
+        seed=int(metadata.get("seed", metadata.get("random_seed", 0))),
+        calibrator=calibrator if not calibration_skipped else _IdentityCalibrator(),
+    )
+
+
 def load_calibration_artifact(
     path_dir: Path | str,
 ) -> tuple[Any, CalibratorFit, dict[str, Any]]:
@@ -327,26 +377,7 @@ def load_calibration_artifact(
     calibrator = joblib.load(cal_path)
     metadata: dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))
 
-    method = metadata.get("method")
-    if method not in _SUPPORTED_METHODS:
-        raise CalibrationError(
-            f"metadata.json missing or invalid calibration method: {method!r}"
-        )
-
-    calibration_skipped = bool(metadata.get("calibration_skipped", False))
-    if calibration_skipped and not isinstance(calibrator, _IdentityCalibrator):
-        logger.warning(
-            "calibration_skipped=true but calibrator is not identity marker; "
-            "trusting metadata flag"
-        )
-
-    calibrator_fit = CalibratorFit(
-        method=method,
-        calibration_skipped=calibration_skipped,
-        n_calibration=int(metadata.get("n_calibration", 0)),
-        seed=int(metadata.get("seed", metadata.get("random_seed", 0))),
-        calibrator=calibrator if not calibration_skipped else _IdentityCalibrator(),
-    )
+    calibrator_fit = calibrator_fit_from_metadata(metadata, calibrator)
     logger.info("Loaded calibration artifact from %s", in_dir)
     return model_raw, calibrator_fit, metadata
 
@@ -355,6 +386,7 @@ __all__ = [
     "CalibrationError",
     "CalibratorFit",
     "apply_calibrator",
+    "calibrator_fit_from_metadata",
     "fit_calibrator",
     "load_calibration_artifact",
     "save_calibration_artifact",

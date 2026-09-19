@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -23,7 +22,7 @@ from modeling.artifacts import (
     load_model_artifact,
     resolve_latest_model_dir,
 )
-from modeling.calibrate import CalibratorFit, apply_calibrator
+from modeling.calibrate import apply_calibrator, calibrator_fit_from_metadata
 from modeling.train_common import predict_raw_proba
 from modeling.train_input import load_training_table_split
 
@@ -54,29 +53,6 @@ class PredictRunResult:
     output_path: Path
 
 
-def _calibrator_fit_from_metadata(metadata: dict[str, Any], calibrator: Any) -> CalibratorFit:
-    """Rebuild a :class:`CalibratorFit` from a ``final/metadata.json`` sidecar.
-
-    Mirrors ``modeling.calibrate.load_calibration_artifact``'s field mapping,
-    adapted to the ``final/`` bundle's flat ``metadata.json`` (no ``model_raw``
-    triple; see :func:`modeling.artifacts.load_latest_calibrator`).
-
-    Raises:
-        ValueError: If ``metadata["method"]`` is missing or not a supported
-            calibration method.
-    """
-    method = metadata.get("method")
-    if method not in ("isotonic", "platt"):
-        raise ValueError(f"model metadata.json missing or invalid calibration method: {method!r}")
-    return CalibratorFit(
-        method=method,
-        calibration_skipped=bool(metadata.get("calibration_skipped", False)),
-        n_calibration=int(metadata.get("n_calibration", 0)),
-        seed=int(metadata.get("seed", metadata.get("random_seed", 0))),
-        calibrator=calibrator,
-    )
-
-
 def run_predict(
     *,
     task: str,
@@ -105,8 +81,10 @@ def run_predict(
         FileNotFoundError: No ``latest`` pointer for ``(task, model)``, or a
             required artifact/dataset file is missing.
         ValueError: ``features_hash`` mismatch between the loaded model and the
-            predict dataset, or an invalid calibration method in the model's
-            ``metadata.json``.
+            predict dataset.
+        CalibrationError: Invalid or missing calibration method in the model's
+            ``metadata.json`` (a ``ValueError`` subclass — see
+            ``modeling.calibrate.calibrator_fit_from_metadata``).
     """
     model_dir = resolve_latest_model_dir(artifacts_root, task, model)
     raw_model, model_metadata = load_model_artifact(model_dir)
@@ -118,7 +96,7 @@ def run_predict(
     check_features_hash_match(model_metadata, dataset_metadata)
 
     raw_p = predict_raw_proba(model, raw_model, X)
-    calibrator_fit = _calibrator_fit_from_metadata(model_metadata, calibrator)
+    calibrator_fit = calibrator_fit_from_metadata(model_metadata, calibrator)
     calibrated_p = apply_calibrator(calibrator_fit, raw_p)
 
     predictions = keys.copy()
