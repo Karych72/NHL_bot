@@ -569,6 +569,79 @@ def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_mod
     assert "1. Kucherov [RW] — 12 (TBL, игр: 78, смен: 1700)" in text
 
 
+# ---------------------------------------------------------------------------
+# JOIN-доказательство (ревью Задачи 18, раунд 2): два теста выше мокают
+# cached_fetch_all и никогда не смотрят на составленный SQL — если бы
+# _leaderboard_tail_columns/_pss_join_sql молча свалили хвост игроков на
+# алиас `pl` вместо `pss` (или потеряли ветку JOIN для players_shot_types),
+# они остались бы зелёными, а `/advanced` упал бы в проде ошибкой Postgres
+# «missing FROM-clause entry for table pss». Ниже — fake_db_router
+# (tests/conftest.py:202): патчит только границу БД, композиция SQL реальная,
+# и `cursor.executed` отдаёт фактический текст запроса на assert.
+# ---------------------------------------------------------------------------
+
+def test_player_stat_leaderboard_page_advanced_stats_joins_pss_for_tail(
+    bot_module, fake_db_router
+):
+    """(B) players_advanced_stats: хвост игр/смен реально приходит через
+    INNER JOIN players_season_stats pss, колонки хвоста qualified алиасом
+    `pss`, а не `pl`."""
+    bot_messages = bot_module("bot_messages")
+    # lastname, roster_position, points(pl.sat_pct), team, tail_games, tail_shifts, total
+    row = ("Makar", "D", 58.2, "COL", 70, 1600, 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "INNER JOIN players_season_stats pss" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('shifts')" in query_text
+
+
+def test_player_stat_leaderboard_page_shot_types_joins_pss_for_tail(
+    bot_module, fake_db_router
+):
+    """(B) players_shot_types: хвост игр/смен реально приходит через
+    LEFT JOIN players_season_stats pss, колонки хвоста qualified алиасом
+    `pss`, а не `pl`."""
+    bot_messages = bot_module("bot_messages")
+    row = ("Kucherov", "RW", 12, "TBL", 78, 1700, 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Голы с кистевого", "players_shot_types", "goals_wrist", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "LEFT JOIN players_season_stats pss" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('shifts')" in query_text
+
+
+def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
+    bot_module, fake_db_router
+):
+    """(C) goalies_season_stats: все поля хвоста уже в самой таблице — нет
+    JOIN на players_season_stats, хвост qualified алиасом `pl`."""
+    bot_messages = bot_module("bot_messages")
+    # lastname, roster_position, points(pl.wins), team,
+    # tail_games, tail_saves, tail_shots_against, tail_toi, tail_toi_pg, total
+    row = ("Vasilevskiy", "G", 39, "TBL", 58, 1353, 1483, "3430:45", "59:09", 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Топ", "goalies_season_stats", "wins", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "players_season_stats pss" not in query_text
+    assert "Identifier('pl'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pl'), SQL('.'), Identifier('shots_against')" in query_text
+
+
 def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
     """(C) Лидерборд вратарей: игр/сейвов/времени на льду."""
     bot_messages = bot_module("bot_messages")
@@ -827,7 +900,11 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
 
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
     bot_messages = bot_module("bot_messages")
-    rows = {"team": [], "points": [], "games_played": [], "total": [], "count_rows": 0}
+    rows = {
+        "team": [], "points": [], "games_played": [],
+        "wins": [], "losses": [], "ot": [], "record_points": [],
+        "total": [], "count_rows": 0,
+    }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
     assert n == 0
