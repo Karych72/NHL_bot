@@ -52,7 +52,7 @@ NHL_bot/
 │   ├── stats/                          # продуктовые планы (статистика)
 │   ├── dataset_agents/                 # ТЗ и шаблоны агентов для датасета
 │   ├── classifier/                     # ML / прематч-классификаторы
-│   ├── engineering/                    # рефакторинг, тесты БД, dead code
+│   ├── engineering/                    # рефакторинг, тесты БД, планы работ
 │   └── deprecated_plan/                # выполненные и архивные планы
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
@@ -427,7 +427,6 @@ handler = _make_stats_handler(
 
 - `SimpleConnectionPool` из psycopg2 (1–5 соединений).
 - Контекстный менеджер `get_connection()`: auto-rollback при ошибке, возврат в пул при выходе.
-- Функция `close_pool()` для корректного завершения.
 
 ### Whitelist-валидация
 

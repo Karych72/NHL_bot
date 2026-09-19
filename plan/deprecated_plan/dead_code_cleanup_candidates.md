@@ -69,6 +69,11 @@ rg '\bclose_pool\b' --type py /Users/petrkarol/Desktop/projects/NHL_bot
 **Альтернативы:** оставить, но прикрутить `atexit.register(close_pool)` в
 `bot.py` (отдельный таск, не часть этой чистки).
 
+**Решение (Задача 27, 2026-09-19):** удалить. Путь «прикрутить
+`atexit.register(close_pool)`» отклонён по Global Constraint 1 (YAGNI) —
+graceful shutdown не требуется ТЗ, добавлять хук «на будущее» под гипотетический
+signal-handler не за чем.
+
 ---
 
 ## 3. `telegram_bot/video_replay.py::get_goal_video_url()`
@@ -88,9 +93,11 @@ rg '\bget_goal_video_url\b' --type py /Users/petrkarol/Desktop/projects/NHL_bot
 - Лёгкая альтернатива `download_goal_video` без записи на диск — может пригодиться, если когда-нибудь начнём отдавать `bot.send_video(url=...)` напрямую (Telegram это поддерживает для коротких клипов).
 - Не зовёт `ffmpeg` / `tempfile`, поэтому это простой публичный API «дай мне ссылку».
 
-**Если удалять — что ещё снести по цепочке:** в текущем виде ничего, функция
-переиспользует `_get_brightcove_clip_id` и `_get_mp4_url`, оба нужны для
-`download_goal_video`.
+**Если удалять — что ещё снести по цепочке (уточнено в Задаче 27, 2026-09-19):**
+вместе с `get_goal_video_url()` сносится и `_get_mp4_url()` — она вызывается
+только из `get_goal_video_url()` и после его удаления становится мёртвой по
+цепочке. `_get_brightcove_clip_id()` и `_brightcove_rendition()` остаются —
+их напрямую использует `download_goal_video()`.
 
 ---
 
@@ -100,7 +107,7 @@ rg '\bget_goal_video_url\b' --type py /Users/petrkarol/Desktop/projects/NHL_bot
 - [x] §1: обновить `docs/pipeline_nulls_and_explicit_null_tz.md` §1.
 - [x] §1: поправить комментарий в `telegram_bot/bot_messages.py:226`.
 - [x] §1: прогнать `make test-fast`.
-- [ ] §2: удалить `close_pool()` из `database.py`, убрать упоминание из `docs/architecture.md`.
-- [ ] §3: удалить `get_goal_video_url()` из `video_replay.py`.
-- [ ] Прогнать `make test-fast` после каждого пункта.
-- [ ] Удалить этот файл (`plan/engineering/dead_code_cleanup_candidates.md`) и ссылку в `plan/README.md`.
+- [x] §2: удалить `close_pool()` из `database.py`, убрать упоминание из `docs/architecture.md`.
+- [x] §3: удалить `get_goal_video_url()` из `video_replay.py` (и `_get_mp4_url()` вместе с ним).
+- [x] Прогнать `make test-fast` после каждого пункта.
+- [x] Заархивировать этот файл: `git mv` в `plan/deprecated_plan/dead_code_cleanup_candidates.md`, добавить строку в `plan/deprecated_plan/README.md`, поправить ссылку в `plan/README.md`.
