@@ -19,8 +19,9 @@ CREATE TABLE games(
 
 -- Обслуживает фактические паттерны запросов бота/пайплайна, все фильтруют по season_id
 -- (первая колонка индекса), часть — ещё и по day:
---   telegram_bot/bot_messages.py:340-345  (_last_n_form_record: ORDER BY day DESC LIMIT n)
---   telegram_bot/bot_messages.py:388-391  (_h2h_season_wins: WHERE season_id = %s)
+--   telegram_bot/bot_messages.py:497-503  (_last_n_form_record: ORDER BY day DESC LIMIT n)
+--   telegram_bot/bot_messages.py:544-550  (_current_streak: тот же паттерн, LIMIT 100 — Задача 24)
+--   telegram_bot/bot_messages.py:593-596  (_h2h_season_wins: WHERE season_id = %s)
 --   telegram_bot/bot_messages.py:756-757, 1073-1074 (max(day) WHERE season_id = %s)
 --   telegram_bot/bot_messages.py:1086-1087 (day_digest: WHERE day = %s AND season_id = %s)
 --   telegram_bot/push_digest_job.py:49-51 (WHERE season_id = %s AND day = %s::date AND ...)

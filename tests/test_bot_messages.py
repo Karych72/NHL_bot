@@ -256,6 +256,107 @@ def test_game_exists_true_only_when_a_row_is_found(bot_module):
 
 
 # ---------------------------------------------------------------------------
+# _last_n_form_record() / _current_streak() — Задача 24, включая правило NHL 84.2
+# ---------------------------------------------------------------------------
+
+_STREAK_TEAM_ID = 10
+_STREAK_OPP_ID = 20
+
+
+def _recent_games_rows(outcomes):
+    """Строит фикстуру `cached_fetch_all()` для запроса «последние игры команды»
+    (общий для `_last_n_form_record()`/`_current_streak()`).
+
+    outcomes: список `(winner_id, is_overtime, is_shootouts, ot_empty_net_win)`,
+    от новой игры к старой — как их отдаёт `ORDER BY day DESC, game_id DESC`.
+    """
+    return {
+        "winner_id": [o[0] for o in outcomes],
+        "home_team_id": [_STREAK_TEAM_ID] * len(outcomes),
+        "away_team_id": [_STREAK_OPP_ID] * len(outcomes),
+        "is_overtime": [o[1] for o in outcomes],
+        "is_shootouts": [o[2] for o in outcomes],
+        "ot_empty_net_win": [o[3] for o in outcomes],
+        "count_rows": len(outcomes),
+    }
+
+
+def test_current_streak_three_wins_in_a_row(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([
+        (_STREAK_TEAM_ID, False, False, False),
+        (_STREAK_TEAM_ID, False, False, False),
+        (_STREAK_TEAM_ID, False, False, False),
+        (_STREAK_OPP_ID, False, False, False),
+    ])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "W3"
+
+
+def test_current_streak_two_losses_in_a_row(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([
+        (_STREAK_OPP_ID, False, False, False),
+        (_STREAK_OPP_ID, False, False, False),
+        (_STREAK_TEAM_ID, False, False, False),
+    ])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "L2"
+
+
+def test_current_streak_one_shootout_loss(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([
+        (_STREAK_OPP_ID, True, True, False),
+        (_STREAK_TEAM_ID, False, False, False),
+    ])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "OTL1"
+
+
+def test_current_streak_stops_at_first_different_outcome(bot_module):
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([
+        (_STREAK_TEAM_ID, False, False, False),   # W
+        (_STREAK_TEAM_ID, False, False, False),   # W
+        (_STREAK_OPP_ID, True, False, False),      # OTL — обрывает серию
+        (_STREAK_TEAM_ID, False, False, False),   # W (старее, в серию не входит)
+    ])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "W2"
+
+
+def test_current_streak_no_games_returns_dash(bot_module):
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "cached_fetch_all", return_value=_recent_games_rows([])):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "—"
+
+
+def test_current_streak_rule_84_2_ot_empty_net_goal_is_loss_not_otl(bot_module):
+    """Правило NHL 84.2: is_overtime=True, без буллитов, но с победным голом в
+    пустые ворота в периоде >= 4 (`ot_empty_net_win=True`) — для проигравшей
+    команды это L, а не OTL, поэтому серия здесь L2, а не OTL2."""
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([
+        (_STREAK_OPP_ID, True, False, True),
+        (_STREAK_OPP_ID, True, False, True),
+        (_STREAK_TEAM_ID, False, False, False),
+    ])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "L2"
+
+
+def test_last_n_form_record_rule_84_2_ot_empty_net_goal_counts_as_loss(bot_module):
+    """Тот же случай 84.2 для записи формы W-L-OTL: случай из брифа Задачи 24
+    (game_id 2023021166, MIN 1 – VGK 2) — 0-1-0 для проигравшей команды,
+    а не 0-0-1."""
+    bot_messages = bot_module("bot_messages")
+    rows = _recent_games_rows([(_STREAK_OPP_ID, True, False, True)])
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        assert bot_messages._last_n_form_record(_STREAK_TEAM_ID, 5) == "0-1-0"
+
+
+# ---------------------------------------------------------------------------
 # matchup_season_preview() — escaping and missing-data branches
 # ---------------------------------------------------------------------------
 
@@ -326,6 +427,58 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     assert "<b>BBB</b> — 3-7-0, 6 очков (30%)" in text
     assert "<b>Сравнение</b>" in text
     assert "<pre>" in text
+
+
+def test_matchup_season_preview_shows_streak_in_form_block_and_omits_dash_parens(bot_module):
+    """Задача 24: серия печатается в скобках рядом с формой (`AAA: 3-1-1 (серия W3)`),
+    а у команды без игр — форма и серия «—» и скобки вовсе не выводятся."""
+    bot_messages = bot_module("bot_messages")
+    stats_row = {
+        "abbr": ["AAA", "BBB"],
+        "games_played": [10, 10],
+        "wins": [7, 3],
+        "losses": [3, 7],
+        "ot": [0, 0],
+        "points": [14, 6],
+        "procent_points": [70.0, 30.0],
+        "goals_per_game": [3.5, 2.1],
+        "goals_against_per_game": [2.0, 3.0],
+        "power_play_percentage": [25.0, 15.0],
+        "penalty_kill_percentage": [80.0, 75.0],
+        "shots_per_game": [32.0, 28.0],
+        "face_off_win_percentage": [51.0, 49.0],
+        "count_rows": 2,
+    }
+    team_ids = {"AAA": 111, "BBB": 222}
+    # AAA: 2 победы подряд, затем поражение -> форма 2-1-0, серия W2.
+    aaa_games = _recent_games_rows([
+        (111, False, False, False),
+        (111, False, False, False),
+        (222, False, False, False),
+    ])
+    # BBB: в сезоне пока нет завершённых игр -> форма и серия "—".
+    bbb_games = _recent_games_rows([])
+
+    def fake_fetch(query, params=None, columns=None):
+        q = str(query)
+        if "teams_stats ts" in q:
+            return stats_row
+        if "FROM games g WHERE" in q:
+            return aaa_games if params[1] == 111 else bbb_games
+        if "team_id FROM teams" in q:
+            tid = team_ids.get(params[1])
+            return {"count_rows": 1 if tid else 0, "team_id": [tid] if tid else []}
+        if "((home_team_id" in q:
+            return {"count_rows": 0, "winner_id": []}
+        raise AssertionError(f"unexpected query: {q}")
+
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
+        text = bot_messages.matchup_season_preview("AAA", "BBB")
+
+    assert "<b>AAA</b>: 2-1-0 (серия W2)" in text
+    assert "<b>BBB</b>: —" in text
+    assert "(серия —)" not in text
+    assert "<b>BBB</b>: — (серия" not in text
 
 
 # ---------------------------------------------------------------------------
