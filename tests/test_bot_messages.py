@@ -265,15 +265,13 @@ _STREAK_OPP_ID = 20
 
 def _recent_games_rows(outcomes):
     """Строит фикстуру `cached_fetch_all()` для запроса «последние игры команды»
-    (общий для `_last_n_form_record()`/`_current_streak()`).
+    (`_recent_team_outcomes()`, общий для `_last_n_form_record()`/`_current_streak()`).
 
     outcomes: список `(winner_id, is_overtime, is_shootouts, ot_empty_net_win)`,
     от новой игры к старой — как их отдаёт `ORDER BY day DESC, game_id DESC`.
     """
     return {
         "winner_id": [o[0] for o in outcomes],
-        "home_team_id": [_STREAK_TEAM_ID] * len(outcomes),
-        "away_team_id": [_STREAK_OPP_ID] * len(outcomes),
         "is_overtime": [o[1] for o in outcomes],
         "is_shootouts": [o[2] for o in outcomes],
         "ot_empty_net_win": [o[3] for o in outcomes],

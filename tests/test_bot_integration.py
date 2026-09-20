@@ -240,13 +240,12 @@ _GAMES = {
     },
 }
 
-# Выборка формы: winner_id, home_team_id, away_team_id, is_overtime,
-# is_shootouts, ot_empty_net_win (Задача 24 — признак правила NHL 84.2 из
-# EXISTS-подзапроса по all_goals; здесь всегда False и на исход не влияет,
-# см. ниже). Запрос уходит по одному разу на команду и фильтруется по её
-# team_id (`WHERE home_team_id = %s OR away_team_id = %s`), поэтому маршрут
-# отвечает по team_id из параметров: иначе команде засчитывались бы игры,
-# которых она не играла.
+# Выборка формы: winner_id, is_overtime, is_shootouts, ot_empty_net_win
+# (Задача 24 — признак правила NHL 84.2 из EXISTS-подзапроса по all_goals;
+# здесь всегда False и на исход не влияет, см. ниже). Запрос уходит по
+# одному разу на команду и фильтруется по её team_id (`WHERE home_team_id
+# = %s OR away_team_id = %s`), поэтому маршрут отвечает по team_id из
+# параметров: иначе команде засчитывались бы игры, которых она не играла.
 #
 # is_shootouts = True у всех строк — это НЕ произвол фикстуры, а текущее
 # состояние БД (дефект Д1 Задачи 28: загрузчик пишет туда `shootoutInUse`,
@@ -257,21 +256,21 @@ _GAMES = {
 # здесь же — см. «Область» Задачи 28 в плане.
 _FORM_BY_TEAM = {
     1: [  # NYR — 3 победы, 2 поражения; рендерится как 3-0-2
-        (1, 1, 3, False, True, False),
-        (1, 1, 4, False, True, False),
-        (1, 5, 1, False, True, False),
-        (6, 1, 6, False, True, False),
-        (7, 7, 1, True, True, False),
+        (1, False, True, False),
+        (1, False, True, False),
+        (1, False, True, False),
+        (6, False, True, False),
+        (7, True, True, False),
     ],
     2: [  # BOS — 1 победа, 4 поражения; рендерится как 1-0-4
-        (2, 2, 8, False, True, False),
-        (9, 2, 9, False, True, False),
-        (10, 10, 2, False, True, False),
-        (11, 2, 11, False, True, False),
-        (12, 12, 2, False, True, False),
+        (2, False, True, False),
+        (9, False, True, False),
+        (10, False, True, False),
+        (11, False, True, False),
+        (12, False, True, False),
     ],
-    11: [(11, 11, 13, False, True, False)],  # TOR — 1-0-0
-    12: [(14, 14, 12, False, True, False)],  # MTL — 0-0-1
+    11: [(11, False, True, False)],  # TOR — 1-0-0
+    12: [(14, False, True, False)],  # MTL — 0-0-1
 }
 
 
