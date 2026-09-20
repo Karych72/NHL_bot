@@ -85,12 +85,33 @@ Technical enforcement:
   game of a new season starts with an empty window and never snapshots a row from the prior
   season (fixed 2026-09-12, Task 30)
 
+`_snapshot_side` renames *every* remaining joined column to `<home|away>_<name>`, which also
+carries through columns that are not model features: `hist_day` / `hist_game_id` (the audit
+pair above) and `opponent_team_id` / `home_team_id` / `away_team_id` (identifiers of the
+*snapshot's own historical game*, not the current matchup — meaningless as an ordinal/numeric
+signal, and prone to a train/predict dtype mismatch: `float64` when some row in the build has
+no snapshot yet, `int64` once every row does). All six (`{home,away}_{hist_day,hist_game_id,
+opponent_team_id,home_team_id,away_team_id}`) are listed in `feature_schema.AUDIT_COLUMNS` and
+excluded from `feature_columns_from_df` — never part of `feature_manifest` / `features_hash` /
+X, and dropped by `ordered_columns_for_output` before the CSV is written (fixed Задача 15,
+first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08.md`).
+
 ## Schema Parity and Versioning
 
 - Predict mode requires `--train-metadata-path` to load train manifest.
 - Predict build fails if feature names/order/dtypes do not match train manifest.
 - Predict build fails if `feature_set_version` differs from train metadata.
 - Predict build fails on explicit `features_hash` mismatch with train metadata.
+- A predict feature column's pandas dtype can legitimately differ from train's for a reason
+  that has nothing to do with a real schema drift: dtype is a property of the *whole*
+  target-game set assembled before cold-start filtering (any first-of-season row with no
+  snapshot yet upcasts a column to `float64` for the entire train build), and a much smaller
+  predict build can easily contain no such row, keeping pandas' narrower `int64` inference.
+  `base.py::_align_predict_to_manifest` casts every predict feature column already present in
+  the frame to the train manifest's recorded dtype before `assert_feature_parity` runs — for
+  *any* row count, not only the empty-predict case it originally covered (fixed Задача 15,
+  first real-data predict build). A manifest column genuinely **missing** from the predict
+  frame is left uncast, so `assert_feature_parity` still rejects it loudly.
 - Metadata includes:
   - `feature_set_version`
   - `features_hash`

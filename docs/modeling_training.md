@@ -211,6 +211,86 @@ Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md
 
 ---
 
+## 7. Inference (predict)
+
+Loads the `latest` trained artifact for a `(task, model)` pair and scores a predict
+dataset (`build-dataset --mode predict`), writing per-game probabilities. Implemented
+in [`modeling/predict_runner.py`](../modeling/predict_runner.py) (new module, Задача
+15); CLI subcommand in [`modeling/cli.py`](../modeling/cli.py). Same isolation as
+`train`: no PostgreSQL, no `modeling.dataset_builder` import.
+
+```bash
+python -m modeling.cli predict --task home_win --model lgbm
+```
+
+| Flag | Description |
+|------|-------------|
+| `--task {home_win,over_5_5}` | required |
+| `--model {logreg,lgbm}` | required |
+| `--predict-dataset PATH` | default `artifacts/datasets/dataset_predict.csv` |
+| `--predict-metadata PATH` | default `artifacts/datasets/metadata_predict.json` |
+| `--artifacts-root PATH` | default `artifacts` (root of `models/<task>/<model>/latest`) |
+| `--output PATH` | default `<artifacts-root>/predictions/<task>_<model>_predictions.csv` |
+
+Steps performed by `run_predict()`:
+
+1. Resolve `artifacts/models/<task>/<model>/latest` (symlink or `latest.txt` fallback)
+   to a `final/` directory (`modeling.artifacts.resolve_latest_model_dir`).
+2. Load `model.joblib` + `metadata.json` (`load_model_artifact`) and
+   `calibrator.joblib` (`load_latest_calibrator` — a plain estimator dump, distinct
+   from the `model_raw.joblib` triple `modeling.calibrate.load_calibration_artifact`
+   reads for per-fold artifacts).
+3. Load the predict CSV + metadata with the same schema-generic loader training uses
+   (`train_input.load_training_table_split`), then compare the loaded model's
+   `features_hash` against the predict dataset's (`modeling.artifacts.check_features_hash_match`)
+   — an inference-time guard distinct from the predict-vs-train-manifest check already
+   performed at dataset-build time (`dataset_builder/base.py`).
+4. Compute raw probabilities (`train_common.predict_raw_proba` — the same logreg/lgbm
+   dispatch `train_runner.py` uses) and apply the frozen calibrator (`calibrate.apply_calibrator`).
+5. Write `game_id, day, season_id, home_team_id, away_team_id, probability` to the
+   output CSV (and echo a preview to stdout).
+
+Raises `FileNotFoundError` if no `latest` artifact exists for the pair (train one
+first — a run must reach `status: ok`), and `ValueError` on a `features_hash` mismatch.
+
+**Known config gap, discovered running this end to end on real data for the first
+time (Задача 15):** `configs/modeling_default.yaml` and `configs/modeling_smoke.yaml`'s
+`models.lgbm.monotone` blocks reference feature names (`diff_gf_roll_mean_*`,
+`diff_ga_roll_mean_*`, `diff_goal_diff_roll_mean_{10,20}`) that do not exist in the
+actual feature set — the real names are `diff_goals_for_roll_mean_*` /
+`diff_goals_against_roll_mean_*`, and `goal_diff_roll_mean` only exists at window 5 by
+design (`features.py::compute_team_rolling_features`). `build_monotone_constraints`
+fails loudly (`ConfigError`) the moment any pattern matches zero feature columns, so
+LGBM training under either checked-in config cannot currently proceed with monotone
+constraints enabled. Fixing the constraint list needs domain judgment about which real
+feature names deserve which sign, which is out of Задача 15's scope; the real-data
+demonstration below worked around it with `--set models.lgbm.monotone={}`. Needs its
+own follow-up task.
+
+**Second known config gap, same discovery (Задача 15): calibration is silently
+disabled on the working profile.** `configs/modeling_default.yaml` sets
+`calibration.min_samples: 500` while `split.calibration_games: 300` — every
+calibration block under this profile has exactly 300 rows, always below the
+500-row threshold, so `fit_calibrator` (`modeling/calibrate.py:196`) skips
+calibration on **every** fold and the final artifact for **every** task/model pair,
+storing an identity calibrator (`calibration_skipped: true` in `metadata.json`).
+`configs/modeling_smoke.yaml:80-81` states the rule this violates in its own
+comment: `min_samples` must not exceed `split.calibration_games`, or the
+calibration code path never runs. It looks like the 500 default was never lowered
+when Задача 14 fixed the 300/300/5 split profile. Practical effect, verified on a
+real-data `train` run under `configs/modeling_default.yaml`:
+`artifacts/models/home_win/logreg/latest/metadata.json`
+has `"calibration_skipped": true, "n_calibration": 300` — the baseline-gate
+comparison in that run was therefore made on **raw, uncalibrated** probabilities,
+and the calibrated code path (`load_latest_calibrator` → `calibrator_fit_from_metadata`
+→ `apply_calibrator` with a real fitted estimator) has not actually been exercised
+on real data yet, only the identity branch. Not fixed here — like the monotone gap
+above, lowering `min_samples` is a config decision for its own task, not something
+Задача 15 changes. These two config gaps (monotone names, calibration threshold)
+are candidates for one follow-up task; opening that task is a human decision.
+
+---
+
 ## Further reading
 
 Deeper module-level notes (splits, metrics, bootstrap, calibration, acceptance) were consolidated here from implementation stages 2–12. For module entry points see [`modeling/cli.py`](../modeling/cli.py), [`modeling/train_runner.py`](../modeling/train_runner.py), and the UPDATE plan stage list.

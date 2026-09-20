@@ -13,6 +13,7 @@ import logging
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+import pandas as pd
 
 from modeling.config import ConfigError
 
@@ -135,6 +136,29 @@ def build_monotone_constraints(
     return constraints
 
 
+def predict_raw_proba(model_family: str, model: Any, X: pd.DataFrame) -> np.ndarray:
+    """Return raw (pre-calibration) positive-class probabilities for *model_family*.
+
+    Shared logreg-vs-lgbm dispatch used by both training (evaluating
+    calibration/test/holdout blocks in ``train_runner.py``) and inference
+    (``predict_runner.py``, scoring an already-frozen model), so this dispatch
+    logic exists in exactly one place.
+
+    Args:
+        model_family: ``"logreg"`` or ``"lgbm"``.
+        model: A fitted sklearn ``Pipeline`` (logreg) or ``lightgbm.Booster`` (lgbm).
+        X: Feature matrix in manifest column order.
+
+    Returns:
+        1-D array of raw probabilities in ``[0, 1]`` (no calibration applied).
+    """
+    if model_family == "logreg":
+        return model.predict_proba(X)[:, 1]
+    from modeling.train_lgbm import predict_lgbm_proba  # deferred: avoids train_common <-> train_lgbm cycle
+
+    return predict_lgbm_proba(model, X)
+
+
 __all__ = [
     "LGBM_GRID_KEYS",
     "SUPPORTED_TASKS",
@@ -143,5 +167,6 @@ __all__ = [
     "expand_lgbm_grid",
     "expand_param_grid",
     "get_task_label",
+    "predict_raw_proba",
     "validate_num_threads",
 ]

@@ -8,7 +8,9 @@ Designed to be re-used by stage 8 (LightGBM) without modification — the
 ``model_family`` field in ``metadata.json`` disambiguates families.
 
 Calibrators written by stage 9 are stored in a **separate** sibling file
-``calibrator.joblib``; that file is not touched here.
+``calibrator.joblib``; that file is not touched by ``save_model_artifact`` /
+``load_model_artifact`` above, but *is* read by :func:`load_latest_calibrator`
+below.
 
 Directory layout written by this module::
 
@@ -18,15 +20,21 @@ Directory layout written by this module::
 
 No database access.  No ``run_id`` generation — the caller (CLI stage 10) owns
 that responsibility and passes it via *metadata*.
+
+**Inference-side additions (Задача 15):** :func:`resolve_latest_model_dir`,
+:func:`load_latest_calibrator`, and :func:`check_features_hash_match` support
+``modeling/predict_runner.py`` loading the ``latest`` trained artifact (symlink
+or ``latest.txt`` fallback) and refusing to score with a stale one.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import joblib
 
@@ -174,6 +182,99 @@ def load_model_artifact(path_dir: Path | str) -> tuple[Any, dict[str, Any]]:
     return model, metadata
 
 
+# ---------------------------------------------------------------------------
+# Inference-side loading (Задача 15): resolve ``latest``, load calibrator,
+# compare features_hash against a predict dataset.
+# ---------------------------------------------------------------------------
+
+
+def resolve_latest_model_dir(artifacts_root: Path | str, task: str, model: str) -> Path:
+    """Resolve ``artifacts/models/<task>/<model>/latest`` to its ``<run_id>/final/`` directory.
+
+    Handles both forms written by ``train_runner.update_latest_symlink``
+    (``modeling/train_runner.py:579-621``): a real symlink, or the
+    ``latest.txt`` fallback used on filesystems without symlink support.
+
+    Args:
+        artifacts_root: Root directory containing ``models/<task>/<model>/latest``.
+        task: ``"home_win"`` or ``"over_5_5"``.
+        model: ``"logreg"`` or ``"lgbm"``.
+
+    Returns:
+        Absolute path to the resolved ``final/`` directory.
+
+    Raises:
+        FileNotFoundError: Neither a ``latest`` symlink nor ``latest.txt`` exists
+            (no run with ``status: ok`` has been produced yet for this pair).
+    """
+    base = Path(artifacts_root) / "models" / task / model
+    link_path = base / "latest"
+    if link_path.is_symlink():
+        return (base / os.readlink(link_path)).resolve()
+    txt_path = base / "latest.txt"
+    if txt_path.is_file():
+        rel_target = txt_path.read_text(encoding="utf-8").strip()
+        return (base / rel_target).resolve()
+    raise FileNotFoundError(
+        f"no 'latest' pointer for {task}/{model} under {base} "
+        "(expected a symlink or latest.txt; train a model with status=ok first)"
+    )
+
+
+def load_latest_calibrator(path_dir: Path | str) -> Any:
+    """Load the raw calibrator estimator saved alongside a ``final/`` model bundle.
+
+    ``train_runner.run_training`` writes this file directly with
+    ``joblib.dump(final_calibrator.calibrator, final_dir / "calibrator.joblib")``
+    (``modeling/train_runner.py:975``) — a plain estimator, not the
+    ``model_raw.joblib`` triple that :func:`modeling.calibrate.load_calibration_artifact`
+    expects for fold artifacts, so that loader does not apply here.
+
+    Args:
+        path_dir: A ``final/`` directory, e.g. from :func:`resolve_latest_model_dir`.
+
+    Raises:
+        FileNotFoundError: If ``calibrator.joblib`` is missing.
+    """
+    calibrator_path = Path(path_dir) / "calibrator.joblib"
+    if not calibrator_path.exists():
+        raise FileNotFoundError(f"calibrator.joblib not found in {path_dir}")
+    return joblib.load(calibrator_path)
+
+
+def check_features_hash_match(
+    model_metadata: Mapping[str, Any],
+    predict_metadata: Mapping[str, Any],
+) -> None:
+    """Fail loudly when the loaded model and predict dataset disagree on ``features_hash``.
+
+    This is an inference-time guard, distinct from the predict-vs-train-manifest
+    check already performed at dataset-build time
+    (``modeling/dataset_builder/base.py:323-329``): that one checks the predict
+    build against the *train* metadata it was built with; this one checks the
+    *currently loaded model* against the *current* predict dataset, catching a
+    ``latest`` artifact that has gone stale relative to it.
+
+    Args:
+        model_metadata: Parsed ``metadata.json`` from the loaded model artifact.
+        predict_metadata: Parsed ``metadata_predict.json`` from the predict dataset.
+
+    Raises:
+        ValueError: If the two ``features_hash`` values differ, with both values
+            in the message.
+        KeyError: If ``model_metadata`` has no ``features_hash`` key — a malformed
+            model artifact is a louder failure than a coincidental ``None == None``
+            match against a similarly-missing key on the predict side.
+    """
+    model_hash = model_metadata["features_hash"]
+    predict_hash = predict_metadata.get("features_hash")
+    if model_hash != predict_hash:
+        raise ValueError(
+            "features_hash mismatch between loaded model and predict dataset: "
+            f"model={model_hash!r}, predict={predict_hash!r}"
+        )
+
+
 def build_logreg_metadata(
     *,
     task: str,
@@ -286,6 +387,9 @@ def build_lgbm_metadata(
 __all__ = [
     "build_lgbm_metadata",
     "build_logreg_metadata",
+    "check_features_hash_match",
+    "load_latest_calibrator",
     "load_model_artifact",
+    "resolve_latest_model_dir",
     "save_model_artifact",
 ]
