@@ -36,8 +36,13 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
         bot_messages = _load_bot_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
+            "roster_position": ["LW"],
             "points": [58.2],
             "team": ["WSH"],
+            # Задача 18 — хвост игр/смен, обязателен в фикстуре: player_stats_with_count
+            # читает эти ключи напрямую (без запасного None).
+            "tail_games": [82],
+            "tail_shifts": [1700],
             "total": [1],
             "count_rows": 1,
         }
@@ -54,6 +59,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
                     text = bot_messages.player_stats(title, table, col)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
+                self.assertIn("игр: 82, смен: 1700", text)
                 self.assertTrue(mock_fetch.called)
 
 
@@ -141,8 +147,13 @@ class Phase1UxCommandsTest(unittest.TestCase):
         bot_messages = _load_bot_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
+            "roster_position": ["LW"],
             "points": [99],
             "team": ["WSH"],
+            # Задача 18 — хвост игр/смен, обязателен в фикстуре: player_stats_with_count
+            # читает эти ключи напрямую (без запасного None).
+            "tail_games": [79],
+            "tail_shifts": [1650],
             "total": [1],
             "count_rows": 1,
         }
@@ -152,6 +163,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             )
         self.assertIn("Топ бомбардиров", text)
         self.assertIn("Ovechkin", text)
+        self.assertIn("игр: 79, смен: 1650", text)
         self.assertFalse(has_prev)
         self.assertFalse(has_next)
 

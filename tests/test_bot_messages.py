@@ -342,6 +342,11 @@ def _leader_rows(n: int, total: int | None = None):
         "roster_position": ["C"] * n,
         "points": [100 - i for i in range(n)],
         "team": ["WSH"] * n,
+        # Задача 18 — «хвост» строки лидерборда (games/shifts), обязателен в
+        # каждой фикстуре players_season_stats: player_stats_with_count читает
+        # эти ключи напрямую (без запасного None), их отсутствие — KeyError.
+        "tail_games": [82] * n,
+        "tail_shifts": [1500 + i for i in range(n)],
         "total": [total] * n,
         "count_rows": n,
     }
@@ -357,7 +362,7 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
         )
     assert has_prev is False
     assert has_next is True
-    assert "Player0" in text
+    assert "1. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
     assert "Показаны 1–10 из 25" in text
 
 
@@ -372,6 +377,7 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     assert has_prev is True
     assert has_next is True
     assert "Показаны 11–20 из 25" in text
+    assert "11. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
@@ -385,6 +391,7 @@ def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     assert has_prev is True
     assert has_next is False
     assert "Показаны 11–13 из 13" in text
+    assert "11. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
 
 
 def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
@@ -400,6 +407,7 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         )
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
+    assert "1. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
@@ -417,6 +425,9 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
         "team": ["BOS"], "points": [55.5], "games_played": [40],
+        # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
+        # team_stats_with_count читает эти ключи напрямую (без запасного None).
+        "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [12], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
@@ -424,7 +435,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
             "Статистика большинства", "power_play_percentage", 0
         )
     assert "Статистика большинства" in text
-    assert "BOS" in text
+    assert "1. BOS — 55.5 (игр: 40, 30-8-2, 62 очк.)" in text
     assert has_prev is False
     assert has_next is True
     assert "Показаны 1 из 12" in text
@@ -436,6 +447,10 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         "team": [f"T{i}" for i in range(10)],
         "points": [float(i) for i in range(10)],
         "games_played": [40] * 10,
+        "wins": [10 + i for i in range(10)],
+        "losses": [5] * 10,
+        "ot": [1] * 10,
+        "record_points": [float(i) for i in range(10)],
         "total": [10] * 10,
         "count_rows": 10,
     }
@@ -443,12 +458,230 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
+    assert "1. T0 — 0 (игр: 40, 10-5-1, 0 очк.)" in text
 
 
 def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
     bot_messages = bot_module("bot_messages")
     with pytest.raises(ValueError, match="unknown leaderboard kind"):
         bot_messages.stat_leaderboard_for_kind("wins", 0)
+
+
+# ---------------------------------------------------------------------------
+# Задача 18 — «спящие» данные: постоянный хвост строки лидерборда
+# (games/shifts у игроков, games/saves/shots_against/time_on_ice у вратарей,
+# wins-losses-ot/points у команд). Одна и та же механика на всех трёх
+# поверхностях, нулевой риск неверной сортировки — сама сортировка не меняется.
+# ---------------------------------------------------------------------------
+
+def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
+    """(A) Лидерборд команд: хвост игр:/W-L-OT/очков поверх текущей строки."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "team": ["BOS"], "points": [55], "games_played": [40],
+        "wins": [25], "losses": [10], "ot": [5], "record_points": [55],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
+    assert "1. BOS — 55 (игр: 40, 25-10-5, 55 очк.)" in text
+
+
+def test_team_stat_leaderboard_page_null_record_fields_render_dash(bot_module):
+    """Хвост обязан переживать NULL (Задача 18: «не заполнены везде»)."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "team": ["BOS"], "points": [None], "games_played": [40],
+        "wins": [None], "losses": [None], "ot": [None], "record_points": [None],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
+    assert "1. BOS — — (игр: 40, —-—-—, — очк.)" in text
+    assert "None" not in text
+
+
+def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
+    """(B) Лидерборд полевых игроков (players_season_stats): игр/смен."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["McDavid"], "roster_position": ["C"],
+        "points": [153], "team": ["EDM"],
+        "tail_games": [82], "tail_shifts": [1800],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "players_season_stats", "points", 0
+        )
+    assert "1. McDavid [C] — 153 (EDM, игр: 82, смен: 1800)" in text
+
+
+def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(bot_module):
+    """Реальный сценарий из БД (Задача 18): shifts NULL в 7 строках на 2
+    сезона — рендер обязан отдать «—», а не «None» и не упасть."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Rookie"], "roster_position": ["C"],
+        "points": [10], "team": ["CHI"],
+        "tail_games": [5], "tail_shifts": [None],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "players_season_stats", "points", 0
+        )
+    assert "1. Rookie [C] — 10 (CHI, игр: 5, смен: —)" in text
+    assert "None" not in text
+
+
+def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot_module):
+    """(B) Лидерборд players_advanced_stats («Расширенная статистика») тоже
+    отдаёт игр/смен — через LEFT/INNER JOIN players_season_stats, не только
+    для players_season_stats напрямую."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Makar"], "roster_position": ["D"],
+        "points": [58.2], "team": ["COL"],
+        "tail_games": [70], "tail_shifts": [1600],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
+        )
+    assert "1. Makar [D] — 58.2 (COL, игр: 70, смен: 1600)" in text
+
+
+def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_module):
+    """(B) Лидерборд players_shot_types тоже отдаёт игр/смен через JOIN."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Kucherov"], "roster_position": ["RW"],
+        "points": [12], "team": ["TBL"],
+        "tail_games": [78], "tail_shifts": [1700],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Голы с кистевого", "players_shot_types", "goals_wrist", 0
+        )
+    assert "1. Kucherov [RW] — 12 (TBL, игр: 78, смен: 1700)" in text
+
+
+# ---------------------------------------------------------------------------
+# JOIN-доказательство (ревью Задачи 18, раунд 2): два теста выше мокают
+# cached_fetch_all и никогда не смотрят на составленный SQL — если бы
+# _leaderboard_tail_columns/_pss_join_sql молча свалили хвост игроков на
+# алиас `pl` вместо `pss` (или потеряли ветку JOIN для players_shot_types),
+# они остались бы зелёными, а `/advanced` упал бы в проде ошибкой Postgres
+# «missing FROM-clause entry for table pss». Ниже — fake_db_router
+# (tests/conftest.py:202): патчит только границу БД, композиция SQL реальная,
+# и `cursor.executed` отдаёт фактический текст запроса на assert.
+# ---------------------------------------------------------------------------
+
+def test_player_stat_leaderboard_page_advanced_stats_joins_pss_for_tail(
+    bot_module, fake_db_router
+):
+    """(B) players_advanced_stats: хвост игр/смен реально приходит через
+    INNER JOIN players_season_stats pss, колонки хвоста qualified алиасом
+    `pss`, а не `pl`."""
+    bot_messages = bot_module("bot_messages")
+    # lastname, roster_position, points(pl.sat_pct), team, tail_games, tail_shifts, total
+    row = ("Makar", "D", 58.2, "COL", 70, 1600, 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "INNER JOIN players_season_stats pss" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('shifts')" in query_text
+
+
+def test_player_stat_leaderboard_page_shot_types_joins_pss_for_tail(
+    bot_module, fake_db_router
+):
+    """(B) players_shot_types: хвост игр/смен реально приходит через
+    LEFT JOIN players_season_stats pss, колонки хвоста qualified алиасом
+    `pss`, а не `pl`."""
+    bot_messages = bot_module("bot_messages")
+    row = ("Kucherov", "RW", 12, "TBL", 78, 1700, 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Голы с кистевого", "players_shot_types", "goals_wrist", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "LEFT JOIN players_season_stats pss" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pss'), SQL('.'), Identifier('shifts')" in query_text
+
+
+def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
+    bot_module, fake_db_router
+):
+    """(C) goalies_season_stats: все поля хвоста уже в самой таблице — нет
+    JOIN на players_season_stats, хвост qualified алиасом `pl`."""
+    bot_messages = bot_module("bot_messages")
+    # lastname, roster_position, points(pl.wins), team,
+    # tail_games, tail_saves, tail_shots_against, tail_toi, tail_toi_pg, total
+    row = ("Vasilevskiy", "G", 39, "TBL", 58, 1353, 1483, "3430:45", "59:09", 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Топ", "goalies_season_stats", "wins", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert "players_season_stats pss" not in query_text
+    assert "Identifier('pl'), SQL('.'), Identifier('games')" in query_text
+    assert "Identifier('pl'), SQL('.'), Identifier('shots_against')" in query_text
+
+
+def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
+    """(C) Лидерборд вратарей: игр/сейвов/времени на льду."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Shesterkin"], "roster_position": ["G"],
+        "points": [0.925], "team": ["NYR"],
+        "tail_games": [55], "tail_saves": [1500], "tail_shots_against": [1620],
+        "tail_toi": ["3200:15"], "tail_toi_pg": ["58:11"],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "goalies_season_stats", "save_percentage", 0
+        )
+    assert (
+        "1. Shesterkin [G] — 0.925 (NYR, игр: 55, сейвы: 1500/1620, "
+        "время: 3200:15 (58:11/игра))"
+    ) in text
+
+
+def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(bot_module):
+    """goalies_season_stats.time_on_ice/time_on_ice_per_game — 0 NULL в живой
+    БД (проверено координатором), но рендер всё равно не должен полагаться
+    на это и обязан пережить NULL в любом поле хвоста."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Backup"], "roster_position": ["G"],
+        "points": [0.0], "team": ["CHI"],
+        "tail_games": [1], "tail_saves": [None], "tail_shots_against": [None],
+        "tail_toi": [None], "tail_toi_pg": [None],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "goalies_season_stats", "save_percentage", 0
+        )
+    assert (
+        "1. Backup [G] — 0 (CHI, игр: 1, сейвы: —/—, время: — (—/игра))" in text
+    )
+    assert "None" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +887,9 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
         "team": ["BOS"], "points": [55.5], "games_played": [40],
+        # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
+        # team_stats_with_count читает эти ключи напрямую (без запасного None).
+        "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [7], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
@@ -664,7 +900,11 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
 
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
     bot_messages = bot_module("bot_messages")
-    rows = {"team": [], "points": [], "games_played": [], "total": [], "count_rows": 0}
+    rows = {
+        "team": [], "points": [], "games_played": [],
+        "wins": [], "losses": [], "ot": [], "record_points": [],
+        "total": [], "count_rows": 0,
+    }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
     assert n == 0

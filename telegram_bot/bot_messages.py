@@ -76,21 +76,51 @@ def _second_order_table_alias(table_name: str, second_order: str) -> str:
     return "pl"
 
 
-def _pss_join_sql(table_name: str, second_order: str) -> sql.Composable:
+def _pss_join_sql(table_name: str) -> sql.Composable:
+    """JOIN players_season_stats под алиасом `pss` — нужен вторичной сортировке
+    по колонке pss (`_second_order_table_alias`) и «хвосту» строки лидерборда
+    (games/shifts, Задача 18). Для players_advanced_stats и players_shot_types
+    join всегда присутствует (не только когда second_order сам на pss) —
+    games/shifts в хвосте нужны независимо от того, чем сортируется страница.
+    """
     if table_name == "players_advanced_stats":
         return sql.SQL(
             "INNER JOIN players_season_stats pss ON pl.player_id = pss.player_id "
             "AND pss.season_id = pl.season_id AND pss.games >= 20 "
         )
-    if (
-        table_name == "players_shot_types"
-        and _second_order_table_alias(table_name, second_order) == "pss"
-    ):
+    if table_name == "players_shot_types":
         return sql.SQL(
             "LEFT JOIN players_season_stats pss ON pl.player_id = pss.player_id "
             "AND pss.season_id = pl.season_id "
         )
     return sql.SQL("")
+
+
+def _leaderboard_tail_columns(table_name: str) -> Tuple[sql.Composable, List[str]]:
+    """SQL-колонки и ключи для постоянного «хвоста» строки лидерборда (Задача
+    18, «включить спящие данные»): вратарям (goalies_season_stats) — игры,
+    сейвы, броски против, время на льду (всё уже в самой таблице); полевым
+    игрокам (players_season_stats и, через JOIN на `pss`, players_advanced_stats
+    / players_shot_types) — игры и смены. Любое из значений может быть `NULL`
+    («заполнены не везде») — рендер обязан пережить это через
+    `_format_leader_value`, а не считать колонку гарантированно заполненной.
+
+    Возвращает: (SQL-фрагмент SELECT-колонок через запятую, список ключей
+    результата в том же порядке — передаётся в `columns=` у `fetch_all`).
+    """
+    cols: Tuple[str, ...]
+    if table_name == "goalies_season_stats":
+        cols = ("games", "saves", "shots_against", "time_on_ice", "time_on_ice_per_game")
+        keys = ["tail_games", "tail_saves", "tail_shots_against", "tail_toi", "tail_toi_pg"]
+        alias = "pl"
+    else:
+        cols = ("games", "shifts")
+        keys = ["tail_games", "tail_shifts"]
+        alias = "pl" if table_name == "players_season_stats" else "pss"
+    select_sql = sql.SQL(", ").join(
+        sql.SQL(".").join([sql.Identifier(alias), sql.Identifier(c)]) for c in cols
+    )
+    return select_sql, keys
 
 
 def _goal_situation_suffix(
@@ -664,6 +694,12 @@ def player_stats_with_count(
         secondary_sort: вторичная сортировка при равенстве `column_name`.
         use_html: HTML-рендер (для ботовых сообщений) вместо jinja-шаблона.
 
+    Строка (HTML) несёт постоянный «хвост» уже загруженных полей (Задача 18):
+    для вратарей — игры/сейвы/броски против/время на льду, для остальных
+    игровых таблиц — игры/смены (через JOIN на players_season_stats для
+    players_advanced_stats/players_shot_types). Сортировка от этого не
+    меняется — хвост не влияет на ORDER BY.
+
     Возвращает: (текст, число строк на странице, полный размер выборки).
     """
     validate_table(table_name)
@@ -673,15 +709,17 @@ def player_stats_with_count(
     second_order = _resolve_secondary_sort(table_name, secondary_sort)
     validate_column(second_order)
 
-    join_pss = _pss_join_sql(table_name, second_order)
+    join_pss = _pss_join_sql(table_name)
     second_alias = _second_order_table_alias(table_name, second_order)
     pl_col = sql.SQL(".").join([sql.Identifier("pl"), sql.Identifier(column_name)])
     second_col = sql.SQL(".").join(
         [sql.Identifier(second_alias), sql.Identifier(second_order)]
     )
+    tail_select, tail_keys = _leaderboard_tail_columns(table_name)
 
     q = sql.SQL(
         "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.abbreviation AS team, "
+        "{tail_select}, "
         "COUNT(*) OVER () AS total "
         "FROM {table} pl "
         "{join_pss}"
@@ -697,27 +735,44 @@ def player_stats_with_count(
         table=sql.Identifier(table_name),
         join_pss=join_pss,
         second_col=second_col,
+        tail_select=tail_select,
     )
     stats = cached_fetch_all(
         q, (config.SEASON_ID, count, offset),
-        ['lastname', 'roster_position', 'points', 'team', 'total'],
+        ['lastname', 'roster_position', 'points', 'team', *tail_keys, 'total'],
     )
 
     # COUNT(*) OVER () не возвращает строк вовсе для пустой выборки — total
     # в этом случае 0, а не отсутствующее значение.
     total = int(stats['total'][0]) if stats['count_rows'] else 0
 
-    roster_positions = stats.get("roster_position")
+    is_goalie = table_name == "goalies_season_stats"
+    roster_positions = stats['roster_position']
+    tail_cols = {key: stats[key] for key in tail_keys}
     players = []
     for i in range(stats['count_rows']):
         lastname = stats['lastname'][i] or "Unknown"
-        pos_raw = roster_positions[i] if roster_positions is not None else None
+        pos_raw = roster_positions[i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
+        if is_goalie:
+            tail = (
+                f"игр: {_format_leader_value(tail_cols['tail_games'][i])}, "
+                f"сейвы: {_format_leader_value(tail_cols['tail_saves'][i])}/"
+                f"{_format_leader_value(tail_cols['tail_shots_against'][i])}, "
+                f"время: {_format_leader_value(tail_cols['tail_toi'][i])} "
+                f"({_format_leader_value(tail_cols['tail_toi_pg'][i])}/игра)"
+            )
+        else:
+            tail = (
+                f"игр: {_format_leader_value(tail_cols['tail_games'][i])}, "
+                f"смен: {_format_leader_value(tail_cols['tail_shifts'][i])}"
+            )
         players.append({
             'rank': offset + i + 1,
             'lastname': lastname + (f" [{pos}]" if pos else ""),
             'value': _format_leader_value(stats['points'][i]),
             'team': stats['team'][i] or "—",
+            'tail': tail,
         })
 
     if use_html:
@@ -725,7 +780,8 @@ def player_stats_with_count(
         for p in players:
             line = (
                 f"{p['rank']}. {html.escape(str(p['lastname']))} — "
-                f"{html.escape(str(p['value']))} ({html.escape(str(p['team']))})"
+                f"{html.escape(str(p['value']))} ({html.escape(str(p['team']))}, "
+                f"{html.escape(str(p['tail']))})"
             )
             lines.append(line)
         inner = "\n".join(lines)
@@ -1099,6 +1155,10 @@ def team_stats_with_count(
     колонка сортировки (из белого списка `validate_column`), размер и сдвиг
     страницы, HTML-рендер вместо jinja-шаблона.
 
+    Строка (HTML) несёт постоянный «хвост» уже загруженных полей (Задача 18):
+    `wins`-`losses`-`ot` и `points` из `teams_stats` поверх текущего
+    игр:/значения. Сортировка от этого не меняется.
+
     Возвращает: (текст, число строк на странице, полный размер выборки).
     """
     validate_column(column_name)
@@ -1106,7 +1166,8 @@ def team_stats_with_count(
         offset = 0
 
     q = sql.SQL(
-        "SELECT short_name, {col}, games_played, COUNT(*) OVER () AS total "
+        "SELECT short_name, {col}, games_played, wins, losses, ot, points, "
+        "COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
@@ -1116,7 +1177,10 @@ def team_stats_with_count(
     stats = cached_fetch_all(
         q,
         (config.SEASON_ID, count, offset),
-        columns=['team', 'points', 'games_played', 'total'],
+        columns=[
+            'team', 'points', 'games_played',
+            'wins', 'losses', 'ot', 'record_points', 'total',
+        ],
     )
 
     total = int(stats['total'][0]) if stats['count_rows'] else 0
@@ -1127,16 +1191,22 @@ def team_stats_with_count(
             'rank': offset + i + 1,
             'name': (stats['team'][i] or "—").strip(),
             'value': _format_leader_value(stats['points'][i]),
-            'games': stats['games_played'][i],
+            'games': _format_leader_value(stats['games_played'][i]),
+            'wins': _format_leader_value(stats['wins'][i]),
+            'losses': _format_leader_value(stats['losses'][i]),
+            'ot': _format_leader_value(stats['ot'][i]),
+            'record_points': _format_leader_value(stats['record_points'][i]),
         })
 
     if use_html:
         lines_t: List[str] = []
         for trow in teams:
-            gn = html.escape(str(trow["games"]))
+            record = f"{trow['wins']}-{trow['losses']}-{trow['ot']}"
             lines_t.append(
-                f"{trow['rank']}. {html.escape(trow['name'])} — "
-                f"{html.escape(str(trow['value']))} (игр: {gn})"
+                f"{trow['rank']}. {html.escape(str(trow['name']))} — "
+                f"{html.escape(str(trow['value']))} "
+                f"(игр: {html.escape(str(trow['games']))}, {html.escape(record)}, "
+                f"{html.escape(str(trow['record_points']))} очк.)"
             )
         inner_t = "\n".join(lines_t)
         body_t = f"<pre>{inner_t}</pre>" if inner_t else ""
