@@ -111,10 +111,9 @@ ALLOWED_COLUMNS = frozenset({
 
 def get_pool() -> psycopg2.pool.SimpleConnectionPool:
     """Возвращает общий пул соединений с БД (1–5 штук), создавая его лениво
-    при первом вызове или заново, если он ещё не создан либо был закрыт
-    (`close_pool()`). Параметры соединения берутся из `config`."""
+    при первом вызове. Параметры соединения берутся из `config`."""
     global _pool
-    if _pool is None or _pool.closed:
+    if _pool is None:
         _pool = psycopg2.pool.SimpleConnectionPool(
             minconn=1,
             maxconn=5,
@@ -140,17 +139,6 @@ def get_connection():
         raise
     finally:
         pool.putconn(conn)
-
-
-def close_pool() -> None:
-    """Закрывает все соединения общего пула (`_pool.closeall()`) и сбрасывает
-    его в `None`, так что следующий `get_pool()` создаст пул заново. Повторный
-    вызов на уже закрытом или ещё не созданном пуле — no-op."""
-    global _pool
-    if _pool is not None and not _pool.closed:
-        _pool.closeall()
-        _pool = None
-        logger.info("Closed DB connection pool")
 
 
 # ---------------------------------------------------------------------------

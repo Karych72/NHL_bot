@@ -104,7 +104,26 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "is_home": [True],
             "count_rows": 1,
         }
+    if "get_three_stars_game" in q:
+        return _THREE_STARS_ROWS
     raise AssertionError(f"unexpected query in game_message(): {q}")
+
+
+# Три звезды по умолчанию: полевой игрок, вратарь, и звезда с экранируемыми
+# фамилией/аббревиатурой команды и без статистики (NULL) — хвост после «—»
+# в этом случае не выводится.
+_THREE_STARS_ROWS = {
+    "star": [1, 2, 3],
+    "lastname": ["Kaprizov", "Thompson", _EVIL_SCORER],
+    "player_position": ["LW", "G", "C"],
+    "abbreviation": ["MIN", "VGK", "TOR<script>alert(1)</script>"],
+    "goals": [1, None, None],
+    "assists": [0, None, None],
+    "saves": [None, 33, None],
+    "shots": [None, 34, None],
+    "save_percentage": [None, 97.1, None],
+    "count_rows": 3,
+}
 
 
 @pytest.fixture
@@ -161,6 +180,67 @@ def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
     _, goals_meta = game_message_text
     assert [g["event_id"] for g in goals_meta] == [10, 11, 12]
     assert all(g["game_id"] == 555 for g in goals_meta)
+
+
+# ---------------------------------------------------------------------------
+# game_message() — блок «Звёзды матча»
+# ---------------------------------------------------------------------------
+
+def test_game_message_renders_three_stars_heading_and_three_lines(game_message_text):
+    text, _ = game_message_text
+    assert "<b>Звёзды матча</b>" in text
+    # "★" встречается и в блоке голов (отметка победного гола) — считаем
+    # только звёзды матча, за заголовком блока.
+    block = text.split("<b>Звёзды матча</b>", 1)[1]
+    assert block.count("★") == 3
+
+
+def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
+    text, _ = game_message_text
+    assert "★1 Kaprizov (MIN) — 1+0" in text
+
+
+def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
+    game_message_text,
+):
+    text, _ = game_message_text
+    assert "★2 Thompson (VGK) — 33/34, 97.1%" in text
+
+
+def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
+    game_message_text,
+):
+    text, _ = game_message_text
+    assert (
+        "★3 O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
+        "(TOR&lt;script&gt;alert(1)&lt;/script&gt;)"
+    ) in text
+    assert "<script>alert(1)</script>" not in text
+
+
+def test_game_message_omits_tail_when_three_star_stats_are_null(game_message_text):
+    """Третья звезда фикстуры без статистики: строка обрывается перед «—»
+    вместо `— None+None`."""
+    text, _ = game_message_text
+    assert "TOR&lt;script&gt;alert(1)&lt;/script&gt;) —" not in text
+
+
+def test_game_message_omits_three_stars_block_when_no_rows(bot_module):
+    def fetch_all_no_stars(query, params=None, columns=None):
+        q = str(query)
+        if "get_three_stars_game" in q:
+            return {"count_rows": 0}
+        return _game_message_fetch_all(query, params, columns)
+
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "fetch_all", side_effect=fetch_all_no_stars), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=fetch_all_no_stars):
+        text, _ = bot_messages.game_message(555)
+
+    assert "Звёзды матча" not in text
+    # "★" сам по себе не показателен: он же отмечает победный гол в блоке
+    # голов (winner_mark, независимая от этой задачи функциональность).
+    assert "Kaprizov" not in text and "Thompson" not in text
 
 
 # ---------------------------------------------------------------------------

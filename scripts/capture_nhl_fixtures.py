@@ -2,10 +2,13 @@
 
 Manual, network-bound tool for the loader tests (``tests/test_pipeline_*.py``):
 never imported by a test, never called from ``make``. Every file it writes is a
-real response of the URL printed next to it below, trimmed only by *dropping
+real response of the URL printed next to it below, trimmed mostly by *dropping
 records* — server-side ``cayenneExp`` filters where the endpoint supports them,
-an id whitelist otherwise. Keys and value types are stored exactly as the API
-returned them (a ``null`` stays ``null``, a string stays a string).
+an id whitelist otherwise — plus, for the ``landing`` fixture only, dropping
+the top-level ``tvBroadcasts`` and reducing ``summary`` to its ``threeStars``
+key (the loader reads nothing else there). Keys and value types that are kept
+are stored exactly as the API returned them (a ``null`` stays ``null``, a
+string stays a string).
 
 Fixtures for ``https://api.nhle.com/stats/rest/en/*`` hold the ``data`` list of
 the paginated response — i.e. what ``ModernNhlLoader.fetch_paginated`` returns;
@@ -185,6 +188,16 @@ def capture_web_payloads(loader: ModernNhlLoader) -> None:
             for group, players in box["playerByGameStats"][side].items()
         }
     write_fixture("nhl_game_boxscore.json", box, box_url)
+
+    landing_url = f"{WEB_API}gamecenter/{GAME_ID}/landing"
+    landing = loader.get_json(landing_url)
+    landing.pop("tvBroadcasts", None)  # not read by the loader
+    landing["summary"] = {
+        # Only threeStars is read by the loader; scoring/penalties duplicate
+        # what play-by-play already covers, at far higher volume.
+        k: v for k, v in landing["summary"].items() if k == "threeStars"
+    }
+    write_fixture("nhl_game_landing.json", landing, landing_url)
 
 
 def main() -> None:

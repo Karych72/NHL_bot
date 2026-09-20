@@ -26,6 +26,7 @@ NHL_bot/
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
 │   ├── t.game_team_stats.sql
+│   ├── t.game_three_stars.sql
 │   ├── t.games.sql
 │   ├── t.goalies_season_stats.sql
 │   ├── t.players_season_stats.sql
@@ -34,7 +35,9 @@ NHL_bot/
 │   ├── t.teams_stats.sql
 │   └── migrations/                     # Точечные изменения схемы: NNNN_slug.{up,down}.sql (make db-migrate)
 │       ├── 0001_bot_subscriptions.up.sql
-│       └── 0001_bot_subscriptions.down.sql
+│       ├── 0001_bot_subscriptions.down.sql
+│       ├── 0002_game_three_stars.up.sql
+│       └── 0002_game_three_stars.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
@@ -49,7 +52,7 @@ NHL_bot/
 │   ├── stats/                          # продуктовые планы (статистика)
 │   ├── dataset_agents/                 # ТЗ и шаблоны агентов для датасета
 │   ├── classifier/                     # ML / прематч-классификаторы
-│   ├── engineering/                    # рефакторинг, тесты БД, dead code
+│   ├── engineering/                    # рефакторинг, тесты БД, планы работ
 │   └── deprecated_plan/                # выполненные и архивные планы
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
@@ -89,7 +92,8 @@ NHL_bot/
 │   └── queries/                        # PL/pgSQL функции
 │       ├── get_game_stats.sql
 │       ├── get_goals_game.sql
-│       └── get_goalies_game.sql
+│       ├── get_goalies_game.sql
+│       └── get_three_stars_game.sql
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
 │   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict`
@@ -174,7 +178,7 @@ NHL_bot/
 | API | Базовый URL | Данные |
 |---|---|---|
 | Stats API | `api.nhle.com/stats/rest/en/` | Команды, статистика игроков/вратарей/команд за сезон, список игр |
-| Web API | `api-web.nhle.com/v1/` | Турнирная таблица, составы, play-by-play, boxscore |
+| Web API | `api-web.nhle.com/v1/` | Турнирная таблица, составы, play-by-play, boxscore, landing (звёзды матча) |
 
 ### Поток данных
 
@@ -184,8 +188,8 @@ NHL Stats API                          NHL Web API
      ├─ /team ──────────────────────┐        ├─ /standings/now
      ├─ /team/summary               │        ├─ /roster/{tri}/{season}
      ├─ /skater/summary             │        ├─ /gamecenter/{id}/play-by-play
-     ├─ /goalie/summary             │        └─ /gamecenter/{id}/boxscore
-     └─ /game (finished)            │
+     ├─ /goalie/summary             │        ├─ /gamecenter/{id}/boxscore
+     └─ /game (finished)            │        └─ /gamecenter/{id}/landing
                                     │
               ┌─────────────────────┘
               ▼
@@ -210,10 +214,11 @@ NHL Stats API                          NHL Web API
               │       → games_meta (завершённые игры за DATE_FROM..DATE_TO)
               │
               ├── 7. build_game_rows(games_meta)
-              │       Для каждой игры: play-by-play + boxscore через
-              │       fetch_game_json() (диск-кэш, см. ниже)
+              │       Для каждой игры: play-by-play + boxscore + landing
+              │       через fetch_game_json() (диск-кэш, см. ниже)
               │       → games_rows, all_goals_rows, game_team_rows,
-              │         game_player_rows, game_goalie_rows
+              │         game_player_rows, game_goalie_rows,
+              │         game_three_stars_rows
               │
               └── 8. PostgreSQL (одна транзакция):
                       DELETE per-game для game_id в окне
@@ -234,9 +239,10 @@ NHL Stats API                          NHL Web API
 ### Кэш сырых пер-игровых ответов
 
 `ModernNhlLoader.fetch_game_json(game_id, endpoint)` — единственная точка, через которую
-`build_game_rows` читает `gamecenter/{id}/play-by-play` и `gamecenter/{id}/boxscore`.
+`build_game_rows` читает `gamecenter/{id}/play-by-play`, `gamecenter/{id}/boxscore` и
+`gamecenter/{id}/landing` (звёзды матча).
 Финальная игра неизменна, поэтому её ответ кэшируется на диске без TTL и инвалидации:
-`all_data/raw/{season_id}/{game_id}.{pbp|box}.json.gz` (каталог `all_data/` — в `.gitignore`,
+`all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz` (каталог `all_data/` — в `.gitignore`,
 в репозиторий не коммитится). Файл есть → читаем с диска; файла нет → идём в сеть и, если
 `gameState` ответа финальный (`OFF`/`FINAL`), пишем в кэш. Чтение сквозное, без флага
 включения. Сезонные отчёты (`skater/summary`, `standings/now` и другие эндпоинты `build_*`)
@@ -424,7 +430,6 @@ handler = _make_stats_handler(
 
 - `SimpleConnectionPool` из psycopg2 (1–5 соединений).
 - Контекстный менеджер `get_connection()`: auto-rollback при ошибке, возврат в пул при выходе.
-- Функция `close_pool()` для корректного завершения.
 
 ### Whitelist-валидация
 
@@ -620,6 +625,12 @@ UNIQUE(`game_id`, `player_id`). Содержит: `time_on_ice`, `goals`, `assis
 
 UNIQUE(`game_id`, `player_id`). Содержит: `timeOnIce`, `shots`, `saves`, `save_percentage`, `decision` (boolean: победа), детализация по ситуациям (PP/SH/EV).
 
+#### `game_three_stars` — Три звезды матча
+
+UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/третья звезда), `player_id` и
+`team_id` — без FK (та же причина, что у остальных пер-игровых таблиц: нет `season_id`,
+а звезда может не оказаться в `rosters` того сезона).
+
 ### PL/pgSQL функции
 
 #### `get_game_stats(game_id)` → game_team_stats + games + teams
@@ -633,6 +644,10 @@ UNIQUE(`game_id`, `player_id`). Содержит: `timeOnIce`, `shots`, `saves`,
 #### `get_goalies_game(game_id)` → game_goalie_stats + rosters + games
 
 Возвращает: `shots`, `saves`, `timeonice`, `lastname`, `save_percentage`, `is_home`. Сортировка: `is_home DESC` (домашний вратарь первым).
+
+#### `get_three_stars_game(game_id)` → game_three_stars + rosters + teams + game_player_stats + game_goalie_stats + games
+
+Возвращает: `star`, `lastname`, `player_position`, `abbreviation`, `goals`, `assists` (полевой игрок), `saves`, `shots`, `save_percentage` (вратарь) — по звезде одна строка, статистика не своей роли приходит `NULL` из пустого `LEFT JOIN`. Сортировка: `star`.
 
 ---
 
@@ -650,6 +665,11 @@ UNIQUE(`game_id`, `player_id`). Содержит: `timeOnIce`, `shots`, `saves`,
 *Броски:* 32 - 28
 *Штрафное время:* 6 - 8
 *Вратари:* Shesterkin (26/28, 92.86%, 65:00) - Vasilevskiy (29/32, 90.63%, 65:00)
+
+*Звёзды матча*
+★1 Panarin (NYR) — 2+1
+★2 Kucherov (TBL) — 1+2
+★3 Shesterkin (NYR) — 26/28, 92.86%
 ```
 
 ### `season_leaders_players.txt` — Лидеры сезона
@@ -688,8 +708,8 @@ Panthers        28.5  70
 │  ├── /team                           ├── /standings/now            │
 │  ├── /team/summary                   ├── /roster/{tri}/{season}    │
 │  ├── /skater/summary                 ├── /gamecenter/{id}/play-by-play
-│  ├── /goalie/summary                 └── /gamecenter/{id}/boxscore │
-│  └── /game                                                         │
+│  ├── /goalie/summary                 ├── /gamecenter/{id}/boxscore │
+│  └── /game                           └── /gamecenter/{id}/landing  │
 └─────────────┬───────────────────────────────────────────────────────┘
               │  HTTP GET (requests.Session, retry ×10, backoff)
               ▼
@@ -707,17 +727,18 @@ Panthers        28.5  70
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         PostgreSQL                                   │
 │                                                                      │
-│  12 таблиц:                     3 PL/pgSQL функции:                 │
+│  13 таблиц:                     4 PL/pgSQL функции:                  │
 │  teams, teams_stats,            get_game_stats()                     │
 │  rosters,                       get_goals_game()                     │
 │  players_season_stats,          get_goalies_game()                   │
-│  players_advanced_stats,                                             │
+│  players_advanced_stats,        get_three_stars_game()               │
 │  players_shot_types,                                                 │
 │  goalies_season_stats,                                               │
 │  games, all_goals,                                                   │
 │  game_team_stats,                                                    │
 │  game_player_stats,                                                  │
-│  game_goalie_stats                                                   │
+│  game_goalie_stats,                                                  │
+│  game_three_stars                                                    │
 └──────────────────────────────────┬───────────────────────────────────┘
                                    │  psycopg2 (SimpleConnectionPool)
                                    ▼
@@ -819,7 +840,7 @@ make season-sync-month    # обновить данные за последни�
 ## Известные особенности и ограничения
 
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
-2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals.game_id → games.game_id`. `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), а фактическая вставка в загрузчике — в порядке «родители раньше детей» (`teams → teams_stats → rosters → players_season_stats → players_advanced_stats → players_shot_types → goalies_season_stats → games → all_goals → game_team_stats → game_player_stats → game_goalie_stats`); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна. `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
+2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals|game_three_stars.game_id → games.game_id`. `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), а фактическая вставка в загрузчике — в порядке «родители раньше детей» (`teams → teams_stats → rosters → players_season_stats → players_advanced_stats → players_shot_types → goalies_season_stats → games → all_goals → game_team_stats → game_player_stats → game_goalie_stats`); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). `game_three_stars` (Задача 23.2) встроена в загрузчике в тот же порядок — первой при удалении, последней при вставке — и проверена на живой БД отдельно (прогон по всем 5 сезонам, 6560 игр, 2026-09-15…09-18): 0 строк с `game_id`, отсутствующим в `games`. FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`, `game_three_stars`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна. `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
 4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в cron-скрипте `push_digest_job.py`, — поэтому extra `[job-queue]` (APScheduler) не ставится.
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.

@@ -126,20 +126,6 @@ def _brightcove_rendition(clip_id: int) -> Optional[tuple]:
     return (best["src"], width, height, duration_sec)
 
 
-def _get_mp4_url(clip_id: int) -> Optional[str]:
-    """Resolve Brightcove clip ID to a direct HTTPS MP4 URL."""
-    r = _brightcove_rendition(clip_id)
-    return r[0] if r else None
-
-
-def get_goal_video_url(game_id: int, event_id: int) -> Optional[str]:
-    """Resolve goal replay to a direct MP4 URL (no download)."""
-    clip_id = _get_brightcove_clip_id(game_id, event_id)
-    if clip_id is None:
-        return None
-    return _get_mp4_url(clip_id)
-
-
 def _ffmpeg_bin() -> Optional[str]:
     return shutil.which("ffmpeg")
 

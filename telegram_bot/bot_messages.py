@@ -110,6 +110,41 @@ def _goal_situation_suffix(
     return " (" + ", ".join(parts) + ")"
 
 
+def _format_three_star_line(
+    star: int,
+    lastname: Optional[str],
+    position: Optional[str],
+    abbreviation: Optional[str],
+    goals: Optional[int],
+    assists: Optional[int],
+    saves: Optional[int],
+    shots: Optional[int],
+    save_percentage: Optional[float],
+) -> str:
+    """Одна строка блока «Звёзды матча»: `★1 Kaprizov (MIN) — 1+0` для полевого
+    игрока, `★1 Thompson (VGK) — 33/34, 97.1%` для вратаря. Различение — по
+    позиции из `rosters` (`G` → вратарь). Отсутствующая фамилия → `Unknown`
+    (как для голов, `bot_messages.py:187`); отсутствующая статистика (NULL) —
+    строка без хвоста после «—». Каждое поле из БД проходит `html.escape()`.
+    """
+    name = html.escape(str(lastname or "Unknown"))
+    abbr = html.escape(str(abbreviation or ""))
+    star_str = html.escape(str(star))
+    is_goalie = position == "G"
+    tail = ""
+    if is_goalie:
+        if saves is not None and shots is not None:
+            tail = f"{html.escape(str(saves))}/{html.escape(str(shots))}"
+            if save_percentage is not None:
+                pct = round(float(save_percentage), 2)
+                tail += f", {html.escape(str(pct))}%"
+    elif goals is not None and assists is not None:
+        tail = f"{html.escape(str(goals))}+{html.escape(str(assists))}"
+
+    line = f"★{star_str} {name} ({abbr})"
+    return f"{line} — {tail}" if tail else line
+
+
 def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     """Return (rendered_text, goal_video_metadata)."""
     game_stats = fetch_all(
@@ -155,6 +190,11 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         "SELECT * FROM get_goalies_game(%s)", (game_id,),
         ['shots', 'saves', 'timeonice', 'lastname',
          'save_percentage', 'is_home'],
+    )
+    game_three_stars = fetch_all(
+        "SELECT * FROM get_three_stars_game(%s)", (game_id,),
+        ['star', 'lastname', 'player_position', 'abbreviation',
+         'goals', 'assists', 'saves', 'shots', 'save_percentage'],
     )
 
     is_overtime = game_stats['is_overtime'][0]
@@ -277,6 +317,21 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             f"{html.escape(str(toi))})"
         )
 
+    three_stars = "\n".join(
+        _format_three_star_line(
+            game_three_stars['star'][i],
+            game_three_stars['lastname'][i],
+            game_three_stars['player_position'][i],
+            game_three_stars['abbreviation'][i],
+            game_three_stars['goals'][i],
+            game_three_stars['assists'][i],
+            game_three_stars['saves'][i],
+            game_three_stars['shots'][i],
+            game_three_stars['save_percentage'][i],
+        )
+        for i in range(game_three_stars['count_rows'])
+    )
+
     to_template = {
         'team_home': html.escape(str(game_stats['team_name'][0] or "")),
         'team_away': html.escape(str(game_stats['team_name'][1] or "")),
@@ -292,6 +347,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         'period_scores': html.escape(period_scores),
         'hat_tricks': hat_tricks,
         'recent_form': recent_form,
+        'three_stars': three_stars,
     }
     return output_text('messages/game_message.txt', to_template), goals_meta
 

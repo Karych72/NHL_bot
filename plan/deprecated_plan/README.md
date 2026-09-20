@@ -11,5 +11,6 @@
 | [`skater_reports_plan_realize.md`](./skater_reports_plan_realize.md) | Пошаговая реализация (выполнена) |
 | [`tonight_games_plan.md`](./tonight_games_plan.md) | Команда `/tonight` (NHL Web API scoreboard; в коде) |
 | [`nhl_dataset_build_plan.md`](./nhl_dataset_build_plan.md) | Сборка датасета train/predict (в коде; контрактный референс) |
+| [`dead_code_cleanup_candidates.md`](./dead_code_cleanup_candidates.md) | Чеклист сноса dead code (`close_pool`, `get_goal_video_url` — удалены Задачей 27) |
 
 Индекс всех планов и статусы — в [`../README.md`](../README.md).

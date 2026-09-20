@@ -40,6 +40,7 @@ WSH, OTT = 15, 9
 OVECHKIN, SOURDIF, SANDIN = 8471214, 8482088, 8480873
 THOMPSON, ULLMARK, PINTO = 8480313, 8476999, 8481596
 MCMICHAEL = 8481580  # only reachable through the player landing endpoint
+WILSON, HUTSON = 8476880, 8484873  # game_three_stars: 2nd/3rd stars (both WSH)
 
 # Column order of every INSERT/UPSERT in ``ModernNhlLoader.run()``: the build_*
 # tuples are positional, so these lists are the contract the tests assert on.
@@ -124,6 +125,7 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "decision", "save_percentage", "power_play_save_percentage",
         "short_handed_save_percentage", "even_strength_save_percentage",
     ),
+    "game_three_stars": ("game_id", "star", "player_id", "team_id"),
 }
 
 
