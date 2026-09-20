@@ -1,0 +1,10 @@
+# Prefer project .venv (`make setup`): global pip can leave an x86_64 NumPy on Apple Silicon while Python is arm64.
+# Источник для requirements.txt (`make lock`, см. DEVELOPMENT.md) — requirements.txt руками не редактировать.
+# pandas зафиксирован тем же пином, что и в requirements-modeling.in (2.2.3): CI ставит все
+# три lock-файла одной командой, и без общего пина совместный резолв не сойдётся.
+pandas==2.2.3
+requests
+psycopg2-binary
+jinja2
+python-telegram-bot==21.11.1
+pytest>=8.0

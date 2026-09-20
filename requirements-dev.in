@@ -1,0 +1,13 @@
+# Dev/CI tools only (see DEVELOPMENT.md). Runtime image uses requirements.txt.
+# Источник для requirements-dev.txt (`make lock`) — requirements-dev.txt руками не редактировать.
+ruff==0.8.4
+mypy==1.14.1
+# async-хендлеры PTB 21.x: тесты помечаются @pytest.mark.asyncio (строгий режим по умолчанию)
+pytest-asyncio==1.4.0
+types-requests==2.31.0.20240106
+types-psycopg2==2.9.21.20241019
+pandas-stubs==2.2.2.240909
+# stubs for pyyaml (modeling/config.py), pyyaml itself lives in requirements-modeling.txt
+types-PyYAML==6.0.12.20241221
+# генерация lock-файлов (`make lock`), см. DEVELOPMENT.md
+pip-tools==7.6.1
