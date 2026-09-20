@@ -324,7 +324,7 @@ def test_get_connection_rolls_back_and_still_returns_conn_on_exception(bot_modul
 
 
 # ---------------------------------------------------------------------------
-# get_pool / close_pool — construction args and reuse
+# get_pool — construction args and reuse
 # ---------------------------------------------------------------------------
 
 class _FakeSimpleConnectionPool:
@@ -334,13 +334,7 @@ class _FakeSimpleConnectionPool:
 
     def __init__(self, *, minconn: int, maxconn: int, host: str, port: str, user: str, database: str) -> None:
         self.kwargs = dict(minconn=minconn, maxconn=maxconn, host=host, port=port, user=user, database=database)
-        self.closed = False
-        self.closeall_called = False
         _FakeSimpleConnectionPool.instances.append(self)
-
-    def closeall(self) -> None:
-        self.closeall_called = True
-        self.closed = True
 
 
 @pytest.fixture
@@ -381,35 +375,3 @@ def test_get_pool_reuses_existing_open_pool(fake_pool_class):
 
     assert first is second
     assert len(_FakeSimpleConnectionPool.instances) == 1
-
-
-def test_get_pool_creates_new_pool_after_close(fake_pool_class):
-    database = fake_pool_class
-
-    first = database.get_pool()
-    database.close_pool()
-    second = database.get_pool()
-
-    assert first is not second
-    assert len(_FakeSimpleConnectionPool.instances) == 2
-
-
-def test_close_pool_closes_and_clears_global_pool(fake_pool_class):
-    database = fake_pool_class
-    pool = database.get_pool()
-
-    database.close_pool()
-
-    assert pool.closeall_called is True
-    assert database._pool is None
-
-
-def test_close_pool_is_a_no_op_when_no_pool_exists(fake_pool_class):
-    """fake_pool_class already guarantees _pool is None; the only thing this
-    test asserts is that close_pool() tolerates that (no AttributeError from
-    calling closeall() on None)."""
-    database = fake_pool_class
-
-    database.close_pool()  # must not raise
-
-    assert database._pool is None

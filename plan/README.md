@@ -29,10 +29,13 @@
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
+| [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md) | **В процессе** | Действующий исполняемый план; единственный источник истины по задачам, критерии приёмки и команды проверки. |
+| [`engineering/work_plan_2026-09-12.md`](./engineering/work_plan_2026-09-12.md) | **В процессе** | Срез остатка; оставшиеся задачи одной таблицей, критерии приёмки — в [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md). |
+| [`engineering/work_plan_2026-06-29.md`](./engineering/work_plan_2026-06-29.md) | **История / источник приоритетов** | Заменён [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md). |
+| [`engineering/refactoring_plan_3.md`](./engineering/refactoring_plan_3.md) | **В процессе** | Актуальный мастер-план приоритетов (дата среза 2026-05-15), наследует `refactoring_plan_2.md` и `refactoring_plan.md`; один из двух источников приоритетов `work_plan_2026-08-08.md`. |
 | [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md) | **В процессе** | Срез незакрытых задач рефакторинга. |
 | [`engineering/refactoring_plan.md`](./engineering/refactoring_plan.md) | **Частично / история** | Полный чеклист по фазам; для остатка см. [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md). |
 | [`engineering/db_tests_remediation_plan.md`](./engineering/db_tests_remediation_plan.md) | **Частично выполнено** | Этап A закрыт; CI и прочее — по чеклисту внутри. |
-| [`engineering/dead_code_cleanup_candidates.md`](./engineering/dead_code_cleanup_candidates.md) | **Не выполнено** | Найденный, но не удалённый dead code (eager-helpers в loader, `close_pool`, `get_goal_video_url`). Чеклист на снос. |
 
 ## Архив выполненных планов (`plan/deprecated_plan/`)
 
@@ -45,6 +48,7 @@
 | [`deprecated_plan/skater_reports_plan.md`](./deprecated_plan/skater_reports_plan.md) | Ранняя версия ТЗ. |
 | [`deprecated_plan/tonight_games_plan.md`](./deprecated_plan/tonight_games_plan.md) | `/tonight` и score API — реализовано. |
 | [`deprecated_plan/nhl_dataset_build_plan.md`](./deprecated_plan/nhl_dataset_build_plan.md) | Датасет train/predict — реализовано; эталон контракта. |
+| [`deprecated_plan/dead_code_cleanup_candidates.md`](./deprecated_plan/dead_code_cleanup_candidates.md) | Чеклист сноса dead code — `close_pool`, `get_goal_video_url` удалены Задачей 27. |
 
 ## Связь с `docs/`
 
