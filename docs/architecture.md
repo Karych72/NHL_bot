@@ -19,7 +19,8 @@ NHL_bot/
 ├── .gitignore
 ├── Makefile                            # Сборка, запуск, инициализация БД
 ├── README.md                           # Quick start
-├── requirements.txt                    # Зависимости Python
+├── requirements.in / requirements-dev.in / requirements-modeling.in  # Источник зависимостей (правим руками)
+├── requirements.txt / requirements-dev.txt / requirements-modeling.txt  # Lock-файлы, генерируются `make lock` (не редактировать)
 │
 ├── data_tables/                        # DDL — схемы всех таблиц PostgreSQL
 │   ├── t.all_goals.sql
@@ -147,8 +148,13 @@ NHL_bot/
 | `make bot` | Запуск Telegram-бота (`bot.py::main()` проверяет обязательные переменные окружения) |
 | `make run-bot` | `setup` + `env-example` + `bot` |
 | `make run-local` | Запуск бота без pipeline (для работы с уже загруженными данными) |
+| `make lock` | Перегенерирует `requirements*.txt` из `requirements*.in` (pip-tools, hash-режим), в порядке рантайм → modeling → dev |
 
-### Зависимости (`requirements.txt`)
+### Зависимости (`requirements.in` → `requirements.txt`)
+
+Источник истины — `requirements.in` / `requirements-dev.in` / `requirements-modeling.in`;
+`requirements*.txt` — lock-файлы с хешами, генерируются `make lock` и руками не
+редактируются (подробнее — `DEVELOPMENT.md`).
 
 | Пакет | Назначение |
 |---|---|
@@ -156,7 +162,7 @@ NHL_bot/
 | `psycopg2-binary` | Драйвер PostgreSQL |
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
-| `pandas` | Используется в `modeling/dataset_builder/*` (сборка фичей для моделирования) |
+| `pandas==2.2.3` | Используется в `modeling/dataset_builder/*` (сборка фичей для моделирования); пин совпадает с `requirements-modeling.in`, иначе совместный резолв слоёв не сходится |
 | `pytest>=8.0` | Тесты (`tests/test_*.py`); юнит-тесты по `pipeline/`, `modeling/`, бот |
 
 ---
