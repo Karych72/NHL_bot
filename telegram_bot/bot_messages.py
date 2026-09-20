@@ -498,7 +498,7 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
 
     Аргументы:
         team_id: команда, для которой отбираются игры.
-        limit: сколько последних игр взять (`ORDER BY day DESC, game_id DESC`).
+        limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
 
     Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
     пустой список, если в текущем сезоне у команды нет завершённых игр.
