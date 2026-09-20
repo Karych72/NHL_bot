@@ -198,21 +198,46 @@ def _empty_series_for_dtype(dtype_name: str) -> pd.Series:
     return pd.Series(dtype="object")
 
 
-def _align_empty_predict_to_manifest(
+def _align_predict_to_manifest(
     assembled: pd.DataFrame,
     train_manifest: Sequence[Dict[str, str]],
 ) -> pd.DataFrame:
-    if not assembled.empty:
-        return assembled
+    """Cast predict feature columns to the train manifest's recorded dtype.
+
+    A snapshot-joined column's pandas dtype is a property of the *entire*
+    target-game set assembled before cold-start filtering: any first-of-season
+    row with no prior snapshot puts NaN into that column across the whole
+    build, upcasting it to ``float64`` even though every *surviving* value
+    (after cold-start drop) is a whole number. Row filtering afterwards does
+    not revert the dtype. A much smaller predict build — e.g. only a handful
+    of upcoming games, none of them a team's first game of the season — never
+    introduces that NaN, so pandas infers a narrower dtype (typically
+    ``int64``) for the same logical column. Without this cast,
+    ``assert_feature_parity`` below would reject a perfectly valid predict
+    build over a false dtype mismatch (this is exactly what an empty predict
+    build already needed — Ruling 1, Задача 15 — generalised to any row count).
+
+    Only pre-existing columns are cast. A manifest column genuinely **missing**
+    from *assembled* is left alone here so ``assert_feature_parity`` still
+    rejects it loudly (Global Constraint 4) instead of this function silently
+    fabricating data for a non-empty build; that fabrication only makes sense
+    when *assembled* has zero rows (predict legitimately found no target games)
+    and the output must still have the full manifest shape.
+    """
     out = assembled.copy()
     expected_features = [item["name"] for item in train_manifest]
+    is_empty = out.empty
     for item in train_manifest:
         name = item["name"]
         dtype = item["dtype"]
         if name not in out.columns:
+            if not is_empty:
+                continue
             out[name] = _empty_series_for_dtype(dtype)
         else:
             out[name] = out[name].astype(cast(Any, dtype))
+    if not is_empty:
+        return out
     extra_features = [col for col in feature_columns_from_df(out) if col not in expected_features]
     if extra_features:
         out = out.drop(columns=extra_features)
@@ -293,7 +318,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
                 "predict dataset is empty (no target games). "
                 "Pass allow_empty_predict=True when this is expected, or widen day/season filters."
             )
-        assembled = _align_empty_predict_to_manifest(assembled, train_manifest)
+        assembled = _align_predict_to_manifest(assembled, train_manifest)
         assert_feature_parity(assembled, train_manifest)
 
     if config.mode == "predict" and train_manifest is not None:

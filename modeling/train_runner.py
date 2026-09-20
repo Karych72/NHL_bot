@@ -42,12 +42,11 @@ from modeling.acceptance import (
 )
 from modeling.report import compose_metrics_json, compose_summary_md, configure_run_logger, write_report
 from modeling.splits import OuterWindow, WalkForwardSplits, build_walk_forward_splits
-from modeling.train_common import build_monotone_constraints, expand_lgbm_grid, get_task_label
+from modeling.train_common import build_monotone_constraints, expand_lgbm_grid, get_task_label, predict_raw_proba
 from modeling.train_input import load_training_table_split
 from modeling.train_lgbm import (
     LgbmFitResult,
     build_lgbm_base_params,
-    predict_lgbm_proba,
     select_lgbm_config_by_inner_val,
     train_lgbm_for_task,
     train_single_lgbm,
@@ -365,12 +364,6 @@ def _eval_block(
     if reliability_path is not None:
         block["reliability_path"] = reliability_path
     return block
-
-
-def _predict_raw(model_family: str, model: Any, X: pd.DataFrame) -> np.ndarray:
-    if model_family == "logreg":
-        return model.predict_proba(X)[:, 1]
-    return predict_lgbm_proba(model, X)
 
 
 def _train_raw_model(
@@ -791,7 +784,7 @@ def run_training(
                     log_loss_fn=metric_fns["log_loss"],
                 )
                 raw_model = _raw_model_from_fit(model_family, fit)
-                p_cal_raw = _predict_raw(model_family, raw_model, X.iloc[cal])
+                p_cal_raw = predict_raw_proba(model_family, raw_model, X.iloc[cal])
                 calibrator = fit_calibrator(
                     p_cal_raw,
                     y_cal,
@@ -800,7 +793,7 @@ def run_training(
                     seed=config.random_seed,
                     num_threads=config.compute.num_threads,
                 )
-                p_test_raw = _predict_raw(model_family, raw_model, X.iloc[te])
+                p_test_raw = predict_raw_proba(model_family, raw_model, X.iloc[te])
                 p_test = apply_calibrator(calibrator, p_test_raw)
 
                 fold_dir = model_run_dir / f"fold_{window.k}"
@@ -863,7 +856,7 @@ def run_training(
             )
 
             y_cal_final = y_all[final_slices.calibration_final_idx]
-            p_cal_final_raw = _predict_raw(
+            p_cal_final_raw = predict_raw_proba(
                 model_family,
                 final_model,
                 X.iloc[final_slices.calibration_final_idx],
@@ -879,7 +872,7 @@ def run_training(
 
             holdout_idx = splits.holdout.holdout_idx
             y_holdout = y_all[holdout_idx]
-            p_holdout_raw = _predict_raw(model_family, final_model, X.iloc[holdout_idx])
+            p_holdout_raw = predict_raw_proba(model_family, final_model, X.iloc[holdout_idx])
             p_holdout = apply_calibrator(final_calibrator, p_holdout_raw)
             holdout_keys = keys.iloc[holdout_idx]
 
