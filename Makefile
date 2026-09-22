@@ -54,7 +54,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck lock ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -180,6 +180,17 @@ lint:
 
 typecheck:
 	@$(PY) -m mypy telegram_bot modeling pipeline
+
+# Перегенерация трёх requirements*.txt из requirements*.in (pip-tools, requirements-dev.in).
+# Порядок важен: сначала рантайм-слой, затем modeling и dev констрейнтятся им
+# (-c requirements.txt), а dev — ещё и modeling-слоем (-c requirements-modeling.txt), чтобы
+# `pip install -r requirements.txt -r requirements-dev.txt -r requirements-modeling.txt`
+# (см. ci.yml) всегда получал непротиворечивый набор версий. Без --upgrade pip-compile
+# держит уже закоммиченные пины, двигая только то, что реально требуется — см. DEVELOPMENT.md.
+lock: setup-dev
+	$(VENV)/bin/pip-compile --generate-hashes --allow-unsafe --output-file=requirements.txt requirements.in
+	$(VENV)/bin/pip-compile --generate-hashes --allow-unsafe --output-file=requirements-modeling.txt -c requirements.txt requirements-modeling.in
+	$(VENV)/bin/pip-compile --generate-hashes --allow-unsafe --output-file=requirements-dev.txt -c requirements.txt -c requirements-modeling.txt requirements-dev.in
 
 # Same checks as GitHub Actions (no DB-backed tests). setup-dev pulls in
 # requirements-modeling.txt (via modeling-dev) so tests/test_modeling_*.py actually collect.
