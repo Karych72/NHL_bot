@@ -432,36 +432,142 @@ def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
     return int(row["team_id"][0])
 
 
-def _last_n_form_record(team_id: int, n: int = 5) -> str:
-    """Формат W-L-OTL по последним n завершённым играм (как в таблице очков)."""
+_TEAM_RECENT_GAMES_COLUMNS = [
+    "winner_id",
+    "is_overtime",
+    "is_shootouts",
+    "ot_empty_net_win",
+]
+
+# В сезоне у команды не больше 82 игр — с запасом на предмет ошибок в данных.
+_CURRENT_STREAK_LOOKBACK_LIMIT = 100
+
+
+def _team_game_outcome(
+    team_id: int,
+    winner_id: Optional[int],
+    is_overtime: bool,
+    is_shootouts: bool,
+    ot_empty_net_win: bool,
+) -> str:
+    """Разряд исхода одной завершённой игры (`games.winner_id IS NOT NULL`)
+    для команды `team_id`: победа (`"W"`), поражение с очком (`"OTL"`) или
+    поражение без очка (`"L"`).
+
+    Общий классификатор для `_recent_team_outcomes()` (и через него — для
+    `_last_n_form_record()` и `_current_streak()`) — без него правило NHL
+    84.2 (см. ниже) пришлось бы поддерживать в двух копиях.
+
+    Правило NHL 84.2: команда, снявшая вратаря в овертайме и пропустившая
+    победный гол в пустые ворота, поражения "по овертайму" не получает —
+    это обычное поражение, хотя `games.is_overtime = true`. Поэтому одного
+    `is_overtime` недостаточно, чтобы отличить ПО от поражения: нужен
+    `ot_empty_net_win` — признак «победный гол забит в пустые ворота в
+    периоде >= 4», посчитанный в SQL через `EXISTS` по `all_goals`
+    (буллитное поражение, `is_shootouts`, этой оговорки не касается — оно
+    всегда ПО).
+
+    Аргументы:
+        team_id: команда, для которой определяется исход.
+        winner_id: `games.winner_id`.
+        is_overtime: `games.is_overtime`.
+        is_shootouts: `games.is_shootouts`.
+        ot_empty_net_win: см. правило 84.2 выше.
+
+    Возвращает: `"W"`, `"L"` или `"OTL"`.
+    """
+    if winner_id == team_id:
+        return "W"
+    if is_shootouts:
+        return "OTL"
+    if is_overtime and not ot_empty_net_win:
+        return "OTL"
+    return "L"
+
+
+def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
+    """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
+    сезона команды `team_id`, от новой игры к старой.
+
+    Единственное место, где строится запрос «последние игры команды» и
+    разбирается его строка — общее для `_last_n_form_record()` (`limit=5`,
+    запись формы `W-L-OTL`) и `_current_streak()`
+    (`limit=_CURRENT_STREAK_LOOKBACK_LIMIT`, текущая серия). Учитывает
+    правило NHL 84.2 через `_team_game_outcome()`, поэтому форма и серия не
+    могут разойтись в подсчёте ПО.
+
+    Аргументы:
+        team_id: команда, для которой отбираются игры.
+        limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
+
+    Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
+    пустой список, если в текущем сезоне у команды нет завершённых игр.
+    """
     row = cached_fetch_all(
-        "SELECT winner_id, home_team_id, away_team_id, is_overtime, is_shootouts "
-        "FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
+        "SELECT winner_id, is_overtime, is_shootouts, "
+        "EXISTS (SELECT 1 FROM all_goals a WHERE a.game_id = g.game_id "
+        "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
+        "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
-        (config.SEASON_ID, team_id, team_id, n),
-        columns=[
-            "winner_id",
-            "home_team_id",
-            "away_team_id",
-            "is_overtime",
-            "is_shootouts",
-        ],
+        (config.SEASON_ID, team_id, team_id, limit),
+        columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
-    w = losses = otl = 0
-    for i in range(row["count_rows"]):
-        wid = row["winner_id"][i]
-        ot = bool(row["is_overtime"][i])
-        so = bool(row["is_shootouts"][i])
-        if wid == team_id:
-            w += 1
-        elif ot or so:
-            otl += 1
-        else:
-            losses += 1
-    if row["count_rows"] == 0:
+    return [
+        _team_game_outcome(
+            team_id,
+            row["winner_id"][i],
+            bool(row["is_overtime"][i]),
+            bool(row["is_shootouts"][i]),
+            bool(row["ot_empty_net_win"][i]),
+        )
+        for i in range(row["count_rows"])
+    ]
+
+
+def _last_n_form_record(team_id: int, n: int = 5) -> str:
+    """Формат W-L-OTL по последним n завершённым играм (как в таблице очков).
+
+    Игры и их разряды берёт `_recent_team_outcomes()` (правило NHL 84.2 —
+    см. `_team_game_outcome()`), чтобы форма и текущая серия
+    (`_current_streak()`) не могли разойтись в подсчёте ПО.
+    """
+    outcomes = _recent_team_outcomes(team_id, n)
+    if not outcomes:
         return "—"
+    w = outcomes.count("W")
+    losses = outcomes.count("L")
+    otl = outcomes.count("OTL")
     return f"{w}-{losses}-{otl}"
+
+
+def _current_streak(team_id: int) -> str:
+    """Текущая серия команды: сколько подряд последних завершённых игр
+    сезона закончились одним разрядом (`_team_game_outcome()`), и каким.
+
+    Зачем: превью ещё не сыгранного матча (`matchup_season_preview()`)
+    показывает серию рядом с формой W-L-OTL. Игры и их разряды берёт тот же
+    `_recent_team_outcomes()`, что и `_last_n_form_record()`, поэтому
+    учитывает правило NHL 84.2 — победный гол в пустые ворота в овертайме
+    (период >= 4) для проигравшей команды это поражение (L), а не
+    поражение "по овертайму" (OTL), хотя `games.is_overtime = true`.
+
+    Аргументы:
+        team_id: команда, для которой считается серия.
+
+    Возвращает: строку вида `"W3"`, `"L2"`, `"OTL1"`; `"—"`, если в текущем
+    сезоне у команды нет завершённых игр.
+    """
+    outcomes = _recent_team_outcomes(team_id, _CURRENT_STREAK_LOOKBACK_LIMIT)
+    if not outcomes:
+        return "—"
+    streak_outcome = outcomes[0]
+    streak_len = 0
+    for outcome in outcomes:
+        if outcome != streak_outcome:
+            break
+        streak_len += 1
+    return f"{streak_outcome}{streak_len}"
 
 
 def _matchup_aligned_compare_rows(pairs: List[Tuple[str, str, str]], min_gap: int = 4) -> List[str]:
@@ -648,8 +754,12 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
         parts.append("<b>Форма (последние 5 игр)</b>")
         fa = _last_n_form_record(tid_a, 5) if tid_a is not None else "—"
         fh = _last_n_form_record(tid_h, 5) if tid_h is not None else "—"
-        parts.append(f"<b>{esc_a}</b>: {html.escape(fa)}")
-        parts.append(f"<b>{esc_h}</b>: {html.escape(fh)}")
+        streak_a = _current_streak(tid_a) if tid_a is not None else "—"
+        streak_h = _current_streak(tid_h) if tid_h is not None else "—"
+        streak_a_suffix = f" (серия {html.escape(streak_a)})" if streak_a != "—" else ""
+        streak_h_suffix = f" (серия {html.escape(streak_h)})" if streak_h != "—" else ""
+        parts.append(f"<b>{esc_a}</b>: {html.escape(fa)}{streak_a_suffix}")
+        parts.append(f"<b>{esc_h}</b>: {html.escape(fh)}{streak_h_suffix}")
 
         if tid_a is not None and tid_h is not None:
             h2h = _h2h_season_wins(tid_a, tid_h, away_abbr, home_abbr)
