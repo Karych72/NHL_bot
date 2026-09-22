@@ -4,11 +4,17 @@
 
 Оперативная документация по архитектуре и API — в [`docs/`](../docs/).
 
+## Что открыто прямо сейчас
+
+**[`open_tasks.md`](./open_tasks.md) — единый реестр невыполненных задач** по всем темам
+(инженерия, трек B, продукт). Выбирать следующую задачу — оттуда; остальные файлы ниже
+нужны за историей, критериями приёмки и контрактами.
+
 ## Статистика и продукт (`stats/`)
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
-| [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Не выполнено** | Агрегаты по стране и сравнение команд. |
+| [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Частично** | Фаза C реализована (сезонное сравнение команд из `/tonight`), Фаза A частично; остаток — Задачи 41 и 42 в [`open_tasks.md`](./open_tasks.md). |
 
 ## Датасет и агенты Cursor (`dataset_agents/`)
 
@@ -29,13 +35,13 @@
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
-| [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md) | **В процессе** | Действующий исполняемый план; единственный источник истины по задачам, критерии приёмки и команды проверки. |
-| [`engineering/work_plan_2026-09-12.md`](./engineering/work_plan_2026-09-12.md) | **В процессе** | Срез остатка; оставшиеся задачи одной таблицей, критерии приёмки — в [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md). |
+| [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md) | **Источник истины по Задачам 1–32** | Критерии приёмки, команды проверки и основания закрытия. Открытых задач осталось три (21, 22, 26), они в [`open_tasks.md`](./open_tasks.md). |
+| [`engineering/work_plan_2026-09-12.md`](./engineering/work_plan_2026-09-12.md) | **История** | Срез остатка на 2026-09-12; заменён [`open_tasks.md`](./open_tasks.md). |
 | [`engineering/work_plan_2026-06-29.md`](./engineering/work_plan_2026-06-29.md) | **История / источник приоритетов** | Заменён [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md). |
-| [`engineering/refactoring_plan_3.md`](./engineering/refactoring_plan_3.md) | **В процессе** | Актуальный мастер-план приоритетов (дата среза 2026-05-15), наследует `refactoring_plan_2.md` и `refactoring_plan.md`; один из двух источников приоритетов `work_plan_2026-08-08.md`. |
-| [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md) | **В процессе** | Срез незакрытых задач рефакторинга. |
-| [`engineering/refactoring_plan.md`](./engineering/refactoring_plan.md) | **Частично / история** | Полный чеклист по фазам; для остатка см. [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md). |
-| [`engineering/db_tests_remediation_plan.md`](./engineering/db_tests_remediation_plan.md) | **Частично выполнено** | Этап A закрыт; CI и прочее — по чеклисту внутри. |
+| [`engineering/refactoring_plan_3.md`](./engineering/refactoring_plan_3.md) | **Исчерпан** | Мастер-план приоритетов (срез 2026-05-15); все пункты перенумерованы в `work_plan_2026-08-08.md` и закрыты, кроме B3/B5/B6 → Задачи 21, 22, 26. |
+| [`engineering/refactoring_plan_2.md`](./engineering/refactoring_plan_2.md) | **История** | Срез незакрытых задач рефакторинга; остатка не осталось. |
+| [`engineering/refactoring_plan.md`](./engineering/refactoring_plan.md) | **История** | Полный чеклист по фазам. |
+| [`engineering/db_tests_remediation_plan.md`](./engineering/db_tests_remediation_plan.md) | **Выполнено** | Этапы A–D закрыты Задачей 1 (DB-тесты в CI) и целями `test-db`/`test-db-data`. |
 
 ## Архив выполненных планов (`plan/deprecated_plan/`)
 
