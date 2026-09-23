@@ -35,8 +35,7 @@ make bot
 |------------|------------|
 | `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather; **обязателен** для `make bot`. |
 | `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_DATABASE` | Те же `PG_*`, что использует лоадер; для бота тоже **обязательны** (см. §2.1). |
-| `SEASON_ID` | Сезон, по которому бот фильтрует ответы (`config.SEASON_ID`). |
-| `CURRENT_SEASON` | Подпись сезона в сообщениях, например `25/26`. |
+| `SEASON_ID` | Сезон, по которому бот фильтрует ответы (`config.SEASON_ID`); **обязателен**, без дефолта — падение на старте, если не задан. Подпись сезона в сообщениях (`config.CURRENT_SEASON`, например `25/26`) выводится из него, отдельной переменной больше нет (`config.derive_season()`, Задача 33). |
 | `ENABLE_PUSH_DIGEST` | `0`/`1` — разрешить скрипт рассылки `push_digest_job.py` (по умолчанию выкл.). |
 | `PUSH_SEND_INTERVAL_SEC` | Пауза между сообщениями при массовой отправке (по умолчанию `0.05`). |
 
@@ -56,7 +55,7 @@ make bot
 Выполняется `telegram_bot/bot.py` через интерпретатор из `.venv`; `bot.py::main()`
 перед стартом polling вызывает `config.validate_env()` — падает с сообщением,
 называющим переменную, если пуст или не задан `TELEGRAM_BOT_TOKEN` или любой из
-`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`.
+`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`/`SEASON_ID`.
 
 ### 2.2. С автоматической подготовкой окружения
 
@@ -72,7 +71,7 @@ make run-local  # синоним run-bot
 
 ```bash
 make setup env-example
-# заполнить .env (TELEGRAM_BOT_TOKEN, PG_*, SEASON_ID, CURRENT_SEASON)
+# заполнить .env (TELEGRAM_BOT_TOKEN, PG_*, SEASON_ID)
 make db-reset-local
 make season-load-full
 make bot

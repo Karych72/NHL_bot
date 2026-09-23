@@ -134,7 +134,8 @@ class Phase1UxCommandsTest(unittest.TestCase):
                 return max_day_row
             return standings_row
 
-        with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
+        with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
+             patch.object(bot_messages.config, "CURRENT_SEASON", "25/26"):
             text = bot_messages.team_table()
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)

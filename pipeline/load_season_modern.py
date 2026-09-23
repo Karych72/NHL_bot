@@ -1733,11 +1733,23 @@ class ModernNhlLoader:
         )
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
+def main(argv: Optional[List[str]] = None) -> None:
+    """Точка входа CLI: строит `ModernNhlLoader`, разрешает окно дат и сезон
+    из флагов/`.env`/дефолтов `config.py`, запускает `run()`.
+
+    `SEASON_ID` обязателен — из `.env` (`config.SEASON_ID`) или флага
+    `--season-id`; без него лоадер не эквивалентен боту (`config.TOKEN` ему
+    не нужен), поэтому вместо всего `config.validate_env()` здесь отдельная
+    явная проверка с именем переменной в сообщении (Задача 33).
+
+    Метка сезона (`games.season`) больше не задаётся отдельным флагом —
+    `--current-season` убран, метка всегда выводится из итогового
+    `season_id` через `config.derive_season()`, единственный источник.
+
+    Args:
+        argv: аргументы командной строки без имени программы; `None` — взять
+            `sys.argv[1:]` (обычный запуск).
+    """
     parser = argparse.ArgumentParser(
         description="Load NHL teams, season aggregates, and finished games into PostgreSQL.",
     )
@@ -1758,15 +1770,9 @@ if __name__ == "__main__":
         dest="season_id",
         type=int,
         metavar="ID",
-        help="NHL stats seasonId, e.g. 20252026 (overrides SEASON_ID).",
+        help="NHL stats seasonId, e.g. 20262027 (overrides SEASON_ID).",
     )
-    parser.add_argument(
-        "--current-season",
-        dest="current_season",
-        metavar="LABEL",
-        help='Season label stored on games.season, e.g. "25/26" (overrides CURRENT_SEASON).',
-    )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     loader = ModernNhlLoader()
     if args.date_from:
         loader.start_date = args.date_from
@@ -1774,6 +1780,18 @@ if __name__ == "__main__":
         loader.end_date = args.date_to
     if args.season_id is not None:
         loader.season_id = args.season_id
-    if args.current_season:
-        loader.current_season_label = args.current_season
+    if loader.season_id is None:
+        raise RuntimeError(
+            "Не задана обязательная переменная окружения: SEASON_ID. "
+            "Задайте её в .env, экспортируйте в shell или передайте --season-id."
+        )
+    loader.current_season_label = config.derive_season(loader.season_id)[0]
     loader.run()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
+    main()

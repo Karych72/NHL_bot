@@ -56,7 +56,7 @@ telegram_bot/bot.py (только чтение БД)  ── см. telegram_bot.
 
 ```bash
 make setup env-example          # venv + зависимости + .env из шаблона
-# Отредактируйте .env: PG_*, SEASON_ID, CURRENT_SEASON, при желании DATE_FROM/DATE_TO
+# Отредактируйте .env: PG_*, SEASON_ID (обязателен), при желании DATE_FROM/DATE_TO
 make db-reset-local             # DROP всех таблиц проекта + CREATE из data_tables/t.*.sql + SQL-функции
 make season-sync-month          # загрузка за последние ~30 дней (сеть + NHL API)
 make test-db                    # проверка схемы в PostgreSQL
@@ -107,23 +107,17 @@ make env-example
 | `PG_PORT` | то же | `5432` | Порт. |
 | `PG_USER` | то же | `postgres`; при пустой переменной локальные `_local`-цели `Makefile` подставляют `$(id -un)` | Имя роли БД. |
 | `PG_DATABASE` | то же | `postgres` | Имя базы. |
-| `DATE_FROM` | лоадер | `2025-10-01` | Начало окна загрузки **завершённых** игр (ISO `YYYY-MM-DD`). |
+| `SEASON_ID` | лоадер + бот | нет (обязателен) | Numeric `seasonId` NHL Stats API, например `20262027`. Пишется в `games.season_id`, `*_season_stats.season_id` и т.д. **Единственный источник сезона** — `CURRENT_SEASON` и дата старта `season-load-full` выводятся из него (`config.derive_season()`, Задача 33). Не задан — падение на старте и у бота (`validate_env()`), и у лоадера (`load_season_modern.py::main()`). |
+| `DATE_FROM` | лоадер | 1 сентября первого года `SEASON_ID` | Начало окна загрузки **завершённых** игр (ISO `YYYY-MM-DD`). |
 | `DATE_TO` | лоадер | `date.today()` | Конец окна (включительно). |
-| `SEASON_ID` | лоадер + бот | `20252026` | Numeric `seasonId` NHL Stats API. Пишется в `games.season_id`, `*_season_stats.season_id` и т.д. |
-| `CURRENT_SEASON` | лоадер + бот | `25/26` | Текстовая метка, попадает в `games.season`. |
 | `TELEGRAM_BOT_TOKEN` | только бот | пусто | Не нужно для загрузки. |
-| `SEASON_START` | только Makefile-цель `season-load-full` | `2025-10-01` | Начало сезона для full-reload. |
 | `RUN_DB_SCHEMA_TESTS` | `make test-db` | `1` | См. §10.2. |
 | `RUN_DB_DATA_TESTS` | `make test-db` | пусто | См. §10.2. |
-
-`SEASON` в `.env.example` — **legacy-переменная**, текущий код её не
-использует (читается только `SEASON_ID`). Можно удалить из своего `.env`.
 
 > **Подсказка:** для разовых переопределений CLI > env > config:
 >
 > ```bash
 > DATE_FROM=2026-01-01 DATE_TO=2026-01-31 make season-sync
-> SEASON_START=2024-10-01 make season-load-full
 > PG_USER=myuser make db-sync-local
 > ```
 
@@ -287,7 +281,7 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 В логах в начале выводятся окно дат и `season_id`:
 
 ```
-Date window 2025-10-01 .. 2026-03-29 (season_id=20252026, games.season=25/26)
+Date window 2026-09-01 .. 2027-03-29 (season_id=20262027, games.season=26/27)
 ```
 
 ### 6.2. Источники данных
@@ -396,7 +390,7 @@ rm -rf all_data/raw/{season_id}
 | Команда | DATE_FROM | DATE_TO | Когда применять |
 |---------|-----------|---------|-----------------|
 | `make season-sync DATE_FROM=… DATE_TO=…` | как задано | как задано | универсальная цель; **обязательны** оба аргумента, иначе ошибка `Usage:` |
-| `make season-load-full` | `$(SEASON_START)` (default `2025-10-01`) | `$(date +%Y-%m-%d)` | **полный** реload текущего сезона до сегодня |
+| `make season-load-full` | выведено из `SEASON_ID` (1 сентября первого года, `config.derive_season()`) | `$(date +%Y-%m-%d)` | **полный** реload текущего сезона до сегодня |
 | `make season-reload-current` | то же | то же | алиас на `season-load-full` |
 | `make season-load` | то же | то же | алиас на `season-load-full` |
 | `make season-sync-week` | `$(date -v-7d +%Y-%m-%d)` (BSD `date`) | `$(date +%Y-%m-%d)` | последние 7 дней (свежие игры) |
@@ -421,10 +415,9 @@ make season-sync DATE_FROM=2026-03-22 DATE_TO=2026-03-29
 
 ```bash
 cd pipeline && ../.venv/bin/python -u load_season_modern.py \
-  --date-from 2025-10-01 \
-  --date-to 2026-03-29 \
-  --season-id 20252026 \
-  --current-season "25/26"
+  --date-from 2026-09-01 \
+  --date-to 2027-03-29 \
+  --season-id 20262027
 ```
 
 Аргументы:
@@ -433,11 +426,12 @@ cd pipeline && ../.venv/bin/python -u load_season_modern.py \
 |------|--------------------|
 | `--date-from YYYY-MM-DD` | `DATE_FROM` |
 | `--date-to YYYY-MM-DD` | `DATE_TO` (включительно) |
-| `--season-id INT` | `SEASON_ID` |
-| `--current-season "LABEL"` | `CURRENT_SEASON`, попадает в колонку `games.season` |
+| `--season-id INT` | `SEASON_ID`. Метка в `games.season` отдельным флагом не задаётся — она всегда выводится из итогового `season_id` (`config.derive_season()`, Задача 33). |
 
 Без аргументов лоадер читает значения из `telegram_bot/config.py` (то есть
-из `.env`).
+из `.env`). Без `SEASON_ID` — ни в `.env`, ни через `--season-id` — `main()`
+падает с `RuntimeError`, называющим переменную (как `config.validate_env()`
+у бота, но отдельная проверка: `TELEGRAM_BOT_TOKEN` лоадеру не нужен).
 
 Логирование — `INFO` по умолчанию, формат
 `%(asctime)s - %(name)s - %(levelname)s - %(message)s`. Для отладки PBP
@@ -456,11 +450,11 @@ cd pipeline && ../.venv/bin/python -u load_season_modern.py \
 Чтобы загрузить второй сезон (например прошлый), не теряя текущий:
 
 ```bash
-SEASON_ID=20242025 CURRENT_SEASON="24/25" \
+SEASON_ID=20242025 \
   make season-sync DATE_FROM=2024-10-01 DATE_TO=2025-06-30
 ```
 
-Строки сезона `20252026` не трогаются: UPSERT-ы идут только по своим PK,
+Строки текущего сезона не трогаются: UPSERT-ы идут только по своим PK,
 а `DELETE … WHERE game_id = ANY(...)` фильтрует только игры из переданного
 окна, чьи `game_id` в любом случае уникальны на уровне NHL.
 
