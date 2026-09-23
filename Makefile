@@ -46,8 +46,6 @@ FN_FILES  := $(wildcard telegram_bot/queries/*.sql)
 MIGRATION_FILES := $(sort $(wildcard data_tables/migrations/*.up.sql))
 MIGRATIONS_TABLE_DDL := CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
-# NHL regular season start for full reloads (override: make season-load-full SEASON_START=2024-10-01)
-SEASON_START ?= 2025-10-01
 # Portable "30 days ago" for season-sync-month (requires Python)
 MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((date.today()-timedelta(days=30)).isoformat())")
 
@@ -208,8 +206,9 @@ db-functions:
 db-functions-local:
 	$(MAKE) db-functions PG_USER="$$(id -un)"
 
-# Unified entry: pass DATE_FROM and DATE_TO (and optional SEASON_ID / CURRENT_SEASON via .env).
-# Example: make season-sync DATE_FROM=2025-10-01 DATE_TO=2026-03-29
+# Unified entry: pass DATE_FROM and DATE_TO (SEASON_ID is required, via .env or
+# --season-id — see telegram_bot/config.py / load_season_modern.py).
+# Example: make season-sync DATE_FROM=2026-09-01 DATE_TO=2026-10-15
 season-sync: setup env-example
 	@if [ -z "$(strip $(DATE_FROM))" ] || [ -z "$(strip $(DATE_TO))" ]; then \
 		echo "Usage: make season-sync DATE_FROM=YYYY-MM-DD DATE_TO=YYYY-MM-DD"; \
@@ -217,9 +216,21 @@ season-sync: setup env-example
 	fi
 	cd pipeline && DATE_FROM="$(DATE_FROM)" DATE_TO="$(DATE_TO)" ../$(PY) -u load_season_modern.py
 
-# Full season to today (aggregates + all finished games from SEASON_START through today).
+# Full season to today (aggregates + all finished games from the season start
+# through today). Calls the loader directly instead of going through
+# season-sync: season-sync requires an explicit non-empty DATE_FROM, but here
+# we want the loader's own derived default — main() in load_season_modern.py
+# (Задача 33) derives the start date from the *effective* SEASON_ID (after
+# any --season-id override, which this target doesn't use) via
+# config.derive_season(), so there is exactly one place that does the
+# deriving. DATE_FROM= is passed explicitly empty, not left unset: Makefile
+# does `include .env; export`, so a DATE_FROM a user set in .env for a
+# one-off `season-sync` would otherwise leak into this process's environment
+# and silently override the season start (main() only derives the default
+# when DATE_FROM is unset/empty). For a custom start date, call
+# `make season-sync DATE_FROM=... DATE_TO=...` directly.
 season-load-full: setup env-example
-	$(MAKE) season-sync DATE_FROM="$(SEASON_START)" DATE_TO="$$(date +%Y-%m-%d)"
+	cd pipeline && DATE_FROM= DATE_TO="$$(date +%Y-%m-%d)" ../$(PY) -u load_season_modern.py
 
 season-reload-current: season-load-full
 

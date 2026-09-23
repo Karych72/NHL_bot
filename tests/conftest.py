@@ -66,7 +66,7 @@ def bot_module(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Any]:
 
 # config.validate_env() checks the raw environment (os.environ), not the
 # already-defaulted config.PG_*, so any test that drives bot.main() /
-# push_digest_job.main() end-to-end must set all five required variables
+# push_digest_job.main() end-to-end must set all six required variables
 # itself — it cannot rely on whatever `make` happened to supply.
 _REQUIRED_BOT_ENV = {
     "TELEGRAM_BOT_TOKEN": "123456789:TEST-TOKEN-NOT-A-REAL-SECRET",
@@ -74,6 +74,7 @@ _REQUIRED_BOT_ENV = {
     "PG_PORT": "5432",
     "PG_USER": "nhl_bot_test",
     "PG_DATABASE": "nhl_bot_test",
+    "SEASON_ID": "20262027",
 }
 
 
