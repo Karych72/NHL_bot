@@ -56,24 +56,27 @@ models:
       lambda_l1: [0.1]
       lambda_l2: [0.1]
       learning_rate: [0.05]
+    # Задача 39: same name fix as configs/modeling_default.yaml -- these are
+    # the real diff_/sum_ dataset columns (features.py + assemble.py), not
+    # the old diff_gf_*/diff_ga_*/sum_gf_*/sum_ga_* aliases and the
+    # non-existent diff_goal_diff_roll_mean_{10,20} (goal_diff exists only on
+    # window 5). Signs unchanged; see modeling_default.yaml for the reasoning.
     monotone:
       home_win:
+        diff_goals_for_roll_mean_5: 1
+        diff_goals_for_roll_mean_10: 1
+        diff_goals_for_roll_mean_20: 1
+        diff_goals_against_roll_mean_5: -1
+        diff_goals_against_roll_mean_10: -1
+        diff_goals_against_roll_mean_20: -1
         diff_goal_diff_roll_mean_5: 1
-        diff_goal_diff_roll_mean_10: 1
-        diff_goal_diff_roll_mean_20: 1
-        diff_gf_roll_mean_5: 1
-        diff_gf_roll_mean_10: 1
-        diff_gf_roll_mean_20: 1
-        diff_ga_roll_mean_5: -1
-        diff_ga_roll_mean_10: -1
-        diff_ga_roll_mean_20: -1
       over_5_5:
-        sum_gf_roll_mean_5: 1
-        sum_gf_roll_mean_10: 1
-        sum_gf_roll_mean_20: 1
-        sum_ga_roll_mean_5: 1
-        sum_ga_roll_mean_10: 1
-        sum_ga_roll_mean_20: 1
+        sum_goals_for_roll_mean_5: 1
+        sum_goals_for_roll_mean_10: 1
+        sum_goals_for_roll_mean_20: 1
+        sum_goals_against_roll_mean_5: 1
+        sum_goals_against_roll_mean_10: 1
+        sum_goals_against_roll_mean_20: 1
 
 calibration:
   method: isotonic
