@@ -108,7 +108,7 @@ make env-example
 | `PG_USER` | то же | `postgres`; при пустой переменной локальные `_local`-цели `Makefile` подставляют `$(id -un)` | Имя роли БД. |
 | `PG_DATABASE` | то же | `postgres` | Имя базы. |
 | `SEASON_ID` | лоадер + бот | нет (обязателен) | Numeric `seasonId` NHL Stats API, например `20262027`. Пишется в `games.season_id`, `*_season_stats.season_id` и т.д. **Единственный источник сезона** — `CURRENT_SEASON` и дата старта `season-load-full` выводятся из него (`config.derive_season()`, Задача 33). Не задан — падение на старте и у бота (`validate_env()`), и у лоадера (`load_season_modern.py::main()`). |
-| `DATE_FROM` | лоадер | 1 сентября первого года `SEASON_ID` | Начало окна загрузки **завершённых** игр (ISO `YYYY-MM-DD`). |
+| `DATE_FROM` | лоадер | нет дефолта в `config.py` (сырое значение переменной или `None`); если не задано, лоадер сам (`load_season_modern.py::main()`) подставляет 1 сентября первого года **итогового** `SEASON_ID` (после `--season-id`) | Начало окна загрузки **завершённых** игр (ISO `YYYY-MM-DD`). |
 | `DATE_TO` | лоадер | `date.today()` | Конец окна (включительно). |
 | `TELEGRAM_BOT_TOKEN` | только бот | пусто | Не нужно для загрузки. |
 | `RUN_DB_SCHEMA_TESTS` | `make test-db` | `1` | См. §10.2. |
@@ -390,7 +390,7 @@ rm -rf all_data/raw/{season_id}
 | Команда | DATE_FROM | DATE_TO | Когда применять |
 |---------|-----------|---------|-----------------|
 | `make season-sync DATE_FROM=… DATE_TO=…` | как задано | как задано | универсальная цель; **обязательны** оба аргумента, иначе ошибка `Usage:` |
-| `make season-load-full` | выведено из `SEASON_ID` (1 сентября первого года, `config.derive_season()`) | `$(date +%Y-%m-%d)` | **полный** реload текущего сезона до сегодня |
+| `make season-load-full` | не передаётся (Makefile явно очищает `DATE_FROM=`) — лоадер сам выводит из `SEASON_ID` (1 сентября первого года, `config.derive_season()`) | `$(date +%Y-%m-%d)` | **полный** реload текущего сезона до сегодня |
 | `make season-reload-current` | то же | то же | алиас на `season-load-full` |
 | `make season-load` | то же | то же | алиас на `season-load-full` |
 | `make season-sync-week` | `$(date -v-7d +%Y-%m-%d)` (BSD `date`) | `$(date +%Y-%m-%d)` | последние 7 дней (свежие игры) |

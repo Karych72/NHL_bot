@@ -122,13 +122,13 @@ NHL_bot/
 | `PG_PORT` | Порт PostgreSQL | `5432` |
 | `PG_USER` | Пользователь PostgreSQL | `postgres` |
 | `PG_DATABASE` | Имя базы данных | `postgres` |
-| `SEASON_ID` | Идентификатор сезона NHL API (напр. `20262027`); единственный источник — `CURRENT_SEASON` и стартовая дата `make season-load-full` выводятся из него (`config.derive_season()`, Задача 33) | — (обязательно) |
-| `DATE_FROM` | Начало диапазона дат для загрузки игр | 1 сентября первого года `SEASON_ID` |
+| `SEASON_ID` | Идентификатор сезона NHL API (напр. `20262027`); единственный источник — `CURRENT_SEASON` (в `config.py`) и стартовая дата окна (в лоадере) выводятся из него через `config.derive_season()` (Задача 33) | — (обязательно) |
+| `DATE_FROM` | Начало диапазона дат для загрузки игр (только лоадер; бот эту переменную не читает) | нет дефолта в `config.py`; если пусто/не задано, лоадер (`load_season_modern.py::main()`) сам подставляет 1 сентября первого года *итогового* `season_id` (после `--season-id`) |
 | `DATE_TO` | Конец диапазона дат для загрузки игр | текущая дата |
 
 Конфигурация считывается модулем `telegram_bot/config.py`. Pipeline повторно использует тот же модуль, добавляя его директорию в `sys.path`.
 
-Модульные дефолты `PG_*` рассчитаны на лоадер и `make db-*` — сам импорт `config.py` на отсутствии переменных не падает; `SEASON_ID` тоже не роняет импорт, но дефолта у него нет (`config.SEASON_ID is None`, `CURRENT_SEASON`/`DATE_FROM` тогда тоже не выводятся). Для бота действует отдельная явная проверка `config.validate_env()`, вызываемая из точек входа (`bot.py`, `push_digest_job.py`): отсутствие или пустое значение любой из `TELEGRAM_BOT_TOKEN`/`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`/`SEASON_ID` — падение на старте с сообщением, называющим переменную (без её значения). У лоадера своя явная проверка на том же условии (`pipeline/load_season_modern.py::main()`), потому что ему не нужен `TELEGRAM_BOT_TOKEN` — вызывать весь `validate_env()` ему не подходит.
+Модульные дефолты `PG_*` рассчитаны на лоадер и `make db-*` — сам импорт `config.py` на отсутствии переменных не падает; `SEASON_ID` тоже не роняет импорт, но дефолта у него нет (`config.SEASON_ID is None`, тогда и `CURRENT_SEASON` — `None`). `DATE_FROM` в `config.py` дефолта не имеет вовсе — это либо сырое значение переменной окружения, либо `None`; дату старта от `SEASON_ID` подставляет только лоадер (`pipeline/load_season_modern.py::main()`), причём от **итогового** `season_id` (после `--season-id`), не от того, что было в `config.SEASON_ID` на момент импорта — это и держит вывод единственным (fix round 1, Задача 33: старая версия вычисляла дефолт `DATE_FROM` в `config.py` на импорте и могла разойтись с `--season-id`). Для бота действует отдельная явная проверка `config.validate_env()`, вызываемая из точек входа (`bot.py`, `push_digest_job.py`): отсутствие или пустое значение любой из `TELEGRAM_BOT_TOKEN`/`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`/`SEASON_ID` — падение на старте с сообщением, называющим переменную (без её значения). У лоадера своя явная проверка на том же условии (`pipeline/load_season_modern.py::main()`), потому что ему не нужен `TELEGRAM_BOT_TOKEN` — вызывать весь `validate_env()` ему не подходит.
 
 ### Makefile-цели
 
@@ -142,7 +142,7 @@ NHL_bot/
 | `make db-migrate` | Применяет непримененные `data_tables/migrations/*.up.sql` по возрастанию версии, фиксируя каждую в `schema_migrations` |
 | `make db-migrate-down` | Откатывает последнюю применённую миграцию (`*.down.sql` + удаление строки из `schema_migrations`) |
 | `make season-sync DATE_FROM=… DATE_TO=…` | Запуск ETL-загрузчика `load_season_modern.py` для произвольного окна дат |
-| `make season-load-full` | Полная перезагрузка текущего сезона (от даты старта, выведенной из `SEASON_ID`, до сегодня) |
+| `make season-load-full` | Полная перезагрузка текущего сезона: запускает лоадер напрямую с очищенным `DATE_FROM`, чтобы он сам вывел дату старта из `SEASON_ID` (см. §Конфигурация); окно — до сегодня |
 | `make season-sync-week` / `-month` / `-today` | Синхронизация за последние 7 / 30 / 0 дней |
 | `make bot` | Запуск Telegram-бота (`bot.py::main()` проверяет обязательные переменные окружения) |
 | `make run-bot` | `setup` + `env-example` + `bot` |

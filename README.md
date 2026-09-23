@@ -22,6 +22,7 @@ PG_HOST=localhost
 PG_PORT=5432
 PG_USER=
 PG_DATABASE=postgres
+SEASON_ID=20262027
 DATE_FROM=2026-03-18
 DATE_TO=2026-03-18
 ```
@@ -93,7 +94,9 @@ Bot run (with setup + env copy helper):
 make run-bot
 ```
 
-Load full season using modern NHL API (`SEASON_ID`, `DATE_FROM`, `DATE_TO` from `.env`):
+Load full season using modern NHL API (`SEASON_ID` from `.env`, required; the start date is
+derived from it, `DATE_TO` defaults to today — `.env`'s `DATE_FROM`/`DATE_TO`, if set, are
+cleared for this target, see `Makefile`):
 
 ```bash
 make season-load-full
