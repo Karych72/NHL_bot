@@ -1742,9 +1742,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     не нужен), поэтому вместо всего `config.validate_env()` здесь отдельная
     явная проверка с именем переменной в сообщении (Задача 33).
 
-    Метка сезона (`games.season`) больше не задаётся отдельным флагом —
-    `--current-season` убран, метка всегда выводится из итогового
-    `season_id` через `config.derive_season()`, единственный источник.
+    Метка сезона (`games.season`) и дефолт окна дат больше не задаются
+    отдельными флагом/переменной — `--current-season` убран, а окно, если
+    ни `--date-from`, ни явный `DATE_FROM` в окружении не даны, начинается
+    с даты старта **итогового** `season_id` (после `--season-id`), не того,
+    что было выведено на импорте `config.py`: `config.SEASON_ID=20262027` +
+    `--season-id 20242025` без своего окна дат должны грузить окно 24/25,
+    а не 1 сентября 2026-го (Задача 33, fix round 1). Оба — единственный
+    источник `config.derive_season()`.
 
     Args:
         argv: аргументы командной строки без имени программы; `None` — взять
@@ -1774,10 +1779,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     args = parser.parse_args(argv)
     loader = ModernNhlLoader()
-    if args.date_from:
-        loader.start_date = args.date_from
-    if args.date_to:
-        loader.end_date = args.date_to
     if args.season_id is not None:
         loader.season_id = args.season_id
     if loader.season_id is None:
@@ -1785,7 +1786,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             "Не задана обязательная переменная окружения: SEASON_ID. "
             "Задайте её в .env, экспортируйте в shell или передайте --season-id."
         )
-    loader.current_season_label = config.derive_season(loader.season_id)[0]
+    current_season_label, season_start = config.derive_season(loader.season_id)
+    loader.current_season_label = current_season_label
+    if args.date_from:
+        loader.start_date = args.date_from
+    elif not config.DATE_FROM:
+        # Ни флага, ни явного DATE_FROM в окружении — окно от даты старта
+        # ИТОГОВОГО season_id, а не от того, что config.py вывел на импорте.
+        loader.start_date = season_start
+    if args.date_to:
+        loader.end_date = args.date_to
     loader.run()
 
 

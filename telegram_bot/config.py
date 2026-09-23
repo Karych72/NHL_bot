@@ -111,14 +111,15 @@ def _season_id_from_env() -> Optional[int]:
 
 # Pipeline settings are centralized here too.
 SEASON_ID: Optional[int] = _season_id_from_env()
-CURRENT_SEASON: Optional[str]
-_SEASON_START: Optional[str]
-if SEASON_ID is not None:
-    CURRENT_SEASON, _SEASON_START = derive_season(SEASON_ID)
-else:
-    CURRENT_SEASON, _SEASON_START = None, None
+CURRENT_SEASON: Optional[str] = derive_season(SEASON_ID)[0] if SEASON_ID is not None else None
 
-DATE_FROM = _env("DATE_FROM", _SEASON_START or "")
+# Нет дефолта: раньше "пустая DATE_FROM -> дата старта SEASON_ID на момент
+# импорта config.py" молча расходилась с сезоном после переопределения
+# `--season-id` в лоадере (Задача 33, fix round 1 — GC4). Дату старта
+# окна для того SEASON_ID, с которым лоадер реально запускается,
+# `pipeline/load_season_modern.py::main()` выводит через `derive_season()`
+# сам, уже после применения `--season-id`.
+DATE_FROM: Optional[str] = os.getenv("DATE_FROM", "").strip() or None
 DATE_TO = _env("DATE_TO", date.today().isoformat())
 
 
