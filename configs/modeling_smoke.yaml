@@ -56,11 +56,8 @@ models:
       lambda_l1: [0.1]
       lambda_l2: [0.1]
       learning_rate: [0.05]
-    # Задача 39: same name fix as configs/modeling_default.yaml -- these are
-    # the real diff_/sum_ dataset columns (features.py + assemble.py), not
-    # the old diff_gf_*/diff_ga_*/sum_gf_*/sum_ga_* aliases and the
-    # non-existent diff_goal_diff_roll_mean_{10,20} (goal_diff exists only on
-    # window 5). Signs unchanged; see modeling_default.yaml for the reasoning.
+    # Real dataset diff_/sum_ columns, same fix and sign reasoning as
+    # configs/modeling_default.yaml; see docs/modeling_training.md §7 (Задача 39).
     monotone:
       home_win:
         diff_goals_for_roll_mean_5: 1
@@ -80,9 +77,7 @@ models:
 
 calibration:
   method: isotonic
-  # Must not exceed split.calibration_games (50) -- above it every smoke window
-  # would skip calibration entirely (modeling/calibrate.py:196) and the path
-  # would never be exercised.
+  # Must not exceed split.calibration_games (50), or calibration is skipped.
   min_samples: 50
 
 evaluation:

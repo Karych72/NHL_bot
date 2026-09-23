@@ -46,18 +46,10 @@ models:
       lambda_l1: [0.0, 0.1, 1.0]
       lambda_l2: [0.0, 0.1, 1.0]
       learning_rate: [0.03, 0.05, 0.1]
-    # Задача 39: names below are real dataset columns (checked against
-    # modeling/dataset_builder/features.py + assemble.py's diff_/sum_ wide
-    # columns, not aliases) -- the old diff_gf_*/diff_ga_*/sum_gf_*/sum_ga_*
-    # and the diff_goal_diff_roll_mean_{10,20} keys don't exist in the
-    # dataset (goal_diff/pace_sum are derived only on window 5) and made
-    # build_monotone_constraints raise ConfigError, so lgbm never trained.
-    # Signs are unchanged domain reasoning, only names are fixed:
-    # home scoring more (diff_goals_for) or conceding less (diff_goals_against,
-    # hence the -1) than away raises P(home_win); a positive combined recent
-    # goal differential (diff_goal_diff_roll_mean_5) does too. For over_5_5,
-    # more goals for OR against on either side both push the total over the
-    # 5.5 line, hence +1 for both sum_goals_for_* and sum_goals_against_*.
+    # Real dataset diff_/sum_ columns, not aliases. Signs: home outscoring away
+    # (diff_goals_for) or conceding less (diff_goals_against, hence -1) raises
+    # P(home_win); either side's scoring or goals-against pushes the total over
+    # 5.5 (over_5_5, both +1). See docs/modeling_training.md §7 (Задача 39).
     monotone:
       home_win:
         diff_goals_for_roll_mean_5: 1
@@ -77,12 +69,8 @@ models:
 
 calibration:
   method: isotonic
-  # Задача 39: must not exceed split.calibration_games (300) -- above it
-  # every calibration block is smaller than the threshold and
-  # fit_calibrator (modeling/calibrate.py:196) silently skips calibration on
-  # every fold, storing an identity calibrator (real run before the fix:
-  # artifacts/models/home_win/logreg/latest/metadata.json had
-  # calibration_skipped: true, n_calibration: 300). See docs/modeling_training.md §7.
+  # Must not exceed split.calibration_games (300), or calibration is silently
+  # skipped on every fold. See docs/modeling_training.md §7 (Задача 39).
   min_samples: 300
 
 evaluation:

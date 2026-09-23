@@ -402,15 +402,19 @@ class TestCliLazyImports(unittest.TestCase):
                 )
 
 
-def _dataset_feature_columns(rolling_windows: list[int] = [5, 10, 20]) -> set[str]:
+# Mirrors the production dataset builder default (modeling/dataset_builder/base.py:
+# rolling_windows=(5, 10, 20)); a tuple, not a list, so it is safe as a default value.
+_PRODUCTION_ROLLING_WINDOWS: tuple[int, ...] = (5, 10, 20)
+
+
+def _dataset_feature_columns(rolling_windows: tuple[int, ...] = _PRODUCTION_ROLLING_WINDOWS) -> set[str]:
     """Real ``diff_``/``sum_`` column names the training pipeline produces.
 
     Runs a tiny synthetic history through the actual
     ``modeling.dataset_builder.features``/``assemble`` code (not a hand-written
     name list) so a config referencing a column that pipeline never builds is
     caught the same way ``build_monotone_constraints`` would catch it at
-    train time. Windows mirror the production dataset builder default
-    (``modeling/dataset_builder/base.py``: ``rolling_windows=(5, 10, 20)``).
+    train time.
     """
     day0 = pd.Timestamp("2024-10-01")
     rows = []
