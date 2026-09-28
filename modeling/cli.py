@@ -135,6 +135,25 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: <artifacts-root>/predictions/<task>_<model>_predictions.csv)"
         ),
     )
+
+    publish = sub.add_parser(
+        "publish-predictions",
+        help="Publish predict CSV probabilities to PostgreSQL game_predictions",
+    )
+    publish.add_argument("--task", choices=("home_win", "over_5_5"), required=True)
+    publish.add_argument("--model", choices=("logreg", "lgbm"), required=True)
+    publish.add_argument(
+        "--predictions",
+        help=(
+            "Predictions CSV from `predict` "
+            "(default: <artifacts-root>/predictions/<task>_<model>_predictions.csv)"
+        ),
+    )
+    publish.add_argument(
+        "--artifacts-root",
+        default="artifacts",
+        help="Root containing models/<task>/<model>/latest (default: artifacts)",
+    )
     return parser
 
 
@@ -240,6 +259,32 @@ def _handle_predict(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_publish(args: argparse.Namespace) -> int:
+    # Lazy import: psycopg2 lives only on the publish/build-dataset paths.
+    from modeling.dataset_builder.base import _connect_from_env
+    from modeling.publish_predictions import publish_predictions
+
+    artifacts_root = Path(args.artifacts_root)
+    predictions_csv = (
+        Path(args.predictions)
+        if args.predictions
+        else artifacts_root / "predictions" / f"{args.task}_{args.model}_predictions.csv"
+    )
+    conn = _connect_from_env()
+    try:
+        inserted = publish_predictions(
+            conn,
+            task=args.task,
+            model=args.model,
+            predictions_csv=predictions_csv,
+            artifacts_root=artifacts_root,
+        )
+    finally:
+        conn.close()
+    print(f"task={args.task} model={args.model} published_rows={inserted}")
+    return 0
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -275,6 +320,9 @@ def main() -> None:
 
     if args.command == "predict":
         raise SystemExit(_handle_predict(args))
+
+    if args.command == "publish-predictions":
+        raise SystemExit(_handle_publish(args))
 
 
 if __name__ == "__main__":

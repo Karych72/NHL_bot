@@ -34,6 +34,7 @@ DDL_TABLES := \
 	data_tables/t.goalies_season_stats.sql \
 	data_tables/t.games.sql \
 	data_tables/t.scheduled_games.sql \
+	data_tables/t.game_predictions.sql \
 	data_tables/t.game_three_stars.sql \
 	data_tables/t.game_team_stats.sql \
 	data_tables/t.game_player_stats.sql \
@@ -54,7 +55,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck lock ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train modeling-publish env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data all-tests lint typecheck lock ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -73,6 +74,17 @@ modeling-dev: setup
 
 modeling-train: modeling-dev
 	$(PY) -m modeling.cli train --config configs/modeling_default.yaml
+
+# Прогноз ближайших игр -> game_predictions (Задача 22B). Нужны БД и обученный latest;
+# без latest / при status != ok строки задачи удаляются (штатный исход). Расписание — Задача 26.
+TASK ?= home_win
+MODEL ?= lgbm
+modeling-publish: modeling-dev
+	$(PY) -m modeling.cli build-dataset --mode predict --output-dir artifacts/datasets \
+		--feature-set-version v2 --rolling-windows 5,10,20 --min-prior-games 5 \
+		--cold-start-policy-predict drop --train-metadata-path artifacts/datasets/metadata_train.json
+	$(PY) -m modeling.cli predict --task $(TASK) --model $(MODEL)
+	$(PY) -m modeling.cli publish-predictions --task $(TASK) --model $(MODEL)
 
 env-example:
 	cp -n .env.example .env || true
