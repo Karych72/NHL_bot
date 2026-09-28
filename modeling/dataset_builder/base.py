@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -14,7 +14,12 @@ import pandas as pd
 import psycopg2
 
 from .assemble import assemble_dataset
-from .features import build_match_feature_snapshots, compute_team_rolling_features
+from .features import (
+    attach_pregame_elo,
+    build_match_feature_snapshots,
+    compute_pregame_elo,
+    compute_team_rolling_features,
+)
 from .schema import (
     assert_feature_parity,
     build_feature_manifest,
@@ -30,7 +35,7 @@ from .validate import validate_or_raise, write_report
 class DatasetBuildConfig:
     mode: str
     output_dir: Path
-    feature_set_version: str = "v1"
+    feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
     cold_start_policy_predict: str = "allow_with_flag"
@@ -296,10 +301,20 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
+        # Elo (Task 3) persists across seasons, so it needs the *complete* played
+        # history regardless of config.season_ids/target_day_from — reuse
+        # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
+        # rather than a near-duplicate query; only target_day_to still bounds it,
+        # for a historical "as of" snapshot.
+        elo_history = load_target_games(
+            conn, replace(config, mode="train", season_ids=[], target_day_from=None)
+        ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
 
     team_facts, team_facts_report = build_team_game_facts(history)
     rolling = compute_team_rolling_features(team_facts, config.rolling_windows)
     snapshots = build_match_feature_snapshots(target_games, rolling)
+    elo_per_game, elo_final_ratings = compute_pregame_elo(elo_history)
+    snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
     assembled, assemble_report = assemble_dataset(
         mode=config.mode,
         snapshots=snapshots,

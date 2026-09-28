@@ -112,16 +112,17 @@ _LEADERS = [
 ]
 
 
-def _leaders_page(params):
-    """Ответ на запрос страницы лидеров: срез по LIMIT/OFFSET плюс COUNT(*) OVER ()."""
-    _season_id, limit, offset = params
-    return [
-        (lastname, position, value, team, games, shifts, len(_LEADERS))
-        for lastname, position, value, team, games, shifts in _LEADERS[offset:offset + limit]
-    ]
+def _leaderboard_page_route(rows):
+    """Маршрут `COUNT(*) OVER () AS total`: срез `rows` по LIMIT/OFFSET плюс
+    размер выборки — параметризован по списку строк (не копировать под каждый сценарий)."""
+    def page(params):
+        _season_id, limit, offset = params
+        return [(*row, len(rows)) for row in rows[offset:offset + limit]]
+
+    return page
 
 
-_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaders_page)]
+_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route(_LEADERS))]
 
 
 @pytest.mark.asyncio
@@ -274,28 +275,40 @@ _FORM_BY_TEAM = {
 }
 
 
-def _form_rows(params):
-    _season_id, team_id, _same_team_id, _limit = params
-    return _FORM_BY_TEAM[team_id]
-
-
-def _by_game(key):
-    """Маршрут, отвечающий данными того матча, чей game_id пришёл в параметрах."""
+def _form_route(form_by_team):
+    """Маршрут «форма команды» (`ORDER BY day DESC NULLS LAST`) по `team_id`
+    из параметров — параметризован по словарю формы (не копировать под
+    каждый сценарий)."""
     def rows(params):
-        return _GAMES[params[0]][key]
+        _season_id, team_id, _same_team_id, _limit = params
+        return form_by_team[team_id]
 
     return rows
 
 
-_GAME_CARD_ROUTES = [
-    ("SELECT 1 AS o FROM games", [(1,)]),
-    ("SELECT * FROM get_game_stats", _by_game("stats")),
-    ("SELECT home_team_id, away_team_id FROM games", _by_game("teams")),
-    ("SELECT * FROM get_goals_game", _by_game("goals")),
-    ("SELECT * FROM get_goalies_game", _by_game("goalies")),
-    ("SELECT * FROM get_three_stars_game", _by_game("three_stars")),
-    ("ORDER BY day DESC NULLS LAST", _form_rows),
-]
+def _game_card_routes(games_by_id, form_by_team):
+    """Семь общих маршрутов карточки матча (`/game`, дайджест дня) по словарю
+    игр `games_by_id` (`game_id` → ответы формы `_GAMES`) и форме
+    `form_by_team` — общий строитель для любого сценария (не копировать
+    построчно под каждый)."""
+    def by_game(key):
+        def rows(params):
+            return games_by_id[params[0]][key]
+
+        return rows
+
+    return [
+        ("SELECT 1 AS o FROM games", [(1,)]),
+        ("SELECT * FROM get_game_stats", by_game("stats")),
+        ("SELECT home_team_id, away_team_id FROM games", by_game("teams")),
+        ("SELECT * FROM get_goals_game", by_game("goals")),
+        ("SELECT * FROM get_goalies_game", by_game("goalies")),
+        ("SELECT * FROM get_three_stars_game", by_game("three_stars")),
+        ("ORDER BY day DESC NULLS LAST", _form_route(form_by_team)),
+    ]
+
+
+_GAME_CARD_ROUTES = _game_card_routes(_GAMES, _FORM_BY_TEAM)
 
 _DIGEST_ROUTES = [
     ("SELECT max(day) AS day FROM games", [("2026-04-01",)]),
@@ -420,6 +433,315 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     assert "<b>TOR MTL 1:0</b>" in card["text"]
     assert "1:0 Matthews [C](Nylander) ★ P1 12:00" in card["text"]
     assert _callback_data(card["reply_markup"]) == [f"gv:{GAME_TWO}:201"]
+
+
+# ---------------------------------------------------------------------------
+# Задача 36: сезон с 0 и с 1–3 игровыми днями — /table, /leaders, /day_games,
+# /game, /advanced.
+#
+# Факт из прогона загрузчика на скретч-БД (season-load-full, SEASON_ID=20262027,
+# 2026-09-28, до старта сезона): при 0 сыгранных играх лиги пустует не только
+# `games` — `teams`/`teams_stats`/`rosters`/`players_season_stats` тоже, потому
+# что `build_teams_and_stats()` строит их из `team/summary` (агрегат по уже
+# сыгранным играм), а `build_rosters()` идёт только по командам из этого же
+# списка (`pipeline/load_season_modern.py:263-338`). Маршрут-заглушка "" ниже
+# отвечает пустой выборкой на любой запрос — это и есть реальное состояние БД
+# в первый день после переключения сезона, а не гипотеза.
+#
+# Для «1–3 игровых дня» живых данных получить нельзя (сезон 2026/27 на дату
+# работы над задачей ещё не начался), поэтому фикстура собрана по этому же
+# факту: только команды, уже сыгравшие матч, попадают в teams_stats/rosters/
+# players_season_stats — команды без единой игры в сезоне отсутствуют в
+# строках целиком, а не приходят строкой с нулями.
+# ---------------------------------------------------------------------------
+
+_EMPTY_SEASON_ROUTES = [
+    # MAX() без GROUP BY в Postgres всегда отдаёт ровно одну строку (NULL на
+    # пустой таблице), а не ноль строк — маршрут-заглушка ниже отвечает [] на
+    # всё остальное, но day_digest()'s `MAX(day)` нужно перечислить отдельно
+    # (team_table() на пустом teams_stats возвращается раньше своего
+    # `MAX(day)::text` в `_standings_as_of_day()` — тот запрос сюда не доходит).
+    ("SELECT max(day) AS day FROM games", [(None,)]),
+    ("", []),
+]
+
+
+@pytest.mark.asyncio
+async def test_table_command_on_empty_season_reports_season_not_started(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_EMPTY_SEASON_ROUTES)
+    update = make_message_update("/table")
+
+    await bot.cmd_table(update, fake_context)
+
+    (reply,) = update.message.replies
+    assert reply["parse_mode"] == "HTML"
+    assert "Сезон ещё не начался" in reply["text"]
+    assert "EASTERN CONFERENCE" not in reply["text"], "пустая таблица с заголовками — не текст-причина"
+
+
+@pytest.mark.asyncio
+async def test_leaders_pick_on_empty_season_reports_no_data(
+    bot_module, fake_db_router, make_message_update, make_callback_update, fake_context
+):
+    bot = bot_module("bot")
+    stats_handlers = bot_module("stats_handlers")
+    fake_db_router(_EMPTY_SEASON_ROUTES)
+
+    menu = make_message_update("/leaders")
+    await bot.cmd_leaders(menu, fake_context)
+    points_button = _flat_buttons(menu.message.replies[0]["reply_markup"])[0]
+
+    update = make_callback_update(points_button.callback_data)
+    await stats_handlers.callback_leaders_pick(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert "Нет данных в этом диапазоне." in edited["text"]
+
+
+@pytest.mark.asyncio
+async def test_day_games_on_empty_season_reports_no_finished_matches(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_EMPTY_SEASON_ROUTES)
+    update = make_message_update("/day_games")
+
+    await bot.cmd_day_games(update, fake_context)
+
+    sent, hint = fake_context.bot.sent_messages
+    assert sent["text"] == "В базе пока нет завершенных матчей."
+    assert "/stats" in hint["text"]
+
+
+@pytest.mark.asyncio
+async def test_game_command_on_empty_season_reports_missing_game(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_EMPTY_SEASON_ROUTES)
+    update = make_message_update("/game 1")
+    fake_context.args = ["1"]
+
+    await bot.cmd_game(update, fake_context)
+
+    (sent,) = fake_context.bot.sent_messages
+    assert sent["text"] == "Такого матча нет в базе бота."
+
+
+@pytest.mark.asyncio
+async def test_advanced_pick_on_empty_season_reports_no_data(
+    bot_module, fake_db_router, make_message_update, make_callback_update, fake_context
+):
+    bot = bot_module("bot")
+    stats_handlers = bot_module("stats_handlers")
+    fake_db_router(_EMPTY_SEASON_ROUTES)
+
+    intro = make_message_update("/advanced")
+    await bot.cmd_advanced(intro, fake_context)
+    sat_button = _flat_buttons(intro.message.replies[0]["reply_markup"])[0]
+    assert sat_button.callback_data == "adv:sat"
+
+    update = make_callback_update(sat_button.callback_data)
+    await stats_handlers.callback_standalone_adv(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert "Нет данных в этом диапазоне." in edited["text"]
+
+
+# ---------------------------------------------------------------------------
+# «1–3 игровых дня»: три команды сыграли (NYR — 2 игры, BOS и TOR — по одной),
+# остальные 29 команд отсутствуют в teams_stats целиком (см. факт выше).
+# ---------------------------------------------------------------------------
+
+# short_name, games_played, points, procent_points, wins, losses, ot,
+# division_name, conference_name — ни одной команды с Западного побережья:
+# там пока никто не сыграл ни одного матча.
+_PARTIAL_STANDINGS_ROWS = [
+    ("Rangers", 2, 4, 100.0, 2, 0, 0, "Metropolitan", "Eastern"),
+    ("Bruins", 1, 0, 0.0, 0, 1, 0, "Atlantic", "Eastern"),
+    ("Maple Leafs", 1, 0, 0.0, 0, 1, 0, "Atlantic", "Eastern"),
+]
+
+_PARTIAL_TABLE_ROUTES = [
+    ("FROM teams_stats ts", _PARTIAL_STANDINGS_ROWS),
+    ("SELECT max(day)::text AS d", [("2026-10-03",)]),
+]
+
+
+@pytest.mark.asyncio
+async def test_table_command_on_partial_season_shows_only_teams_with_games(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_PARTIAL_TABLE_ROUTES)
+    update = make_message_update("/table")
+
+    await bot.cmd_table(update, fake_context)
+
+    (reply,) = update.message.replies
+    text = reply["text"]
+    assert "Сезон ещё не начался" not in text
+    assert "Rangers          4   2 100.00" in text
+    # Разделы западной конференции остаются на месте (нет исключения), но
+    # каждый дивизион без единой сыгранной игры несёт текст-причину, а не
+    # заголовки пустой таблицы.
+    assert "<b>WESTERN CONFERENCE</b>" in text
+    assert "<b>CENTRAL DIVISION</b>" in text
+    # Ровно два пустых дивизиона (Central и Pacific) — оба западных, оба с
+    # текстом-причиной, ни одного лишнего или пропущенного.
+    assert text.count("(в дивизионе ещё никто не сыграл)") == 2
+    assert "Avalanche" not in text and "Kings" not in text
+
+
+# lastname, position, value(points), team, games, shifts — только игроки трёх
+# команд, уже сыгравших матч.
+_PARTIAL_LEADERS = [
+    ("Panarin", "LW", 5, "NYR", 2, 45),
+    ("Zibanejad", "C", 3, "NYR", 2, 40),
+    ("Marchand", "LW", 2, "BOS", 1, 20),
+    ("Matthews", "C", 1, "TOR", 1, 18),
+]
+
+
+_PARTIAL_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route(_PARTIAL_LEADERS))]
+
+
+@pytest.mark.asyncio
+async def test_leaders_pick_on_partial_season_shows_short_page_without_next_button(
+    bot_module, fake_db_router, make_message_update, make_callback_update, fake_context
+):
+    bot = bot_module("bot")
+    stats_handlers = bot_module("stats_handlers")
+    fake_db_router(_PARTIAL_LEADERS_ROUTES)
+
+    menu = make_message_update("/leaders")
+    await bot.cmd_leaders(menu, fake_context)
+    points_button = _flat_buttons(menu.message.replies[0]["reply_markup"])[0]
+
+    update = make_callback_update(points_button.callback_data)
+    await stats_handlers.callback_leaders_pick(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    text = edited["text"]
+    assert "<i>Показаны 1–4 из 4 строк.</i>" in text
+    assert "1. Panarin [LW] — 5 (NYR, игр: 2, смен: 45)" in text
+    assert "4. Matthews [C] — 1 (TOR, игр: 1, смен: 18)" in text
+    # Ни prev, ни next — показаны все 4 строки; остаётся только смена категории.
+    assert _callback_data(edited["reply_markup"]) == [
+        "pl:pick:points", "pl:pick:goals", "pl:pick:assists",
+    ]
+
+
+# Ранняя сборная (games < 20) отфильтровывается INNER JOIN players_season_stats
+# в самом запросе (bot_messages._pss_join_sql) — на 1–3 играх сезона выборка
+# players_advanced_stats пуста для *всех* игроков, не только по недостатку строк.
+_PARTIAL_ADVANCED_ROUTES = [("players_advanced_stats", [])]
+
+
+@pytest.mark.asyncio
+async def test_advanced_pick_on_partial_season_reports_no_data_below_games_threshold(
+    bot_module, fake_db_router, make_message_update, make_callback_update, fake_context
+):
+    bot = bot_module("bot")
+    stats_handlers = bot_module("stats_handlers")
+    cursor = fake_db_router(_PARTIAL_ADVANCED_ROUTES)
+
+    intro = make_message_update("/advanced")
+    await bot.cmd_advanced(intro, fake_context)
+    sat_button = _flat_buttons(intro.message.replies[0]["reply_markup"])[0]
+
+    update = make_callback_update(sat_button.callback_data)
+    await stats_handlers.callback_standalone_adv(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert "Нет данных в этом диапазоне." in edited["text"]
+    # «Нет данных» — реально из-за порога games >= 20 в самом запросе
+    # (_pss_join_sql), а не по случайному совпадению пустого маршрута.
+    assert "pss.games >= 20" in cursor.executed[-1][0]
+
+
+# Игры сезона: NYR обыгрывает BOS 2026-10-01 (в фикстуре не нужна отдельно —
+# участвует только как первая игра NYR в её форме, `_PARTIAL_FORM_BY_TEAM`),
+# затем TOR — 2026-10-03 (первая игра сезона у TOR). /day_games и /game без
+# аргумента дня показывают только последний день — вторую игру.
+PARTIAL_GAME_B = 2026020102  # TOR (home) 1 : 3 NYR (away) — 2026-10-03
+
+_PARTIAL_GAME_B_DATA = {
+    "stats": [
+        (1, 4, 8, 15, 22, False, False, "home", "TOR"),
+        (3, 6, 9, 24, 30, False, False, "away", "NYR"),
+    ],
+    "teams": [(3, 1)],  # home_team_id=TOR(3), away_team_id=NYR(1)
+    "goals": [
+        ("Matthews", "C", "Marner", None, 1, "05:00", 1, 0, False, False, False, False, PARTIAL_GAME_B, 301),
+        ("Panarin", "LW", "Zibanejad", None, 2, "10:00", 1, 1, False, False, False, False, PARTIAL_GAME_B, 302),
+        ("Zibanejad", "C", None, None, 3, "15:00", 1, 2, False, False, False, True, PARTIAL_GAME_B, 303),
+        ("Panarin", "LW", None, None, 3, "18:00", 1, 3, False, False, False, False, PARTIAL_GAME_B, 304),
+    ],
+    "goalies": [
+        (22, 21, "60:00", "Woll", 95.45, True),
+        (15, 14, "60:00", "Shesterkin", 93.33, False),
+    ],
+    "three_stars": [
+        (1, "Panarin", "LW", "NYR", 2, 1, None, None, None),
+        (2, "Matthews", "C", "TOR", 1, 0, None, None, None),
+        (3, "Zibanejad", "C", "NYR", 1, 1, None, None, None),
+    ],
+}
+
+# winner_id, is_overtime, is_shootouts, ot_empty_net_win — форма читает
+# games ещё раз, независимо от карточки; TOR играет свой первый матч сезона
+# (одна строка вместо «—»), NYR — уже вторую подряд победу.
+_PARTIAL_FORM_BY_TEAM = {
+    3: [(1, False, False, False)],  # TOR: 0-1-0 (эта же игра, других не было)
+    1: [(1, False, False, False), (1, False, False, False)],  # NYR: 2-0-0
+}
+
+
+_PARTIAL_GAME_CARD_ROUTES = _game_card_routes(
+    {PARTIAL_GAME_B: _PARTIAL_GAME_B_DATA}, _PARTIAL_FORM_BY_TEAM
+)
+
+_PARTIAL_DIGEST_ROUTES = [
+    ("SELECT max(day) AS day FROM games", [("2026-10-03",)]),
+    ("SELECT DISTINCT game_id FROM games", [(PARTIAL_GAME_B,)]),
+] + _PARTIAL_GAME_CARD_ROUTES
+
+
+@pytest.mark.asyncio
+async def test_game_command_on_partial_season_renders_card_with_low_game_count_form(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_PARTIAL_GAME_CARD_ROUTES)
+    update = make_message_update(f"/game {PARTIAL_GAME_B}")
+    fake_context.args = [str(PARTIAL_GAME_B)]
+
+    await bot.cmd_game(update, fake_context)
+
+    (sent,) = fake_context.bot.sent_messages
+    text = sent["text"]
+    assert "<b>TOR NYR 1:3</b> (1:0, 0:1, 0:2)" in text
+    # TOR — первая игра сезона (0-1-0, не «—»), NYR — вторая подряд победа.
+    assert "<b>NYR</b> 2-0-0 — <b>TOR</b> 0-1-0" in text
+
+
+@pytest.mark.asyncio
+async def test_day_games_on_partial_season_renders_the_latest_day_card(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    bot = bot_module("bot")
+    fake_db_router(_PARTIAL_DIGEST_ROUTES)
+    update = make_message_update("/day_games")
+
+    await bot.cmd_day_games(update, fake_context)
+
+    sent, hint = fake_context.bot.sent_messages
+    assert "<b>TOR NYR 1:3</b>" in sent["text"]
+    assert "/stats" in hint["text"]
 
 
 # ---------------------------------------------------------------------------

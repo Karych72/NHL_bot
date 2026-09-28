@@ -37,15 +37,21 @@ models:
   logreg:
     grids:
       C: [0.01, 0.1, 1.0, 10.0]
+  # Задача 40 (see docs/modeling_training.md §4, "Production bundle" for the
+  # runtime finding): the previous 7-axis x 3 grid was 2187 points, ~19
+  # min/fold (~1.9 h/task) on 6049 rows -- a path to overfitting a 300-row
+  # inner_val, not a search a 4755-row train_full supports. Cut to
+  # num_leaves x min_data_in_leaf x learning_rate = 2x2x2 = 8 points, the rest
+  # fixed at one conservative value each (small trees, floor on leaf size).
   lgbm:
     grids:
-      num_leaves: [15, 31, 63]
-      min_data_in_leaf: [20, 50, 100]
-      feature_fraction: [0.7, 0.9, 1.0]
-      bagging_fraction: [0.7, 0.9, 1.0]
-      lambda_l1: [0.0, 0.1, 1.0]
-      lambda_l2: [0.0, 0.1, 1.0]
-      learning_rate: [0.03, 0.05, 0.1]
+      num_leaves: [7, 15]
+      min_data_in_leaf: [100, 200]
+      feature_fraction: [0.7]
+      bagging_fraction: [0.8]
+      lambda_l1: [0.0]
+      lambda_l2: [1.0]
+      learning_rate: [0.03, 0.05]
     # Real dataset diff_/sum_ columns, not aliases. Signs: home outscoring away
     # (diff_goals_for) or conceding less (diff_goals_against, hence -1) raises
     # P(home_win); either side's scoring or goals-against pushes the total over
@@ -59,6 +65,10 @@ models:
         diff_goals_against_roll_mean_10: -1
         diff_goals_against_roll_mean_20: -1
         diff_goal_diff_roll_mean_5: 1
+        # Задача 40 (Task 3): pre-game Elo diff, home - away; a stronger home
+        # team (higher diff_elo) raises P(home_win). See docs/modeling_dataset_builder.md
+        # "Elo team-strength feature".
+        diff_elo: 1
       over_5_5:
         sum_goals_for_roll_mean_5: 1
         sum_goals_for_roll_mean_10: 1
@@ -68,7 +78,9 @@ models:
         sum_goals_against_roll_mean_20: 1
 
 calibration:
-  method: isotonic
+  # Isotonic on a 300-game calibration block outputs exact 0/1 at the extreme
+  # bins, which blows up holdout log-loss (spike 40a). Platt is the default.
+  method: platt
   # Must not exceed split.calibration_games (300), or calibration is silently
   # skipped on every fold. See docs/modeling_training.md §7 (Задача 39).
   min_samples: 300

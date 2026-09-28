@@ -37,12 +37,9 @@ split:
       from: null
       to: null
 
-# Smoke grids: one value per axis -- the middle (for logreg's 4-value list, the
-# sklearn default) of the corresponding production list in
-# configs/modeling_default.yaml, where logreg.C has 4 values and each of the
-# seven lgbm axes has 3, i.e. 3^7 = 2187 lgbm fits per task per window.
-# A smoke run checks that the pipeline goes end to end, not which
-# hyperparameters win. models.lgbm.monotone is kept as in production.
+# Smoke grids: one arbitrary value per axis, unrelated in size or value to
+# configs/modeling_default.yaml's production grid -- only to exercise the
+# pipeline end to end. models.lgbm.monotone is kept as in production.
 models:
   logreg:
     grids:
@@ -67,6 +64,10 @@ models:
         diff_goals_against_roll_mean_10: -1
         diff_goals_against_roll_mean_20: -1
         diff_goal_diff_roll_mean_5: 1
+        # Задача 40 (Task 3): pre-game Elo diff, home - away; see
+        # configs/modeling_default.yaml and docs/modeling_dataset_builder.md
+        # "Elo team-strength feature".
+        diff_elo: 1
       over_5_5:
         sum_goals_for_roll_mean_5: 1
         sum_goals_for_roll_mean_10: 1
@@ -76,7 +77,9 @@ models:
         sum_goals_against_roll_mean_20: 1
 
 calibration:
-  method: isotonic
+  # Isotonic on a 300-game calibration block outputs exact 0/1 at the extreme
+  # bins, which blows up holdout log-loss (spike 40a). Platt is the default.
+  method: platt
   # Must not exceed split.calibration_games (50), or calibration is skipped.
   min_samples: 50
 

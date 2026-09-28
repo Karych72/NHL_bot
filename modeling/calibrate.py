@@ -38,6 +38,20 @@ _METADATA_FILENAME = "metadata.json"
 
 _SUPPORTED_METHODS: frozenset[str] = frozenset({"isotonic", "platt"})
 
+# Clip bound for the logit transform Platt scaling fits on (Задача 40a).
+# Mirrors the default of the YAML `evaluation.epsilon_clip` field, but that
+# field is not threaded into this module's API (both `fit_calibrator` and
+# `apply_calibrator` are also called from modeling/predict_runner.py without
+# it) -- a local constant avoids widening those signatures for a value that
+# is only ever this default in practice.
+_PLATT_LOGIT_EPS = 1e-15
+
+
+def _logit(p: np.ndarray, *, eps: float = _PLATT_LOGIT_EPS) -> np.ndarray:
+    """Log-odds of *p*, clipped to ``[eps, 1 - eps]`` to stay finite at 0/1."""
+    clipped = np.clip(p, eps, 1.0 - eps)
+    return np.log(clipped / (1.0 - clipped))
+
 
 class CalibrationError(ValueError):
     """Invalid calibration inputs, configuration, or method."""
@@ -112,22 +126,25 @@ def _build_platt_calibrator(
     seed: int,
     num_threads: int,
 ) -> LogisticRegression:
-    """Fit Platt scaling via logistic regression on raw probabilities.
+    """Fit Platt scaling: unregularized logistic regression on ``logit(p)``.
 
-    The single input feature is the **raw probability** ``p`` (not its logit).
-    Probabilities are already in ``[0, 1]`` and map linearly to a well-conditioned
-    feature space for ``LogisticRegression``; using ``logit(p)`` would amplify
-    numerical instability near 0 and 1 without improving fit quality on typical
-    sports-classifier score distributions.
+    This is classical Platt scaling -- a sigmoid over the raw model's logit,
+    ``sigmoid(a * logit(p) + b)`` -- not a logistic regression over ``p``
+    itself. ``penalty=None`` (no L2 shrinkage): with L2 the previous ``p``-input
+    fit regularized the slope toward a near-constant prediction on some models
+    (spike 40a: Elo's fitted Platt slope was -0.014). See
+    ``docs/modeling_training.md`` §7 (Задача 40) for the holdout numbers this
+    is based on.
     """
+    x_cal = _logit(raw_p_cal).reshape(-1, 1)
     lr = LogisticRegression(
-        penalty="l2",
+        penalty=None,
         solver="lbfgs",
         max_iter=5000,
         random_state=seed,
         n_jobs=num_threads,
     )
-    lr.fit(raw_p_cal.reshape(-1, 1), y_cal)
+    lr.fit(x_cal, y_cal)
     return lr
 
 
@@ -138,7 +155,7 @@ def _apply_fitted_calibrator(calibrator: Any, method: str, raw_p: np.ndarray) ->
     if method == "isotonic":
         return np.clip(calibrator.predict(p), 0.0, 1.0)
     if method == "platt":
-        return calibrator.predict_proba(p.reshape(-1, 1))[:, 1]
+        return calibrator.predict_proba(_logit(p).reshape(-1, 1))[:, 1]
     raise CalibrationError(f"Unknown calibration method {method!r}")
 
 
