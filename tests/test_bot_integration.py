@@ -640,17 +640,20 @@ async def test_team_profile_reports_team_without_roster(
 
 
 @pytest.mark.asyncio
-async def test_team_profile_invalid_callback_is_ignored(
-    bot_module, make_callback_update, fake_context
+async def test_team_profile_reports_unknown_abbreviation(
+    bot_module, fake_db_router, make_callback_update, fake_context
 ):
-    """Некорректный callback (не совпал с TEAM_PROFILE_CALLBACK_PATTERN) не
-    роняет хендлер и не перерисовывает сообщение — как у соседних страниц
-    статистики (callback_stats_player_page)."""
+    """Аббревиатура прошла TEAM_PROFILE_CALLBACK_PATTERN (кнопка), но не
+    резолвится в team_id (не найдена в teams для сезона) — текст с причиной,
+    «« Назад»» на список команд по-прежнему на месте."""
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    update = make_callback_update("tp:")
+    fake_db_router([("SELECT team_id FROM teams WHERE season_id", [])])
+    update = make_callback_update("tp:ZZZ")
 
     state = await stats_handlers.bot_team_profile_show(update, fake_context)
 
+    (edited,) = update.callback_query.edited_texts
     assert state == dialog_states.SECOND
-    assert update.callback_query.edited_texts == []
+    assert "Команда не найдена в базе для этого сезона." in edited["text"]
+    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_PROFILE_PICK)

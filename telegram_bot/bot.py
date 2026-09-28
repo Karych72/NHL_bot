@@ -559,10 +559,6 @@ def build_conversation_handler() -> ConversationHandler:
                     bot_player_advanced_menu, pattern='^' + str(PLAYER_ADVANCED_SUBMENU) + '$'
                 ),
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
-                # Выбор команды профиля (tp:<ABBR>) и «« Назад»» с профиля на
-                # список команд — обе ветки экрана TEAM_PROFILE_PICK живут
-                # в SECOND, куда попадает пользователь после клика по кнопке
-                # «Профиль команды» в TEAM_STATS.
                 CallbackQueryHandler(bot_team_profile_show, pattern=TEAM_PROFILE_CALLBACK_PATTERN),
                 CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
                 # «« Назад»» результата дайджеста ведёт на меню дайджеста;

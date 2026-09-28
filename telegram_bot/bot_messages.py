@@ -1363,11 +1363,14 @@ def team_profile(abbrev: str) -> str:
 
     Пустые случаи (Задача 36): неизвестная аббревиатура и команда без строк в
     `rosters` для этого сезона — текст с причиной, не исключение.
+
+    Аргументы:
+        abbrev: аббревиатура команды из нажатой кнопки (`tp:<ABBR>`,
+            `TEAM_PROFILE_CALLBACK_PATTERN` уже гарантирует непустую
+            буквенно-цифровую строку) — не текст пользователя.
     """
-    a = (abbrev or "").strip().upper()
+    a = abbrev.strip().upper()
     season_esc = html.escape(str(config.CURRENT_SEASON))
-    if not a or a == "?":
-        return "Не удалось определить команду."
     team_id = _team_id_for_abbrev(a)
     header = f"<b>{html.escape(a)}</b> — профиль команды ({season_esc})\n"
     if team_id is None:

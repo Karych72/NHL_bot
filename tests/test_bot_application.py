@@ -557,9 +557,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # каждый, bot_digest_date_menu 5 раз — FIRST×2, SECOND×2, THIRD×1)
     # и 47 регистраций stats_handlers.py (в т.ч. bot_team_conference_stats/
     # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST; и
-    # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D:
-    # bot_team_profile_pick дважды, FIRST и SECOND, как «« Назад»» с
-    # профиля на список команд, bot_team_profile_show один раз в SECOND).
+    # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D).
     assert len(registered) == 86
     assert {h.callback.__module__ for h in registered} == {
         "bot",

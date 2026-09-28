@@ -283,18 +283,10 @@ def team_profile_pick_keyboard(abbrevs: List[str]) -> InlineKeyboardMarkup:
     `matchup_season_preview` (Фаза C): `team_id` резолвится по аббревиатуре
     из кнопки, а не из текста пользователя. Футер — «« Назад»» на подменю
     команд (`TEAM_STATS`).
-
-    Args:
-        abbrevs: `season_team_abbrevs()` — аббревиатуры, не совпадающие с
-            `TEAM_PROFILE_CALLBACK_PATTERN` (нестандартная длина/символы —
-            вырожденный случай пустой `abbreviation` и отката на `short_name`
-            в БД), пропускаются: кнопка с нерабочим callback_data хуже, чем
-            команда, недоступная из этого списка.
     """
     buttons = [
         InlineKeyboardButton(ab, callback_data=f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
         for ab in abbrevs
-        if re.match(TEAM_PROFILE_CALLBACK_PATTERN, f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
     ]
     rows = build_menu(buttons, n_cols=4, footer_buttons=[_stats_menu_nav_row(TEAM_STATS)])
     return InlineKeyboardMarkup(rows)
@@ -325,17 +317,15 @@ async def bot_team_profile_show(update: Update, context: CallbackContext) -> int
     команд (`TEAM_PROFILE_PICK`), а не сразу в `TEAM_STATS` — так можно
     выбрать другую команду без лишнего клика.
 
-    Некорректный callback (не совпал с `TEAM_PROFILE_CALLBACK_PATTERN`) —
-    отвечает и остаётся в `SECOND`, ничего не перерисовывая, как
-    `callback_stats_player_page`.
+    Неизвестная/ненайденная в базе аббревиатура — не отдельная ветка здесь:
+    `team_profile()` сама возвращает текст с причиной (Задача 36).
     """
     query = update.callback_query
-    if not query or not query.data:
-        return SECOND
+    assert query is not None and query.data is not None
+    # `CallbackQueryHandler` вызывает хендлер только на данных, уже прошедших
+    # `TEAM_PROFILE_CALLBACK_PATTERN` (`bot.py`) — совпадение гарантировано.
     m = re.match(TEAM_PROFILE_CALLBACK_PATTERN, query.data)
-    if not m:
-        await query.answer()
-        return SECOND
+    assert m is not None
     await query.answer()
     text = truncate_telegram_text(team_profile(m.group(1)))
     markup = InlineKeyboardMarkup([_stats_menu_nav_row(TEAM_PROFILE_PICK)])
