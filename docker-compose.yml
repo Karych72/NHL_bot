@@ -39,5 +39,33 @@ services:
     working_dir: /app/telegram_bot
     command: ["python", "bot.py"]
 
+  sync:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    working_dir: /app/pipeline
+    command: ["python", "-u", "scheduled_sync.py", "loop"]
+    volumes:
+      - syncdata:/app/all_data
+    # Overrides the bot's PG-connect HEALTHCHECK (Dockerfile): this container's
+    # actual job is the daily sync, so "healthy" means "last sync run ok and
+    # not stale" (scheduled_sync.py check), not "can reach PostgreSQL".
+    # start_period covers the catch-up run scheduled_sync.py does at startup.
+    healthcheck:
+      test: ["CMD", "python", "scheduled_sync.py", "check"]
+      interval: 5m
+      timeout: 30s
+      start_period: 30m
+      retries: 3
+
 volumes:
   pgdata:
+  syncdata:

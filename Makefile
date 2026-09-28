@@ -46,7 +46,8 @@ FN_FILES  := $(wildcard telegram_bot/queries/*.sql)
 MIGRATION_FILES := $(sort $(wildcard data_tables/migrations/*.up.sql))
 MIGRATIONS_TABLE_DDL := CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
-# Portable "30 days ago" for season-sync-month (requires Python)
+# Portable "N days ago" for season-sync-week / season-sync-month (requires Python)
+WEEK_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((date.today()-timedelta(days=7)).isoformat())")
 MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((date.today()-timedelta(days=30)).isoformat())")
 
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
@@ -234,9 +235,9 @@ season-load-full: setup env-example
 
 season-reload-current: season-load-full
 
-# Last 7 days inclusive (macOS date; same as historical season-update).
+# Last 7 days inclusive (DATE_FROM via Python, portable; same as historical season-update).
 season-sync-week: setup env-example
-	$(MAKE) season-sync DATE_FROM="$$(date -v-7d +%Y-%m-%d)" DATE_TO="$$(date +%Y-%m-%d)"
+	$(MAKE) season-sync DATE_FROM="$(WEEK_AGO)" DATE_TO="$$(date +%Y-%m-%d)"
 
 # Last 30 days inclusive through today (DATE_FROM via Python; DATE_TO uses date(1)).
 season-sync-month: setup env-example

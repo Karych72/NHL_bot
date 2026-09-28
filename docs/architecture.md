@@ -57,7 +57,8 @@ NHL_bot/
 │   └── deprecated_plan/                # выполненные и архивные планы
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
-│   └── load_season_modern.py           # Класс ModernNhlLoader
+│   ├── load_season_modern.py           # Класс ModernNhlLoader
+│   └── scheduled_sync.py               # Задача 34: ежедневный планировщик (сервис `sync`)
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
@@ -268,6 +269,36 @@ NHL Stats API                          NHL Web API
 
 Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
+### Модуль: `pipeline/scheduled_sync.py` (Задача 34, автообновление)
+
+Планировщик, который вызывает `load_season_modern.py` без участия человека — сервис `sync`
+в `docker-compose.yml` (тот же образ, что у бота, `working_dir: /app/pipeline`,
+`command: ["python", "-u", "scheduled_sync.py", "loop"]`). Только stdlib, новых зависимостей нет.
+
+- **Окно загрузки:** `sync_window(today)` — `[today − WINDOW_DAYS_BACK, today]` (`WINDOW_DAYS_BACK = 2`,
+  UTC-дата) — захватывает поздние финалы вчерашнего дня.
+- **Расписание:** `SYNC_HOUR_UTC = 8` (11:00 МСК, матчи в Северной Америке уже закончены).
+  `seconds_until_next_run(now)` — секунд до ближайших `08:00 UTC` строго после `now`.
+- **Один прогон:** `run_once(commands, status_file, window)` выполняет `build_commands(window,
+  with_digest)` последовательно (`subprocess.run(..., check=False)`), останавливаясь на первой
+  ненулевой команде — дайджест не шлётся после неудачной загрузки. Пишет `status_file` атомарно
+  (tmp + `os.replace`, как диск-кэш `fetch_game_json`): `{finished_at, ok, failed_command,
+  returncode, window}`.
+- **Цикл (`loop`):** при старте — прогон БЕЗ дайджеста (догнать данные после перезапуска, не
+  дублируя рассылку), затем бесконечно: спать до `SYNC_HOUR_UTC`, прогон С дайджестом.
+  Неуспешный прогон не роняет цикл — отказ виден через статус-файл и `check`.
+- **Видимость отказа:** `check(status_file, now)` — код выхода healthcheck: 0, если последний
+  прогон успешен и `finished_at` не старше `STALE_AFTER = 26h`, иначе 1. Используется как
+  `docker-compose.yml` `healthcheck:` сервиса `sync` (перекрывает образный `HEALTHCHECK`,
+  рассчитанный на бота — PG-коннект) — `docker compose ps` показывает `unhealthy` при отказе
+  или устаревших данных.
+- Диск-кэш загрузчика и `sync_status.json` живут в `/app/all_data` контейнера, на именованном
+  томе `syncdata` (переживает пересоздание контейнера); каталог создаётся и передаётся
+  `appuser` в `Dockerfile` (сервис работает под тем же non-root пользователем, что бот).
+- Тесты — `tests/test_scheduled_sync.py`: реальные процессы (`sys.executable -c "..."`) для
+  `run_once`, фиксированные `datetime` для `seconds_until_next_run`/`check` — без моков
+  `subprocess`/`time`.
+
 ---
 
 ## Архитектура Telegram Bot
@@ -292,9 +323,10 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `Optional`-поля `Update` (`update.message`, `update.callback_query`, `query.message`)
 распаковываются через `assert` там, где инвариант гарантирован типом хендлера;
 данные от пользователя (`query.data`) по-прежнему проверяются обычными гардами.
-Асинхронен и cron-скрипт рассылки `push_digest_job.py`: он не часть процесса бота,
-а отдельный запуск, который поднимает собственный `Application` (без polling и без
-`JobQueue`), строит от него `CallbackContext` и переиспользует
+Асинхронен и скрипт рассылки `push_digest_job.py` (запускается сервисом `sync` после
+каждой ежедневной загрузки, см. «Модуль: `pipeline/scheduled_sync.py`» выше): он не часть
+процесса бота, а отдельный запуск, который поднимает собственный `Application` (без
+polling и без `JobQueue`), строит от него `CallbackContext` и переиспользует
 `dispatch_day_digest_messages`; точка входа — `asyncio.run(main())`.
 
 Единственный event loop обслуживает и polling, и обработчики, поэтому блокирующая
@@ -873,6 +905,6 @@ make season-sync-month    # обновить данные за последни�
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
 2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals|game_three_stars.game_id → games.game_id`. `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), а фактическая вставка в загрузчике — в порядке «родители раньше детей» (`teams → teams_stats → rosters → players_season_stats → players_advanced_stats → players_shot_types → goalies_season_stats → games → all_goals → game_team_stats → game_player_stats → game_goalie_stats`); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). `game_three_stars` (Задача 23.2) встроена в загрузчике в тот же порядок — первой при удалении, последней при вставке — и проверена на живой БД отдельно (прогон по всем 5 сезонам, 6560 игр, 2026-09-15…09-18): 0 строк с `game_id`, отсутствующим в `games`. FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`, `game_three_stars`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна. `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
-4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в cron-скрипте `push_digest_job.py`, — поэтому extra `[job-queue]` (APScheduler) не ставится.
+4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в отдельном скрипте `push_digest_job.py` (запускается сервисом `sync`, Задача 34), — поэтому extra `[job-queue]` (APScheduler) не ставится.
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.
 6. **Датасет-билдер — мультисезонная сборка (Задача 30, 2026-09-12):** `python -m modeling.cli build-dataset` кладёт `dataset_{train,predict}.csv` и `metadata_*.json` плоско в `artifacts/datasets/` (дефолт CLI) — не коммитятся, `--season-ids` фиксирует, какие сезоны вошли, в `data_snapshot_id` метаданных (пустое значение пишет `seasons=all` и не восстанавливается из артефакта, поэтому прогон всегда с явным списком). Rolling-окна (`features.py::compute_team_rolling_features`) и as-of снэпшоты (`features.py::_snapshot_side`, `merge_asof`) группируются по `(team_id, season_id)`, а не только по `team_id` — без этого признаки первой игры нового сезона утекали статистику из прошлого. Из-за сброса окон на границе каждого сезона `apply_cold_start_policy` (train, `min_prior_games=5`) отбрасывает больше строк, чем при однолетней сборке: на 5 сезонах/6560 играх — 6049 строк (511 отброшено, а не только в начале первого сезона). Подробности и контракт — `docs/modeling_dataset_builder.md`.
