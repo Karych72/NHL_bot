@@ -18,11 +18,16 @@ RUN python -m pip install --upgrade pip \
 
 COPY . .
 
-# Non-root user for running the bot; packages above are installed as root.
-# The bot never writes under /app (its only disk writes are tempfile.NamedTemporaryFile
-# in telegram_bot/video_replay.py, i.e. /tmp), so no chown of /app is needed here.
+# Non-root user for running the bot and the sync service; packages above are
+# installed as root. The bot itself never writes under /app (its only disk
+# writes are tempfile.NamedTemporaryFile in telegram_bot/video_replay.py, i.e.
+# /tmp); the sync service (pipeline/scheduled_sync.py) does, into /app/all_data
+# (disk cache + status file), so that directory is created and chowned to
+# appuser here — the rest of /app stays root-owned.
 RUN groupadd --gid 1000 appuser \
-    && useradd --uid 1000 --gid appuser --no-create-home --shell /usr/sbin/nologin appuser
+    && useradd --uid 1000 --gid appuser --no-create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/all_data \
+    && chown -R appuser:appuser /app/all_data
 USER appuser
 
 WORKDIR /app/telegram_bot

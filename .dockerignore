@@ -2,6 +2,7 @@
 .ci_venv
 requirements-modeling.txt
 artifacts/
+all_data/
 __pycache__
 *.pyc
 .env
