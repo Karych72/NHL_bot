@@ -253,41 +253,29 @@ Steps performed by `run_predict()`:
 Raises `FileNotFoundError` if no `latest` artifact exists for the pair (train one
 first — a run must reach `status: ok`), and `ValueError` on a `features_hash` mismatch.
 
-**Known config gap, discovered running this end to end on real data for the first
-time (Задача 15):** `configs/modeling_default.yaml` and `configs/modeling_smoke.yaml`'s
-`models.lgbm.monotone` blocks reference feature names (`diff_gf_roll_mean_*`,
-`diff_ga_roll_mean_*`, `diff_goal_diff_roll_mean_{10,20}`) that do not exist in the
-actual feature set — the real names are `diff_goals_for_roll_mean_*` /
-`diff_goals_against_roll_mean_*`, and `goal_diff_roll_mean` only exists at window 5 by
-design (`features.py::compute_team_rolling_features`). `build_monotone_constraints`
-fails loudly (`ConfigError`) the moment any pattern matches zero feature columns, so
-LGBM training under either checked-in config cannot currently proceed with monotone
-constraints enabled. Fixing the constraint list needs domain judgment about which real
-feature names deserve which sign, which is out of Задача 15's scope; the real-data
-demonstration below worked around it with `--set models.lgbm.monotone={}`. Needs its
-own follow-up task.
+**Two config gaps found running this end to end on real data (Задача 15), fixed in
+Задача 39 (`plan/tasks/task_39_modeling_config_gaps.md`):**
 
-**Second known config gap, same discovery (Задача 15): calibration is silently
-disabled on the working profile.** `configs/modeling_default.yaml` sets
-`calibration.min_samples: 500` while `split.calibration_games: 300` — every
-calibration block under this profile has exactly 300 rows, always below the
-500-row threshold, so `fit_calibrator` (`modeling/calibrate.py:196`) skips
-calibration on **every** fold and the final artifact for **every** task/model pair,
-storing an identity calibrator (`calibration_skipped: true` in `metadata.json`).
-`configs/modeling_smoke.yaml:80-81` states the rule this violates in its own
-comment: `min_samples` must not exceed `split.calibration_games`, or the
-calibration code path never runs. It looks like the 500 default was never lowered
-when Задача 14 fixed the 300/300/5 split profile. Practical effect, verified on a
-real-data `train` run under `configs/modeling_default.yaml`:
-`artifacts/models/home_win/logreg/latest/metadata.json`
-has `"calibration_skipped": true, "n_calibration": 300` — the baseline-gate
-comparison in that run was therefore made on **raw, uncalibrated** probabilities,
-and the calibrated code path (`load_latest_calibrator` → `calibrator_fit_from_metadata`
-→ `apply_calibrator` with a real fitted estimator) has not actually been exercised
-on real data yet, only the identity branch. Not fixed here — like the monotone gap
-above, lowering `min_samples` is a config decision for its own task, not something
-Задача 15 changes. These two config gaps (monotone names, calibration threshold)
-are candidates for one follow-up task; opening that task is a human decision.
+1. `models.lgbm.monotone` in both `configs/modeling_default.yaml` and
+   `configs/modeling_smoke.yaml` referenced feature names
+   (`diff_gf_roll_mean_*`, `diff_ga_roll_mean_*`,
+   `diff_goal_diff_roll_mean_{10,20}`, `sum_gf_roll_mean_*`,
+   `sum_ga_roll_mean_*`) that don't exist in the dataset, so
+   `build_monotone_constraints` raised `ConfigError` and LGBM never trained
+   under the shipped config. Both files now use the real
+   `diff_goals_for_roll_mean_*` / `diff_goals_against_roll_mean_*` /
+   `diff_goal_diff_roll_mean_5` / `sum_goals_for_roll_mean_*` /
+   `sum_goals_against_roll_mean_*` columns (`goal_diff_roll_mean` exists only
+   at window 5 by design — `features.py::compute_team_rolling_features`).
+2. `configs/modeling_default.yaml` had `calibration.min_samples: 500` above
+   `split.calibration_games: 300`, so `fit_calibrator`
+   (`modeling/calibrate.py:196`) silently skipped calibration on every fold,
+   storing an identity calibrator. `min_samples` is now `300`.
+
+`tests/test_modeling_config.py::TestLgbmMonotoneNamesMatchDataset` guards both
+against recurring: monotone keys are checked against columns the real
+`dataset_builder` pipeline produces, and `calibration.min_samples <=
+split.calibration_games` is asserted for both configs.
 
 ---
 
