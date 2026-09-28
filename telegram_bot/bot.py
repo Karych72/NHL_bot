@@ -88,6 +88,7 @@ from dialog_states import (
     TEAM_POWER_KILL,
     TEAM_POWER_PLAY,
     TEAM_PROCENT_WINS,
+    TEAM_PROFILE_PICK,
     TEAM_STATS,
     THIRD,
 )
@@ -115,6 +116,7 @@ from stats_handlers import (
     STAT_PAGE_CALLBACK_PATTERN,
     STANDALONE_SA_CALLBACK_PATTERN,
     TEAM_PAGE_CALLBACK_PATTERN,
+    TEAM_PROFILE_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
     bot_digest_calendar_today,
@@ -150,6 +152,8 @@ from stats_handlers import (
     bot_team_power_kill,
     bot_team_power_play,
     bot_team_procent_wins,
+    bot_team_profile_pick,
+    bot_team_profile_show,
     callback_expand_digest_game,
     callback_leaderboard_page,
     callback_leaders_pick,
@@ -537,6 +541,7 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_power_kill, pattern='^' + str(TEAM_POWER_KILL) + '$'),
                 CallbackQueryHandler(bot_team_conference_stats, pattern='^' + str(TEAM_CONFERENCE_STATS) + '$'),
                 CallbackQueryHandler(bot_team_division_stats, pattern='^' + str(TEAM_DIVISION_STATS) + '$'),
+                CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
             ],
             SECOND: [
                 CallbackQueryHandler(
@@ -554,6 +559,8 @@ def build_conversation_handler() -> ConversationHandler:
                     bot_player_advanced_menu, pattern='^' + str(PLAYER_ADVANCED_SUBMENU) + '$'
                 ),
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
+                CallbackQueryHandler(bot_team_profile_show, pattern=TEAM_PROFILE_CALLBACK_PATTERN),
+                CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
                 # «« Назад»» результата дайджеста ведёт на меню дайджеста;
                 # та же просроченная кнопка ввода даты, что и в FIRST — сюда
                 # тоже можно вернуться из SECOND.

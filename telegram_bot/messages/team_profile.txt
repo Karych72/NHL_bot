@@ -1,0 +1,11 @@
+<b>{{ team_name }}</b> — профиль команды ({{ season }})
+{{ season_line }}
+
+<b>Состав по позициям</b>
+{% for line in position_lines -%}
+{{ line }}
+{% endfor %}
+<b>Топ-3 бомбардира клуба</b>
+{% for line in top_lines -%}
+{{ line }}
+{% endfor -%}
