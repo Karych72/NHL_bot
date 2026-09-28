@@ -151,7 +151,8 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
   updates applied together afterwards — the Elo analogue of `compute_team_rolling_features`'s
   `intra_day_prev` policy for rolling features (a same-day predecessor is masked out, not used).
 - **Predict mode:** target games come from the `scheduled_games` table (upcoming games written
-  by the loader on every run, Task 22A; `games` only ever holds played games), and have no
+  by the loader on every run, Task 22A, only those whose both teams already exist in `teams`
+  for the season; `games` only ever holds played games), and have no
   result, so they are never part of the play-order pass.
   They get the rating "as of after the last played game" — the final `{team_id: rating}` state
   once the whole history has been processed, with no season-transition regression applied for a

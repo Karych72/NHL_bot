@@ -26,14 +26,14 @@ NHL_bot/
 │   ├── t.all_goals.sql
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
+│   ├── t.game_predictions.sql
 │   ├── t.game_team_stats.sql
 │   ├── t.game_three_stars.sql
 │   ├── t.games.sql
-│   ├── t.scheduled_games.sql
-│   ├── t.game_predictions.sql
 │   ├── t.goalies_season_stats.sql
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
+│   ├── t.scheduled_games.sql
 │   ├── t.teams.sql
 │   ├── t.teams_stats.sql
 │   └── migrations/                     # Точечные изменения схемы: NNNN_slug.{up,down}.sql (make db-migrate)
@@ -286,7 +286,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `push_digest_job.py`) без участия человека — сервис `sync` в `docker-compose.yml`, тот же
 образ, что у бота. Только stdlib, новых зависимостей нет. Расписание, здоровье сервиса,
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
-загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A). Тесты —
+загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением). Тесты —
 `tests/test_scheduled_sync.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`

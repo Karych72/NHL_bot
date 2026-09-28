@@ -582,6 +582,53 @@ class ScheduledGamesTest(LoaderApiTestCase):
         )
         self.assertEqual([r[0] for r in rows], [2025021080])
 
+    def test_replace_deletes_season_and_skips_played_games_and_unknown_teams(self):
+        executed = []
+        answers = {
+            "FROM games": [(GAME_ID,)],  # уже сыграна
+            "FROM teams": [(1,), (4,)],  # WSH/OTT (15/9) в teams сезона нет
+        }
+
+        class Cursor:
+            rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def execute(self, sql, params):
+                executed.append((sql, params))
+                self.rows = next((v for k, v in answers.items() if k in sql), [])
+
+            def fetchall(self):
+                return self.rows
+
+        class Conn:
+            def cursor(self):
+                return Cursor()
+
+        instance = make_loader()
+        inserted = []
+        instance.execute_insert = lambda conn, table, cols, rows, page_size=1000: inserted.append(
+            (table, rows)
+        )
+        meta = load_fixture("nhl_scheduled_games_meta.json") + [
+            dict(load_fixture("nhl_scheduled_games_meta.json")[0], id=2025021081, homeTeamId=15)
+        ]
+
+        with self.assertLogs(loader.logger, level="WARNING") as logs:
+            count = instance.replace_scheduled_games(Conn(), meta)
+
+        self.assertEqual(
+            executed[0], ("DELETE FROM scheduled_games WHERE season_id = %s", (SEASON_ID,))
+        )
+        # GAME_ID сыграна, 2025021081 с хозяином 15 без команды в teams -> остаётся одна игра.
+        self.assertEqual(inserted, [("scheduled_games", [(2025021080, "2026-03-19", 1, 4, SEASON_ID)])])
+        self.assertEqual(count, 1)
+        self.assertIn("Skipped 1 scheduled game", logs.output[0])
+
     def test_record_without_a_team_raises(self):
         broken = without(load_fixture("nhl_scheduled_games_meta.json")[0], "homeTeamId")
         with self.assertRaises(KeyError):

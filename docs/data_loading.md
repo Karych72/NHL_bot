@@ -277,7 +277,7 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
     3. `INSERT` в per-game таблицы;
     4. `scheduled_games` сезона целиком заменяется (`DELETE` + `INSERT`) незавершёнными играми
        регулярки (`gameStateId` 1/2) на `SCHEDULE_WINDOW_DAYS` UTC-дней от сегодня — не от
-       окна `--date-from/--date-to`; игры, уже лежащие в `games`, пропускаются (Задача 22A);
+       окна `--date-from/--date-to`; игры, уже лежащие в `games`, и игры, у которых нет обеих команд в `teams` сезона (в начале сезона `team/summary` ещё пуст), пропускаются (Задача 22A);
     5. `COMMIT`. На любом исключении выше — `ROLLBACK` всей транзакции,
        подключение закрывается.
 

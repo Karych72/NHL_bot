@@ -840,8 +840,12 @@ class ModernNhlLoader:
     def replace_scheduled_games(self, conn, games_meta: List[dict]) -> int:
         """Replace this season's ``scheduled_games`` rows in the caller's transaction.
 
-        Must run after ``games`` and ``teams`` are written (the FKs and the
-        "already played" filter read them). Does not commit.
+        Must run after ``games`` and ``teams`` are written (the "already played"
+        and "team exists" filters read them). A game whose home or away team has
+        no ``teams`` row for the season is skipped with a warning: at a season's
+        start the team summary endpoint is still empty while the schedule is
+        not, and the FK violation would roll back the whole loader transaction.
+        Does not commit.
 
         Args:
             conn: open psycopg2 connection, autocommit off.
@@ -855,7 +859,16 @@ class ModernNhlLoader:
             cur.execute("DELETE FROM scheduled_games WHERE season_id = %s", (self.season_id,))
             cur.execute("SELECT game_id FROM games WHERE game_id = ANY(%s)", (ids,))
             played = {row[0] for row in cur.fetchall()}
-        rows = self.build_scheduled_rows(games_meta, played)
+            cur.execute("SELECT team_id FROM teams WHERE season_id = %s", (self.season_id,))
+            known_teams = {row[0] for row in cur.fetchall()}
+        candidates = self.build_scheduled_rows(games_meta, played)
+        rows = [r for r in candidates if r[2] in known_teams and r[3] in known_teams]
+        if len(rows) < len(candidates):
+            logger.warning(
+                "Skipped %d scheduled game(s): team missing in teams for season_id=%s",
+                len(candidates) - len(rows),
+                self.season_id,
+            )
         self.execute_insert(
             conn,
             "scheduled_games",
