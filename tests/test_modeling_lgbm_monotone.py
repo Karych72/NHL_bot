@@ -7,10 +7,11 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from modeling.config import ConfigError
+from modeling.config import ConfigError, ResolvedConfig
 from modeling.metrics import log_loss
 from modeling.train_common import build_monotone_constraints, validate_num_threads
 from modeling.train_lgbm import (
+    LgbmFitResult,
     build_lgbm_base_params,
     expand_lgbm_grid,
     predict_lgbm_proba,
@@ -18,6 +19,7 @@ from modeling.train_lgbm import (
     train_lgbm_for_task,
     train_single_lgbm,
 )
+from modeling.train_runner import FinalRetrainSlices, _fit_final_raw_model
 
 # lightgbm is a required, pinned dependency for modeling tests (see
 # requirements-modeling.txt, installed together via `make modeling-dev`/
@@ -284,6 +286,111 @@ class TestNumThreads(unittest.TestCase):
         params = build_lgbm_base_params(random_seed=1, num_threads=3)
         self.assertEqual(params["num_threads"], 3)
         self.assertNotEqual(params["num_threads"], -1)
+
+
+def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
+    """Smallest valid :class:`ResolvedConfig` for calling ``_fit_final_raw_model``.
+
+    Split/calibration/evaluation sections are unused by that function but are
+    required fields on the model; values are smoke-sized placeholders.
+    """
+    grid: dict[str, list] = {
+        "num_leaves": [4],
+        "min_data_in_leaf": [5],
+        "feature_fraction": [1.0],
+        "bagging_fraction": [1.0],
+        "lambda_l1": [0.0],
+        "lambda_l2": [0.0],
+        "learning_rate": [0.2],
+    }
+    grid.update(lgbm_grid_overrides)
+    return ResolvedConfig.model_validate(
+        {
+            "random_seed": 42,
+            "compute": {"num_threads": 1, "log_level": "INFO"},
+            "tasks": {"home_win": {"enabled": True}, "over_5_5": {"enabled": True}},
+            "split": {
+                "method": "month",
+                "n_test_windows": 1,
+                "inner_val_games": 1,
+                "calibration_games": 1,
+                "holdout": {"fraction": 0.15, "date_range": {"from": None, "to": None}},
+            },
+            "models": {
+                "logreg": {"grids": {"C": [1.0]}},
+                "lgbm": {
+                    "grids": grid,
+                    "monotone": {"home_win": {}, "over_5_5": {}},
+                },
+            },
+            "calibration": {"method": "platt", "min_samples": 1},
+            "evaluation": {
+                "ece_bins": 5,
+                "bootstrap_samples": 1,
+                "bootstrap_block_by_day": True,
+                "epsilon_clip": 1e-15,
+            },
+            "feature_set_version": "v1",
+            "rolling_windows": [5],
+            "features_hash": "a" * 64,
+            "feature_manifest": [{"name": "feat_mono"}, {"name": "feat_noise"}],
+            "cold_start_policy_predict": "allow_with_flag",
+        }
+    )
+
+
+class TestFinalRetrainFixedRounds(unittest.TestCase):
+    """Задача 40 Task 2: the final LGBM retrain on ``train_full`` must not
+    early-stop against ``inner_val`` (``inner_val ⊂ train_full``) and must
+    instead run exactly the ``best_iteration`` inner-val selection already
+    chose honestly (see docs/modeling_training.md §4, "Production bundle":
+    pre-fix this always hit the 500-round cap, e.g. holdout log loss
+    0.6926 -> 0.7646)."""
+
+    def test_final_booster_runs_exactly_selected_best_iteration(self) -> None:
+        # Noisy (not perfectly separable) synthetic data so grid selection's
+        # early stopping genuinely fires before the 500-round cap.
+        X, y = _make_monotone_data(n=900, coef=1.2, rng=np.random.default_rng(21))
+        y_all = y.astype(float)
+
+        train_full_idx = np.arange(0, 700)
+        inner_val_idx = np.arange(600, 700)  # last 100 rows of train_full, per compute_final_retrain_slices
+        final_slices = FinalRetrainSlices(
+            train_full_idx=train_full_idx,
+            inner_val_idx=inner_val_idx,
+            calibration_final_idx=np.arange(700, 800),
+            train_full_days=("d0", "d1"),
+            inner_val_days=("d0", "d1"),
+            calibration_final_days=("d0", "d1"),
+        )
+        config = _minimal_resolved_config(learning_rate=[0.05, 0.2])
+
+        final_booster, fit = _fit_final_raw_model(
+            "lgbm",
+            "home_win",
+            X,
+            y_all,
+            final_slices,
+            config,
+            feature_names=list(X.columns),
+            log_loss_fn=log_loss,
+        )
+
+        self.assertIsInstance(fit, LgbmFitResult)
+        # Selection (on train_hp/inner_val, honest — inner_val is not inside
+        # train_hp) must have early-stopped before the 500-round cap.
+        self.assertGreater(fit.best_iteration, 0)
+        self.assertLess(
+            fit.best_iteration,
+            500,
+            "expected inner_val grid selection to early-stop before the 500-round cap",
+        )
+        # No validation set on the final train_full fit -> LightGBM never sets
+        # best_iteration on this booster (stays 0, its "no early stopping was
+        # configured" sentinel), and training runs exactly num_boost_round
+        # rounds: fit.best_iteration, not the 500-round cap.
+        self.assertEqual(final_booster.best_iteration, 0)
+        self.assertEqual(final_booster.current_iteration(), fit.best_iteration)
 
 
 if __name__ == "__main__":

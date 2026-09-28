@@ -27,8 +27,15 @@ def _wide_feature_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         if away_col not in data.columns:
             continue
         data[f"diff_{feature}"] = data[home_col] - data[away_col]
+        built.extend([home_col, away_col, f"diff_{feature}"])
+        if feature == "elo":
+            # Задача 40 (Task 3; see docs/modeling_dataset_builder.md, "Elo
+            # team-strength feature"): home_elo+away_elo carries no signal
+            # beyond what diff_elo already does (it is ~2*mean after season
+            # regression, not a team-strength comparison) — skip it.
+            continue
         data[f"sum_{feature}"] = data[home_col] + data[away_col]
-        built.extend([home_col, away_col, f"diff_{feature}", f"sum_{feature}"])
+        built.append(f"sum_{feature}")
     return data, built
 
 

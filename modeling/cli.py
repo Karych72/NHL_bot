@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     build = sub.add_parser("build-dataset", help="Build train or predict dataset")
     build.add_argument("--mode", choices=("train", "predict"), required=True)
     build.add_argument("--output-dir", default="artifacts/datasets")
-    build.add_argument("--feature-set-version", default="v1")
+    build.add_argument("--feature-set-version", default="v2")
     build.add_argument("--rolling-windows", type=_parse_windows, default=[5, 10, 20])
     build.add_argument("--min-prior-games", type=int, default=5)
     build.add_argument(

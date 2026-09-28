@@ -143,7 +143,18 @@ artifacts/
 
 - **Walk-forward folds** — `artifacts/models/<task>/<model>/<run_id>/fold_<k>/` (per-fold raw model, calibrator, metadata).
 - **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final` after final retrain before holdout).
-- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated only when run status is `ok`.
+  For LGBM, `model_final` is retrained on `train_full` for a **fixed** number of
+  rounds — the `best_iteration` an honest inner-val grid search already picked —
+  with no early stopping and no validation set carved out of `train_full`.
+  Early stopping there would validate against `inner_val`, which is a subset of
+  `train_full` itself (Задача 40, `modeling/train_lgbm.py::train_lgbm_fixed_rounds`).
+  Before this fix, the final retrain *did* early-stop against `inner_val`, but since
+  `inner_val ⊂ train_full` early stopping never actually fired — the final retrain always ran the
+  full 500-round cap regardless of what grid selection had picked, inflating raw
+  holdout log-loss for `home_win`/lgbm from 0.6926 (fixed-round retrain) to 0.7646.
+  The old 7-axis × 3-value grid (2187 points) that grid selection searched over also
+  took about 19 minutes per fold on this dataset; the 8-point grid in `configs/modeling_default.yaml` (`models.lgbm.grids`) replaces it.
+- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
 ### `metadata.json` (final and fold artifacts)
@@ -268,14 +279,110 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
    `sum_goals_against_roll_mean_*` columns (`goal_diff_roll_mean` exists only
    at window 5 by design — `features.py::compute_team_rolling_features`).
 2. `configs/modeling_default.yaml` had `calibration.min_samples: 500` above
-   `split.calibration_games: 300`, so `fit_calibrator`
-   (`modeling/calibrate.py:196`) silently skipped calibration on every fold,
-   storing an identity calibrator. `min_samples` is now `300`.
+   `split.calibration_games: 300`, so `fit_calibrator` (`modeling/calibrate.py`)
+   silently skipped calibration on every fold, storing an identity calibrator.
+   `min_samples` is now `300`.
 
 `tests/test_modeling_config.py::TestLgbmMonotoneNamesMatchDataset` guards both
 against recurring: monotone keys are checked against columns the real
 `dataset_builder` pipeline produces, and `calibration.min_samples <=
 split.calibration_games` is asserted for both configs.
+
+**`calibration.method` defaults to `platt`, not `isotonic` (Задача 40, spike
+40a):** on the real `split.calibration_games: 300` block,
+`IsotonicRegression(out_of_bounds="clip")` puts the extreme bins at exact 0
+and 1, and `np.clip(..., 0, 1)` inside `_apply_fitted_calibrator`
+(`modeling/calibrate.py`) keeps them —
+each such row costs ~34.5 nats of holdout log-loss. Measured on the real
+dataset: calibrated holdout log-loss for `home_win`/`logreg` was 0.887 with
+isotonic vs. 0.699 raw (worse than not calibrating at all), while Platt gave
+0.692, beating the trivial-baseline log-loss of 0.694. `isotonic` is still a
+supported `calibration.method` value (spec §9) and is unchanged — it is just
+no longer the default. Platt itself (`_build_platt_calibrator` /
+`_apply_fitted_calibrator` in `modeling/calibrate.py`) fits on
+`logit(clip(p, eps, 1-eps))` rather than on the raw probability `p`, and uses
+an unregularized `LogisticRegression(penalty=None)`: this is classical Platt
+scaling (a sigmoid over the raw model's logit), and dropping the L2 term
+matters because with it the fitted slope could collapse toward a near-constant
+prediction (spike 40a measured a fitted slope of -0.014 for one candidate
+model under the old `p`-input, L2 fit).
+
+---
+
+## 8. Результаты Задачи 40
+
+Реальный прогон (не разведка): `build-dataset --mode train` на живой БД (6049 строк, 5
+сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
+задачи, обе модели, один вызов, `run_start_utc` общий для всех 4 пар —
+`bb0c2b06_20260928T183528Z` в `run_id`). Конфиг уже включает результаты Задач 1–3 этой
+карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone`,
+8-точечная сетка lgbm, финальный retrain lgbm на фиксированном `num_boost_round` без
+утечки early stopping.
+
+Holdout — 994 игры, 2025-11-20…2026-04-16 (хвост 15 % уникальных дней, почти весь сезон
+2025-26 после первых 6 недель).
+
+| task | model | raw LL | cal LL | trivial LL | Δ (trivial − model) | 95% ДИ Δ(model − trivial), block-by-day | acceptance |
+|---|---|---|---|---|---|---|---|
+| home_win | logreg | 0.703489 | 0.691975 | 0.693761 | +0.001786 | [−0.004412, +0.000797] | `ok` |
+| home_win | lgbm | 0.691250 | 0.690900 | 0.693761 | +0.002861 | [−0.005666, +0.000003] | `ok` |
+| over_5_5 | logreg | 0.697096 | 0.682794 | 0.682040 | −0.000753 | [−0.001474, +0.003137] | `failed_baseline_check` |
+| over_5_5 | lgbm | 0.694964 | 0.683514 | 0.682040 | −0.001474 | [−0.001636, +0.004535] | `failed_baseline_check` |
+
+`run_id`: `home_win_logreg_bb0c2b06_20260928T183528Z`, `home_win_lgbm_bb0c2b06_20260928T183528Z`,
+`over_5_5_logreg_bb0c2b06_20260928T183528Z`, `over_5_5_lgbm_bb0c2b06_20260928T183528Z`
+(`artifacts/reports/<run_id>/metrics.json` и `summary.md`, git-ignored). The `raw`/`cal LL`
+and `trivial LL` columns are copied verbatim from each pair's own `metrics.json`; the ДИ
+column is **not** in `metrics.json` (that file's `holdout.bootstrap.log_loss` CI is for the
+model's own log loss, not the difference against trivial) — it was computed once by a
+throwaway script outside the repo, paired block-by-day bootstrap (seed 42, 1000 resamples,
+same day-blocks as `modeling/bootstrap.py`), reusing the repo's own `predict_raw_proba` /
+`apply_calibrator` / `load_model_artifact` on the saved `final/model.joblib` +
+`final/calibrator.joblib` of each of the 4 runs above; its point values for `model_cal_ll`
+and `trivial_ll` were checked against `metrics.json` and match to the printed precision.
+
+**Вывод: запас маленький, в пределах шума.** Every ДИ above straddles (or, for
+`home_win`/lgbm, all but touches) zero — none of the four deltas is statistically
+significant at the block-by-day 95% level with 994 holdout games. Both `home_win` model
+families individually beat trivial (`+0.0018` logreg, `+0.0029` lgbm): Platt calibration
+alone flips the earlier `failed_baseline_check` result (spike 40a, `docs/modeling_training.md`
+§7) into a pass, and the pass is honestly small — see spike 40a's finding that 994-game
+block bootstrap CIs are roughly ±0.003–0.01 wide, so a "significant" pass on this holdout
+is not achievable even for a genuinely-better model (Elo's 3-prior-season track record —
+see `docs/modeling_dataset_builder.md`, «Elo team-strength feature» — is the example). The
+task itself passes on its winning family (see below), and here that happens to be true for
+both families at once, but the gate only ever checks the winning one. **`over_5_5` does not
+pass for either model** — both are worse than trivial (`+0.0008` to `+0.0015` on log loss),
+matching spike 40a's finding that there is no usable signal for this target in box-score
+rolling features or in the Elo-like scoring rating tried there.
+
+**Acceptance status is computed per *task*, not per model and not for the whole run**
+(`modeling/acceptance.py::pair_run_status` / `evaluate_baseline_gate`). For each enabled
+task, `evaluate_baseline_gate` picks the trained model family with the lowest calibrated
+holdout log loss (`pick_winning_family`) and compares *that one* against
+`trivial_base_rate`; the resulting pass/fail is the task's single verdict. Every
+`(task, model)` pair for that task then inherits the task's verdict
+(`pair_run_status(task=..., baseline, artifacts)` looks up the verdict by `task` only) —
+so if the winning family for a task passes, **both** trained model families for that task
+get `status: ok` and both get their own `latest` symlink written, even a losing model that
+individually did not beat trivial (in this run both `home_win` families happen to
+individually pass, but the code does not check that — only the winning family's number
+decides the task). The **whole-run** status
+(`apply_acceptance_to_training_outcomes` → `run_status`, and the CLI's exit code) is `ok`
+only if *every* enabled task passes; here it is `failed_baseline_check` because
+`over_5_5` fails, even though `home_win` is `ok`. `update_latest_symlink` is skipped
+per-pair when that pair's own `status != ok`, so `latest` was **not** written for either
+`over_5_5` pair.
+
+`latest` after this run (`artifacts/models/<task>/<model>/latest`, all git-ignored):
+
+- `home_win/logreg/latest` → `home_win_logreg_bb0c2b06_20260928T183528Z/final` (symlink,
+  written by `update_latest_symlink`, verified by `apply_latest_symlink_check`).
+- `home_win/lgbm/latest` → `home_win_lgbm_bb0c2b06_20260928T183528Z/final` (same).
+- `over_5_5/logreg/latest`, `over_5_5/lgbm/latest` — do not exist; no run for `over_5_5`
+  has ever reached `status: ok`.
+
+No manual `latest` symlink existed in the main checkout — no cleanup was needed there.
 
 ---
 
