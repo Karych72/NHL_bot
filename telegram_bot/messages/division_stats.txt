@@ -1,0 +1,5 @@
+<b>Сводка по дивизионам</b> ({{ season }})
+
+{% for row in rows -%}
+<b>{{ row.name }}</b> ({{ row.conference }}) — команд: {{ row.team_count }}, очки (среднее): {{ row.avg_points }}, голы/игра: {{ row.goals_per_game }}, большинство: {{ row.power_play_percentage }}, меньшинство: {{ row.penalty_kill_percentage }}
+{% endfor -%}

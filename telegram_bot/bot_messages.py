@@ -1209,6 +1209,103 @@ def team_table() -> str:
     return output_text('messages/league_table.txt', to_template)
 
 
+def conference_summary() -> str:
+    """Сводка по конференциям сезона `config.SEASON_ID`: число команд и средние
+    командные метрики (`teams_stats` ⋈ `teams` по `(team_id, season_id)`) —
+    голы за игру, % большинства/меньшинства, очки на команду. Только то, что
+    уже лежит в `teams_stats` — без вычисляемых «рейтингов».
+
+    Не дублирует турнирную таблицу `/table` (`team_table()`): там строка на
+    каждую команду, здесь — усреднение по конференции. Пустой сезон — текст с
+    причиной, а не пустая таблица (Задача 36).
+    """
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    stats = cached_fetch_all(
+        "SELECT t.conference_name, COUNT(*) AS team_count, "
+        "AVG(ts.goals_per_game) AS avg_goals_per_game, "
+        "AVG(ts.power_play_percentage) AS avg_power_play_percentage, "
+        "AVG(ts.penalty_kill_percentage) AS avg_penalty_kill_percentage, "
+        "AVG(ts.points) AS avg_points "
+        "FROM teams_stats ts "
+        "JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
+        "WHERE ts.season_id = %s "
+        "GROUP BY t.conference_name "
+        "ORDER BY t.conference_name",
+        (config.SEASON_ID,),
+        columns=[
+            "conference_name", "team_count", "avg_goals_per_game",
+            "avg_power_play_percentage", "avg_penalty_kill_percentage", "avg_points",
+        ],
+    )
+    if stats["count_rows"] == 0:
+        return (
+            f"<b>Сводка по конференциям</b> ({season_esc})\n"
+            "В базе нет командной статистики для этого сезона."
+        )
+    rows = [
+        {
+            "name": html.escape((stats["conference_name"][i] or "—").strip()),
+            "team_count": _format_leader_value(stats["team_count"][i]),
+            "goals_per_game": _fmt_num_max2(stats["avg_goals_per_game"][i]),
+            "power_play_percentage": _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
+            "penalty_kill_percentage": _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
+            "avg_points": _fmt_num_max2(stats["avg_points"][i]),
+        }
+        for i in range(stats["count_rows"])
+    ]
+    return output_text(
+        "messages/conference_stats.txt", {"season": season_esc, "rows": rows}
+    )
+
+
+def division_summary() -> str:
+    """Сводка по дивизионам — как `conference_summary()`, но `GROUP BY
+    t.division_name` (заодно `t.conference_name` — один дивизион лежит в одной
+    конференции, но `GROUP BY` не знает об этом без явного столбца в списке).
+
+    Не дублирует деление на дивизионы в турнирной таблице `/table`: там
+    строка на команду внутри дивизиона, здесь — средние метрики дивизиона.
+    """
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    stats = cached_fetch_all(
+        "SELECT t.division_name, t.conference_name, COUNT(*) AS team_count, "
+        "AVG(ts.goals_per_game) AS avg_goals_per_game, "
+        "AVG(ts.power_play_percentage) AS avg_power_play_percentage, "
+        "AVG(ts.penalty_kill_percentage) AS avg_penalty_kill_percentage, "
+        "AVG(ts.points) AS avg_points "
+        "FROM teams_stats ts "
+        "JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
+        "WHERE ts.season_id = %s "
+        "GROUP BY t.conference_name, t.division_name "
+        "ORDER BY t.conference_name, t.division_name",
+        (config.SEASON_ID,),
+        columns=[
+            "division_name", "conference_name", "team_count", "avg_goals_per_game",
+            "avg_power_play_percentage", "avg_penalty_kill_percentage", "avg_points",
+        ],
+    )
+    if stats["count_rows"] == 0:
+        return (
+            f"<b>Сводка по дивизионам</b> ({season_esc})\n"
+            "В базе нет командной статистики для этого сезона."
+        )
+    rows = [
+        {
+            "name": html.escape((stats["division_name"][i] or "—").strip()),
+            "conference": html.escape((stats["conference_name"][i] or "—").strip()),
+            "team_count": _format_leader_value(stats["team_count"][i]),
+            "goals_per_game": _fmt_num_max2(stats["avg_goals_per_game"][i]),
+            "power_play_percentage": _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
+            "penalty_kill_percentage": _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
+            "avg_points": _fmt_num_max2(stats["avg_points"][i]),
+        }
+        for i in range(stats["count_rows"])
+    ]
+    return output_text(
+        "messages/division_stats.txt", {"season": season_esc, "rows": rows}
+    )
+
+
 def season_team_abbrev_help_text() -> str:
     """Краткий список аббревиатур команд текущего сезона для /team."""
     stats = cached_fetch_all(

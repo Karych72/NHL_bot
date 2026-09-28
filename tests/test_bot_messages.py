@@ -655,6 +655,84 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     assert "None" not in text
 
 
+# ---------------------------------------------------------------------------
+# conference_summary() / division_summary() — Задача 41, Фаза B
+# ---------------------------------------------------------------------------
+
+def test_conference_summary_reports_when_season_has_no_rows(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    empty = {"count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
+        text = bot_messages.conference_summary()
+    assert "В базе нет командной статистики для этого сезона." in text
+    assert "(25/26)" in text
+
+
+def test_conference_summary_renders_averages_per_conference(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    rows = {
+        "conference_name": ["Eastern", "<i>Western"],
+        "team_count": [16, 16],
+        "avg_goals_per_game": [3.123, 2.987],
+        "avg_power_play_percentage": [21.456, 19.876],
+        "avg_penalty_kill_percentage": [79.5, 80.25],
+        "avg_points": [55.25, 50.1],
+        "count_rows": 2,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text = bot_messages.conference_summary()
+    assert (
+        "<b>Eastern</b> — команд: 16, очки (среднее): 55.25, "
+        "голы/игра: 3.12, большинство: 21.46%, меньшинство: 79.5%"
+    ) in text
+    assert (
+        "<b>&lt;i&gt;Western</b> — команд: 16, очки (среднее): 50.1, "
+        "голы/игра: 2.99, большинство: 19.88%, меньшинство: 80.25%"
+    ) in text
+    assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
+
+
+def test_division_summary_reports_when_season_has_no_rows(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    empty = {"count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
+        text = bot_messages.division_summary()
+    assert "В базе нет командной статистики для этого сезона." in text
+    assert "(25/26)" in text
+
+
+def test_division_summary_renders_averages_per_division_with_conference(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    rows = {
+        "division_name": ["Metropolitan"],
+        "conference_name": ["Eastern"],
+        "team_count": [8],
+        "avg_goals_per_game": [3.0],
+        "avg_power_play_percentage": [20.0],
+        "avg_penalty_kill_percentage": [80.0],
+        "avg_points": [52.5],
+        "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text = bot_messages.division_summary()
+    assert (
+        "<b>Metropolitan</b> (Eastern) — команд: 8, очки (среднее): 52.5, "
+        "голы/игра: 3, большинство: 20%, меньшинство: 80%"
+    ) in text
+
+
 def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
     """(B) Лидерборд полевых игроков (players_season_stats): игр/смен."""
     bot_messages = bot_module("bot_messages")

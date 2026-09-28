@@ -219,6 +219,8 @@ def test_state_first_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.TEAM_PROCENT_WINS), sh.bot_team_procent_wins),
         _cq(_state(ds.TEAM_POWER_PLAY), sh.bot_team_power_play),
         _cq(_state(ds.TEAM_POWER_KILL), sh.bot_team_power_kill),
+        _cq(_state(ds.TEAM_CONFERENCE_STATS), sh.bot_team_conference_stats),
+        _cq(_state(ds.TEAM_DIVISION_STATS), sh.bot_team_division_stats),
     ]
 
 
@@ -550,8 +552,9 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # висят «« Назад»» на родительские подменю: bot_player_field/
     # bot_player_goalie/bot_player_advanced_menu/bot_team_stats по 2 раза
     # каждый, bot_digest_date_menu 5 раз — FIRST×2, SECOND×2, THIRD×1)
-    # и 42 регистрации stats_handlers.py.
-    assert len(registered) == 81
+    # и 44 регистрации stats_handlers.py (в т.ч. bot_team_conference_stats/
+    # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST).
+    assert len(registered) == 83
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",
