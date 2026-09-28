@@ -169,10 +169,17 @@ class TestPlattWorks(unittest.TestCase):
 
 
 class TestPlattFixesLogitScaleMiscalibration(unittest.TestCase):
-    """Platt fits on logit(p) (Задача 40a): it must recover a logit-space skew
-    that a p-space fit cannot -- a raw model whose logit is a constant multiple
-    of the true logit, e.g. an overconfident model with true
-    p = sigmoid(0.5 * logit(p_raw))."""
+    """Synthetic data (Задача 40a) where the raw model's logit is a constant
+    multiple of the true logit -- an overconfident model with true
+    p = sigmoid(0.5 * logit(p_raw)), i.e. a true calibration slope of 0.5 in
+    logit space. Both the old p-space L2 fit and the new logit-space
+    penalty=None fit lower log-loss vs raw here, so log-loss alone does not
+    tell them apart (reviewer measurement on this exact seed: raw 0.5770, old
+    p-space 0.5434, new logit-space 0.5329). What tells them apart is the
+    recovered slope: fit on logit(p), the calibrator's single coefficient is
+    directly comparable to the true 0.5 slope (measured ~0.506); fit on raw
+    p, the coefficient lives on a different, non-comparable scale (measured
+    ~3.03) and is not close to 0.5. That is the behavioural check below."""
 
     def setUp(self) -> None:
         rng = np.random.default_rng(123)
@@ -199,6 +206,21 @@ class TestPlattFixesLogitScaleMiscalibration(unittest.TestCase):
         ll_raw = log_loss(self.y_eval, self.p_raw_eval)
         ll_cal = log_loss(self.y_eval, cal_p)
         self.assertLess(ll_cal, ll_raw - 0.02)
+
+    def test_recovers_true_logit_space_slope(self) -> None:
+        # The decisive check (a log-loss improvement alone does not
+        # distinguish this from the old p-space L2 fit -- see class
+        # docstring): fit on logit(p), the calibrator's coefficient is a
+        # direct estimate of the true 0.5 logit-space slope. A fit on raw p
+        # (the old representation) puts a very different, non-comparable
+        # coefficient there (measured ~3.03 on this data) and fails this
+        # assertion with a wide margin.
+        fit = fit_calibrator(
+            self.p_raw_cal, self.y_cal, method="platt", min_samples=500, seed=11
+        )
+        assert isinstance(fit.calibrator, LogisticRegression)
+        slope = float(fit.calibrator.coef_[0, 0])
+        self.assertAlmostEqual(slope, 0.5, delta=0.1)
 
     def test_calibrated_probabilities_strictly_inside_unit_interval(self) -> None:
         fit = fit_calibrator(
