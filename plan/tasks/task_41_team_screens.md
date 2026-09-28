@@ -1,7 +1,7 @@
 # Задача 41. Экраны команд: дивизионы и профиль
 
 **Статус:** выполнена (2026-09-28, ветки `sdd-task-41-team-screens` — Фаза B,
-`sdd-task-41d-team-profile` — Фаза D; PR — после открытия; ручной проход в живом боте
+`sdd-task-41d-team-profile` — Фаза D; PR #41, #42; ручной проход в живом боте
 ждёт человека) · **Блок:** продукт · **Надобность:** ⚪
 **Область:** `telegram_bot/bot_messages.py`, `script_bot.py`, `dialog_states.py`, `stats_handlers.py`, `bot.py`, `messages/*.txt`, `tests/`, `docs/architecture.md`.
 **Порядок:** после релиза, окнами между крупным; порядок с 37, 38, 42 любой.

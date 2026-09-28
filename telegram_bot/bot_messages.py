@@ -1373,8 +1373,8 @@ _TEAM_PROFILE_POSITION_ORDER = ("C", "L", "R", "D", "G")
 
 def _team_profile_position_key(pos: str) -> Tuple[int, str]:
     """Ключ сортировки строк по позициям в профиле команды — по месту в
-    `_TEAM_PROFILE_POSITION_ORDER`; код вне этого набора (не встречается в
-    реальных данных) уходит в конец списком по алфавиту."""
+    `_TEAM_PROFILE_POSITION_ORDER`; код вне этого набора (например, «—» при
+    `position IS NULL`) уходит в конец списком по алфавиту."""
     try:
         return (_TEAM_PROFILE_POSITION_ORDER.index(pos), "")
     except ValueError:
