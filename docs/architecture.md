@@ -271,33 +271,11 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
 ### Модуль: `pipeline/scheduled_sync.py` (Задача 34, автообновление)
 
-Планировщик, который вызывает `load_season_modern.py` без участия человека — сервис `sync`
-в `docker-compose.yml` (тот же образ, что у бота, `working_dir: /app/pipeline`,
-`command: ["python", "-u", "scheduled_sync.py", "loop"]`). Только stdlib, новых зависимостей нет.
-
-- **Окно загрузки:** `sync_window(today)` — `[today − WINDOW_DAYS_BACK, today]` (`WINDOW_DAYS_BACK = 2`,
-  UTC-дата) — захватывает поздние финалы вчерашнего дня.
-- **Расписание:** `SYNC_HOUR_UTC = 8` (11:00 МСК, матчи в Северной Америке уже закончены).
-  `seconds_until_next_run(now)` — секунд до ближайших `08:00 UTC` строго после `now`.
-- **Один прогон:** `run_once(commands, status_file, window)` выполняет `build_commands(window,
-  with_digest)` последовательно (`subprocess.run(..., check=False)`), останавливаясь на первой
-  ненулевой команде — дайджест не шлётся после неудачной загрузки. Пишет `status_file` атомарно
-  (tmp + `os.replace`, как диск-кэш `fetch_game_json`): `{finished_at, ok, failed_command,
-  returncode, window}`.
-- **Цикл (`loop`):** при старте — прогон БЕЗ дайджеста (догнать данные после перезапуска, не
-  дублируя рассылку), затем бесконечно: спать до `SYNC_HOUR_UTC`, прогон С дайджестом.
-  Неуспешный прогон не роняет цикл — отказ виден через статус-файл и `check`.
-- **Видимость отказа:** `check(status_file, now)` — код выхода healthcheck: 0, если последний
-  прогон успешен и `finished_at` не старше `STALE_AFTER = 26h`, иначе 1. Используется как
-  `docker-compose.yml` `healthcheck:` сервиса `sync` (перекрывает образный `HEALTHCHECK`,
-  рассчитанный на бота — PG-коннект) — `docker compose ps` показывает `unhealthy` при отказе
-  или устаревших данных.
-- Диск-кэш загрузчика и `sync_status.json` живут в `/app/all_data` контейнера, на именованном
-  томе `syncdata` (переживает пересоздание контейнера); каталог создаётся и передаётся
-  `appuser` в `Dockerfile` (сервис работает под тем же non-root пользователем, что бот).
-- Тесты — `tests/test_scheduled_sync.py`: реальные процессы (`sys.executable -c "..."`) для
-  `run_once`, фиксированные `datetime` для `seconds_until_next_run`/`check` — без моков
-  `subprocess`/`time`.
+Планировщик, который вызывает `load_season_modern.py` (и, после успешной загрузки,
+`push_digest_job.py`) без участия человека — сервис `sync` в `docker-compose.yml`, тот же
+образ, что у бота. Только stdlib, новых зависимостей нет. Расписание, здоровье сервиса,
+том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Тесты —
+`tests/test_scheduled_sync.py`.
 
 ---
 

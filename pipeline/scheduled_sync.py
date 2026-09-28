@@ -79,6 +79,36 @@ def seconds_until_next_run(now: datetime) -> float:
     return (next_run - now).total_seconds()
 
 
+def _next_target(now: datetime, target: datetime) -> Tuple[datetime, float]:
+    """Следующий целевой момент прогона в цикле и секунды сна до него.
+
+    *target* — момент последнего запланированного прогона (или момента старта
+    цикла, до самого первого прогона). Следующий слот считается не от *now*
+    само по себе, а от ``max(now, target)``: если бы считали только от *now*,
+    неточность ``time.sleep`` (или скачок часов) могла бы разбудить цикл на
+    волосок раньше ``target`` — тогда *now* всё ещё "видит" себя ДО уже
+    состоявшегося прогона, `seconds_until_next_run(now)` вернула бы то же
+    самое (уже отработанное) время почти без задержки, и дайджест ушёл бы
+    второй раз подряд за тот же слот. Взяв больший из *now*/*target*, для уже
+    прошедшего слота следующий шаг всегда считается на сутки вперёд от него
+    самого. Долгий простой (например, контейнер был приостановлен на
+    несколько дней) не ломается симметрично: тогда *now* заведомо позже
+    *target*, и следующий слот считается от актуального текущего момента, а
+    не откуда-то из прошлого.
+
+    Аргументы:
+        now: текущий момент (UTC).
+        target: момент последнего прогона/старта цикла (UTC).
+
+    Возвращает: ``(next_target, sleep_seconds)`` — момент следующего прогона
+    (передать как *target* следующему вызову) и секунды сна до него.
+    """
+    effective = max(now, target)
+    sleep_seconds = seconds_until_next_run(effective)
+    next_target = effective + timedelta(seconds=sleep_seconds)
+    return next_target, sleep_seconds
+
+
 def _write_status_atomic(status_file: Path, status: dict) -> None:
     """Пишет JSON статуса атомарно: tmp-файл рядом + ``os.replace``.
 
@@ -239,8 +269,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # loop
     catch_up_window = sync_window(datetime.now(timezone.utc).date())
     run_once(build_commands(catch_up_window, with_digest=False), STATUS_FILE, catch_up_window)
+    target = datetime.now(timezone.utc)
     while True:
-        sleep_seconds = seconds_until_next_run(datetime.now(timezone.utc))
+        target, sleep_seconds = _next_target(datetime.now(timezone.utc), target)
         logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
         time.sleep(sleep_seconds)
         window = sync_window(datetime.now(timezone.utc).date())

@@ -25,6 +25,7 @@ if _PIPELINE_DIR not in sys.path:
 from scheduled_sync import (  # noqa: E402
     STALE_AFTER,
     SyncCommand,
+    _next_target,
     build_commands,
     check,
     run_once,
@@ -65,6 +66,55 @@ class SecondsUntilNextRunTest(unittest.TestCase):
         now = datetime(2026, 9, 15, 9, 30, 0, tzinfo=timezone.utc)
         seconds = seconds_until_next_run(now)
         self.assertEqual(seconds, (24 - 1.5) * 3600.0)
+
+
+class NextTargetTest(unittest.TestCase):
+    """Fix round 1: ``loop`` must not fire the digest twice for one slot.
+
+    Recomputing purely from ``now`` after each run let an imprecise
+    ``time.sleep`` (or wall clock reading a hair behind its target) wake the
+    loop just before ``SYNC_HOUR_UTC``: ``now`` still looked "before today's
+    slot", so the very next iteration scheduled again almost immediately and
+    fired a second digest for the same slot. ``_next_target`` fixes this by
+    computing from ``max(now, target)`` — see its docstring.
+    """
+
+    def test_normal_case_before_sync_hour(self) -> None:
+        now = datetime(2026, 9, 15, 7, 0, 0, tzinfo=timezone.utc)
+        next_target, sleep_seconds = _next_target(now, target=now)
+
+        self.assertEqual(sleep_seconds, 3600.0)
+        self.assertEqual(next_target, datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc))
+
+    def test_early_wake_just_before_target_does_not_double_fire(self) -> None:
+        """``now`` reads a hair before ``target`` (the slot that just ran) —
+        must still advance a full day, not fire almost immediately again."""
+        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+        now = target - timedelta(microseconds=1)
+
+        next_target, sleep_seconds = _next_target(now, target)
+
+        self.assertEqual(sleep_seconds, 24 * 3600.0)
+        self.assertEqual(next_target, datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc))
+
+    def test_now_exactly_at_target_does_not_double_fire(self) -> None:
+        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+
+        next_target, sleep_seconds = _next_target(now=target, target=target)
+
+        self.assertEqual(sleep_seconds, 24 * 3600.0)
+        self.assertEqual(next_target, datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc))
+
+    def test_long_pause_catches_up_from_now_not_stale_target(self) -> None:
+        """Container paused for days: ``now`` is far past ``target`` — the next
+        slot must follow the actual current time, not replay from the past."""
+        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 18, 10, 0, 0, tzinfo=timezone.utc)
+
+        next_target, sleep_seconds = _next_target(now, target)
+
+        self.assertEqual(sleep_seconds, 22 * 3600.0)
+        self.assertEqual(next_target, datetime(2026, 9, 19, 8, 0, 0, tzinfo=timezone.utc))
 
 
 class RunOnceTest(unittest.TestCase):

@@ -28,10 +28,11 @@
 
 Утренний дайджест
 -----------------
-Внешний планировщик (cron, systemd timer, облачная задача) вызывает скрипт,
-который для всех ``active`` строк с ``kind='morning_digest'`` вызывает ту же
-логику, что и ``day_digest()`` / ``dispatch_day_digest_messages``, и шлёт
-результат с ``attach_conv_nav_on_last=False`` и без callback-кнопок диалога.
+Сервис `sync` (``pipeline/scheduled_sync.py``, Задача 34) вызывает скрипт после
+каждой ежедневной загрузки данных; тот для всех ``active`` строк с
+``kind='morning_digest'`` вызывает ту же логику, что и ``day_digest()`` /
+``dispatch_day_digest_messages``, и шлёт результат с ``attach_conv_nav_on_last=False``
+и без callback-кнопок диалога.
 
 Подписка на команду
 -------------------

@@ -173,7 +173,7 @@ async def run_team_scores_broadcast(context: CallbackContext) -> None:
 
 
 async def main() -> None:
-    """Точка входа cron-скрипта: проверяет флаги и прогоняет обе рассылки.
+    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и прогоняет обе рассылки.
 
     Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
     принимает ``CallbackContext``, а построить его можно только от ``Application``.
