@@ -1174,7 +1174,12 @@ def team_table() -> str:
     секции по конференциям/дивизионам, отсортированные по очкам, плюс секции
     Wild Card — HTML-текст с шапкой сезона и даты (шаблон
     `messages/league_table.txt`) для команды `/table` (`bot.py`) и пункта
-    «Турнирная таблица» диалога `/stats` (`stats_handlers.py`)."""
+    «Турнирная таблица» диалога `/stats` (`stats_handlers.py`).
+
+    Пустой `teams_stats` (сезон ещё не начался — загрузчик не пишет туда
+    строк, пока в сезоне нет ни одной завершённой игры, см. Задача 36)
+    отдаёт текст с причиной вместо таблицы с одними заголовками секций и
+    без единой строки команды."""
     stats = cached_fetch_all(
         "SELECT short_name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "
@@ -1186,6 +1191,13 @@ def team_table() -> str:
         columns=['short_name', 'games_played', 'points', 'procent_points',
                  'wins', 'losses', 'ot', 'division_name', 'conference_name'],
     )
+
+    if stats['count_rows'] == 0:
+        season_esc = html.escape(str(config.CURRENT_SEASON))
+        return (
+            f"<b>Турнирная таблица NHL</b> — сезон {season_esc}\n\n"
+            "Сезон ещё не начался: в базе нет статистики команд."
+        )
 
     teams: List[Dict[str, Union[int, str, float, None]]] = []
     for i in range(stats['count_rows']):
