@@ -458,9 +458,10 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 _EMPTY_SEASON_ROUTES = [
     # MAX() без GROUP BY в Postgres всегда отдаёт ровно одну строку (NULL на
     # пустой таблице), а не ноль строк — маршрут-заглушка ниже отвечает [] на
-    # всё остальное, но агрегаты нужно перечислить отдельно.
+    # всё остальное, но day_digest()'s `MAX(day)` нужно перечислить отдельно
+    # (team_table() на пустом teams_stats возвращается раньше своего
+    # `MAX(day)::text` в `_standings_as_of_day()` — тот запрос сюда не доходит).
     ("SELECT max(day) AS day FROM games", [(None,)]),
-    ("SELECT max(day)::text AS d", [(None,)]),
     ("", []),
 ]
 
@@ -589,7 +590,9 @@ async def test_table_command_on_partial_season_shows_only_teams_with_games(
     # заголовки пустой таблицы.
     assert "<b>WESTERN CONFERENCE</b>" in text
     assert "<b>CENTRAL DIVISION</b>" in text
-    assert "(в дивизионе ещё никто не сыграл)" in text
+    # Ровно два пустых дивизиона (Central и Pacific) — оба западных, оба с
+    # текстом-причиной, ни одного лишнего или пропущенного.
+    assert text.count("(в дивизионе ещё никто не сыграл)") == 2
     assert "Avalanche" not in text and "Kings" not in text
 
 
@@ -644,7 +647,7 @@ async def test_advanced_pick_on_partial_season_reports_no_data_below_games_thres
 ):
     bot = bot_module("bot")
     stats_handlers = bot_module("stats_handlers")
-    fake_db_router(_PARTIAL_ADVANCED_ROUTES)
+    cursor = fake_db_router(_PARTIAL_ADVANCED_ROUTES)
 
     intro = make_message_update("/advanced")
     await bot.cmd_advanced(intro, fake_context)
@@ -655,6 +658,9 @@ async def test_advanced_pick_on_partial_season_reports_no_data_below_games_thres
 
     (edited,) = update.callback_query.edited_texts
     assert "Нет данных в этом диапазоне." in edited["text"]
+    # «Нет данных» — реально из-за порога games >= 20 в самом запросе
+    # (_pss_join_sql), а не по случайному совпадению пустого маршрута.
+    assert "pss.games >= 20" in cursor.executed[-1][0]
 
 
 # Игры сезона: NYR обыгрывает BOS 2026-10-01 (в фикстуре не нужна отдельно —
@@ -724,7 +730,7 @@ async def test_game_command_on_partial_season_renders_card_with_low_game_count_f
 
 
 @pytest.mark.asyncio
-async def test_day_games_on_partial_season_shows_only_the_latest_game_day(
+async def test_day_games_on_partial_season_renders_the_latest_day_card(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
