@@ -15,9 +15,40 @@
 - Локальный стек PostgreSQL + бот: скопировать `.env.example` в `.env`, задать `TELEGRAM_BOT_TOKEN`, затем `docker compose up`. Имя compose-проекта закреплено полем `name: nhl_bot` в `docker-compose.yml`, поэтому named volume `nhl_bot_pgdata` под PGDATA не зависит от каталога, из которого запущена команда (основной чекаут или таск-воркtree). Сервис `db` пробрасывает порт `5432`, но только на loopback (`127.0.0.1:5432:5432`) — `POSTGRES_HOST_AUTH_METHOD: trust` остаётся, порт наружу не смотрит; в compose для бота выставлены `PG_HOST=db` и `PG_USER=postgres` (см. `docker-compose.yml`). Перед первым запуском бота примените DDL/SQL-функции к этой БД с хоста: `make PG_HOST=localhost PG_USER=postgres db-init` (когда контейнер `db` уже слушает порт). Переменные нужно передавать именно аргументами `make`, а не переменными окружения перед командой — Makefile делает `include .env` и `export`, и если в `.env` уже задан свой `PG_USER` (например, от локального нативного PostgreSQL), значение из `.env` перекрывает переменную окружения, но не аргумент командной строки `make`.
 - Контейнер бота выполняется от non-root пользователя (`appuser`, uid/gid 1000); пакеты по-прежнему ставятся от root на этапе сборки. У образа есть `HEALTHCHECK` — он проверяет доступность PostgreSQL из контейнера бота (подключение psycopg2 по `PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`), а не то, жив ли процесс.
 - В образ не копируется `.env`; при `docker compose up` используется `env_file: .env`.
+- **Restart-политика (Задача 35).** У всех сервисов (`db`, `bot`, `sync`, `backup`) — `restart: unless-stopped`: переживают падение процесса и перезапуск Docker Desktop/хоста без ручного вмешательства.
 - **Автообновление данных (Задача 34).** Сервис `sync` в `docker-compose.yml` — тот же образ, что у бота, с `command: ["python", "-u", "scheduled_sync.py", "loop"]` и `working_dir: /app/pipeline`. Планировщик (`pipeline/scheduled_sync.py`) при старте сразу прогоняет загрузчик за окно `сегодня−2…сегодня` (без дайджеста — не дублировать рассылку после перезапуска), затем раз в сутки в 08:00 UTC (11:00 МСК; к этому времени матчи в Северной Америке закончены) прогоняет его снова и, следом, `telegram_bot/push_digest_job.py` (пропускается сам, если `ENABLE_PUSH_DIGEST` не включён в `.env`). Диск-кэш загрузчика и файл статуса (`all_data/sync_status.json`) живут в именованном томе `syncdata:/app/all_data`, отдельном от `pgdata`, — переживают пересоздание контейнера. У сервиса свой `healthcheck: python scheduled_sync.py check` (перекрывает образный `HEALTHCHECK`, рассчитанный на бота): 0, если последний прогон успешен и не старше 26 часов, иначе 1 — `docker compose ps` покажет `unhealthy`.
   - Результат: `docker compose ps` (колонка health), `docker compose logs sync` (логи каждого прогона), `all_data/sync_status.json` внутри тома `syncdata`.
   - Ручной прогон в контейнере: `docker compose run --rm sync python scheduled_sync.py once` — учтите, что `once` шлёт дайджест (если `ENABLE_PUSH_DIGEST=1`) и не координируется с уже работающим `loop` в сервисе `sync`, так что оба могут наложиться друг на друга. Для ручного обновления только данных (без риска задвоить рассылку) — с хоста, как и раньше, `make season-sync-week` (или сам загрузчик без дайджеста: `docker compose run --rm sync python load_season_modern.py --date-from … --date-to …`).
+- **Развёртывание с нуля (Задача 35).** Площадка — этот Mac, Docker Desktop.
+  1. `cp .env.example .env`, заполнить `TELEGRAM_BOT_TOKEN`, `SEASON_ID`, `BACKUP_DIR` (абсолютный путь вне репозитория и вне тома `pgdata` — комментарий в `.env.example`).
+  2. `docker compose up -d db` — поднять только БД (том `pgdata` создаётся автоматически).
+  3. `make PG_HOST=localhost PG_USER=postgres db-init` — применить DDL и SQL-функции к пустой БД, когда `db` уже слушает `127.0.0.1:5432`.
+  4. Первичная загрузка данных с хоста, пока `bot`/`sync` ещё не подняты: `make season-load-full` — весь текущий сезон от даты старта (`SEASON_ID`) до сегодня (другие окна — `README.md`).
+  5. `docker compose up -d` — поднять `bot`, `sync`, `backup`; `backup` снимет первый дамп сразу при старте.
+
+  Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересоздаёт `bot`, `sync`, `backup` на новом образе (`restart: unless-stopped` их и так вернёт после падения, но не подхватит новый образ без `up -d`); `db` использует готовый `postgres:16.6-alpine`, не пересобирается.
+- **Бэкап (Задача 35).** Сервис `backup` в `docker-compose.yml` — тот же принцип, что `sync`: долгоживущий контейнер со своим циклом (не host cron), образ `postgres:16.6-alpine`, как у `db`, — версия `pg_dump` совпадает с версией сервера. Раз в сутки, первый дамп — сразу при старте: `pg_dump -h db -U postgres -Fc postgres` пишется во временный файл и переименовывается в `nhl_<UTC-метка>.dump` только после успешного завершения, чтобы оборванный дамп не выглядел свежим. При ошибке `pg_dump` контейнер падает (`set -e`) — `restart: unless-stopped` поднимает его заново, а падение видно в `docker compose ps` (`Exit`/`Restarting`) и `docker compose logs backup`. Хранит 14 последних дампов, более старые удаляются при следующем успешном прогоне. Каталог — bind mount `${BACKUP_DIR}:/backups` (переменная обязательна: без неё `docker compose config`/`up` падает с понятным сообщением); дампы вне дерева репозитория и вне тома `pgdata`, поэтому записи в `.gitignore`/`.dockerignore` не нужны.
+  - Проверить: `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"`.
+- **Восстановление (Задача 35).**
+  - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает):
+    ```
+    docker compose cp "$BACKUP_DIR/nhl_<метка>.dump" db:/tmp/check.dump
+    docker compose exec db createdb -U postgres nhl_check
+    docker compose exec db pg_restore -U postgres -d nhl_check /tmp/check.dump
+    docker compose exec db psql -U postgres -d nhl_check -c 'select count(*) from games;'  # сравнить с рабочей БД, повторить по нужным таблицам
+    docker compose exec db dropdb -U postgres nhl_check
+    docker compose exec db rm /tmp/check.dump
+    ```
+  - *Полное восстановление рабочей БД* (потеря/порча `pgdata`) — сначала остановить `bot` и `sync`, чтобы не писали поверх восстановления:
+    ```
+    docker compose stop bot sync
+    docker compose cp "$BACKUP_DIR/nhl_<метка>.dump" db:/tmp/restore.dump
+    docker compose exec db pg_restore -U postgres -d postgres --clean --if-exists /tmp/restore.dump
+    docker compose exec db rm /tmp/restore.dump
+    docker compose start bot sync
+    ```
+- **`trust` только на loopback (Задача 35).** `POSTGRES_HOST_AUTH_METHOD: trust` у `db` допустим, пока порт опубликован на `127.0.0.1:5432:5432`, а не `0.0.0.0`. Если площадка когда-нибудь потребует открыть порт наружу — `trust` меняется на пароль (`POSTGRES_PASSWORD` в compose) тем же коммитом, что и смена порта; `telegram_bot/database.py` и загрузчик сейчас подключаются без пароля (`config.PG_HOST/PG_PORT/PG_USER/PG_DATABASE`, см. `database.py:120-123`), так что переход на пароль потребует добавить и его чтение в код подключения — это уже отдельная задача, не только смена compose.
+- **Пересоздание `db`** при смене параметров контейнера (образ, переменные, healthcheck) не теряет данные — они на named volume `pgdata`, а не в самом контейнере. Перед командой убедиться в имени тома: `docker volume ls | grep nhl_bot_pgdata`, затем `docker compose up -d --force-recreate db` и перезапустить `bot` (пул соединений): `docker compose restart bot`.
 
 ## Тесты и качество
 

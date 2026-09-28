@@ -278,6 +278,11 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Тесты —
 `tests/test_scheduled_sync.py`.
 
+Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
+устроен и сервис `backup` (Задача 35): ежесуточный `pg_dump` тома `pgdata` на bind mount
+`${BACKUP_DIR}` с ротацией на 14 дампов — детали и процедура восстановления в
+`DEVELOPMENT.md` §Docker.
+
 ---
 
 ## Архитектура Telegram Bot

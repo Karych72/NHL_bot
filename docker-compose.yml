@@ -8,6 +8,9 @@ name: nhl_bot
 services:
   db:
     image: postgres:16.6-alpine
+    # Переживает перезагрузку хоста и падение процесса (Задача 35); данные не теряются —
+    # они на named volume pgdata, а не в самом контейнере.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
@@ -26,6 +29,7 @@ services:
 
   bot:
     build: .
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -41,6 +45,7 @@ services:
 
   sync:
     build: .
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -64,6 +69,47 @@ services:
       interval: 5m
       timeout: 30s
       start_period: 30m
+      retries: 3
+
+  backup:
+    # Compose-сервис вместо host cron (Задача 35, решение контроллера п.1) — тот же
+    # долгоживущий-контейнер-со-своим-циклом, что и sync. Образ — тот же postgres:16.6-alpine,
+    # что у db: версия pg_dump совпадает с версией сервера без обращения к хостовым утилитам.
+    image: postgres:16.6-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # BACKUP_DIR обязателен (см. .env.example) — bind mount вне тома pgdata и вне репозитория,
+    # compose падает с понятным сообщением, если переменная не задана.
+    volumes:
+      - ${BACKUP_DIR:?задайте BACKUP_DIR в .env — абсолютный путь на хосте вне репозитория и тома pgdata}:/backups
+    # Раз в сутки (86400с) снимает pg_dump в кастомном формате, первый дамп — сразу при
+    # старте. Пишет во временный файл и переименовывает после успешного завершения, чтобы
+    # оборванный дамп не выглядел свежим для восстановления или healthcheck. set -e: если
+    # pg_dump падает, падает и цикл (Global Constraint 4) — restart: unless-stopped поднимет
+    # контейнер заново, а падение видно в `docker compose ps` / логах. Ротация — 14 последних
+    # дампов (имена nhl_<UTC-метка>.dump сортируются как строки в хронологическом порядке).
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        while true; do
+          ts=$$(date -u +%Y%m%dT%H%M%SZ)
+          tmp="/backups/.nhl_$${ts}.dump.tmp"
+          out="/backups/nhl_$${ts}.dump"
+          pg_dump -h db -U postgres -Fc postgres > "$$tmp"
+          mv "$$tmp" "$$out"
+          ls -1 /backups/nhl_*.dump 2>/dev/null | sort -r | tail -n +15 | xargs -r rm -f
+          sleep 86400
+        done
+    # Здоров, если в каталоге есть дамп моложе 26 часов (как STALE_AFTER у sync).
+    healthcheck:
+      test: ["CMD-SHELL", "find /backups -maxdepth 1 -name 'nhl_*.dump' -mmin -1560 | grep -q ."]
+      interval: 30m
+      timeout: 10s
+      start_period: 5m
       retries: 3
 
 volumes:
