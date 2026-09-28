@@ -143,6 +143,11 @@ artifacts/
 
 - **Walk-forward folds** — `artifacts/models/<task>/<model>/<run_id>/fold_<k>/` (per-fold raw model, calibrator, metadata).
 - **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final` after final retrain before holdout).
+  For LGBM, `model_final` is retrained on `train_full` for a **fixed** number of
+  rounds — the `best_iteration` an honest inner-val grid search already picked —
+  with no early stopping and no validation set carved out of `train_full`.
+  Early stopping there would validate against `inner_val`, which is a subset of
+  `train_full` itself (Задача 40, `modeling/train_lgbm.py::train_lgbm_fixed_rounds`).
 - **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated only when run status is `ok`.
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
