@@ -22,6 +22,7 @@ PG_HOST=localhost
 PG_PORT=5432
 PG_USER=
 PG_DATABASE=postgres
+SEASON_ID=20262027
 DATE_FROM=2026-03-18
 DATE_TO=2026-03-18
 ```
@@ -48,8 +49,8 @@ This applies:
 
 ```bash
 make season-sync-month        # last ~30 days
-make season-load-full         # full current season from SEASON_START to today
-make season-sync DATE_FROM=2025-10-01 DATE_TO=2026-03-29  # explicit window
+make season-load-full         # full current season, from the derived season start (SEASON_ID) to today
+make season-sync DATE_FROM=2026-09-01 DATE_TO=2027-03-29  # explicit window
 ```
 
 Подробности — [`docs/data_loading.md`](docs/data_loading.md).
@@ -93,7 +94,9 @@ Bot run (with setup + env copy helper):
 make run-bot
 ```
 
-Load full season using modern NHL API (`SEASON_ID`, `DATE_FROM`, `DATE_TO` from `.env`):
+Load full season using modern NHL API (`SEASON_ID` from `.env`, required; the start date is
+derived from it, `DATE_TO` defaults to today — `.env`'s `DATE_FROM`/`DATE_TO`, if set, are
+cleared for this target, see `Makefile`):
 
 ```bash
 make season-load-full
@@ -111,7 +114,7 @@ for f in data_tables/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres
 for f in telegram_bot/queries/*.sql; do psql -h localhost -p 5432 -U postgres -d postgres -f "$f"; done
 
 cd pipeline && ../.venv/bin/python -u load_season_modern.py \
-    --date-from 2025-10-01 --date-to 2026-03-29 \
-    --season-id 20252026 --current-season "25/26"
+    --date-from 2026-09-01 --date-to 2027-03-29 \
+    --season-id 20262027
 cd ../telegram_bot && TELEGRAM_BOT_TOKEN=your_bot_token ../.venv/bin/python bot.py
 ```
