@@ -148,6 +148,12 @@ artifacts/
   with no early stopping and no validation set carved out of `train_full`.
   Early stopping there would validate against `inner_val`, which is a subset of
   `train_full` itself (Задача 40, `modeling/train_lgbm.py::train_lgbm_fixed_rounds`).
+  Before this fix, the final retrain *did* early-stop against `inner_val`, but since
+  `inner_val ⊂ train_full` early stopping never actually fired — every fold ran the
+  full 500-round cap regardless of what grid selection had picked, inflating raw
+  holdout log-loss for `home_win`/lgbm from 0.6926 (fixed-round retrain) to 0.7646.
+  The old 7-axis × 3-value grid (2187 points) that grid selection searched over also
+  took about 19 minutes per fold on this dataset; the 8-point grid in §2 replaces it.
 - **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated only when run status is `ok`.
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
@@ -273,9 +279,9 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
    `sum_goals_against_roll_mean_*` columns (`goal_diff_roll_mean` exists only
    at window 5 by design — `features.py::compute_team_rolling_features`).
 2. `configs/modeling_default.yaml` had `calibration.min_samples: 500` above
-   `split.calibration_games: 300`, so `fit_calibrator`
-   (`modeling/calibrate.py:196`) silently skipped calibration on every fold,
-   storing an identity calibrator. `min_samples` is now `300`.
+   `split.calibration_games: 300`, so `fit_calibrator` (`modeling/calibrate.py`)
+   silently skipped calibration on every fold, storing an identity calibrator.
+   `min_samples` is now `300`.
 
 `tests/test_modeling_config.py::TestLgbmMonotoneNamesMatchDataset` guards both
 against recurring: monotone keys are checked against columns the real
@@ -285,7 +291,8 @@ split.calibration_games` is asserted for both configs.
 **`calibration.method` defaults to `platt`, not `isotonic` (Задача 40, spike
 40a):** on the real `split.calibration_games: 300` block,
 `IsotonicRegression(out_of_bounds="clip")` puts the extreme bins at exact 0
-and 1, and `np.clip(..., 0, 1)` (`modeling/calibrate.py:139`) keeps them —
+and 1, and `np.clip(..., 0, 1)` inside `_apply_fitted_calibrator`
+(`modeling/calibrate.py`) keeps them —
 each such row costs ~34.5 nats of holdout log-loss. Measured on the real
 dataset: calibrated holdout log-loss for `home_win`/`logreg` was 0.887 with
 isotonic vs. 0.699 raw (worse than not calibrating at all), while Platt gave
@@ -336,16 +343,18 @@ and `trivial_ll` were checked against `metrics.json` and match to the printed pr
 
 **Вывод: запас маленький, в пределах шума.** Every ДИ above straddles (or, for
 `home_win`/lgbm, all but touches) zero — none of the four deltas is statistically
-significant at the block-by-day 95% level with 994 holdout games. `home_win` passes the
-gate for **both** model families (`+0.0018` logreg, `+0.0029` lgbm), by design: Platt
-calibration alone flips the earlier `failed_baseline_check` result (spike 40a,
-`docs/modeling_training.md` §7) into a pass, and the pass is honestly small — see spike
-40a's finding that 994-game block bootstrap CIs are roughly ±0.003–0.01 wide, so a
-"significant" pass on this holdout is not achievable even for a genuinely-better model
-(Elo's 3-prior-season track record in spike-findings.md is the example). **`over_5_5`
-does not pass for either model** — both are worse than trivial (`+0.0008` to `+0.0015` on
-log loss), matching spike 40a's finding that there is no usable signal for this target in
-box-score rolling features or in the Elo-like scoring rating tried there.
+significant at the block-by-day 95% level with 994 holdout games. Both `home_win` model
+families individually beat trivial (`+0.0018` logreg, `+0.0029` lgbm): Platt calibration
+alone flips the earlier `failed_baseline_check` result (spike 40a, `docs/modeling_training.md`
+§7) into a pass, and the pass is honestly small — see spike 40a's finding that 994-game
+block bootstrap CIs are roughly ±0.003–0.01 wide, so a "significant" pass on this holdout
+is not achievable even for a genuinely-better model (Elo's 3-prior-season track record —
+see `docs/modeling_dataset_builder.md`, «Elo team-strength feature» — is the example). The
+task itself passes on its winning family (see below), and here that happens to be true for
+both families at once, but the gate only ever checks the winning one. **`over_5_5` does not
+pass for either model** — both are worse than trivial (`+0.0008` to `+0.0015` on log loss),
+matching spike 40a's finding that there is no usable signal for this target in box-score
+rolling features or in the Elo-like scoring rating tried there.
 
 **Acceptance status is computed per *task*, not per model and not for the whole run**
 (`modeling/acceptance.py::pair_run_status` / `evaluate_baseline_gate`). For each enabled
@@ -362,8 +371,8 @@ decides the task). The **whole-run** status
 (`apply_acceptance_to_training_outcomes` → `run_status`, and the CLI's exit code) is `ok`
 only if *every* enabled task passes; here it is `failed_baseline_check` because
 `over_5_5` fails, even though `home_win` is `ok`. `update_latest_symlink` is skipped
-per-pair when that pair's own `status != ok` (`train_runner.py:585`), so `latest` was
-**not** written for either `over_5_5` pair.
+per-pair when that pair's own `status != ok`, so `latest` was **not** written for either
+`over_5_5` pair.
 
 `latest` after this run (`artifacts/models/<task>/<model>/latest`, all git-ignored):
 

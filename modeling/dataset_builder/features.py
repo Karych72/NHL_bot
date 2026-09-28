@@ -170,7 +170,9 @@ def build_match_feature_snapshots(
     return out
 
 
-# Задача 40 (Task 3, spike-findings.md §3): tuned pre-game team-strength Elo.
+# Задача 40 (Task 3; tuning and evidence documented in
+# docs/modeling_dataset_builder.md, "Elo team-strength feature"): tuned
+# pre-game team-strength Elo.
 # K sizes each update; HFA is added to the home side before win-expectancy;
 # SEASON_REGRESSION shrinks every team 1/3 toward the field mean at a
 # season_id change (Elo persists across seasons, unlike the features above);

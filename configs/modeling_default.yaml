@@ -37,9 +37,10 @@ models:
   logreg:
     grids:
       C: [0.01, 0.1, 1.0, 10.0]
-  # Задача 40 (spike-findings.md §5): the previous 7-axis x 3 grid was 2187
-  # points, ~19 min/fold (~1.9 h/task) on 6049 rows -- a path to overfitting a
-  # 300-row inner_val, not a search a 4755-row train_full supports. Cut to
+  # Задача 40 (see docs/modeling_training.md §4, "Production bundle" for the
+  # runtime finding): the previous 7-axis x 3 grid was 2187 points, ~19
+  # min/fold (~1.9 h/task) on 6049 rows -- a path to overfitting a 300-row
+  # inner_val, not a search a 4755-row train_full supports. Cut to
   # num_leaves x min_data_in_leaf x learning_rate = 2x2x2 = 8 points, the rest
   # fixed at one conservative value each (small trees, floor on leaf size).
   lgbm:

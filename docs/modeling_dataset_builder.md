@@ -101,7 +101,8 @@ first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08
 
 ## Elo team-strength feature
 
-Added Задача 40 (Task 3; tuned on the diagnostics in `spike-findings.md` §3, 40a spike).
+Added Задача 40 (Task 3; tuned via a read-only diagnostic spike, 40a, before any code
+was written — see the tuning and evidence notes below).
 Unlike every other feature above, Elo is **cross-team and cross-season**: it is a single
 `{team_id: rating}` state that a full pass over the played-game history mutates game by game
 in `(day, game_id)` order (`features.py::compute_pregame_elo`, attached to every target game by
@@ -121,12 +122,28 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
   - at a `season_id` change: every rating shrinks 1/3 toward the field mean
     (`R ← mean + (1 - 1/3)·(R - mean)`) instead of resetting — Elo is meant to persist
     across seasons, unlike the rolling/as-of features above.
+- **Tuning:** grid search over `K ∈ {4, 6, 8, 10, 12, 16}`, `HFA ∈ {0, 20, 35, 50}`, season
+  regression `∈ {0, 1/4, 1/3, 1/2}`, MOV on/off, and OT/SO-win weight `∈ {1, 0.75}`, scored by
+  raw-Elo log-loss on games from 2022-10-01 up to (not including) the 2025-11-20 holdout
+  start — i.e. only pre-holdout games; the holdout itself was never touched during tuning.
+  The chosen point (`K=8, HFA=35`, season regression `1/3`, MOV on, OT/SO wins scored as full
+  wins) was not a sharp optimum: the top 8 settings in that search were all within 0.0004
+  log-loss of each other.
+- **Evidence it carries signal:** per-season raw-Elo log-loss vs. that season's prior-rate
+  constant — 2022-23: 0.6612 vs 0.6924 (Δ −0.0312), 2023-24: 0.6611 vs 0.6900 (Δ −0.0289),
+  2024-25: 0.6670 vs 0.6870 (Δ −0.0200). Elo beats the constant by 0.020–0.031 log-loss in
+  every one of the three seasons before 2025-26. In 2025-26 itself the gap nearly closes
+  (0.6897 vs 0.6929, Δ −0.0032): that season's home-win rate (0.522) sits well off the
+  training-era rate (0.541) and the season plays unusually close to a coin flip, so most of
+  Elo's usual edge over a constant disappears there — a property of that season, not of the
+  feature.
 - **Columns:** `home_elo`, `away_elo` (raw ratings, no HFA baked in) and `diff_elo =
   home_elo - away_elo`, produced by the same `assemble.py::_wide_feature_columns` convention as
   every other `diff_*`/`sum_*` pair, except `sum_elo` is intentionally not produced (it is
-  ≈2×the post-regression mean rating and carries no team-strength signal) —
-  `_wide_feature_columns` special-cases `elo` the same way it already special-cases
-  `goals_target`.
+  ≈2×the post-regression mean rating and carries no team-strength signal). This is a lighter
+  special case than `goals_target`'s: `goals_target` is skipped before any `diff_`/`sum_`
+  column is built for it, while `elo` still gets its `diff_elo` — only the `sum_elo` step is
+  skipped.
 - **As-of / no leakage:** a game's `home_elo`/`away_elo` are the ratings held strictly *before*
   that game — recorded before the update, mirroring `_snapshot_side`'s backward as-of join.
   Games sharing a calendar day never see each other's result: ratings are frozen at the start
@@ -277,8 +294,8 @@ Implemented tests:
   (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to
   valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
 - `TestPregameElo` (Задача 40, Task 3): `test_hand_computed_pregame_ratings` (3-game
-  mini example, expected ratings computed independently from the spike-findings.md §3
-  formula), `test_asof_future_result_does_not_change_earlier_rating`,
+  mini example, expected ratings computed independently from the formula in "Elo
+  team-strength feature" above), `test_asof_future_result_does_not_change_earlier_rating`,
   `test_same_day_games_do_not_see_each_others_result` (intra-day policy),
   `test_season_boundary_regresses_toward_mean`,
   `test_predict_mode_uses_rating_after_last_played_game_no_extra_regression`,

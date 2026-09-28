@@ -343,8 +343,9 @@ class TestFinalRetrainFixedRounds(unittest.TestCase):
     """Задача 40 Task 2: the final LGBM retrain on ``train_full`` must not
     early-stop against ``inner_val`` (``inner_val ⊂ train_full``) and must
     instead run exactly the ``best_iteration`` inner-val selection already
-    chose honestly (spike-findings.md §5: pre-fix this always hit the
-    500-round cap, e.g. holdout log loss 0.6926 -> 0.7646)."""
+    chose honestly (see docs/modeling_training.md §4, "Production bundle":
+    pre-fix this always hit the 500-round cap, e.g. holdout log loss
+    0.6926 -> 0.7646)."""
 
     def test_final_booster_runs_exactly_selected_best_iteration(self) -> None:
         # Noisy (not perfectly separable) synthetic data so grid selection's

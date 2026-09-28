@@ -479,8 +479,9 @@ class TestPregameElo(unittest.TestCase):
     """Задача 40 (Task 3): ``compute_pregame_elo``/``attach_pregame_elo``.
 
     Expected ratings below are computed independently from the formula in
-    spike-findings.md §3 (K=8, HFA=35, reg=1/3, MOV on, ot_s=1), not by
-    calling the function under test, then rounded to 6 decimal places.
+    docs/modeling_dataset_builder.md, "Elo team-strength feature" (K=8,
+    HFA=35, reg=1/3, MOV on, ot_s=1), not by calling the function under
+    test, then rounded to 6 decimal places.
     """
 
     def _three_game_history(self) -> pd.DataFrame:
