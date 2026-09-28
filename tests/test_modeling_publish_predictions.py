@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from modeling.dataset_builder.base import _load_train_metadata
 from modeling.publish_predictions import publish_predictions
+from tests.test_modeling_predict_runner import (
+    FEATURE_SET_VERSION,
+    MANIFEST,
+    _features_hash,
+    _write_latest_model as _write_real_latest_model,
+)
 
 RUN_ID = "home_win_lgbm_deadbeef_20260101T000000Z"
 DELETE = "DELETE FROM game_predictions WHERE task = %s"
@@ -103,6 +110,7 @@ class TestPublishPredictions(unittest.TestCase):
             inserted = self._publish(tmp, conn)
         self.assertEqual(inserted, 0)
         self.assertEqual(conn.log, [("execute", DELETE, ("home_win",))])
+        self.assertEqual(conn.outcome, "commit")
 
     def test_ok_replaces_task_rows_in_one_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -139,6 +147,18 @@ class TestPublishPredictions(unittest.TestCase):
                     artifacts_root=tmp / "artifacts",
                 )
         self.assertEqual(conn.log, [])
+
+
+class TestLatestMetadataIsValidTrainMetadata(unittest.TestCase):
+    def test_latest_metadata_loads_as_build_dataset_train_metadata(self) -> None:
+        """Makefile передаёт latest/metadata.json как --train-metadata-path build-dataset."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            artifacts_root = Path(tmp_str) / "artifacts"
+            _write_real_latest_model(artifacts_root, model_family="logreg")
+            loaded = _load_train_metadata(artifacts_root / "models" / "home_win" / "logreg" / "latest" / "metadata.json")
+        self.assertEqual(loaded["feature_manifest"], MANIFEST)
+        self.assertEqual(loaded["features_hash"], _features_hash("drop"))
+        self.assertEqual(loaded["feature_set_version"], FEATURE_SET_VERSION)
 
 
 if __name__ == "__main__":
