@@ -408,7 +408,8 @@ def test_main_raises_and_never_polls_when_token_missing(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "missing_var", ["TELEGRAM_BOT_TOKEN", "PG_HOST", "PG_PORT", "PG_USER", "PG_DATABASE"]
+    "missing_var",
+    ["TELEGRAM_BOT_TOKEN", "PG_HOST", "PG_PORT", "PG_USER", "PG_DATABASE", "SEASON_ID"],
 )
 def test_validate_env_raises_on_missing_variable(
     bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env, missing_var: str
@@ -458,20 +459,52 @@ def test_validate_env_passes_when_all_required_variables_are_set(
 
 
 # ---------------------------------------------------------------------------
-# config._env_int / config._env_float на кривом значении
+# config._season_id_from_env / config._env_float на кривом значении
 # ---------------------------------------------------------------------------
 
-def test_env_int_raises_on_garbage_value_without_leaking_it(
+def test_season_id_from_env_raises_on_garbage_value_without_leaking_it(
     bot_module, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = bot_module("config")
     monkeypatch.setenv("SEASON_ID", "not-a-number")
 
     with pytest.raises(ValueError) as exc_info:
-        config._env_int("SEASON_ID", 20252026)
+        config._season_id_from_env()
 
     assert "SEASON_ID" in str(exc_info.value)
     assert "not-a-number" not in str(exc_info.value)
+
+
+def test_season_id_from_env_returns_none_when_unset(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отсутствие `SEASON_ID` не должно валить импорт `config.py` (тесты/CI
+    импортируют его без `.env`) — падать обязаны только явные точки входа."""
+    config = bot_module("config")
+    monkeypatch.delenv("SEASON_ID", raising=False)
+
+    assert config._season_id_from_env() is None
+
+
+# ---------------------------------------------------------------------------
+# config.derive_season() — единственный источник CURRENT_SEASON / DATE_FROM
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "season_id,expected_label,expected_date_from",
+    [
+        (20262027, "26/27", "2026-09-01"),
+        (20252026, "25/26", "2025-09-01"),
+        (20242025, "24/25", "2024-09-01"),
+        (20212022, "21/22", "2021-09-01"),
+    ],
+)
+def test_derive_season(
+    bot_module, season_id: int, expected_label: str, expected_date_from: str
+) -> None:
+    config = bot_module("config")
+
+    assert config.derive_season(season_id) == (expected_label, expected_date_from)
 
 
 def test_env_float_raises_on_garbage_value_without_leaking_it(

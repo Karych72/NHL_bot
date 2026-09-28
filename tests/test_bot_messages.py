@@ -638,9 +638,12 @@ def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     assert "1. BOS — 55 (игр: 40, 25-10-5, 55 очк.)" in text
 
 
-def test_team_stat_leaderboard_page_null_record_fields_render_dash(bot_module):
+def test_team_stat_leaderboard_page_null_record_fields_render_dash(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
     """Хвост обязан переживать NULL (Задача 18: «не заполнены везде»)."""
     bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "team": ["BOS"], "points": [None], "games_played": [40],
         "wins": [None], "losses": [None], "ot": [None], "record_points": [None],
@@ -668,10 +671,13 @@ def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
     assert "1. McDavid [C] — 153 (EDM, игр: 82, смен: 1800)" in text
 
 
-def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(bot_module):
+def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
     """Реальный сценарий из БД (Задача 18): shifts NULL в 7 строках на 2
     сезона — рендер обязан отдать «—», а не «None» и не упасть."""
     bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "lastname": ["Rookie"], "roster_position": ["C"],
         "points": [10], "team": ["CHI"],
@@ -813,11 +819,14 @@ def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
     ) in text
 
 
-def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(bot_module):
+def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
     """goalies_season_stats.time_on_ice/time_on_ice_per_game — 0 NULL в живой
     БД (проверено координатором), но рендер всё равно не должен полагаться
     на это и обязан пережить NULL в любом поле хвоста."""
     bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "lastname": ["Backup"], "roster_position": ["G"],
         "points": [0.0], "team": ["CHI"],
