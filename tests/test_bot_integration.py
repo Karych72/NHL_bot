@@ -434,10 +434,10 @@ _CONFERENCE_ROWS = [
     ("Western", 16, 2.98, 19.9, 80.25, 50.1),
 ]
 
-# division_name, conference_name, team_count, avg_goals_per_game,
+# conference_name, division_name, team_count, avg_goals_per_game,
 # avg_power_play_percentage, avg_penalty_kill_percentage, avg_points
 _DIVISION_ROWS = [
-    ("Metropolitan", "Eastern", 8, 3.0, 20.0, 80.0, 52.5),
+    ("Eastern", "Metropolitan", 8, 3.0, 20.0, 80.0, 52.5),
 ]
 
 

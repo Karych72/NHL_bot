@@ -1209,19 +1209,41 @@ def team_table() -> str:
     return output_text('messages/league_table.txt', to_template)
 
 
-def conference_summary() -> str:
-    """Сводка по конференциям сезона `config.SEASON_ID`: число команд и средние
-    командные метрики (`teams_stats` ⋈ `teams` по `(team_id, season_id)`) —
-    голы за игру, % большинства/меньшинства, очки на команду. Только то, что
-    уже лежит в `teams_stats` — без вычисляемых «рейтингов».
+# GROUP BY для сводок по конференциям/дивизионам (Задача 41, Фаза B) — ровно
+# два статических варианта, не пользовательский ввод: `_team_group_summary()`
+# принимает только эти литералы, третьего варианта нет и не планируется (YAGNI).
+_CONFERENCE_GROUP_BY = "t.conference_name"
+_DIVISION_GROUP_BY = "t.conference_name, t.division_name"
 
-    Не дублирует турнирную таблицу `/table` (`team_table()`): там строка на
-    каждую команду, здесь — усреднение по конференции. Пустой сезон — текст с
-    причиной, а не пустая таблица (Задача 36).
+_GROUP_BY_COLUMNS = {
+    _CONFERENCE_GROUP_BY: ["conference_name"],
+    _DIVISION_GROUP_BY: ["conference_name", "division_name"],
+}
+
+
+def _team_group_summary(group_by: str, heading: str, template_file: str) -> str:
+    """Общий скелет сводки по конференциям/дивизионам сезона `config.SEASON_ID`:
+    число команд и средние командные метрики (`teams_stats` ⋈ `teams` по
+    `(team_id, season_id)`) — голы за игру, % большинства/меньшинства, очки на
+    команду. Только то, что уже лежит в `teams_stats` — без вычисляемых
+    «рейтингов». Не дублирует турнирную таблицу `/table` (`team_table()`): там
+    строка на каждую команду, здесь — усреднение по группе. Пустой сезон —
+    текст с причиной, а не пустая таблица (Задача 36).
+
+    Args:
+        group_by: `_CONFERENCE_GROUP_BY` или `_DIVISION_GROUP_BY` — единственные
+            допустимые значения (ключ `_GROUP_BY_COLUMNS`), подставляются в
+            `GROUP BY`/`ORDER BY` как есть, т.к. это фиксированные литералы
+            модуля, а не значения от пользователя.
+        heading: заголовок сообщения («Сводка по конференциям»/«...дивизионам»).
+        template_file: путь к Jinja2-шаблону строк (`row.conference_name` и,
+            для дивизионов, ещё `row.division_name` — остальные поля общие).
     """
+    group_columns = _GROUP_BY_COLUMNS[group_by]
     season_esc = html.escape(str(config.CURRENT_SEASON))
+    select_group = ", ".join(f"t.{col}" for col in group_columns)
     stats = cached_fetch_all(
-        "SELECT t.conference_name, COUNT(*) AS team_count, "
+        f"SELECT {select_group}, COUNT(*) AS team_count, "
         "AVG(ts.goals_per_game) AS avg_goals_per_game, "
         "AVG(ts.power_play_percentage) AS avg_power_play_percentage, "
         "AVG(ts.penalty_kill_percentage) AS avg_penalty_kill_percentage, "
@@ -1229,80 +1251,48 @@ def conference_summary() -> str:
         "FROM teams_stats ts "
         "JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
-        "GROUP BY t.conference_name "
-        "ORDER BY t.conference_name",
+        f"GROUP BY {group_by} "
+        f"ORDER BY {group_by}",
         (config.SEASON_ID,),
-        columns=[
-            "conference_name", "team_count", "avg_goals_per_game",
-            "avg_power_play_percentage", "avg_penalty_kill_percentage", "avg_points",
+        columns=group_columns + [
+            "team_count", "avg_goals_per_game", "avg_power_play_percentage",
+            "avg_penalty_kill_percentage", "avg_points",
         ],
     )
     if stats["count_rows"] == 0:
         return (
-            f"<b>Сводка по конференциям</b> ({season_esc})\n"
+            f"<b>{heading}</b> ({season_esc})\n"
             "В базе нет командной статистики для этого сезона."
         )
-    rows = [
-        {
-            "name": html.escape((stats["conference_name"][i] or "—").strip()),
-            "team_count": _format_leader_value(stats["team_count"][i]),
-            "goals_per_game": _fmt_num_max2(stats["avg_goals_per_game"][i]),
-            "power_play_percentage": _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
-            "penalty_kill_percentage": _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
-            "avg_points": _fmt_num_max2(stats["avg_points"][i]),
+    rows = []
+    for i in range(stats["count_rows"]):
+        row = {
+            col: html.escape((stats[col][i] or "—").strip()) for col in group_columns
         }
-        for i in range(stats["count_rows"])
-    ]
-    return output_text(
-        "messages/conference_stats.txt", {"season": season_esc, "rows": rows}
+        row["team_count"] = _format_leader_value(stats["team_count"][i])
+        row["goals_per_game"] = _fmt_num_max2(stats["avg_goals_per_game"][i])
+        row["power_play_percentage"] = _fmt_pct_stat(stats["avg_power_play_percentage"][i])
+        row["penalty_kill_percentage"] = _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i])
+        row["avg_points"] = _fmt_num_max2(stats["avg_points"][i])
+        rows.append(row)
+    return output_text(template_file, {"season": season_esc, "rows": rows})
+
+
+def conference_summary() -> str:
+    """Сводка по конференциям — тонкая обёртка над `_team_group_summary()`
+    с группировкой по конференции; см. докстринг `_team_group_summary()`."""
+    return _team_group_summary(
+        _CONFERENCE_GROUP_BY, "Сводка по конференциям", "messages/conference_stats.txt"
     )
 
 
 def division_summary() -> str:
-    """Сводка по дивизионам — как `conference_summary()`, но `GROUP BY
-    t.division_name` (заодно `t.conference_name` — один дивизион лежит в одной
-    конференции, но `GROUP BY` не знает об этом без явного столбца в списке).
-
-    Не дублирует деление на дивизионы в турнирной таблице `/table`: там
-    строка на команду внутри дивизиона, здесь — средние метрики дивизиона.
-    """
-    season_esc = html.escape(str(config.CURRENT_SEASON))
-    stats = cached_fetch_all(
-        "SELECT t.division_name, t.conference_name, COUNT(*) AS team_count, "
-        "AVG(ts.goals_per_game) AS avg_goals_per_game, "
-        "AVG(ts.power_play_percentage) AS avg_power_play_percentage, "
-        "AVG(ts.penalty_kill_percentage) AS avg_penalty_kill_percentage, "
-        "AVG(ts.points) AS avg_points "
-        "FROM teams_stats ts "
-        "JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
-        "GROUP BY t.conference_name, t.division_name "
-        "ORDER BY t.conference_name, t.division_name",
-        (config.SEASON_ID,),
-        columns=[
-            "division_name", "conference_name", "team_count", "avg_goals_per_game",
-            "avg_power_play_percentage", "avg_penalty_kill_percentage", "avg_points",
-        ],
-    )
-    if stats["count_rows"] == 0:
-        return (
-            f"<b>Сводка по дивизионам</b> ({season_esc})\n"
-            "В базе нет командной статистики для этого сезона."
-        )
-    rows = [
-        {
-            "name": html.escape((stats["division_name"][i] or "—").strip()),
-            "conference": html.escape((stats["conference_name"][i] or "—").strip()),
-            "team_count": _format_leader_value(stats["team_count"][i]),
-            "goals_per_game": _fmt_num_max2(stats["avg_goals_per_game"][i]),
-            "power_play_percentage": _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
-            "penalty_kill_percentage": _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
-            "avg_points": _fmt_num_max2(stats["avg_points"][i]),
-        }
-        for i in range(stats["count_rows"])
-    ]
-    return output_text(
-        "messages/division_stats.txt", {"season": season_esc, "rows": rows}
+    """Сводка по дивизионам — тонкая обёртка над `_team_group_summary()` с
+    группировкой по конференции+дивизиону (дивизион однозначно лежит в одной
+    конференции, но `GROUP BY` требует явного столбца); см. докстринг
+    `_team_group_summary()`."""
+    return _team_group_summary(
+        _DIVISION_GROUP_BY, "Сводка по дивизионам", "messages/division_stats.txt"
     )
 
 
