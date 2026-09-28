@@ -626,9 +626,30 @@ def _team_record_line(
     return f"{rec}, {_format_leader_value(points)} очков ({ppct})"
 
 
-def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
+def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
+    """Строка модельной оценки победы хозяев для превью или None, если её нет.
+
+    Читает `game_predictions` (Задача 22B) по точному `game_id`; строки там есть
+    только у пары, прошедшей гейт качества, поэтому статус модели бот не проверяет.
+    Запрос без кэша: публикация может удалить строку после провала гейта.
+    """
+    row = fetch_all(
+        "SELECT probability FROM game_predictions WHERE game_id = %s AND task = 'home_win'",
+        (game_id,),
+        columns=["probability"],
+    )
+    if row["count_rows"] == 0:
+        return None
+    pct = round(float(row["probability"][0]) * 100)
+    return f"🤖 Модельная оценка (не совет): победа {esc_home} — {pct}%"
+
+
+def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
     """
     Сезонное сравнение по teams.abbreviation (= abbrev из NHL API).
+
+    `game_id` — игра из расписания: по нему в конец превью добавляется строка
+    модельной оценки (если она опубликована).
 
     Разметка HTML (parse_mode=HTML): блок метрик в &lt;pre&gt; — моноширинный шрифт,
     иначе в обычном тексте Telegram пробелы не выравнивают колонки.
@@ -784,6 +805,11 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> str:
                 parts.append("")
                 parts.append("<b>Личные встречи в сезоне (победы)</b>")
                 parts.append(h2h)
+
+    prediction = _model_prediction_line(game_id, esc_h)
+    if prediction:
+        parts.append("")
+        parts.append(prediction)
 
     return "\n".join(parts)
 

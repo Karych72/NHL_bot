@@ -736,7 +736,7 @@ async def callback_tonight_game(update: Update, context: CallbackContext) -> Non
     # Проза без счётных элементов — сноска без чисел, но текст берётся из
     # того же единственного хелпера (truncate_telegram_text по умолчанию),
     # а не из литерала, продублированного здесь и в bot.py.
-    text = truncate_telegram_text(matchup_season_preview(away_a, home_a))
+    text = truncate_telegram_text(matchup_season_preview(game_id, away_a, home_a))
     await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 

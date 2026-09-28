@@ -425,6 +425,21 @@ async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_
 
 
 @pytest.mark.asyncio
+async def test_tonight_game_in_db_does_not_query_predictions(bot_module, make_callback_update, fake_context):
+    """Сыгранный матч идёт по пути карточки: превью и game_predictions не трогаются."""
+    stats_handlers = bot_module("stats_handlers")
+    bot_messages = bot_module("bot_messages")
+    update = make_callback_update("tn:555:DET:NYR")
+
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "send_game_card_message"), \
+            patch.object(bot_messages, "fetch_all") as mock_fetch:
+        await stats_handlers.callback_tonight_game(update, fake_context)
+
+    mock_fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(bot_module, make_callback_update, fake_context):
     stats_handlers = bot_module("stats_handlers")
     update = make_callback_update("tn:555:DET:NYR")
@@ -434,7 +449,7 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(bot_mod
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await stats_handlers.callback_tonight_game(update, fake_context)
 
-    mock_preview.assert_called_once_with("DET", "NYR")
+    mock_preview.assert_called_once_with(555, "DET", "NYR")
     assert fake_context.bot.sent_messages[0]["text"] == "PREVIEW"
     assert fake_context.bot.sent_messages[0]["parse_mode"] == "HTML"
 

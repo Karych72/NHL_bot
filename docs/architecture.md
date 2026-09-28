@@ -649,6 +649,8 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 Поток: `scheduled_games` → `build-dataset --mode predict` → `predict` (CSV) →
 `publish-predictions` → `game_predictions` → бот (читает только PG; `make modeling-publish`).
+Бот читает `home_win` в превью `/tonight` (`matchup_season_preview`, запрос без кэша по `game_id`
+кнопки) и добавляет строку «Модельная оценка»; нет строки — нет и строки в превью.
 Строки задачи целиком заменяются при каждой публикации; при непройденном гейте
 (нет `latest` / `status != ok`) строки задачи удаляются. FK на `games` нет — игра ещё не сыграна.
 
