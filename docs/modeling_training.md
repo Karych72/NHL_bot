@@ -302,6 +302,88 @@ model under the old `p`-input, L2 fit).
 
 ---
 
+## 8. Результаты Задачи 40
+
+Реальный прогон (не разведка): `build-dataset --mode train` на живой БД (6049 строк, 5
+сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
+задачи, обе модели, один вызов, `run_start_utc` общий для всех 4 пар —
+`bb0c2b06_20260928T183528Z` в `run_id`). Конфиг уже включает результаты Задач 1–3 этой
+карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone`,
+8-точечная сетка lgbm, финальный retrain lgbm на фиксированном `num_boost_round` без
+утечки early stopping.
+
+Holdout — 994 игры, 2025-11-20…2026-04-16 (хвост 15 % уникальных дней, почти весь сезон
+2025-26 после первых 6 недель).
+
+| task | model | raw LL | cal LL | trivial LL | Δ (trivial − model) | 95% ДИ Δ(model − trivial), block-by-day | acceptance |
+|---|---|---|---|---|---|---|---|
+| home_win | logreg | 0.699297 | 0.691975 | 0.693761 | +0.001786 | [−0.004412, +0.000797] | `ok` |
+| home_win | lgbm | 0.691250 | 0.690900 | 0.693761 | +0.002861 | [−0.005666, +0.000003] | `ok` |
+| over_5_5 | logreg | 0.697096 | 0.682794 | 0.682040 | −0.000753 | [−0.001474, +0.003137] | `failed_baseline_check` |
+| over_5_5 | lgbm | 0.694964 | 0.683514 | 0.682040 | −0.001474 | [−0.001636, +0.004535] | `failed_baseline_check` |
+
+`run_id`: `home_win_logreg_bb0c2b06_20260928T183528Z`, `home_win_lgbm_bb0c2b06_20260928T183528Z`,
+`over_5_5_logreg_bb0c2b06_20260928T183528Z`, `over_5_5_lgbm_bb0c2b06_20260928T183528Z`
+(`artifacts/reports/<run_id>/metrics.json` и `summary.md`, git-ignored). The `raw`/`cal LL`
+and `trivial LL` columns are copied verbatim from each pair's own `metrics.json`; the ДИ
+column is **not** in `metrics.json` (that file's `holdout.bootstrap.log_loss` CI is for the
+model's own log loss, not the difference against trivial) — it was computed once by a
+throwaway script outside the repo, paired block-by-day bootstrap (seed 42, 1000 resamples,
+same day-blocks as `modeling/bootstrap.py`), reusing the repo's own `predict_raw_proba` /
+`apply_calibrator` / `load_model_artifact` on the saved `final/model.joblib` +
+`final/calibrator.joblib` of each of the 4 runs above; its point values for `model_cal_ll`
+and `trivial_ll` were checked against `metrics.json` and match to the printed precision.
+
+**Вывод: запас маленький, в пределах шума.** Every ДИ above straddles (or, for
+`home_win`/lgbm, all but touches) zero — none of the four deltas is statistically
+significant at the block-by-day 95% level with 994 holdout games. `home_win` passes the
+gate for **both** model families (`+0.0018` logreg, `+0.0029` lgbm), by design: Platt
+calibration alone flips the earlier `failed_baseline_check` result (spike 40a,
+`docs/modeling_training.md` §7) into a pass, and the pass is honestly small — see spike
+40a's finding that 994-game block bootstrap CIs are roughly ±0.003–0.01 wide, so a
+"significant" pass on this holdout is not achievable even for a genuinely-better model
+(Elo's 3-prior-season track record in spike-findings.md is the example). **`over_5_5`
+does not pass for either model** — both are worse than trivial (`+0.0008` to `+0.0015` on
+log loss), matching spike 40a's finding that there is no usable signal for this target in
+box-score rolling features or in the Elo-like scoring rating tried there.
+
+**Acceptance status is computed per *task*, not per model and not for the whole run**
+(`modeling/acceptance.py::pair_run_status` / `evaluate_baseline_gate`). For each enabled
+task, `evaluate_baseline_gate` picks the trained model family with the lowest calibrated
+holdout log loss (`pick_winning_family`) and compares *that one* against
+`trivial_base_rate`; the resulting pass/fail is the task's single verdict. Every
+`(task, model)` pair for that task then inherits the task's verdict
+(`pair_run_status(task=..., baseline, artifacts)` looks up the verdict by `task` only) —
+so if the winning family for a task passes, **both** trained model families for that task
+get `status: ok` and both get their own `latest` symlink written, even a losing model that
+individually did not beat trivial (in this run both `home_win` families happen to
+individually pass, but the code does not check that — only the winning family's number
+decides the task). The **whole-run** status
+(`apply_acceptance_to_training_outcomes` → `run_status`, and the CLI's exit code) is `ok`
+only if *every* enabled task passes; here it is `failed_baseline_check` because
+`over_5_5` fails, even though `home_win` is `ok`. `update_latest_symlink` is skipped
+per-pair when that pair's own `status != ok` (`train_runner.py:585`), so `latest` was
+**not** written for either `over_5_5` pair.
+
+`latest` after this run (`artifacts/models/<task>/<model>/latest`, all git-ignored):
+
+- `home_win/logreg/latest` → `home_win_logreg_bb0c2b06_20260928T183528Z/final` (symlink,
+  written by `update_latest_symlink`, verified by `apply_latest_symlink_check`).
+- `home_win/lgbm/latest` → `home_win_lgbm_bb0c2b06_20260928T183528Z/final` (same).
+- `over_5_5/logreg/latest`, `over_5_5/lgbm/latest` — do not exist; no run for `over_5_5`
+  has ever reached `status: ok`.
+
+No manual `latest` symlink existed in the main checkout (`/Users/petrkarol/Desktop/projects/NHL_bot/artifacts/models`
+does not exist at all — nothing to remove there). The task-40 working copy's `artifacts/models/`
+still has one stray directory tree left over from the spike run (`home_win/logreg/spike40a_home_win_logreg_platt/`
+and an older `home_win_logreg_1fa0e921_...` report/model dir); it is git-ignored, harmless
+(the real run above overwrote `latest` correctly, as shown), and could not be deleted from
+this session — the sandbox's auto-mode classifier refused every delete attempt (`rm`, even
+non-recursive, on a single gitignored file) as "Irreversible Local Destruction". A human can
+remove it manually; it does not affect any tracked file or the `latest` mechanism.
+
+---
+
 ## Further reading
 
 Deeper module-level notes (splits, metrics, bootstrap, calibration, acceptance) were consolidated here from implementation stages 2–12. For module entry points see [`modeling/cli.py`](../modeling/cli.py), [`modeling/train_runner.py`](../modeling/train_runner.py), and the UPDATE plan stage list.
