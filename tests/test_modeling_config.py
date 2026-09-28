@@ -13,6 +13,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
 import yaml
 
 from modeling.config import (
@@ -25,6 +26,8 @@ from modeling.config import (
     parse_override,
     resolve_config,
 )
+from modeling.dataset_builder.assemble import _wide_feature_columns
+from modeling.dataset_builder.features import build_match_feature_snapshots, compute_team_rolling_features
 from modeling.dataset_builder.schema import features_hash
 
 
@@ -396,6 +399,111 @@ class TestCliLazyImports(unittest.TestCase):
                 self.assertFalse(
                     node.module.startswith("modeling.dataset_builder"),
                     msg="dataset_builder import must not be at module level in cli.py",
+                )
+
+
+# Mirrors the production dataset builder default (modeling/dataset_builder/base.py:
+# rolling_windows=(5, 10, 20)); a tuple, not a list, so it is safe as a default value.
+_PRODUCTION_ROLLING_WINDOWS: tuple[int, ...] = (5, 10, 20)
+
+
+def _dataset_feature_columns(rolling_windows: tuple[int, ...] = _PRODUCTION_ROLLING_WINDOWS) -> set[str]:
+    """Real ``diff_``/``sum_`` column names the training pipeline produces.
+
+    Runs a tiny synthetic history through the actual
+    ``modeling.dataset_builder.features``/``assemble`` code (not a hand-written
+    name list) so a config referencing a column that pipeline never builds is
+    caught the same way ``build_monotone_constraints`` would catch it at
+    train time.
+    """
+    day0 = pd.Timestamp("2024-10-01")
+    rows = []
+    for i in range(max(rolling_windows) + 5):
+        for team_id in (10, 20):
+            rows.append(
+                {
+                    "team_id": team_id,
+                    "season_id": 20242025,
+                    "day": day0 + pd.Timedelta(days=i),
+                    "game_id": i * 2 + (0 if team_id == 10 else 1),
+                    "goals_for": 3,
+                    "goals_against": 2,
+                    "shots_for": 30,
+                    "shots_against": 28,
+                    "pim_for": 6,
+                    "pim_against": 8,
+                    "power_play_percentage_for": 20.0,
+                    "power_play_percentage_against": 15.0,
+                }
+            )
+    team_facts = pd.DataFrame(rows)
+    team_features = compute_team_rolling_features(team_facts, rolling_windows)
+    target_games = pd.DataFrame(
+        [
+            {
+                "game_id": 999_999,
+                "day": day0 + pd.Timedelta(days=max(rolling_windows) + 5),
+                "season_id": 20242025,
+                "home_team_id": 10,
+                "away_team_id": 20,
+            }
+        ]
+    )
+    snapshots = build_match_feature_snapshots(target_games, team_features)
+    _, built_columns = _wide_feature_columns(snapshots)
+    return {c for c in built_columns if c.startswith("diff_") or c.startswith("sum_")}
+
+
+_TRAINING_CONFIG_PATHS = (
+    Path(__file__).resolve().parents[1] / "configs" / "modeling_default.yaml",
+    Path(__file__).resolve().parents[1] / "configs" / "modeling_smoke.yaml",
+)
+
+
+class TestLgbmMonotoneNamesMatchDataset(unittest.TestCase):
+    """Задача 39: ``models.lgbm.monotone`` keys must be real dataset columns.
+
+    Before Задача 39 both ``configs/modeling_*.yaml`` referenced
+    ``diff_gf_roll_mean_*``/``diff_ga_roll_mean_*``/``sum_gf_roll_mean_*``/
+    ``sum_ga_roll_mean_*`` and ``diff_goal_diff_roll_mean_{10,20}`` — none of
+    which the dataset builder ever produces — so
+    ``modeling.train_common.build_monotone_constraints`` raised
+    ``ConfigError`` at train time and lgbm never trained under the shipped
+    config. This guards against the same drift recurring.
+    """
+
+    def test_monotone_keys_are_real_feature_columns(self) -> None:
+        dataset_columns = _dataset_feature_columns()
+        for cfg_path in _TRAINING_CONFIG_PATHS:
+            with self.subTest(config=cfg_path.name):
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+                monotone = raw["models"]["lgbm"]["monotone"]
+                for task, mapping in monotone.items():
+                    unknown = sorted(set(mapping) - dataset_columns)
+                    self.assertEqual(
+                        unknown,
+                        [],
+                        msg=(
+                            f"{cfg_path.name}: models.lgbm.monotone.{task} references "
+                            f"non-existent dataset columns: {unknown}"
+                        ),
+                    )
+
+    def test_calibration_min_samples_within_calibration_games(self) -> None:
+        for cfg_path in _TRAINING_CONFIG_PATHS:
+            with self.subTest(config=cfg_path.name):
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+                min_samples = raw["calibration"]["min_samples"]
+                calibration_games = raw["split"]["calibration_games"]
+                self.assertLessEqual(
+                    min_samples,
+                    calibration_games,
+                    msg=(
+                        f"{cfg_path.name}: calibration.min_samples ({min_samples}) must not "
+                        f"exceed split.calibration_games ({calibration_games}), or "
+                        "fit_calibrator silently skips calibration on every fold "
+                        "(modeling/calibrate.py:196)"
+                    ),
                 )
 
 
