@@ -1143,10 +1143,17 @@ def _build_standings_table_body(
         chunks.append(title_fmt(title))
         for div in div_order:
             label = _STANDINGS_DIV_LABEL.get(div, div.upper())
-            hdr = f"{'Команда':<{name_w}} {'Очк':>3} {'Игр':>3} {'%очк':>6}"
-            block_lines = [hdr, "-" * len(hdr)]
-            for t in sorted(by_division.get(div) or [], key=_standings_sort_key):
-                block_lines.append(row_fmt(t))
+            div_teams = sorted(by_division.get(div) or [], key=_standings_sort_key)
+            if div_teams:
+                hdr = f"{'Команда':<{name_w}} {'Очк':>3} {'Игр':>3} {'%очк':>6}"
+                block_lines = [hdr, "-" * len(hdr)]
+                for t in div_teams:
+                    block_lines.append(row_fmt(t))
+            else:
+                # Дивизион без единой сыгранной игры (частичный сезон,
+                # Задача 36) — текст-причина вместо заголовков пустой
+                # таблицы, тем же стилем, что и заглушка Wild Card ниже.
+                block_lines = ["    (в дивизионе ещё никто не сыграл)"]
             chunks.append(title_fmt(label))
             chunks.append(block_fmt(block_lines))
         chunks.append(title_fmt(wc_title))

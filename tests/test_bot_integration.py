@@ -112,16 +112,17 @@ _LEADERS = [
 ]
 
 
-def _leaders_page(params):
-    """Ответ на запрос страницы лидеров: срез по LIMIT/OFFSET плюс COUNT(*) OVER ()."""
-    _season_id, limit, offset = params
-    return [
-        (lastname, position, value, team, games, shifts, len(_LEADERS))
-        for lastname, position, value, team, games, shifts in _LEADERS[offset:offset + limit]
-    ]
+def _leaderboard_page_route(rows):
+    """Маршрут `COUNT(*) OVER () AS total`: срез `rows` по LIMIT/OFFSET плюс
+    размер выборки — параметризован по списку строк (не копировать под каждый сценарий)."""
+    def page(params):
+        _season_id, limit, offset = params
+        return [(*row, len(rows)) for row in rows[offset:offset + limit]]
+
+    return page
 
 
-_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaders_page)]
+_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route(_LEADERS))]
 
 
 @pytest.mark.asyncio
@@ -274,28 +275,40 @@ _FORM_BY_TEAM = {
 }
 
 
-def _form_rows(params):
-    _season_id, team_id, _same_team_id, _limit = params
-    return _FORM_BY_TEAM[team_id]
-
-
-def _by_game(key):
-    """Маршрут, отвечающий данными того матча, чей game_id пришёл в параметрах."""
+def _form_route(form_by_team):
+    """Маршрут «форма команды» (`ORDER BY day DESC NULLS LAST`) по `team_id`
+    из параметров — параметризован по словарю формы (не копировать под
+    каждый сценарий)."""
     def rows(params):
-        return _GAMES[params[0]][key]
+        _season_id, team_id, _same_team_id, _limit = params
+        return form_by_team[team_id]
 
     return rows
 
 
-_GAME_CARD_ROUTES = [
-    ("SELECT 1 AS o FROM games", [(1,)]),
-    ("SELECT * FROM get_game_stats", _by_game("stats")),
-    ("SELECT home_team_id, away_team_id FROM games", _by_game("teams")),
-    ("SELECT * FROM get_goals_game", _by_game("goals")),
-    ("SELECT * FROM get_goalies_game", _by_game("goalies")),
-    ("SELECT * FROM get_three_stars_game", _by_game("three_stars")),
-    ("ORDER BY day DESC NULLS LAST", _form_rows),
-]
+def _game_card_routes(games_by_id, form_by_team):
+    """Семь общих маршрутов карточки матча (`/game`, дайджест дня) по словарю
+    игр `games_by_id` (`game_id` → ответы формы `_GAMES`) и форме
+    `form_by_team` — общий строитель для любого сценария (не копировать
+    построчно под каждый)."""
+    def by_game(key):
+        def rows(params):
+            return games_by_id[params[0]][key]
+
+        return rows
+
+    return [
+        ("SELECT 1 AS o FROM games", [(1,)]),
+        ("SELECT * FROM get_game_stats", by_game("stats")),
+        ("SELECT home_team_id, away_team_id FROM games", by_game("teams")),
+        ("SELECT * FROM get_goals_game", by_game("goals")),
+        ("SELECT * FROM get_goalies_game", by_game("goalies")),
+        ("SELECT * FROM get_three_stars_game", by_game("three_stars")),
+        ("ORDER BY day DESC NULLS LAST", _form_route(form_by_team)),
+    ]
+
+
+_GAME_CARD_ROUTES = _game_card_routes(_GAMES, _FORM_BY_TEAM)
 
 _DIGEST_ROUTES = [
     ("SELECT max(day) AS day FROM games", [("2026-04-01",)]),
@@ -571,10 +584,12 @@ async def test_table_command_on_partial_season_shows_only_teams_with_games(
     text = reply["text"]
     assert "Сезон ещё не начался" not in text
     assert "Rangers          4   2 100.00" in text
-    # Разделы западной конференции остаются на месте (нет исключения), но без
-    # единой строки команды — там ещё никто не сыграл.
+    # Разделы западной конференции остаются на месте (нет исключения), но
+    # каждый дивизион без единой сыгранной игры несёт текст-причину, а не
+    # заголовки пустой таблицы.
     assert "<b>WESTERN CONFERENCE</b>" in text
     assert "<b>CENTRAL DIVISION</b>" in text
+    assert "(в дивизионе ещё никто не сыграл)" in text
     assert "Avalanche" not in text and "Kings" not in text
 
 
@@ -588,16 +603,7 @@ _PARTIAL_LEADERS = [
 ]
 
 
-def _partial_leaders_page(params):
-    _season_id, limit, offset = params
-    return [
-        (lastname, position, value, team, games, shifts, len(_PARTIAL_LEADERS))
-        for lastname, position, value, team, games, shifts
-        in _PARTIAL_LEADERS[offset:offset + limit]
-    ]
-
-
-_PARTIAL_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _partial_leaders_page)]
+_PARTIAL_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route(_PARTIAL_LEADERS))]
 
 
 @pytest.mark.asyncio
@@ -651,10 +657,10 @@ async def test_advanced_pick_on_partial_season_reports_no_data_below_games_thres
     assert "Нет данных в этом диапазоне." in edited["text"]
 
 
-# Игры сезона: NYR обыгрывает BOS 2026-10-01, затем TOR — 2026-10-03 (первая
-# игра сезона у TOR). /day_games и /game без аргумента дня показывают только
-# последний день — вторую игру.
-PARTIAL_GAME_A = 2026020101  # NYR (away) 4 : 1 BOS (home) — 2026-10-01, не в дайджесте по умолчанию
+# Игры сезона: NYR обыгрывает BOS 2026-10-01 (в фикстуре не нужна отдельно —
+# участвует только как первая игра NYR в её форме, `_PARTIAL_FORM_BY_TEAM`),
+# затем TOR — 2026-10-03 (первая игра сезона у TOR). /day_games и /game без
+# аргумента дня показывают только последний день — вторую игру.
 PARTIAL_GAME_B = 2026020102  # TOR (home) 1 : 3 NYR (away) — 2026-10-03
 
 _PARTIAL_GAME_B_DATA = {
@@ -689,20 +695,9 @@ _PARTIAL_FORM_BY_TEAM = {
 }
 
 
-def _partial_form_rows(params):
-    _season_id, team_id, _same_team_id, _limit = params
-    return _PARTIAL_FORM_BY_TEAM[team_id]
-
-
-_PARTIAL_GAME_CARD_ROUTES = [
-    ("SELECT 1 AS o FROM games", [(1,)]),
-    ("SELECT * FROM get_game_stats", lambda params: _PARTIAL_GAME_B_DATA["stats"]),
-    ("SELECT home_team_id, away_team_id FROM games", lambda params: _PARTIAL_GAME_B_DATA["teams"]),
-    ("SELECT * FROM get_goals_game", lambda params: _PARTIAL_GAME_B_DATA["goals"]),
-    ("SELECT * FROM get_goalies_game", lambda params: _PARTIAL_GAME_B_DATA["goalies"]),
-    ("SELECT * FROM get_three_stars_game", lambda params: _PARTIAL_GAME_B_DATA["three_stars"]),
-    ("ORDER BY day DESC NULLS LAST", _partial_form_rows),
-]
+_PARTIAL_GAME_CARD_ROUTES = _game_card_routes(
+    {PARTIAL_GAME_B: _PARTIAL_GAME_B_DATA}, _PARTIAL_FORM_BY_TEAM
+)
 
 _PARTIAL_DIGEST_ROUTES = [
     ("SELECT max(day) AS day FROM games", [("2026-10-03",)]),
