@@ -26,16 +26,35 @@
   4. Первичная загрузка данных с хоста, пока `bot`/`sync` ещё не подняты: `make season-load-full` — весь текущий сезон от даты старта (`SEASON_ID`) до сегодня (другие окна — `README.md`).
   5. `docker compose up -d` — поднять `bot`, `sync`, `backup`; `backup` снимет первый дамп сразу при старте.
 
-  Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересоздаёт `bot`, `sync`, `backup` на новом образе (`restart: unless-stopped` их и так вернёт после падения, но не подхватит новый образ без `up -d`); `db` использует готовый `postgres:16.6-alpine`, не пересобирается.
+  Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересобирает и пересоздаёт `bot` и `sync` (единственные сервисы, у которых `build: .`; `restart: unless-stopped` вернёт их после падения, но не подхватит новый образ без `up -d`). `db` и `backup` используют готовый образ `postgres:16.6-alpine` — `docker compose build` их не трогает.
 - **Бэкап (Задача 35).** Сервис `backup` в `docker-compose.yml` — тот же принцип, что `sync`: долгоживущий контейнер со своим циклом (не host cron), образ `postgres:16.6-alpine`, как у `db`, — версия `pg_dump` совпадает с версией сервера. Раз в сутки, первый дамп — сразу при старте: `pg_dump -h db -U postgres -Fc postgres` пишется во временный файл и переименовывается в `nhl_<UTC-метка>.dump` только после успешного завершения, чтобы оборванный дамп не выглядел свежим. При ошибке `pg_dump` контейнер падает (`set -e`) — `restart: unless-stopped` поднимает его заново, а падение видно в `docker compose ps` (`Exit`/`Restarting`) и `docker compose logs backup`. Хранит 14 последних дампов, более старые удаляются при следующем успешном прогоне. Каталог — bind mount `${BACKUP_DIR}:/backups` (переменная обязательна: без неё `docker compose config`/`up` падает с понятным сообщением); дампы вне дерева репозитория и вне тома `pgdata`, поэтому записи в `.gitignore`/`.dockerignore` не нужны.
-  - Проверить: `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"`.
-- **Восстановление (Задача 35).**
-  - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает):
+  - Проверить: `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"` — `.env` не экспортируется в интерактивный shell, поэтому сначала `BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)`.
+- **Восстановление (Задача 35).** `.env` не экспортируется в интерактивный shell (его читают только compose и `make`), поэтому перед любой командой ниже, где встречается `$BACKUP_DIR` или `$COUNT_QUERY`, выполнить в шелле хоста:
+    ```
+    BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)
+    COUNT_QUERY="select 'games', count(*) from games
+    union all select 'teams', count(*) from teams
+    union all select 'rosters', count(*) from rosters
+    union all select 'all_goals', count(*) from all_goals
+    union all select 'game_team_stats', count(*) from game_team_stats
+    union all select 'game_player_stats', count(*) from game_player_stats
+    union all select 'game_goalie_stats', count(*) from game_goalie_stats
+    union all select 'game_three_stars', count(*) from game_three_stars
+    union all select 'teams_stats', count(*) from teams_stats
+    union all select 'players_season_stats', count(*) from players_season_stats
+    union all select 'goalies_season_stats', count(*) from goalies_season_stats
+    union all select 'players_advanced_stats', count(*) from players_advanced_stats
+    union all select 'players_shot_types', count(*) from players_shot_types
+    order by 1;"
+    ```
+    (список таблиц — по файлам `data_tables/t.*.sql`; `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что подстановка без раскрытия `~` работает как есть.)
+  - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает; точное сравнение числа строк по всем таблицам, а не оценка `pg_stat_user_tables`):
     ```
     docker compose cp "$BACKUP_DIR/nhl_<метка>.dump" db:/tmp/check.dump
     docker compose exec db createdb -U postgres nhl_check
     docker compose exec db pg_restore -U postgres -d nhl_check /tmp/check.dump
-    docker compose exec db psql -U postgres -d nhl_check -c 'select count(*) from games;'  # сравнить с рабочей БД, повторить по нужным таблицам
+    docker compose exec db psql -U postgres -d postgres -c "$COUNT_QUERY"    # источник
+    docker compose exec db psql -U postgres -d nhl_check -c "$COUNT_QUERY"   # восстановленная — сравнить построчно с источником
     docker compose exec db dropdb -U postgres nhl_check
     docker compose exec db rm /tmp/check.dump
     ```
