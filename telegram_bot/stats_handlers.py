@@ -276,27 +276,13 @@ def _make_team_group_summary_handler(summary_func):
     return handler
 
 
-def team_profile_pick_keyboard(abbrevs: List[str]) -> InlineKeyboardMarkup:
-    """Клавиатура выбора команды для профиля (Задача 41, Фаза D): сетка
-    кнопок аббревиатур сезона, каждая несёт `tp:<ABBR>` (разбирает
-    `bot_team_profile_show`) — тот же принцип, что у команды в
-    `matchup_season_preview` (Фаза C): `team_id` резолвится по аббревиатуре
-    из кнопки, а не из текста пользователя. Футер — «« Назад»» на подменю
-    команд (`TEAM_STATS`).
-    """
-    buttons = [
-        InlineKeyboardButton(ab, callback_data=f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
-        for ab in abbrevs
-    ]
-    rows = build_menu(buttons, n_cols=4, footer_buttons=[_stats_menu_nav_row(TEAM_STATS)])
-    return InlineKeyboardMarkup(rows)
-
-
 async def bot_team_profile_pick(update: Update, context: CallbackContext) -> int:
     """Кнопка «Профиль команды» подменю команд: список аббревиатур сезона
-    для выбора (Задача 41, Фаза D). Тот же хендлер перерисовывает экран,
-    когда «« Назад»» с профиля возвращает сюда (`TEAM_PROFILE_PICK`
-    зарегистрирован и в FIRST, и в SECOND — см. `bot.py`).
+    для выбора (Задача 41, Фаза D) — сетка кнопок `tp:<ABBR>` (разбирает
+    `bot_team_profile_show`), футер «« Назад»» на подменю команд (`TEAM_STATS`).
+    Тот же хендлер перерисовывает экран, когда «« Назад»» с профиля
+    возвращает сюда (`TEAM_PROFILE_PICK` зарегистрирован и в FIRST, и в
+    SECOND — см. `bot.py`).
 
     Пустой сезон (Задача 36): нет команд в базе — текст с причиной вместо
     клавиатуры без кнопок.
@@ -305,9 +291,13 @@ async def bot_team_profile_pick(update: Update, context: CallbackContext) -> int
     assert query is not None
     await query.answer()
     abbrevs = season_team_abbrevs()
-    markup = team_profile_pick_keyboard(abbrevs)
+    buttons = [
+        InlineKeyboardButton(ab, callback_data=f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
+        for ab in abbrevs
+    ]
+    rows = build_menu(buttons, n_cols=4, footer_buttons=[_stats_menu_nav_row(TEAM_STATS)])
     text = "Выберите команду:" if abbrevs else "В базе нет команд для этого сезона."
-    await query.edit_message_text(text=text, reply_markup=markup)
+    await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(rows))
     return SECOND
 
 

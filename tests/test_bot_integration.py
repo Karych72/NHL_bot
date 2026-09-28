@@ -522,12 +522,14 @@ async def test_team_submenu_conference_button_reports_empty_season_without_trace
 _SEASON_ABBREVS = [("WSH",), ("WPG",)]
 
 # lastname, position, points, goals — LEFT JOIN на players_season_stats, у
-# вратаря (Samsonov) очков/голов в этой таблице нет (NULL).
+# вратаря (Samsonov) очков/голов в этой таблице нет (NULL). position —
+# однобуквенный NHL API positionCode (C/L/R/D/G), как реально пишет загрузчик
+# (pipeline/load_season_modern.py), не "LW"/"RW".
 _ROSTER_ROWS = [
-    ("Ovechkin", "LW", 42, 38),
+    ("Ovechkin", "L", 42, 38),
     ("Backstrom", "C", 30, 10),
     ("Carlson", "D", 25, 5),
-    ("Wilson", "LW", 20, 12),
+    ("Wilson", "L", 20, 12),
     ("Samsonov", "G", None, None),
 ]
 
@@ -605,11 +607,13 @@ async def test_team_profile_abbreviation_button_shows_positions_and_top_scorers(
     assert "<b>WSH</b> — профиль команды" in text
     assert "Сезон: 10-5-2, 22 очков (64.71%)" in text
     # Агрегат по позиции: 2 левых крайних (Овечкин+Уилсон) — очки/голы суммированы.
-    assert "<b>LW</b> — игроков: 2, очков: 62, голов: 50" in text
+    assert "<b>L</b> — игроков: 2, очков: 62, голов: 50" in text
     # Вратарь без строки в players_season_stats (NULL) не ломает агрегат позиции G.
     assert "<b>G</b> — игроков: 1, очков: 0, голов: 0" in text
+    # Порядок звена (C, L, R, D, G), не алфавитный (иначе D/G оказались бы перед L).
+    assert text.index("<b>C</b>") < text.index("<b>L</b>") < text.index("<b>D</b>") < text.index("<b>G</b>")
     # Топ-3 бомбардира по очкам, вратарь и Уилсон (20 очков) в топ-3 не попадают.
-    assert "1. Ovechkin [LW] — 42 очк. (38 гол.)" in text
+    assert "1. Ovechkin [L] — 42 очк. (38 гол.)" in text
     assert "2. Backstrom [C] — 30 очк. (10 гол.)" in text
     assert "3. Carlson [D] — 25 очк. (5 гол.)" in text
     assert "Wilson" not in text

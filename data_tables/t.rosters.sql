@@ -18,8 +18,11 @@ CREATE TABLE rosters(
     FOREIGN KEY (current_team_id, season_id) REFERENCES teams (team_id, season_id)
 );
 
--- Индекс на season_id не добавлен: единственный фактический паттерн запроса к rosters —
--- JOIN по (player_id, season_id) вместе (telegram_bot/bot_messages.py:602-603,
--- telegram_bot/queries/get_goals_game.sql:36-41, get_goalies_game.sql:16-17) — его уже
--- обслуживает PRIMARY KEY (player_id, season_id). Отдельного WHERE season_id = %s
--- по rosters в коде нет.
+-- Индекс на season_id не добавлен: основной паттерн запроса к rosters — JOIN по
+-- (player_id, season_id) вместе (telegram_bot/bot_messages.py, telegram_bot/queries/
+-- get_goals_game.sql, get_goalies_game.sql) — его уже обслуживает
+-- PRIMARY KEY (player_id, season_id). WHERE (current_team_id, season_id) = (%s, %s)
+-- без player_id тоже есть (team_profile(), Задача 41, Фаза D) — отдельного индекса под
+-- него не заводили: ростер команды на сезон — не больше ~30 строк, полный скан таблицы
+-- rosters (несколько сезонов × 32 команды) на этот объём укладывается в доли миллисекунды
+-- без индекса (Global Constraint 8 — масштабировать под фактический объём, не гипотетический).
