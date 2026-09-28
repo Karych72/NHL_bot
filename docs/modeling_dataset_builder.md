@@ -103,10 +103,11 @@ first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08
 
 Added Задача 40 (Task 3; tuned on the diagnostics in `spike-findings.md` §3, 40a spike).
 Unlike every other feature above, Elo is **cross-team and cross-season**: it is a single
-`{team_id: rating}` state that a full pass over `games`+`game_team_stats` (`base.py::
-load_elo_history_games`, unfiltered by `--season-ids`/`--target-day-from`) mutates game by
-game in `(day, game_id)` order, computed by `features.py::compute_pregame_elo` and attached to
-every target game by `features.py::attach_pregame_elo`.
+`{team_id: rating}` state that a full pass over the played-game history mutates game by game
+in `(day, game_id)` order (`features.py::compute_pregame_elo`, attached to every target game by
+`features.py::attach_pregame_elo`). `base.py` gets that history by calling `load_target_games`
+itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-duplicate query)
+— unfiltered by `--season-ids`/`--target-day-from`.
 
 - **Formula** (tuned constants are module-level constants in `features.py`, not config —
   `ELO_START`, `ELO_K`, `ELO_HFA`, `ELO_SEASON_REGRESSION`, `ELO_MOV_BASE`, `ELO_MOV_HFA_WEIGHT`):

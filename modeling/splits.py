@@ -8,16 +8,12 @@ information leak across block boundaries. See
 
 Block-order validation (``_assert_strictly_before``) compares **positions** in
 the sorted timeline, not calendar days, so a day with several games may
-legitimately straddle a block boundary. Most features are scoped to
-``(team_id, season_id)`` with ``shift(1)``/backward as-of and never look
-across teams (Задача 32, ``modeling/dataset_builder/features.py``), which
-makes a same-day boundary trivially safe for them. Elo (Задача 40, Task 3)
-is the one cross-team, cross-season feature, so it is safe for a different
-reason: ``compute_pregame_elo`` freezes every team's rating at the *start* of
-each calendar day and scores every game that day off that same frozen
-snapshot, so no game can see another game's result from the same day
-regardless of which side of a block boundary either lands on. See that
-function's docstring for the exact condition.
+legitimately straddle a block boundary. This is safe because every feature is
+either scoped to ``(team_id, season_id)`` and never looks across teams
+(Задача 32, ``modeling/dataset_builder/features.py``), or — Elo, the one
+exception (Задача 40, Task 3, ``features.py::compute_pregame_elo``) — is
+frozen per calendar day, so it never sees a same-day game's result either.
+See that function's docstring for the exact condition.
 
 Index convention
 ----------------
@@ -557,22 +553,16 @@ def _assert_strictly_before(
     check rejected that and could not build a split on any calendar with
     more than one game per day (Задача 32).
 
-    Most rolling/as-of features are computed within ``(team_id, season_id)``
-    with ``shift(1)`` / ``direction="backward"`` and never look across teams
-    (``modeling/dataset_builder/features.py``): two games on the same day are
-    four different teams with disjoint histories, so their landing in
-    adjacent blocks discloses nothing for those features.
-
-    Elo (Задача 40, Task 3, ``features.py::compute_pregame_elo``) is a
-    cross-team, cross-season feature and is the one that could break this
-    argument — but it is still safe, by construction rather than by scope:
-    ratings are frozen at the *start* of each calendar day and every game
-    that day is scored off that same snapshot, so a game landing in one
-    block never reflects a same-day game's result even when that other game
-    lands in a different (adjacent) block. Any *future* cross-team/league-wide
-    feature must make the same "no same-day feedback" guarantee, or a
-    same-day gap between blocks can leak information and this check stops
-    being sufficient on its own.
+    Most rolling/as-of features are safe here because they are scoped to
+    ``(team_id, season_id)`` and never look across teams
+    (``modeling/dataset_builder/features.py``): two games on the same day
+    are four different teams with disjoint histories. Elo (Задача 40, Task 3,
+    ``features.py::compute_pregame_elo``) is the one exception — cross-team
+    and cross-season — but is safe for a different reason: it freezes every
+    rating at the start of each calendar day, so no game sees a same-day
+    game's result regardless of block. A *future* cross-team/league-wide
+    feature must make the same guarantee, or this check stops being
+    sufficient on its own.
 
     Parameters
     ----------

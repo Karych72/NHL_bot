@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -138,50 +138,6 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
           {_season_where_clause(config)}
           {max_day_clause}
         ORDER BY g.day, g.game_id, s.team_id
-    """
-    return pd.read_sql_query(query, conn)
-
-
-def load_elo_history_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
-    """All played games (result + goals), for the pre-game Elo pass.
-
-    Задача 40 (Task 3): unlike ``load_history_team_stats`` (rolling features,
-    scoped to ``config.season_ids`` because rolling resets every season), Elo
-    persists across seasons with a regression to the mean at each season
-    change — computing it correctly needs the *complete* play history no
-    matter which seasons the caller selected for the output dataset, so this
-    query does not apply ``_season_where_clause``/``target_day_from`` at all.
-    It only honors an explicit ``target_day_to`` ceiling (a historical "as of"
-    snapshot must not see games after it) — the same asymmetry
-    ``load_history_team_stats``'s ``max_day_clause`` already applies.
-    """
-    max_day_clause = ""
-    if config.target_day_to:
-        max_day_clause = f" AND g.day <= '{config.target_day_to}'"
-    query = f"""
-        SELECT
-            g.game_id::bigint AS game_id,
-            g.day::date AS day,
-            g.season_id::bigint AS season_id,
-            g.home_team_id::bigint AS home_team_id,
-            g.away_team_id::bigint AS away_team_id,
-            g.winner_id::bigint AS winner_id,
-            hs.goals::double precision AS home_goals,
-            aws.goals::double precision AS away_goals
-        FROM games g
-        LEFT JOIN game_team_stats hs
-            ON hs.game_id = g.game_id
-           AND hs.team_id::bigint = g.home_team_id::bigint
-        LEFT JOIN game_team_stats aws
-            ON aws.game_id = g.game_id
-           AND aws.team_id::bigint = g.away_team_id::bigint
-        WHERE g.winner_id IS NOT NULL
-          AND g.day IS NOT NULL
-          AND g.home_team_id IS NOT NULL
-          AND g.away_team_id IS NOT NULL
-          AND g.home_team_id <> g.away_team_id
-          {max_day_clause}
-        ORDER BY g.day, g.game_id
     """
     return pd.read_sql_query(query, conn)
 
@@ -345,7 +301,14 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
-        elo_history = load_elo_history_games(conn, config)
+        # Elo (Task 3) persists across seasons, so it needs the *complete* played
+        # history regardless of config.season_ids/target_day_from — reuse
+        # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
+        # rather than a near-duplicate query; only target_day_to still bounds it,
+        # for a historical "as of" snapshot.
+        elo_history = load_target_games(
+            conn, replace(config, mode="train", season_ids=[], target_day_from=None)
+        ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
 
     team_facts, team_facts_report = build_team_game_facts(history)
     rolling = compute_team_rolling_features(team_facts, config.rolling_windows)
