@@ -47,6 +47,8 @@ from dialog_states import (
     PLAYER_STATS,
     PLAYER_USAT_PCT,
     PLAYER_OZ_START_PCT,
+    TEAM_CONFERENCE_STATS,
+    TEAM_DIVISION_STATS,
     TEAM_POWER_KILL,
     TEAM_POWER_PLAY,
     TEAM_PROCENT_WINS,
@@ -135,10 +137,12 @@ async def stats_over(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_team_stats(update: Update, context: CallbackContext) -> int:
-    """Подменю статистики команд: % набранных очков, большинство, меньшинство.
+    """Подменю статистики команд: % набранных очков, большинство, меньшинство,
+    сводки по конференциям/дивизионам.
 
     Кнопки несут состояния FSM (TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
-    TEAM_POWER_KILL), «« Назад»» ведёт в корень меню (CHOOSE_STATS).
+    TEAM_POWER_KILL/TEAM_CONFERENCE_STATS/TEAM_DIVISION_STATS), «« Назад»»
+    ведёт в корень меню (CHOOSE_STATS).
     """
     query = update.callback_query
     assert query is not None
@@ -147,6 +151,8 @@ async def bot_team_stats(update: Update, context: CallbackContext) -> int:
         InlineKeyboardButton("Статистика процент набранных очков", callback_data=str(TEAM_PROCENT_WINS)),
         InlineKeyboardButton("Статистика большинства", callback_data=str(TEAM_POWER_PLAY)),
         InlineKeyboardButton("Статистика меньшинства", callback_data=str(TEAM_POWER_KILL)),
+        InlineKeyboardButton("По конференциям", callback_data=str(TEAM_CONFERENCE_STATS)),
+        InlineKeyboardButton("По дивизионам", callback_data=str(TEAM_DIVISION_STATS)),
     ]
     footer = [[InlineKeyboardButton("« Назад", callback_data=str(CHOOSE_STATS))]]
     reply_markup = InlineKeyboardMarkup(

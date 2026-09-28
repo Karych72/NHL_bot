@@ -655,6 +655,49 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     assert "None" not in text
 
 
+# ---------------------------------------------------------------------------
+# conference_summary() / division_summary() — Задача 41, Фаза B
+#
+# Обе функции — тонкие обёртки над общим _team_group_summary(); полный
+# рендер (сортировка полей, конкретные числа, кнопка «« Назад»») уже
+# проверяется сквозным сценарием в test_bot_integration.py для каждой из
+# двух веток. Здесь — то, что уникально для unit-уровня и не покрыто
+# сценарием: экранирование HTML (общий код, проверяется один раз — второй
+# вызов через division_summary() исполнил бы тот же самый код) и пустой сезон.
+# ---------------------------------------------------------------------------
+
+def test_conference_summary_reports_when_season_has_no_rows(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    empty = {"count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
+        text = bot_messages.conference_summary()
+    assert "В базе нет командной статистики для этого сезона." in text
+    assert "(25/26)" in text
+
+
+def test_conference_summary_escapes_html_in_group_name(
+    bot_module, monkeypatch: pytest.MonkeyPatch
+):
+    bot_messages = bot_module("bot_messages")
+    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    rows = {
+        "conference_name": ["<i>Western"],
+        "team_count": [16],
+        "avg_goals_per_game": [3.0],
+        "avg_power_play_percentage": [20.0],
+        "avg_penalty_kill_percentage": [80.0],
+        "avg_points": [50.0],
+        "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text = bot_messages.conference_summary()
+    assert "<b>&lt;i&gt;Western</b>" in text
+    assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
+
+
 def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
     """(B) Лидерборд полевых игроков (players_season_stats): игр/смен."""
     bot_messages = bot_module("bot_messages")

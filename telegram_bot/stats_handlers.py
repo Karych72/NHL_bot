@@ -20,9 +20,11 @@ from telegram.ext import CallbackContext
 
 from bot_messages import (
     LEADERBOARD_PAGE_SIZE,
+    conference_summary,
     day_digest,
     day_digest_summary_body,
     digest_shown_match_count,
+    division_summary,
     game_exists,
     game_message,
     matchup_season_preview,
@@ -241,6 +243,31 @@ def _make_paginated_team_stat_open_handler(column: str):
     return handler
 
 
+def _make_team_group_summary_handler(summary_func):
+    """Фабрика для сводок по конференциям/дивизионам (Задача 41, Фаза B) —
+    без пагинации (2/4 строки, отдельная страница не нужна), поэтому проще
+    `_make_paginated_team_stat_open_handler`: одно сообщение, «« Назад»» на
+    `TEAM_STATS` (`_stats_menu_nav_row`), как у соседних командных экранов
+    (TEAM_PROCENT_WINS/TEAM_POWER_PLAY/TEAM_POWER_KILL).
+
+    Args:
+        summary_func: `conference_summary`/`division_summary` — без аргументов,
+            сезон берут из `config` сами.
+    """
+
+    async def handler(update: Update, context: CallbackContext) -> int:
+        query = update.callback_query
+        assert query is not None
+        await query.answer()
+        markup = InlineKeyboardMarkup([_stats_menu_nav_row(TEAM_STATS)])
+        await query.edit_message_text(
+            text=summary_func(), parse_mode="HTML", reply_markup=markup
+        )
+        return SECOND
+
+    return handler
+
+
 async def callback_stats_player_page(update: Update, context: CallbackContext) -> int:
     """Листает страницу статистики игрока/вратаря по callback_data
     `st:<table>:<column>:<offset>`, перерисовывая сообщение на месте.
@@ -441,6 +468,9 @@ bot_goalie_shootouts = _make_paginated_player_stat_open_handler(
 bot_team_procent_wins = _make_paginated_team_stat_open_handler("procent_points")
 bot_team_power_play = _make_paginated_team_stat_open_handler("power_play_percentage")
 bot_team_power_kill = _make_paginated_team_stat_open_handler("penalty_kill_percentage")
+bot_team_conference_stats = _make_team_group_summary_handler(conference_summary)
+bot_team_division_stats = _make_team_group_summary_handler(division_summary)
+
 
 # --- Shot type leaders (players_shot_types) ---
 

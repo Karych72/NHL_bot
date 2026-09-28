@@ -56,6 +56,11 @@
 
 ## 4. Фаза B — Конференции и дивизионы
 
+**Статус: реализовано** (Задача 41B, 2026-09-28, ветка `sdd-task-41-team-screens`) —
+`conference_summary()`/`division_summary()` в `bot_messages.py`, шаблоны
+`conference_stats.txt`/`division_stats.txt`, кнопки «По конференциям»/«По дивизионам» в
+подменю команд, состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`.
+
 | Шаг | Задача | Детали |
 |-----|--------|--------|
 | B.1 | SQL-представления или запросы | Запросы с `GROUP BY t.conference_name` / `t.division_name`: средние `goals_per_game`, суммарные очки (или средние очки на команду), количество команд. Источник: `teams_stats` ⋈ `teams` на `team_id`, `season_id`. |

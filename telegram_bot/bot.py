@@ -83,6 +83,8 @@ from dialog_states import (
     PLAYER_USAT_PCT,
     PLAYER_OZ_START_PCT,
     SECOND,
+    TEAM_CONFERENCE_STATS,
+    TEAM_DIVISION_STATS,
     TEAM_POWER_KILL,
     TEAM_POWER_PLAY,
     TEAM_PROCENT_WINS,
@@ -143,6 +145,8 @@ from stats_handlers import (
     bot_player_shot_wrap,
     bot_player_shot_wrist,
     bot_player_usat_pct,
+    bot_team_conference_stats,
+    bot_team_division_stats,
     bot_team_power_kill,
     bot_team_power_play,
     bot_team_procent_wins,
@@ -531,6 +535,8 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_procent_wins, pattern='^' + str(TEAM_PROCENT_WINS) + '$'),
                 CallbackQueryHandler(bot_team_power_play, pattern='^' + str(TEAM_POWER_PLAY) + '$'),
                 CallbackQueryHandler(bot_team_power_kill, pattern='^' + str(TEAM_POWER_KILL) + '$'),
+                CallbackQueryHandler(bot_team_conference_stats, pattern='^' + str(TEAM_CONFERENCE_STATS) + '$'),
+                CallbackQueryHandler(bot_team_division_stats, pattern='^' + str(TEAM_DIVISION_STATS) + '$'),
             ],
             SECOND: [
                 CallbackQueryHandler(

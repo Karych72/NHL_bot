@@ -742,3 +742,95 @@ async def test_day_games_on_partial_season_renders_the_latest_day_card(
     sent, hint = fake_context.bot.sent_messages
     assert "<b>TOR NYR 1:3</b>" in sent["text"]
     assert "/stats" in hint["text"]
+
+
+# ---------------------------------------------------------------------------
+# Сценарий «сводки по конференциям/дивизионам»: подменю команд → кнопка
+# «По конференциям»/«По дивизионам» (Задача 41, Фаза B)
+# ---------------------------------------------------------------------------
+
+# conference_name, team_count, avg_goals_per_game, avg_power_play_percentage,
+# avg_penalty_kill_percentage, avg_points
+_CONFERENCE_ROWS = [
+    ("Eastern", 16, 3.12, 21.5, 79.5, 55.25),
+    ("Western", 16, 2.98, 19.9, 80.25, 50.1),
+]
+
+# conference_name, division_name, team_count, avg_goals_per_game,
+# avg_power_play_percentage, avg_penalty_kill_percentage, avg_points
+_DIVISION_ROWS = [
+    ("Eastern", "Metropolitan", 8, 3.0, 20.0, 80.0, 52.5),
+]
+
+
+@pytest.mark.asyncio
+async def test_team_submenu_conference_button_renders_summary_and_back_to_team_stats(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("FROM teams_stats ts", _CONFERENCE_ROWS)])
+    update = make_callback_update(str(dialog_states.TEAM_CONFERENCE_STATS))
+
+    state = await stats_handlers.bot_team_conference_stats(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    text = edited["text"]
+    assert state == dialog_states.SECOND
+    assert edited["parse_mode"] == "HTML"
+    assert "<b>Сводка по конференциям</b>" in text
+    assert (
+        "<b>Eastern</b> — команд: 16, очки (среднее): 55.25, "
+        "голы/игра: 3.12, большинство: 21.5%, меньшинство: 79.5%"
+    ) in text
+    assert (
+        "<b>Western</b> — команд: 16, очки (среднее): 50.1, "
+        "голы/игра: 2.98, большинство: 19.9%, меньшинство: 80.25%"
+    ) in text
+    # «« Назад»» ведёт на родительское подменю команд, как у TEAM_PROCENT_WINS и соседей.
+    assert _callback_data(edited["reply_markup"]) == [
+        str(dialog_states.TEAM_STATS),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_submenu_division_button_renders_summary_with_conference_label(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("FROM teams_stats ts", _DIVISION_ROWS)])
+    update = make_callback_update(str(dialog_states.TEAM_DIVISION_STATS))
+
+    state = await stats_handlers.bot_team_division_stats(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    text = edited["text"]
+    assert state == dialog_states.SECOND
+    assert "<b>Сводка по дивизионам</b>" in text
+    assert (
+        "<b>Metropolitan</b> (Eastern) — команд: 8, очки (среднее): 52.5, "
+        "голы/игра: 3, большинство: 20%, меньшинство: 80%"
+    ) in text
+    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
+
+
+@pytest.mark.asyncio
+async def test_team_submenu_conference_button_reports_empty_season_without_traceback(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Пустой сезон (Задача 36): текст с причиной, не пустая таблица и не исключение,
+    и «« Назад»» на подменю команд по-прежнему на месте."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("FROM teams_stats ts", [])])
+    update = make_callback_update(str(dialog_states.TEAM_CONFERENCE_STATS))
+
+    state = await stats_handlers.bot_team_conference_stats(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert "В базе нет командной статистики для этого сезона." in edited["text"]
+    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)

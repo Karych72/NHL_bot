@@ -88,6 +88,8 @@ NHL_bot/
 │   ├── bot_messages.py                 # Формирование текстов ответов (SQL + шаблоны)
 │   ├── template_funcs.py              # Обёртка Jinja2
 │   ├── messages/                       # Jinja2-шаблоны сообщений
+│   │   ├── conference_stats.txt
+│   │   ├── division_stats.txt
 │   │   ├── game_message.txt
 │   │   ├── league_table.txt
 │   │   ├── season_leaders_players.txt
@@ -361,7 +363,9 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
                │  └─ Статистика команд        │    │    │
                │      ├─ % очков              │    │    │
                │      ├─ Большинство          │    │    │
-               │      └─ Меньшинство ────┐    │    │    │
+               │      ├─ Меньшинство          │    │    │
+               │      ├─ По конференциям      │    │    │
+               │      └─ По дивизионам ──┐    │    │    │
                └─────────────────────────┘────┘────┘────┘
                                          │
                                          ▼
@@ -387,6 +391,7 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 | 9–16 | `PLAYER_POINTS` ... `PLAYER_ICE_TIME` | Статистики полевых игроков |
 | 17–19 | `GOALIE_WINS`, `GOALIE_PERCENTAGE`, `GOALIE_SHOOTOUTS` | Статистики вратарей |
 | 20 | `END_CONVERSATION` | Завершение диалога |
+| 38–39 | `TEAM_CONFERENCE_STATS`, `TEAM_DIVISION_STATS` | Сводки по конференциям/дивизионам (Задача 41, Фаза B); полный список состояний 21–37 (расширенная статистика полевых, типы бросков, турнирная таблица, дайджест по датам) в этой таблице не отражён — источник истины `dialog_states.py`. |
 
 ### Модульная структура бота
 
@@ -742,6 +747,19 @@ Panthers        28.5  70
 ### `league_table.txt` — Турнирная таблица
 
 Группировка по конференциям и дивизионам: Atlantic, Metropolitan, Central, Pacific. Колонки: Команда / Очки / Игры / % очков.
+
+### `conference_stats.txt` / `division_stats.txt` — Сводки по конференциям и дивизионам (Задача 41, Фаза B)
+
+`bot_messages.conference_summary()` / `division_summary()`: `GROUP BY t.conference_name` /
+`t.division_name` над `teams_stats ⋈ teams` по `(team_id, season_id)` для `config.SEASON_ID` —
+число команд и средние по группе `goals_per_game`/`power_play_percentage`/
+`penalty_kill_percentage`/`points` (только то, что уже есть в `teams_stats`, без вычисляемых
+«рейтингов»). Не дублирует `/table` (`team_table()`, строка на команду) — здесь усреднение по
+группе. Пустой сезон — текст с причиной вместо пустой таблицы. Экраны: кнопки «По конференциям» /
+«По дивизионам» в подменю команд (`TEAM_STATS`, рядом с TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
+TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`
+(`dialog_states.py`), хендлеры `bot_team_conference_stats`/`bot_team_division_stats`
+(`stats_handlers.py`); «« Назад»» — на `TEAM_STATS`, как у соседних командных экранов.
 
 ---
 
