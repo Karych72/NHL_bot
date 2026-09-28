@@ -67,6 +67,10 @@ models:
         diff_goals_against_roll_mean_10: -1
         diff_goals_against_roll_mean_20: -1
         diff_goal_diff_roll_mean_5: 1
+        # Задача 40 (Task 3): pre-game Elo diff, home - away; see
+        # configs/modeling_default.yaml and docs/modeling_dataset_builder.md
+        # "Elo team-strength feature".
+        diff_elo: 1
       over_5_5:
         sum_goals_for_roll_mean_5: 1
         sum_goals_for_roll_mean_10: 1

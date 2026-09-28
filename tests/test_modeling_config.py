@@ -27,7 +27,12 @@ from modeling.config import (
     resolve_config,
 )
 from modeling.dataset_builder.assemble import _wide_feature_columns
-from modeling.dataset_builder.features import build_match_feature_snapshots, compute_team_rolling_features
+from modeling.dataset_builder.features import (
+    attach_pregame_elo,
+    build_match_feature_snapshots,
+    compute_pregame_elo,
+    compute_team_rolling_features,
+)
 from modeling.dataset_builder.schema import features_hash
 
 
@@ -452,6 +457,8 @@ def _dataset_feature_columns(rolling_windows: tuple[int, ...] = _PRODUCTION_ROLL
         ]
     )
     snapshots = build_match_feature_snapshots(target_games, team_features)
+    elo_per_game, elo_final_ratings = compute_pregame_elo(pd.DataFrame())
+    snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
     _, built_columns = _wide_feature_columns(snapshots)
     return {c for c in built_columns if c.startswith("diff_") or c.startswith("sum_")}
 

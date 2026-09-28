@@ -12,7 +12,9 @@ from modeling.dataset_builder.assemble import (
     assemble_dataset,
 )
 from modeling.dataset_builder.features import (
+    attach_pregame_elo,
     build_match_feature_snapshots,
+    compute_pregame_elo,
     compute_team_rolling_features,
 )
 from modeling.dataset_builder.schema import (
@@ -471,6 +473,179 @@ class TestAlignPredictToManifest(unittest.TestCase):
         self.assertNotIn("f_missing", out.columns)
         with self.assertRaises(ValueError):
             assert_feature_parity(out, manifest)
+
+
+class TestPregameElo(unittest.TestCase):
+    """Задача 40 (Task 3): ``compute_pregame_elo``/``attach_pregame_elo``.
+
+    Expected ratings below are computed independently from the formula in
+    spike-findings.md §3 (K=8, HFA=35, reg=1/3, MOV on, ot_s=1), not by
+    calling the function under test, then rounded to 6 decimal places.
+    """
+
+    def _three_game_history(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                # team1 (home) beats team2 3-1
+                {"game_id": 1, "day": "2026-01-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2, "winner_id": 1, "home_goals": 3, "away_goals": 1},
+                # team3 (new team, defaults to 1500) beats team1 (home) 2-0
+                {"game_id": 2, "day": "2026-01-02", "season_id": 20252026, "home_team_id": 1, "away_team_id": 3, "winner_id": 3, "home_goals": 0, "away_goals": 2},
+                # team2 (home) beats team3 1-0
+                {"game_id": 3, "day": "2026-01-03", "season_id": 20252026, "home_team_id": 2, "away_team_id": 3, "winner_id": 2, "home_goals": 1, "away_goals": 0},
+            ]
+        )
+
+    def test_hand_computed_pregame_ratings(self) -> None:
+        per_game, final_ratings = compute_pregame_elo(self._three_game_history())
+        rows = per_game.set_index("game_id")
+
+        self.assertAlmostEqual(rows.loc[1, "home_elo"], 1500.0, places=6)
+        self.assertAlmostEqual(rows.loc[1, "away_elo"], 1500.0, places=6)
+
+        self.assertAlmostEqual(rows.loc[2, "home_elo"], 1503.891344, places=6)
+        self.assertAlmostEqual(rows.loc[2, "away_elo"], 1500.0, places=6)
+
+        self.assertAlmostEqual(rows.loc[3, "home_elo"], 1496.108656, places=6)
+        self.assertAlmostEqual(rows.loc[3, "away_elo"], 1504.972210, places=6)
+
+        # Elo is symmetric (zero-sum delta): with no new team since game 1,
+        # the field mean stays exactly the start rating.
+        self.assertAlmostEqual(sum(final_ratings.values()) / len(final_ratings), 1500.0, places=6)
+
+    def test_asof_future_result_does_not_change_earlier_rating(self) -> None:
+        """Changing game 3's outcome must not change games 1/2's pregame ratings."""
+        baseline = self._three_game_history()
+        changed = baseline.copy()
+        changed.loc[changed["game_id"] == 3, ["winner_id", "home_goals", "away_goals"]] = [3, 0, 5]
+
+        per_game_baseline, _ = compute_pregame_elo(baseline)
+        per_game_changed, _ = compute_pregame_elo(changed)
+
+        for game_id in (1, 2):
+            base_row = per_game_baseline.set_index("game_id").loc[game_id]
+            changed_row = per_game_changed.set_index("game_id").loc[game_id]
+            self.assertAlmostEqual(base_row["home_elo"], changed_row["home_elo"], places=9)
+            self.assertAlmostEqual(base_row["away_elo"], changed_row["away_elo"], places=9)
+
+    def test_same_day_games_do_not_see_each_others_result(self) -> None:
+        """Two same-day games sharing a team: the second must not reflect the first's update.
+
+        Mirrors compute_team_rolling_features's intra_day_prev policy for rolling
+        features: a same-day predecessor is masked out, not used, even though it
+        sorts earlier by game_id.
+        """
+        hist = pd.DataFrame(
+            [
+                {"game_id": 1, "day": "2026-01-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2, "winner_id": 1, "home_goals": 9, "away_goals": 0},
+                {"game_id": 2, "day": "2026-01-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 3, "winner_id": 3, "home_goals": 0, "away_goals": 1},
+            ]
+        )
+        per_game, _ = compute_pregame_elo(hist)
+        rows = per_game.set_index("game_id")
+        # Game 2's home team (team 1) pregame rating must be the start rating,
+        # not team 1's post-game-1 (blown-out win) rating.
+        self.assertAlmostEqual(rows.loc[2, "home_elo"], 1500.0, places=6)
+
+    def test_season_boundary_regresses_toward_mean(self) -> None:
+        season_a = pd.DataFrame(
+            [
+                {"game_id": 1, "day": "2025-01-01", "season_id": 20242025, "home_team_id": 1, "away_team_id": 2, "winner_id": 1, "home_goals": 3, "away_goals": 1},
+            ]
+        )
+        season_b = pd.concat(
+            [
+                season_a,
+                pd.DataFrame(
+                    [
+                        {"game_id": 2, "day": "2025-10-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2, "winner_id": 1, "home_goals": 2, "away_goals": 1},
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+        per_game, _ = compute_pregame_elo(season_b)
+        rows = per_game.set_index("game_id")
+        # 1/3 shrink toward the (exactly 1500, symmetric two-team) mean of the
+        # ratings that came out of season A's only game.
+        self.assertAlmostEqual(rows.loc[2, "home_elo"], 1502.594230, places=6)
+        self.assertAlmostEqual(rows.loc[2, "away_elo"], 1497.405770, places=6)
+
+    def test_predict_mode_uses_rating_after_last_played_game_no_extra_regression(self) -> None:
+        """A future game in a season that has not been played yet gets the raw
+        post-history rating (attach_pregame_elo's fallback), not a rating
+        regressed for that not-yet-played season transition."""
+        season_a = pd.DataFrame(
+            [
+                {"game_id": 1, "day": "2025-01-01", "season_id": 20242025, "home_team_id": 1, "away_team_id": 2, "winner_id": 1, "home_goals": 3, "away_goals": 1},
+            ]
+        )
+        per_game, final_ratings = compute_pregame_elo(season_a)
+        played_row = per_game.set_index("game_id").loc[1]
+
+        future_target = pd.DataFrame(
+            [
+                # Unplayed game, next (unplayed) season — no rows of that season
+                # exist in per_game to have triggered a regression event.
+                {"game_id": 99, "day": "2025-10-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2},
+            ]
+        )
+        attached = attach_pregame_elo(future_target, per_game, final_ratings)
+        self.assertAlmostEqual(float(attached.loc[0, "home_elo"]), final_ratings[1], places=9)
+        self.assertAlmostEqual(float(attached.loc[0, "away_elo"]), final_ratings[2], places=9)
+        # Sanity: this is the post-game-1 rating, not the pregame-game-1 default.
+        self.assertNotAlmostEqual(float(attached.loc[0, "home_elo"]), 1500.0, places=3)
+        self.assertNotAlmostEqual(float(attached.loc[0, "home_elo"]), float(played_row["home_elo"]), places=3)
+
+    def test_unseen_team_defaults_to_start_rating(self) -> None:
+        per_game, final_ratings = compute_pregame_elo(pd.DataFrame())
+        self.assertTrue(per_game.empty)
+        self.assertEqual(final_ratings, {})
+
+        future_target = pd.DataFrame(
+            [{"game_id": 1, "day": "2026-01-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2}]
+        )
+        attached = attach_pregame_elo(future_target, per_game, final_ratings)
+        self.assertAlmostEqual(float(attached.loc[0, "home_elo"]), 1500.0, places=9)
+        self.assertAlmostEqual(float(attached.loc[0, "away_elo"]), 1500.0, places=9)
+
+    def test_missing_result_fails_fast(self) -> None:
+        hist = pd.DataFrame(
+            [
+                {"game_id": 1, "day": "2026-01-01", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2, "winner_id": None, "home_goals": 3, "away_goals": 1},
+            ]
+        )
+        with self.assertRaises(ValueError):
+            compute_pregame_elo(hist)
+
+    def test_diff_elo_built_by_assemble_without_sum_elo(self) -> None:
+        snapshots = pd.DataFrame(
+            [
+                {
+                    "game_id": 1,
+                    "day": "2026-01-01",
+                    "season_id": 20252026,
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "winner_id": 10,
+                    "home_goals_target": 4,
+                    "away_goals_target": 2,
+                    "home_prior_games_count": 8,
+                    "away_prior_games_count": 8,
+                    "home_elo": 1520.0,
+                    "away_elo": 1480.0,
+                }
+            ]
+        )
+        data, report = assemble_dataset(
+            "train",
+            snapshots,
+            min_prior_games=0,
+            cold_start_policy_predict="allow_with_flag",
+        )
+        self.assertIn("diff_elo", data.columns)
+        self.assertEqual(float(data.loc[0, "diff_elo"]), 40.0)
+        self.assertNotIn("sum_elo", data.columns)
+        self.assertNotIn("sum_elo", report["built_feature_columns"])
 
 
 if __name__ == "__main__":

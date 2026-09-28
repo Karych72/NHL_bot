@@ -14,7 +14,12 @@ import pandas as pd
 import psycopg2
 
 from .assemble import assemble_dataset
-from .features import build_match_feature_snapshots, compute_team_rolling_features
+from .features import (
+    attach_pregame_elo,
+    build_match_feature_snapshots,
+    compute_pregame_elo,
+    compute_team_rolling_features,
+)
 from .schema import (
     assert_feature_parity,
     build_feature_manifest,
@@ -30,7 +35,7 @@ from .validate import validate_or_raise, write_report
 class DatasetBuildConfig:
     mode: str
     output_dir: Path
-    feature_set_version: str = "v1"
+    feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
     cold_start_policy_predict: str = "allow_with_flag"
@@ -133,6 +138,50 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
           {_season_where_clause(config)}
           {max_day_clause}
         ORDER BY g.day, g.game_id, s.team_id
+    """
+    return pd.read_sql_query(query, conn)
+
+
+def load_elo_history_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+    """All played games (result + goals), for the pre-game Elo pass.
+
+    Задача 40 (Task 3): unlike ``load_history_team_stats`` (rolling features,
+    scoped to ``config.season_ids`` because rolling resets every season), Elo
+    persists across seasons with a regression to the mean at each season
+    change — computing it correctly needs the *complete* play history no
+    matter which seasons the caller selected for the output dataset, so this
+    query does not apply ``_season_where_clause``/``target_day_from`` at all.
+    It only honors an explicit ``target_day_to`` ceiling (a historical "as of"
+    snapshot must not see games after it) — the same asymmetry
+    ``load_history_team_stats``'s ``max_day_clause`` already applies.
+    """
+    max_day_clause = ""
+    if config.target_day_to:
+        max_day_clause = f" AND g.day <= '{config.target_day_to}'"
+    query = f"""
+        SELECT
+            g.game_id::bigint AS game_id,
+            g.day::date AS day,
+            g.season_id::bigint AS season_id,
+            g.home_team_id::bigint AS home_team_id,
+            g.away_team_id::bigint AS away_team_id,
+            g.winner_id::bigint AS winner_id,
+            hs.goals::double precision AS home_goals,
+            aws.goals::double precision AS away_goals
+        FROM games g
+        LEFT JOIN game_team_stats hs
+            ON hs.game_id = g.game_id
+           AND hs.team_id::bigint = g.home_team_id::bigint
+        LEFT JOIN game_team_stats aws
+            ON aws.game_id = g.game_id
+           AND aws.team_id::bigint = g.away_team_id::bigint
+        WHERE g.winner_id IS NOT NULL
+          AND g.day IS NOT NULL
+          AND g.home_team_id IS NOT NULL
+          AND g.away_team_id IS NOT NULL
+          AND g.home_team_id <> g.away_team_id
+          {max_day_clause}
+        ORDER BY g.day, g.game_id
     """
     return pd.read_sql_query(query, conn)
 
@@ -296,10 +345,13 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
+        elo_history = load_elo_history_games(conn, config)
 
     team_facts, team_facts_report = build_team_game_facts(history)
     rolling = compute_team_rolling_features(team_facts, config.rolling_windows)
     snapshots = build_match_feature_snapshots(target_games, rolling)
+    elo_per_game, elo_final_ratings = compute_pregame_elo(elo_history)
+    snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
     assembled, assemble_report = assemble_dataset(
         mode=config.mode,
         snapshots=snapshots,

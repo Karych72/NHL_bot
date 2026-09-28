@@ -36,6 +36,9 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Rolling features with mandatory `shift(1)` logic.
   - Context features: `rest_days`, `is_b2b`, `games_last_7d`, `prior_games_count`.
   - As-of snapshots for home/away teams per target game.
+  - `compute_pregame_elo`/`attach_pregame_elo`: pre-game team Elo rating
+    (`home_elo`, `away_elo`) — see [Elo team-strength feature](#elo-team-strength-feature)
+    below.
 
 - `modeling/dataset_builder/assemble.py`
   - Wide feature assembly: home/away absolute values, `diff_*`, `sum_*`.
@@ -96,6 +99,54 @@ excluded from `feature_columns_from_df` — never part of `feature_manifest` / `
 X, and dropped by `ordered_columns_for_output` before the CSV is written (fixed Задача 15,
 first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08.md`).
 
+## Elo team-strength feature
+
+Added Задача 40 (Task 3; tuned on the diagnostics in `spike-findings.md` §3, 40a spike).
+Unlike every other feature above, Elo is **cross-team and cross-season**: it is a single
+`{team_id: rating}` state that a full pass over `games`+`game_team_stats` (`base.py::
+load_elo_history_games`, unfiltered by `--season-ids`/`--target-day-from`) mutates game by
+game in `(day, game_id)` order, computed by `features.py::compute_pregame_elo` and attached to
+every target game by `features.py::attach_pregame_elo`.
+
+- **Formula** (tuned constants are module-level constants in `features.py`, not config —
+  `ELO_START`, `ELO_K`, `ELO_HFA`, `ELO_SEASON_REGRESSION`, `ELO_MOV_BASE`, `ELO_MOV_HFA_WEIGHT`):
+  - new team starts at `ELO_START = 1500`.
+  - expectancy `E_home = 1 / (1 + 10^(-(R_home + HFA - R_away)/400))`, `HFA = 35`.
+  - update `R_home += K·M·(S - E_home)`, `R_away -= K·M·(S - E_home)`, `K = 8`.
+  - `S = 1` if `winner_id == home_team_id` else `0` — OT/SO wins count as full wins
+    (tuning picked `ot_s = 1`, so there is no separate overtime branch/column).
+  - margin-of-victory multiplier `M = ln(|goal_diff|+1) · 2.2 / (0.001·winner_edge + 2.2)`,
+    where `winner_edge` is the winning side's rating edge including HFA.
+  - at a `season_id` change: every rating shrinks 1/3 toward the field mean
+    (`R ← mean + (1 - 1/3)·(R - mean)`) instead of resetting — Elo is meant to persist
+    across seasons, unlike the rolling/as-of features above.
+- **Columns:** `home_elo`, `away_elo` (raw ratings, no HFA baked in) and `diff_elo =
+  home_elo - away_elo`, produced by the same `assemble.py::_wide_feature_columns` convention as
+  every other `diff_*`/`sum_*` pair, except `sum_elo` is intentionally not produced (it is
+  ≈2×the post-regression mean rating and carries no team-strength signal) —
+  `_wide_feature_columns` special-cases `elo` the same way it already special-cases
+  `goals_target`.
+- **As-of / no leakage:** a game's `home_elo`/`away_elo` are the ratings held strictly *before*
+  that game — recorded before the update, mirroring `_snapshot_side`'s backward as-of join.
+  Games sharing a calendar day never see each other's result: ratings are frozen at the start
+  of the day and every game that day is scored off that same snapshot, with all of that day's
+  updates applied together afterwards — the Elo analogue of `compute_team_rolling_features`'s
+  `intra_day_prev` policy for rolling features (a same-day predecessor is masked out, not used).
+- **Predict mode:** target games have no result, so they are never part of the play-order pass.
+  They get the rating "as of after the last played game" — the final `{team_id: rating}` state
+  once the whole history has been processed, with no season-transition regression applied for a
+  season that has not actually been played into yet (`attach_pregame_elo`'s fallback path). This
+  is different from every other feature in this document, which use a per-game as-of join.
+- **No NaN, no cold-start row drop:** an unseen team defaults to `ELO_START`, so `home_elo`/
+  `away_elo`/`diff_elo` are always populated — they are not subject to `apply_cold_start_policy`
+  the way `*_roll_mean_*` is.
+- **`games` columns used:** `game_id`, `day`, `season_id`, `home_team_id`, `away_team_id`,
+  `winner_id`; goals for the MOV multiplier come from `game_team_stats` (`game_id`, `team_id`,
+  `goals`).
+- Bumped `feature_set_version` default `v1 → v2` (CLI and `DatasetBuildConfig`) — any feature
+  change is supposed to bump it (`plan/deprecated_plan/nhl_dataset_build_plan.md` §5.3); this
+  also changes `features_hash`, as intended.
+
 ## Schema Parity and Versioning
 
 - Predict mode requires `--train-metadata-path` to load train manifest.
@@ -148,7 +199,7 @@ actually went in cannot be recovered from the artifact afterwards):
 python -m modeling.cli build-dataset \
   --mode train \
   --output-dir artifacts/datasets \
-  --feature-set-version v1 \
+  --feature-set-version v2 \
   --rolling-windows 5,10,20 \
   --min-prior-games 5 \
   --season-ids 20212022,20222023,20232024,20242025,20252026
@@ -160,7 +211,7 @@ Predict (strict parity against train metadata):
 python -m modeling.cli build-dataset \
   --mode predict \
   --output-dir artifacts/datasets \
-  --feature-set-version v1 \
+  --feature-set-version v2 \
   --rolling-windows 5,10,20 \
   --min-prior-games 5 \
   --train-metadata-path artifacts/datasets/metadata_train.json
@@ -224,6 +275,14 @@ Implemented tests:
   `test_power_play_percentage_above_100_is_clipped` — `power_play_percentage` NULL
   (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to
   valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
+- `TestPregameElo` (Задача 40, Task 3): `test_hand_computed_pregame_ratings` (3-game
+  mini example, expected ratings computed independently from the spike-findings.md §3
+  formula), `test_asof_future_result_does_not_change_earlier_rating`,
+  `test_same_day_games_do_not_see_each_others_result` (intra-day policy),
+  `test_season_boundary_regresses_toward_mean`,
+  `test_predict_mode_uses_rating_after_last_played_game_no_extra_regression`,
+  `test_unseen_team_defaults_to_start_rating`, `test_missing_result_fails_fast`,
+  `test_diff_elo_built_by_assemble_without_sum_elo`
 
 File: `tests/test_modeling_train_input.py`
 
