@@ -28,7 +28,7 @@
 
   Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересобирает и пересоздаёт `bot` и `sync` (единственные сервисы, у которых `build: .`; `restart: unless-stopped` вернёт их после падения, но не подхватит новый образ без `up -d`). `db` и `backup` используют готовый образ `postgres:16.6-alpine` — `docker compose build` их не трогает.
 - **Бэкап (Задача 35).** Сервис `backup` в `docker-compose.yml` — тот же принцип, что `sync`: долгоживущий контейнер со своим циклом (не host cron), образ `postgres:16.6-alpine`, как у `db`, — версия `pg_dump` совпадает с версией сервера. Раз в сутки, первый дамп — сразу при старте: `pg_dump -h db -U postgres -Fc postgres` пишется во временный файл и переименовывается в `nhl_<UTC-метка>.dump` только после успешного завершения, чтобы оборванный дамп не выглядел свежим. При ошибке `pg_dump` контейнер падает (`set -e`) — `restart: unless-stopped` поднимает его заново, а падение видно в `docker compose ps` (`Exit`/`Restarting`) и `docker compose logs backup`. Хранит 14 последних дампов, более старые удаляются при следующем успешном прогоне. Каталог — bind mount `${BACKUP_DIR}:/backups` (переменная обязательна: без неё `docker compose config`/`up` падает с понятным сообщением); дампы вне дерева репозитория и вне тома `pgdata`, поэтому записи в `.gitignore`/`.dockerignore` не нужны.
-  - Проверить: `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"` — `.env` не экспортируется в интерактивный shell, поэтому сначала `BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)`.
+  - Проверить: `.env` не экспортируется в интерактивный shell, поэтому сначала `BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)`, затем `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"`.
 - **Восстановление (Задача 35).** `.env` не экспортируется в интерактивный shell (его читают только compose и `make`), поэтому перед любой командой ниже, где встречается `$BACKUP_DIR` или `$COUNT_QUERY`, выполнить в шелле хоста:
     ```
     BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)
@@ -45,9 +45,16 @@
     union all select 'goalies_season_stats', count(*) from goalies_season_stats
     union all select 'players_advanced_stats', count(*) from players_advanced_stats
     union all select 'players_shot_types', count(*) from players_shot_types
+    union all select 'bot_subscriptions', count(*) from bot_subscriptions
+    union all select 'schema_migrations', count(*) from schema_migrations
     order by 1;"
     ```
-    (список таблиц — по файлам `data_tables/t.*.sql`; `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что подстановка без раскрытия `~` работает как есть.)
+    (список таблиц — по `data_tables/t.*.sql` плюс миграции: `bot_subscriptions`
+    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) — единственные пользовательские
+    данные, не восстановимые повторной загрузкой из NHL API, и служебная `schema_migrations`
+    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — обе переживают `db-drop`/`db-reset`, `pg_dump`
+    снимает обе. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
+    подстановка без раскрытия `~` работает как есть.)
   - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает; точное сравнение числа строк по всем таблицам, а не оценка `pg_stat_user_tables`):
     ```
     docker compose cp "$BACKUP_DIR/nhl_<метка>.dump" db:/tmp/check.dump
