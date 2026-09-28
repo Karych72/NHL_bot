@@ -221,6 +221,7 @@ def test_state_first_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.TEAM_POWER_KILL), sh.bot_team_power_kill),
         _cq(_state(ds.TEAM_CONFERENCE_STATS), sh.bot_team_conference_stats),
         _cq(_state(ds.TEAM_DIVISION_STATS), sh.bot_team_division_stats),
+        _cq(_state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
     ]
 
 
@@ -237,6 +238,8 @@ def test_state_second_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.PLAYER_GOALIE), sb.bot_player_goalie),
         _cq(_state(ds.PLAYER_ADVANCED_SUBMENU), sb.bot_player_advanced_menu),
         _cq(_state(ds.TEAM_STATS), sb.bot_team_stats),
+        _cq(sh.TEAM_PROFILE_CALLBACK_PATTERN, sh.bot_team_profile_show),
+        _cq(_state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
         _cq(_state(ds.DAY_DIGEST), sb.bot_digest_date_menu),
         _cq(f"^{sh.DIGEST_BACK_FROM_DATE_CALLBACK}$", sb.bot_digest_date_menu),
         _cq(_state(ds.CHOOSE_STATS), sb.stats_over),
@@ -552,9 +555,12 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # висят «« Назад»» на родительские подменю: bot_player_field/
     # bot_player_goalie/bot_player_advanced_menu/bot_team_stats по 2 раза
     # каждый, bot_digest_date_menu 5 раз — FIRST×2, SECOND×2, THIRD×1)
-    # и 44 регистрации stats_handlers.py (в т.ч. bot_team_conference_stats/
-    # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST).
-    assert len(registered) == 83
+    # и 47 регистраций stats_handlers.py (в т.ч. bot_team_conference_stats/
+    # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST; и
+    # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D:
+    # bot_team_profile_pick дважды, FIRST и SECOND, как «« Назад»» с
+    # профиля на список команд, bot_team_profile_show один раз в SECOND).
+    assert len(registered) == 86
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",

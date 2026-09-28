@@ -512,3 +512,145 @@ async def test_team_submenu_conference_button_reports_empty_season_without_trace
     assert state == dialog_states.SECOND
     assert "В базе нет командной статистики для этого сезона." in edited["text"]
     assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
+
+
+# ---------------------------------------------------------------------------
+# Сценарий «профиль команды»: подменю команд → «Профиль команды» → выбор
+# аббревиатуры → карточка состава (Задача 41, Фаза D)
+# ---------------------------------------------------------------------------
+
+_SEASON_ABBREVS = [("WSH",), ("WPG",)]
+
+# lastname, position, points, goals — LEFT JOIN на players_season_stats, у
+# вратаря (Samsonov) очков/голов в этой таблице нет (NULL).
+_ROSTER_ROWS = [
+    ("Ovechkin", "LW", 42, 38),
+    ("Backstrom", "C", 30, 10),
+    ("Carlson", "D", 25, 5),
+    ("Wilson", "LW", 20, 12),
+    ("Samsonov", "G", None, None),
+]
+
+# wins, losses, ot, points, procent_points
+_TEAM_ROW = [(10, 5, 2, 22, 64.71)]
+
+_PROFILE_ROUTES = [
+    ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+    ("FROM rosters r", _ROSTER_ROWS),
+    ("FROM teams_stats WHERE team_id", _TEAM_ROW),
+]
+
+
+@pytest.mark.asyncio
+async def test_team_submenu_profile_button_lists_season_abbreviations(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation)", _SEASON_ABBREVS)])
+    update = make_callback_update(str(dialog_states.TEAM_PROFILE_PICK))
+
+    state = await stats_handlers.bot_team_profile_pick(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert edited["text"] == "Выберите команду:"
+    callbacks = _callback_data(edited["reply_markup"])
+    assert callbacks[:2] == ["tp:WSH", "tp:WPG"]
+    # Футер — «« Назад»» на подменю команд, как у соседних командных экранов.
+    assert callbacks[2:] == [
+        str(dialog_states.TEAM_STATS),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_submenu_profile_button_reports_empty_season_without_traceback(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Пустой сезон (Задача 36): нет команд в базе — текст с причиной, не
+    клавиатура без единой кнопки, и без исключения."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation)", [])])
+    update = make_callback_update(str(dialog_states.TEAM_PROFILE_PICK))
+
+    state = await stats_handlers.bot_team_profile_pick(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert edited["text"] == "В базе нет команд для этого сезона."
+    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
+
+
+@pytest.mark.asyncio
+async def test_team_profile_abbreviation_button_shows_positions_and_top_scorers(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Выбор аббревиатуры на экране профиля: агрегаты по позиции (число
+    игроков/очков/голов) и топ-3 бомбардира клуба, «« Назад»» — на список
+    команд (TEAM_PROFILE_PICK), не сразу в подменю команд."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router(_PROFILE_ROUTES)
+    update = make_callback_update("tp:WSH")
+
+    state = await stats_handlers.bot_team_profile_show(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    text = edited["text"]
+    assert state == dialog_states.SECOND
+    assert edited["parse_mode"] == "HTML"
+    assert "<b>WSH</b> — профиль команды" in text
+    assert "Сезон: 10-5-2, 22 очков (64.71%)" in text
+    # Агрегат по позиции: 2 левых крайних (Овечкин+Уилсон) — очки/голы суммированы.
+    assert "<b>LW</b> — игроков: 2, очков: 62, голов: 50" in text
+    # Вратарь без строки в players_season_stats (NULL) не ломает агрегат позиции G.
+    assert "<b>G</b> — игроков: 1, очков: 0, голов: 0" in text
+    # Топ-3 бомбардира по очкам, вратарь и Уилсон (20 очков) в топ-3 не попадают.
+    assert "1. Ovechkin [LW] — 42 очк. (38 гол.)" in text
+    assert "2. Backstrom [C] — 30 очк. (10 гол.)" in text
+    assert "3. Carlson [D] — 25 очк. (5 гол.)" in text
+    assert "Wilson" not in text
+    assert _callback_data(edited["reply_markup"]) == [
+        str(dialog_states.TEAM_PROFILE_PICK),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_profile_reports_team_without_roster(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Команда без строк в rosters для сезона (Задача 36) — текст с причиной,
+    не пустая карточка и не исключение."""
+    stats_handlers = bot_module("stats_handlers")
+    fake_db_router([
+        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("FROM rosters r", []),
+    ])
+    update = make_callback_update("tp:WSH")
+
+    await stats_handlers.bot_team_profile_show(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert "В базе нет ростера этой команды для этого сезона." in edited["text"]
+
+
+@pytest.mark.asyncio
+async def test_team_profile_invalid_callback_is_ignored(
+    bot_module, make_callback_update, fake_context
+):
+    """Некорректный callback (не совпал с TEAM_PROFILE_CALLBACK_PATTERN) не
+    роняет хендлер и не перерисовывает сообщение — как у соседних страниц
+    статистики (callback_stats_player_page)."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    update = make_callback_update("tp:")
+
+    state = await stats_handlers.bot_team_profile_show(update, fake_context)
+
+    assert state == dialog_states.SECOND
+    assert update.callback_query.edited_texts == []

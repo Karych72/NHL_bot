@@ -29,7 +29,9 @@ from bot_messages import (
     game_message,
     matchup_season_preview,
     player_stat_leaderboard_page,
+    season_team_abbrevs,
     stat_leaderboard_for_kind,
+    team_profile,
     team_stat_leaderboard_page,
     team_table,
     truncate_telegram_text,
@@ -45,6 +47,7 @@ from dialog_states import (
     PLAYER_FIELD,
     PLAYER_GOALIE,
     SECOND,
+    TEAM_PROFILE_PICK,
     TEAM_STATS,
     THIRD,
     build_menu,
@@ -71,6 +74,11 @@ TONIGHT_GAME_CALLBACK_PATTERN = r"^tn:\d+:[^:]+:[^:]+$"
 # Пагинация в /stats (игроки / вратари / типы бросков / advanced)
 STAT_PAGE_CALLBACK_PATTERN = r"^st:([\w_]+):([\w_]+):(\d+)$"
 TEAM_PAGE_CALLBACK_PATTERN = r"^tm:([\w_]+):(\d+)$"
+
+# Профиль команды (Задача 41, Фаза D): кнопка аббревиатуры на экране выбора
+# команды tp:<ABBR>
+TEAM_PROFILE_CALLBACK_PREFIX = "tp:"
+TEAM_PROFILE_CALLBACK_PATTERN = r"^tp:([A-Za-z0-9]{2,4})$"
 
 # Standalone: /advanced — листание sa:<table>:<col>:<offset>, sa:close
 STANDALONE_SA_CALLBACK_PATTERN = r"^sa:"
@@ -266,6 +274,73 @@ def _make_team_group_summary_handler(summary_func):
         return SECOND
 
     return handler
+
+
+def team_profile_pick_keyboard(abbrevs: List[str]) -> InlineKeyboardMarkup:
+    """Клавиатура выбора команды для профиля (Задача 41, Фаза D): сетка
+    кнопок аббревиатур сезона, каждая несёт `tp:<ABBR>` (разбирает
+    `bot_team_profile_show`) — тот же принцип, что у команды в
+    `matchup_season_preview` (Фаза C): `team_id` резолвится по аббревиатуре
+    из кнопки, а не из текста пользователя. Футер — «« Назад»» на подменю
+    команд (`TEAM_STATS`).
+
+    Args:
+        abbrevs: `season_team_abbrevs()` — аббревиатуры, не совпадающие с
+            `TEAM_PROFILE_CALLBACK_PATTERN` (нестандартная длина/символы —
+            вырожденный случай пустой `abbreviation` и отката на `short_name`
+            в БД), пропускаются: кнопка с нерабочим callback_data хуже, чем
+            команда, недоступная из этого списка.
+    """
+    buttons = [
+        InlineKeyboardButton(ab, callback_data=f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
+        for ab in abbrevs
+        if re.match(TEAM_PROFILE_CALLBACK_PATTERN, f"{TEAM_PROFILE_CALLBACK_PREFIX}{ab}")
+    ]
+    rows = build_menu(buttons, n_cols=4, footer_buttons=[_stats_menu_nav_row(TEAM_STATS)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def bot_team_profile_pick(update: Update, context: CallbackContext) -> int:
+    """Кнопка «Профиль команды» подменю команд: список аббревиатур сезона
+    для выбора (Задача 41, Фаза D). Тот же хендлер перерисовывает экран,
+    когда «« Назад»» с профиля возвращает сюда (`TEAM_PROFILE_PICK`
+    зарегистрирован и в FIRST, и в SECOND — см. `bot.py`).
+
+    Пустой сезон (Задача 36): нет команд в базе — текст с причиной вместо
+    клавиатуры без кнопок.
+    """
+    query = update.callback_query
+    assert query is not None
+    await query.answer()
+    abbrevs = season_team_abbrevs()
+    markup = team_profile_pick_keyboard(abbrevs)
+    text = "Выберите команду:" if abbrevs else "В базе нет команд для этого сезона."
+    await query.edit_message_text(text=text, reply_markup=markup)
+    return SECOND
+
+
+async def bot_team_profile_show(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает выбор аббревиатуры на экране профиля команды (`tp:<ABBR>`):
+    строит `team_profile()` и показывает его. «« Назад»» ведёт на список
+    команд (`TEAM_PROFILE_PICK`), а не сразу в `TEAM_STATS` — так можно
+    выбрать другую команду без лишнего клика.
+
+    Некорректный callback (не совпал с `TEAM_PROFILE_CALLBACK_PATTERN`) —
+    отвечает и остаётся в `SECOND`, ничего не перерисовывая, как
+    `callback_stats_player_page`.
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return SECOND
+    m = re.match(TEAM_PROFILE_CALLBACK_PATTERN, query.data)
+    if not m:
+        await query.answer()
+        return SECOND
+    await query.answer()
+    text = truncate_telegram_text(team_profile(m.group(1)))
+    markup = InlineKeyboardMarkup([_stats_menu_nav_row(TEAM_PROFILE_PICK)])
+    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+    return SECOND
 
 
 async def callback_stats_player_page(update: Update, context: CallbackContext) -> int:

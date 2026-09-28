@@ -1135,3 +1135,21 @@ def test_season_team_abbrev_help_text_no_marker_when_everything_fits(bot_module)
         text = bot_messages.season_team_abbrev_help_text()
     assert "Показаны" not in text
     assert "BOS" in text
+
+
+# ---------------------------------------------------------------------------
+# team_profile() — Задача 41, Фаза D. Полный рендер (агрегаты по позиции,
+# топ-3 бомбардира, «« Назад»») уже проверен сквозным сценарием в
+# test_bot_integration.py; здесь — ветка, для которой хватает одного запроса
+# в БД (неизвестная аббревиатура — team_id не резолвится, дальше запросов нет).
+# ---------------------------------------------------------------------------
+
+def test_team_profile_reports_unknown_abbreviation(bot_module):
+    """Известная аббревиатура-паттерн, но не найденная в БД (Задача 36) —
+    текст с причиной, как у невалидного callback в Фазе C (`matchup_season_preview`)."""
+    bot_messages = bot_module("bot_messages")
+    empty = {"count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
+        text = bot_messages.team_profile("ZZZ")
+    assert "<b>ZZZ</b> — профиль команды" in text
+    assert "Команда не найдена в базе для этого сезона." in text

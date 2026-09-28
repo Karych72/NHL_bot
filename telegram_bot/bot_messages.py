@@ -1296,8 +1296,13 @@ def division_summary() -> str:
     )
 
 
-def season_team_abbrev_help_text() -> str:
-    """Краткий список аббревиатур команд текущего сезона для /team."""
+def season_team_abbrevs() -> List[str]:
+    """Отсортированный список аббревиатур команд текущего сезона (`config.SEASON_ID`).
+
+    Общий источник для `season_team_abbrev_help_text()` (/team) и для клавиатуры
+    выбора команды профиля (Задача 41, Фаза D, `team_profile_pick_keyboard`
+    в `stats_handlers.py`) — один и тот же запрос, а не две копии.
+    """
     stats = cached_fetch_all(
         "SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation), ''), short_name)) AS ab "
         "FROM teams WHERE season_id = %s ORDER BY ab",
@@ -1309,6 +1314,12 @@ def season_team_abbrev_help_text() -> str:
         a = (stats["ab"][i] or "").strip()
         if a:
             abbrevs.append(a)
+    return abbrevs
+
+
+def season_team_abbrev_help_text() -> str:
+    """Краткий список аббревиатур команд текущего сезона для /team."""
+    abbrevs = season_team_abbrevs()
     season_esc = html.escape(str(config.CURRENT_SEASON))
     if not abbrevs:
         return (
@@ -1331,6 +1342,101 @@ def season_team_abbrev_help_text() -> str:
         f"<b>Команды сезона</b> ({season_esc}) — аббревиатуры:\n{inner}{marker}\n\n"
         "Карточку матча из базы удобнее открыть через <code>/day_games</code> "
         "или <code>/stats</code> → дайджест."
+    )
+
+
+_TEAM_PROFILE_ROSTER_COLUMNS = ["lastname", "position", "points", "goals"]
+_TEAM_PROFILE_TOP_N = 3
+
+
+def team_profile(abbrev: str) -> str:
+    """Профиль команды сезона `config.SEASON_ID` (Задача 41, Фаза D): состав по
+    позициям (число игроков, сумма очков/голов) и топ-3 бомбардира клуба —
+    `rosters ⋈ players_season_stats` по `(player_id, season_id)` при
+    `current_team_id = team_id`, плюс краткая строка сезона из `teams_stats`.
+
+    Команда выбирается инлайн-кнопкой аббревиатуры (клавиатура —
+    `team_profile_pick_keyboard()` в `stats_handlers.py`, список аббревиатур —
+    `season_team_abbrevs()`); `abbrev` резолвится в `team_id` через
+    `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C) —
+    `team_id` никогда не берётся из произвольного текста пользователя.
+
+    Пустые случаи (Задача 36): неизвестная аббревиатура и команда без строк в
+    `rosters` для этого сезона — текст с причиной, не исключение.
+    """
+    a = (abbrev or "").strip().upper()
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    if not a or a == "?":
+        return "Не удалось определить команду."
+    team_id = _team_id_for_abbrev(a)
+    header = f"<b>{html.escape(a)}</b> — профиль команды ({season_esc})\n"
+    if team_id is None:
+        return header + "Команда не найдена в базе для этого сезона."
+
+    roster = cached_fetch_all(
+        "SELECT r.lastname, r.position, pss.points, pss.goals "
+        "FROM rosters r "
+        "LEFT JOIN players_season_stats pss "
+        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id "
+        "WHERE r.current_team_id = %s AND r.season_id = %s",
+        (team_id, config.SEASON_ID),
+        columns=_TEAM_PROFILE_ROSTER_COLUMNS,
+    )
+    if roster["count_rows"] == 0:
+        return header + "В базе нет ростера этой команды для этого сезона."
+
+    team_row = cached_fetch_all(
+        "SELECT wins, losses, ot, points, procent_points "
+        "FROM teams_stats WHERE team_id = %s AND season_id = %s",
+        (team_id, config.SEASON_ID),
+        columns=["wins", "losses", "ot", "points", "procent_points"],
+    )
+    if team_row["count_rows"]:
+        rec = (
+            f"{_format_leader_value(team_row['wins'][0])}-"
+            f"{_format_leader_value(team_row['losses'][0])}-"
+            f"{_format_leader_value(team_row['ot'][0])}"
+        )
+        ppct = _fmt_pct_points(team_row["procent_points"][0])
+        season_line = (
+            f"Сезон: {rec}, {_format_leader_value(team_row['points'][0])} очков ({ppct})"
+        )
+    else:
+        season_line = "Сезон: нет статистики команды в базе."
+
+    by_position: Dict[str, Dict[str, int]] = {}
+    scorers: List[Tuple[int, int, str, str]] = []
+    for i in range(roster["count_rows"]):
+        pos = (roster["position"][i] or "—").strip() or "—"
+        pts = int(roster["points"][i] or 0)
+        goals = int(roster["goals"][i] or 0)
+        agg = by_position.setdefault(pos, {"players": 0, "points": 0, "goals": 0})
+        agg["players"] += 1
+        agg["points"] += pts
+        agg["goals"] += goals
+        scorers.append((pts, goals, pos, roster["lastname"][i] or "Unknown"))
+
+    position_lines = [
+        f"• <b>{html.escape(pos)}</b> — игроков: {agg['players']}, "
+        f"очков: {agg['points']}, голов: {agg['goals']}"
+        for pos, agg in sorted(by_position.items())
+    ]
+    scorers.sort(key=lambda row: (-row[0], -row[1]))
+    top_lines = [
+        f"{i + 1}. {html.escape(lastname)} [{html.escape(pos)}] — "
+        f"{pts} очк. ({goals} гол.)"
+        for i, (pts, goals, pos, lastname) in enumerate(scorers[:_TEAM_PROFILE_TOP_N])
+    ]
+
+    return output_text(
+        "messages/team_profile.txt",
+        {
+            "team_name": html.escape(a),
+            "season": season_esc,
+            "season_line": season_line,
+            "position_lines": position_lines,
+            "top_lines": top_lines,
+        },
     )
 
 

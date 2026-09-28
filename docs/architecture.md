@@ -93,6 +93,7 @@ NHL_bot/
 │   │   ├── game_message.txt
 │   │   ├── league_table.txt
 │   │   ├── season_leaders_players.txt
+│   │   ├── team_profile.txt
 │   │   └── team_stats.txt
 │   └── queries/                        # PL/pgSQL функции
 │       ├── get_game_stats.sql
@@ -392,6 +393,7 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 | 17–19 | `GOALIE_WINS`, `GOALIE_PERCENTAGE`, `GOALIE_SHOOTOUTS` | Статистики вратарей |
 | 20 | `END_CONVERSATION` | Завершение диалога |
 | 38–39 | `TEAM_CONFERENCE_STATS`, `TEAM_DIVISION_STATS` | Сводки по конференциям/дивизионам (Задача 41, Фаза B); полный список состояний 21–37 (расширенная статистика полевых, типы бросков, турнирная таблица, дайджест по датам) в этой таблице не отражён — источник истины `dialog_states.py`. |
+| 40 | `TEAM_PROFILE_PICK` | Профиль команды (Задача 41, Фаза D): экран выбора аббревиатуры; зарегистрирован и в FIRST (кнопка из подменю команд), и в SECOND (кнопка «« Назад»» с самого профиля). |
 
 ### Модульная структура бота
 
@@ -760,6 +762,21 @@ Panthers        28.5  70
 TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`
 (`dialog_states.py`), хендлеры `bot_team_conference_stats`/`bot_team_division_stats`
 (`stats_handlers.py`); «« Назад»» — на `TEAM_STATS`, как у соседних командных экранов.
+
+### `team_profile.txt` — Профиль команды (Задача 41, Фаза D)
+
+`bot_messages.team_profile(abbrev)`: `rosters ⋈ players_season_stats` (LEFT JOIN) по
+`(player_id, season_id)` при `current_team_id = team_id` и `season_id = config.SEASON_ID` —
+агрегаты по `position` (число игроков, сумма очков, сумма голов) и топ-3 бомбардира клуба по
+очкам, плюс краткая строка сезона команды из `teams_stats`. Команда выбирается инлайн-кнопкой
+аббревиатуры (`tp:<ABBR>`, список — `season_team_abbrevs()`, общий источник с `/team`);
+`abbrev` резолвится в `team_id` через `_team_id_for_abbrev()` — как в `matchup_season_preview()`
+(Фаза C), `team_id` никогда не берётся из текста пользователя. Пустые случаи (Задача 36):
+неизвестная аббревиатура и команда без строк в `rosters` для сезона — текст с причиной.
+Экраны: кнопка «Профиль команды» в подменю команд (`TEAM_STATS`) → список аббревиатур
+(`TEAM_PROFILE_PICK`, `team_profile_pick_keyboard()`) → карточка (`bot_team_profile_show`,
+callback `tp:<ABBR>`); «« Назад»» со списка — на `TEAM_STATS`, с карточки — обратно на список
+(`TEAM_PROFILE_PICK`), чтобы выбрать другую команду без лишнего клика.
 
 ---
 
