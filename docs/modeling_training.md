@@ -149,12 +149,12 @@ artifacts/
   Early stopping there would validate against `inner_val`, which is a subset of
   `train_full` itself (Задача 40, `modeling/train_lgbm.py::train_lgbm_fixed_rounds`).
   Before this fix, the final retrain *did* early-stop against `inner_val`, but since
-  `inner_val ⊂ train_full` early stopping never actually fired — every fold ran the
+  `inner_val ⊂ train_full` early stopping never actually fired — the final retrain always ran the
   full 500-round cap regardless of what grid selection had picked, inflating raw
   holdout log-loss for `home_win`/lgbm from 0.6926 (fixed-round retrain) to 0.7646.
   The old 7-axis × 3-value grid (2187 points) that grid selection searched over also
-  took about 19 minutes per fold on this dataset; the 8-point grid in §2 replaces it.
-- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated only when run status is `ok`.
+  took about 19 minutes per fold on this dataset; the 8-point grid in `configs/modeling_default.yaml` (`models.lgbm.grids`) replaces it.
+- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
 ### `metadata.json` (final and fold artifacts)
