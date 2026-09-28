@@ -49,7 +49,7 @@ from modeling.train_lgbm import (
     build_lgbm_base_params,
     select_lgbm_config_by_inner_val,
     train_lgbm_for_task,
-    train_single_lgbm,
+    train_lgbm_fixed_rounds,
 )
 from modeling.train_logreg import FitResult, build_logreg_pipeline, select_C_by_inner_val, train_logreg_for_task
 
@@ -624,7 +624,12 @@ def _fit_final_raw_model(
     feature_names: list[str],
     log_loss_fn: Any,
 ) -> tuple[Any, FitResult | LgbmFitResult]:
-    """Select hyperparameters on train_hp + inner_val, then fit raw model on train_full."""
+    """Select hyperparameters on train_hp + inner_val, then fit raw model on train_full.
+
+    For LGBM the final fit uses a fixed ``num_boost_round`` (the ``best_iteration``
+    picked during selection) and no early stopping, since ``inner_val`` ⊂
+    ``train_full`` — see :func:`modeling.train_lgbm.train_lgbm_fixed_rounds`.
+    """
     hp_tr = final_slices.train_hp_idx
     hp_iv = final_slices.inner_val_idx
     train_full = final_slices.train_full_idx
@@ -677,14 +682,15 @@ def _fit_final_raw_model(
         monotone_constraints=monotone,
     )
     full_params = {**base_params, **chosen_params}
-    final_booster = train_single_lgbm(
+    # Fixed-round retrain (UPDATE plan §10): inner_val ⊂ train_full, so early
+    # stopping here would validate against rows the model was just fit on and
+    # never trigger. num_boost_round is instead pinned to best_iteration, the
+    # round count inner-val selection above already chose honestly.
+    final_booster = train_lgbm_fixed_rounds(
         X.iloc[train_full],
         y_train_full,
-        X.iloc[hp_iv],
-        y_hp_iv,
         params=full_params,
-        num_boost_round=LGBM_NUM_BOOST_ROUND,
-        early_stopping_rounds=LGBM_EARLY_STOPPING_ROUNDS,
+        num_boost_round=best_iteration,
     )
     chosen_loss = next(loss for params, loss in losses if params == chosen_params)
     fit = LgbmFitResult(
@@ -693,7 +699,7 @@ def _fit_final_raw_model(
         chosen_params=chosen_params,
         inner_val_log_loss_by_config=losses,
         chosen_inner_val_log_loss=chosen_loss,
-        best_iteration=final_booster.best_iteration,
+        best_iteration=best_iteration,
         n_rows_train=len(train_full),
         n_rows_inner_val=len(hp_iv),
     )

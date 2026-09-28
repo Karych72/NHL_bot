@@ -158,6 +158,31 @@ def train_single_lgbm(
     return booster
 
 
+def train_lgbm_fixed_rounds(
+    X_train: pd.DataFrame | np.ndarray,
+    y_train: np.ndarray,
+    *,
+    params: Mapping[str, Any],
+    num_boost_round: int,
+) -> lgb.Booster:
+    """Train one LightGBM model for a fixed number of rounds, no early stopping.
+
+    Used for the UPDATE plan §10 final retrain on ``train_full``: by that point
+    ``num_boost_round`` is already the ``best_iteration`` an inner-val grid
+    search (:func:`select_lgbm_config_by_inner_val`) picked for *params*, so no
+    validation set is carved out of ``train_full`` and boosting cannot early
+    stop against data the final model itself will be judged on.
+    """
+    if num_boost_round <= 0:
+        raise ValueError("num_boost_round must be >= 1")
+
+    x_train = _as_numpy_matrix(X_train)
+    y_train_arr = np.asarray(y_train).ravel()
+    train_data = lgb.Dataset(x_train, label=y_train_arr)
+
+    return lgb.train(dict(params), train_data, num_boost_round=num_boost_round)
+
+
 def predict_lgbm_proba(
     booster: lgb.Booster,
     X: pd.DataFrame | np.ndarray,
@@ -333,5 +358,6 @@ __all__ = [
     "predict_lgbm_proba",
     "select_lgbm_config_by_inner_val",
     "train_lgbm_for_task",
+    "train_lgbm_fixed_rounds",
     "train_single_lgbm",
 ]
