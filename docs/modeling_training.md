@@ -277,6 +277,24 @@ against recurring: monotone keys are checked against columns the real
 `dataset_builder` pipeline produces, and `calibration.min_samples <=
 split.calibration_games` is asserted for both configs.
 
+**`calibration.method` defaults to `platt`, not `isotonic` (Задача 40, spike
+40a):** on the real `split.calibration_games: 300` block,
+`IsotonicRegression(out_of_bounds="clip")` puts the extreme bins at exact 0
+and 1, and `np.clip(..., 0, 1)` (`modeling/calibrate.py:139`) keeps them —
+each such row costs ~34.5 nats of holdout log-loss. Measured on the real
+dataset: calibrated holdout log-loss for `home_win`/`logreg` was 0.887 with
+isotonic vs. 0.699 raw (worse than not calibrating at all), while Platt gave
+0.692, beating the trivial-baseline log-loss of 0.694. `isotonic` is still a
+supported `calibration.method` value (spec §9) and is unchanged — it is just
+no longer the default. Platt itself (`_build_platt_calibrator` /
+`_apply_fitted_calibrator` in `modeling/calibrate.py`) fits on
+`logit(clip(p, eps, 1-eps))` rather than on the raw probability `p`, and uses
+an unregularized `LogisticRegression(penalty=None)`: this is classical Platt
+scaling (a sigmoid over the raw model's logit), and dropping the L2 term
+matters because with it the fitted slope could collapse toward a near-constant
+prediction (spike 40a measured a fitted slope of -0.014 for one candidate
+model under the old `p`-input, L2 fit).
+
 ---
 
 ## Further reading

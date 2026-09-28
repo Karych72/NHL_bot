@@ -133,7 +133,9 @@ class TestModelingConfigHappyPath(unittest.TestCase):
         default_cfg = repo_root / "configs" / "modeling_default.yaml"
         metadata = _minimal_metadata()
         resolved = resolve_config(default_cfg, metadata)
-        self.assertEqual(resolved.calibration.method.value, "isotonic")
+        # platt is the default (Задача 40a): isotonic on the 300-game
+        # calibration block outputs exact 0/1 and blows up holdout log-loss.
+        self.assertEqual(resolved.calibration.method.value, "platt")
         self.assertEqual(resolved.evaluation.bootstrap_samples, 1000)
 
 

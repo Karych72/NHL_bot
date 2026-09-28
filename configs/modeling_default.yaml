@@ -68,7 +68,9 @@ models:
         sum_goals_against_roll_mean_20: 1
 
 calibration:
-  method: isotonic
+  # Isotonic on a 300-game calibration block outputs exact 0/1 at the extreme
+  # bins, which blows up holdout log-loss (spike 40a). Platt is the default.
+  method: platt
   # Must not exceed split.calibration_games (300), or calibration is silently
   # skipped on every fold. See docs/modeling_training.md §7 (Задача 39).
   min_samples: 300
