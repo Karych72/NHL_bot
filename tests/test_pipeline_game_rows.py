@@ -11,7 +11,9 @@ it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 
 from __future__ import annotations
 
+import re
 import unittest
+from datetime import date, datetime, timezone
 
 from tests._pipeline_fixtures import (
     GAME_ID,
@@ -543,6 +545,47 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
         cache_path = loader.RAW_CACHE_DIR / str(SEASON_ID) / f"{GAME_ID}.pbp.json.gz"
         self.assertFalse(cache_path.exists())
+
+
+class ScheduledGamesTest(LoaderApiTestCase):
+    """Задача 22A: будущие игры для ``scheduled_games``."""
+
+    def test_fetch_asks_for_future_states_of_regular_season_in_a_two_day_window(self):
+        instance = make_loader()
+        urls = []
+        instance.fetch_paginated = lambda url, page_size=500: urls.append(url) or []
+
+        instance.fetch_scheduled_games()
+
+        (url,) = urls
+        self.assertIn(f"season={SEASON_ID} and gameType=2", url)
+        self.assertIn("gameStateId in (1,2)", url)
+        first, last = re.findall(r'gameDate[<>]="(\d{4}-\d{2}-\d{2})"', url)
+        self.assertEqual(first, datetime.now(timezone.utc).date().isoformat())
+        self.assertEqual((date.fromisoformat(last) - date.fromisoformat(first)).days, 1)
+
+    def test_rows_from_api_records(self):
+        rows = make_loader().build_scheduled_rows(
+            load_fixture("nhl_scheduled_games_meta.json"), played_game_ids=set()
+        )
+        self.assertEqual(
+            rows,
+            [
+                (2025021080, "2026-03-19", 1, 4, SEASON_ID),
+                (GAME_ID, "2026-03-18", WSH, OTT, SEASON_ID),
+            ],
+        )
+
+    def test_game_already_in_games_is_skipped(self):
+        rows = make_loader().build_scheduled_rows(
+            load_fixture("nhl_scheduled_games_meta.json"), played_game_ids={GAME_ID}
+        )
+        self.assertEqual([r[0] for r in rows], [2025021080])
+
+    def test_record_without_a_team_raises(self):
+        broken = without(load_fixture("nhl_scheduled_games_meta.json")[0], "homeTeamId")
+        with self.assertRaises(KeyError):
+            make_loader().build_scheduled_rows([broken], played_game_ids=set())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,32 @@
+[
+  {
+    "id": 2025021080,
+    "easternStartTime": "2026-03-19T19:00:00",
+    "gameDate": "2026-03-19",
+    "gameNumber": 1080,
+    "gameScheduleStateId": 1,
+    "gameStateId": 1,
+    "gameType": 2,
+    "homeScore": 0,
+    "homeTeamId": 1,
+    "period": 1,
+    "season": 20252026,
+    "visitingScore": 0,
+    "visitingTeamId": 4
+  },
+  {
+    "id": 2025021079,
+    "easternStartTime": "2026-03-18T19:30:00",
+    "gameDate": "2026-03-18",
+    "gameNumber": 1079,
+    "gameScheduleStateId": 1,
+    "gameStateId": 2,
+    "gameType": 2,
+    "homeScore": 0,
+    "homeTeamId": 15,
+    "period": 1,
+    "season": 20252026,
+    "visitingScore": 0,
+    "visitingTeamId": 9
+  }
+]

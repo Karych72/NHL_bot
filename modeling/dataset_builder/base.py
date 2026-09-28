@@ -78,28 +78,56 @@ def _day_where_clause(config: DatasetBuildConfig) -> str:
 
 
 def load_target_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
-    mode_predicate = "g.winner_id IS NOT NULL" if config.mode == "train" else "g.winner_id IS NULL"
+    """Загружает игры-цели датасета: сыгранные (train) или будущие (predict).
+
+    Train берёт завершённые игры из ``games`` вместе с фактическими голами;
+    predict — ещё не сыгранные из ``scheduled_games`` (их наполняет загрузчик,
+    Задача 22A), у которых нет ни победителя, ни голов: колонки те же, но
+    ``winner_id`` и ``*_goals_target`` — NULL.
+
+    Args:
+        conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
+        config: режим сборки, фильтры сезонов и окна дней.
+    """
+    if config.mode == "train":
+        source = """
+            SELECT
+                g.game_id::bigint AS game_id,
+                g.day::date AS day,
+                g.season_id::bigint AS season_id,
+                g.home_team_id::bigint AS home_team_id,
+                g.away_team_id::bigint AS away_team_id,
+                g.winner_id::bigint AS winner_id,
+                hs.goals::double precision AS home_goals_target,
+                aws.goals::double precision AS away_goals_target
+            FROM games g
+            LEFT JOIN game_team_stats hs
+                ON hs.game_id = g.game_id
+               AND hs.team_id::bigint = g.home_team_id::bigint
+            LEFT JOIN game_team_stats aws
+                ON aws.game_id = g.game_id
+               AND aws.team_id::bigint = g.away_team_id::bigint
+            WHERE g.winner_id IS NOT NULL
+              AND g.day IS NOT NULL
+              AND g.home_team_id IS NOT NULL
+              AND g.away_team_id IS NOT NULL
+        """
+    else:
+        source = """
+            SELECT
+                g.game_id::bigint AS game_id,
+                g.day::date AS day,
+                g.season_id::bigint AS season_id,
+                g.home_team_id::bigint AS home_team_id,
+                g.away_team_id::bigint AS away_team_id,
+                NULL::bigint AS winner_id,
+                NULL::double precision AS home_goals_target,
+                NULL::double precision AS away_goals_target
+            FROM scheduled_games g
+            WHERE TRUE
+        """
     query = f"""
-        SELECT
-            g.game_id::bigint AS game_id,
-            g.day::date AS day,
-            g.season_id::bigint AS season_id,
-            g.home_team_id::bigint AS home_team_id,
-            g.away_team_id::bigint AS away_team_id,
-            g.winner_id::bigint AS winner_id,
-            hs.goals::double precision AS home_goals_target,
-            aws.goals::double precision AS away_goals_target
-        FROM games g
-        LEFT JOIN game_team_stats hs
-            ON hs.game_id = g.game_id
-           AND hs.team_id::bigint = g.home_team_id::bigint
-        LEFT JOIN game_team_stats aws
-            ON aws.game_id = g.game_id
-           AND aws.team_id::bigint = g.away_team_id::bigint
-        WHERE {mode_predicate}
-          AND g.day IS NOT NULL
-          AND g.home_team_id IS NOT NULL
-          AND g.away_team_id IS NOT NULL
+        {source}
           AND g.home_team_id <> g.away_team_id
           {_season_where_clause(config)}
           {_day_where_clause(config)}

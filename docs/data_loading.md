@@ -275,7 +275,10 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
     1. `DELETE FROM game_three_stars|all_goals|game_player_stats|game_team_stats|game_goalie_stats|games WHERE game_id = ANY(window_ids)` — удаление текущей версии данных по этим играм;
     2. `UPSERT` в сезонные таблицы (`ON CONFLICT … DO UPDATE`);
     3. `INSERT` в per-game таблицы;
-    4. `COMMIT`. На любом исключении выше — `ROLLBACK` всей транзакции,
+    4. `scheduled_games` сезона целиком заменяется (`DELETE` + `INSERT`) незавершёнными играми
+       регулярки (`gameStateId` 1/2) на `SCHEDULE_WINDOW_DAYS` UTC-дней от сегодня — не от
+       окна `--date-from/--date-to`; игры, уже лежащие в `games`, пропускаются (Задача 22A);
+    5. `COMMIT`. На любом исключении выше — `ROLLBACK` всей транзакции,
        подключение закрывается.
 
 В логах в начале выводятся окно дат и `season_id`:

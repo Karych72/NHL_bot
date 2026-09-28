@@ -7,6 +7,7 @@ DROP TABLE IF EXISTS game_player_stats CASCADE;
 DROP TABLE IF EXISTS game_team_stats CASCADE;
 DROP TABLE IF EXISTS game_three_stars CASCADE;
 DROP TABLE IF EXISTS games CASCADE;
+DROP TABLE IF EXISTS scheduled_games CASCADE;
 DROP TABLE IF EXISTS goalies_season_stats CASCADE;
 DROP TABLE IF EXISTS players_advanced_stats CASCADE;
 DROP TABLE IF EXISTS players_season_stats CASCADE;

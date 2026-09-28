@@ -29,6 +29,7 @@ NHL_bot/
 │   ├── t.game_team_stats.sql
 │   ├── t.game_three_stars.sql
 │   ├── t.games.sql
+│   ├── t.scheduled_games.sql
 │   ├── t.goalies_season_stats.sql
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
@@ -38,7 +39,9 @@ NHL_bot/
 │       ├── 0001_bot_subscriptions.up.sql
 │       ├── 0001_bot_subscriptions.down.sql
 │       ├── 0002_game_three_stars.up.sql
-│       └── 0002_game_three_stars.down.sql
+│       ├── 0002_game_three_stars.down.sql
+│       ├── 0003_scheduled_games.up.sql
+│       └── 0003_scheduled_games.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
@@ -278,7 +281,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 Планировщик, который вызывает `load_season_modern.py` (и, после успешной загрузки,
 `push_digest_job.py`) без участия человека — сервис `sync` в `docker-compose.yml`, тот же
 образ, что у бота. Только stdlib, новых зависимостей нет. Расписание, здоровье сервиса,
-том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Тесты —
+том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
+загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A). Тесты —
 `tests/test_scheduled_sync.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
@@ -623,6 +627,19 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 Индекс `idx_games_season_day (season_id, day)` — под фильтры `WHERE season_id = %s`
 (частично — с `day`), которыми пользуются день-дайджест, «форма команды» и датасет-билдер.
+
+#### `scheduled_games` — Будущие игры (Задача 22A)
+
+Цели predict-датасета: незавершённые игры регулярки на сегодня и завтра (UTC). `games` хранит
+только сыгранные, поэтому будущие лежат отдельно; загрузчик заменяет содержимое сезона при каждом прогоне.
+
+| Колонка | Тип | Описание |
+|---|---|---|
+| `game_id` | bigint | PK. NHL game ID |
+| `day` | date | NOT NULL. Дата матча |
+| `home_team_id` | bigint | NOT NULL. FK → teams (team_id, season_id) |
+| `away_team_id` | bigint | NOT NULL. FK → teams (team_id, season_id) |
+| `season_id` | bigint | NOT NULL |
 
 #### `all_goals` — Все голы
 
