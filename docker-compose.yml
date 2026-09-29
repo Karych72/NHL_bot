@@ -27,12 +27,34 @@ services:
       timeout: 5s
       retries: 6
 
+  # Применяет SQL-функции и миграции перед стартом bot и sync, при каждом `up`. Цели
+  # идемпотентны: функции — CREATE OR REPLACE, миграции пропускают уже применённые
+  # (schema_migrations). Таблицы не создаёт — на пустой БД сначала `make db-sync`
+  # (DEVELOPMENT.md §Docker, «Развёртывание с нуля»).
+  migrate:
+    image: ${NHL_BOT_IMAGE:-nhl-bot:local}
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    working_dir: /app
+    command: ["make", "db-functions", "db-migrate"]
+
   bot:
+    # NHL_BOT_IMAGE задаёт прод-деплой (release.yml) — образ из GHCR вместо локальной сборки.
+    image: ${NHL_BOT_IMAGE:-nhl-bot:local}
     build: .
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -44,11 +66,14 @@ services:
     command: ["python", "bot.py"]
 
   sync:
+    image: ${NHL_BOT_IMAGE:-nhl-bot:local}
     build: .
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:

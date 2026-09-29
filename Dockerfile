@@ -8,8 +8,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# postgresql-client и make — для сервиса migrate (docker-compose.yml): он применяет
+# SQL-функции и миграции теми же целями Makefile, что и на хосте (db-functions, db-migrate).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 ffmpeg \
+    && apt-get install -y --no-install-recommends libpq5 ffmpeg postgresql-client make \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
