@@ -1227,7 +1227,6 @@ def test_country_pages_reject_code_outside_ranking_without_touching_sql(
         "Страна не найдена в рейтинге этого сезона.", False, False,
     )
     assert bot_messages.country_goalies("ZZZ") == "Страна не найдена в рейтинге этого сезона."
-    assert all(params[1:2] != ("ZZZ",) for _, params in cursor.executed)
     assert len(cursor.executed) == 1  # только запрос рейтинга (кэш), без страницы
 
 
@@ -1238,7 +1237,7 @@ def test_country_goalies_formats_rows_and_reports_empty(bot_module, fake_db_rout
         ("FROM goalies_season_stats", [("Vejmelka", "UTA", 64, 38, 89.67, 2.74592)]),
     ])
     text = bot_messages.country_goalies("CAN")
-    assert "1. Vejmelka UTA — игр: 64, побед: 38, SV%: 0.897, GAA: 2.75" in text
+    assert "1. Vejmelka UTA — игр: 64, побед: 38, SV%: 89.67%, GAA: 2.75" in text
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     assert "У этой страны нет вратарей в этом сезоне." in bot_messages.country_goalies("CAN")

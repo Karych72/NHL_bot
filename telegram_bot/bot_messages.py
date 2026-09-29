@@ -985,6 +985,34 @@ def _rank_range_label(offset: int, rows: int) -> str:
     return f"{lo}–{hi}"
 
 
+def _leaderboard_page_text(
+    heading_html: str, body: str, n: int, total: int, offset: int
+) -> Tuple[str, bool, bool]:
+    """Общий хвост страницы лидерборда: шапка с маркером «Показаны N из M» и
+    флаги перелистывания.
+
+    Аргументы:
+        heading_html: уже экранированный заголовок (без тегов).
+        body: строки страницы; при `n == 0` заменяются текстом «нет данных».
+        n: число строк на странице; total: размер полной выборки; offset: сдвиг.
+
+    Возвращает: (текст, has_prev, has_next).
+    """
+    span = _rank_range_label(offset, n)
+    if n == 0:
+        body = "<i>Нет данных в этом диапазоне.</i>"
+        marker = f"<i>{html.escape(span)}</i>"
+    else:
+        marker = truncation_marker(html.escape(span), total, item_word="строк")
+    text = (
+        f"<b>{heading_html}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
+        f"— {marker}\n\n{body}"
+    )
+    # total, а не «страница пришла полной» — иначе последняя полная страница
+    # рисует кнопку «вперёд» на пустой диапазон, противореча маркеру.
+    return text, offset > 0, offset + n < total
+
+
 def leaders_menu_intro() -> str:
     """Текст первого шага /leaders — до выбора категории кнопкой."""
     season_esc = html.escape(str(config.CURRENT_SEASON))
@@ -1014,21 +1042,7 @@ def player_stat_leaderboard_page(
         secondary_sort=secondary_sort,
         use_html=True,
     )
-    span = _rank_range_label(offset, n)
-    if n == 0:
-        body = "<i>Нет данных в этом диапазоне.</i>"
-        marker = f"<i>{html.escape(span)}</i>"
-    else:
-        marker = truncation_marker(html.escape(span), total, item_word="строк")
-    text = (
-        f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
-        f"— {marker}\n\n{body}"
-    )
-    has_prev = offset > 0
-    # total, а не «страница пришла полной» — иначе последняя полная страница
-    # рисует кнопку «вперёд» на пустой диапазон, противореча маркеру выше.
-    has_next = offset + n < total
-    return text, has_prev, has_next
+    return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
 
 
 def single_stat_leaderboard_page(
@@ -1642,23 +1656,14 @@ def country_skaters_page(code: str, offset: int) -> Tuple[str, bool, bool]:
         f"игр: {stats['games'][i]}"
         for i in range(n)
     ]
-    span = _rank_range_label(offset, n)
-    if n == 0:
-        body = "<i>Нет данных в этом диапазоне.</i>"
-        marker = f"<i>{html.escape(span)}</i>"
-    else:
-        body = "\n".join(lines)
-        marker = truncation_marker(html.escape(span), total, item_word="строк")
-    text = (
-        f"<b>Топ бомбардиров: {_country_label(code)}</b> "
-        f"({html.escape(str(config.CURRENT_SEASON))}) — {marker}\n\n{body}"
+    return _leaderboard_page_text(
+        f"Топ бомбардиров: {_country_label(code)}", "\n".join(lines), n, total, offset
     )
-    return text, offset > 0, offset + n < total
 
 
 def country_goalies(code: str) -> str:
     """Все вратари страны текущего сезона по победам (Задача 42): фамилия,
-    команда, игры, победы, save% (доля 0–1, 3 знака), GAA.
+    команда, игры, победы, save%, GAA.
 
     Аргументы:
         code: код страны из `country_rankings()`; иной код — текст «Страна не
@@ -1682,8 +1687,8 @@ def country_goalies(code: str) -> str:
         return header + "У этой страны нет вратарей в этом сезоне."
     lines = []
     for i in range(stats["count_rows"]):
-        # save_percentage в БД — шкала 0–100 (как в game_message), показываем долю.
-        sv = f"{float(stats['save_pct'][i]) / 100:.3f}" if stats["save_pct"][i] is not None else "—"
+        # save_percentage в БД — шкала 0–100, `_fmt_pct_points` это учитывает.
+        sv = _fmt_pct_points(stats["save_pct"][i])
         gaa = f"{float(stats['gaa'][i]):.2f}" if stats["gaa"][i] is not None else "—"
         lines.append(
             f"{i + 1}. {html.escape(stats['lastname'][i] or 'Unknown')} "
@@ -1795,19 +1800,7 @@ def team_stat_leaderboard_page(
         offset=offset,
         use_html=True,
     )
-    span = _rank_range_label(offset, n)
-    if n == 0:
-        body = "<i>Нет данных в этом диапазоне.</i>"
-        marker = f"<i>{html.escape(span)}</i>"
-    else:
-        marker = truncation_marker(html.escape(span), total, item_word="строк")
-    text = (
-        f"<b>{html.escape(heading)}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
-        f"— {marker}\n\n{body}"
-    )
-    has_prev = offset > 0
-    has_next = offset + n < total
-    return text, has_prev, has_next
+    return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
 
 
 def team_stats(name_stats: str, column_name: str) -> str:
