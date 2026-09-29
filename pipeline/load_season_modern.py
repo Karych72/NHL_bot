@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple
@@ -31,6 +31,16 @@ RAW_CACHE_DIR = Path(__file__).resolve().parents[1] / "all_data" / "raw"
 # NHL API ``gameState`` values that mark a game as finished and therefore safe
 # to cache forever. Anything else (LIVE, CRIT, FUT, PRE, ...) is not cached.
 FINAL_GAME_STATES = {"OFF", "FINAL"}
+
+# Stats REST ``gameStateId`` of a not-yet-started game: 1 = FUT (scheduled), 2 = PRE
+# (pre-game). Live (3, 4) and finished (5-7) states are not future games; 7 is what
+# ``fetch_final_games`` loads into ``games``. Confirmed against the live endpoint:
+# a season's upcoming games all come back with ``gameStateId`` 1.
+SCHEDULED_GAME_STATE_IDS = (1, 2)
+
+# How many UTC days, counting today, ``scheduled_games`` covers on every run:
+# 2 = today and tomorrow (the prediction targets of the bot's "tonight" preview).
+SCHEDULE_WINDOW_DAYS = 2
 
 # gamecenter endpoint name -> cache file suffix.
 _GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box", "landing": "landing"}
@@ -784,6 +794,89 @@ class ModernNhlLoader:
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
         return self.fetch_paginated(url, page_size=1000)
 
+    def fetch_scheduled_games(self) -> List[dict]:
+        """Fetch not-yet-played regular-season games for the next ``SCHEDULE_WINDOW_DAYS`` UTC days.
+
+        Same Stats REST endpoint as ``fetch_final_games``, but with the future
+        ``gameStateId`` values instead of 7 and a window anchored at today
+        (UTC), not at the loader's ``--date-from/--date-to`` history window.
+
+        Returns:
+            Stats API ``game`` records of the upcoming games of ``self.season_id``.
+        """
+        first_day = datetime.now(timezone.utc).date()
+        last_day = first_day + timedelta(days=SCHEDULE_WINDOW_DAYS - 1)
+        states = ",".join(str(i) for i in SCHEDULED_GAME_STATE_IDS)
+        cayenne = (
+            f"season={self.season_id} and gameType=2 and gameStateId in ({states}) and "
+            f'gameDate>="{first_day.isoformat()}" and gameDate<="{last_day.isoformat()}"'
+        )
+        url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
+        return self.fetch_paginated(url, page_size=1000)
+
+    def build_scheduled_rows(self, games_meta: List[dict], played_game_ids: Set[int]) -> List[tuple]:
+        """Turn ``fetch_scheduled_games`` records into ``scheduled_games`` rows.
+
+        Rows are ``(game_id, day, home_team_id, away_team_id, season_id)``. A game
+        already stored in ``games`` is skipped; a record without an id, date or
+        team raises ``KeyError`` — no synthetic defaults for a NOT NULL row.
+
+        Args:
+            games_meta: records returned by ``fetch_scheduled_games``.
+            played_game_ids: ids present in ``games``, excluded from the result.
+        """
+        return [
+            (
+                int(g["id"]),
+                g["gameDate"],
+                int(g["homeTeamId"]),
+                int(g["visitingTeamId"]),
+                self.season_id,
+            )
+            for g in games_meta
+            if int(g["id"]) not in played_game_ids
+        ]
+
+    def replace_scheduled_games(self, conn, games_meta: List[dict]) -> int:
+        """Replace this season's ``scheduled_games`` rows in the caller's transaction.
+
+        Must run after ``games`` and ``teams`` are written (the "already played"
+        and "team exists" filters read them). A game whose home or away team has
+        no ``teams`` row for the season is skipped with a warning: at a season's
+        start the team summary endpoint is still empty while the schedule is
+        not, and the FK violation would roll back the whole loader transaction.
+        Does not commit.
+
+        Args:
+            conn: open psycopg2 connection, autocommit off.
+            games_meta: records returned by ``fetch_scheduled_games``.
+
+        Returns:
+            Number of rows written.
+        """
+        ids = [int(g["id"]) for g in games_meta]
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scheduled_games WHERE season_id = %s", (self.season_id,))
+            cur.execute("SELECT game_id FROM games WHERE game_id = ANY(%s)", (ids,))
+            played = {row[0] for row in cur.fetchall()}
+            cur.execute("SELECT team_id FROM teams WHERE season_id = %s", (self.season_id,))
+            known_teams = {row[0] for row in cur.fetchall()}
+        candidates = self.build_scheduled_rows(games_meta, played)
+        rows = [r for r in candidates if r[2] in known_teams and r[3] in known_teams]
+        if len(rows) < len(candidates):
+            logger.warning(
+                "Skipped %d scheduled game(s): team missing in teams for season_id=%s",
+                len(candidates) - len(rows),
+                self.season_id,
+            )
+        self.execute_insert(
+            conn,
+            "scheduled_games",
+            ["game_id", "day", "home_team_id", "away_team_id", "season_id"],
+            rows,
+        )
+        return len(rows)
+
     def fetch_game_json(self, game_id: int, endpoint: str) -> dict:
         """Fetch one per-game gamecenter endpoint, caching finished games on disk.
 
@@ -1358,6 +1451,7 @@ class ModernNhlLoader:
         logger.info("Fetching finished games...")
         games_meta = self.fetch_final_games()
         logger.info("Finished games to load: %d", len(games_meta))
+        scheduled_meta = self.fetch_scheduled_games()
         (
             games_rows,
             all_goals_rows,
@@ -1718,6 +1812,7 @@ class ModernNhlLoader:
                 game_three_stars_rows,
                 page_size=5000,
             )
+            scheduled_count = self.replace_scheduled_games(conn, scheduled_meta)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1725,7 +1820,7 @@ class ModernNhlLoader:
         finally:
             conn.close()
 
-        logger.info("Done.")
+        logger.info("Done. Scheduled games in window: %d", scheduled_count)
         logger.info(
             "Loaded: teams=%d, rosters=%d, skaters=%d, advanced=%d, shot_types=%d, goalies=%d, games=%d",
             len(teams_rows), len(roster_rows), len(skater_rows), len(advanced_rows),

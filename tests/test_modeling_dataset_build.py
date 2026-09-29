@@ -649,5 +649,37 @@ class TestPregameElo(unittest.TestCase):
         self.assertNotIn("sum_elo", report["built_feature_columns"])
 
 
+class TestLoadTargetGamesSource(unittest.TestCase):
+    """Задача 22A: predict берёт цели из ``scheduled_games``, train — из ``games``."""
+
+    def _query(self, mode: str) -> str:
+        from pathlib import Path
+        from unittest import mock
+
+        from modeling.dataset_builder.base import DatasetBuildConfig, load_target_games
+
+        config = DatasetBuildConfig(
+            mode=mode, output_dir=Path("."), season_ids=[20262027], target_day_from="2026-10-01"
+        )
+        with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
+            load_target_games(object(), config)
+        return read_sql.call_args.args[0]
+
+    def test_predict_reads_scheduled_games_not_games(self):
+        query = self._query("predict")
+        self.assertIn("FROM scheduled_games g", query)
+        self.assertNotIn("FROM games", query)
+        self.assertNotIn("winner_id IS", query)
+        self.assertIn("g.season_id IN (20262027)", query)
+        self.assertIn("g.day >= '2026-10-01'", query)
+        self.assertIn("ORDER BY g.day, g.game_id", query)
+
+    def test_train_reads_played_games(self):
+        query = self._query("train")
+        self.assertIn("FROM games g", query)
+        self.assertIn("g.winner_id IS NOT NULL", query)
+        self.assertNotIn("scheduled_games", query)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -264,6 +264,21 @@ Steps performed by `run_predict()`:
 Raises `FileNotFoundError` if no `latest` artifact exists for the pair (train one
 first — a run must reach `status: ok`), and `ValueError` on a `features_hash` mismatch.
 
+**Публикация в `game_predictions` (Задача 22B).** Бот читает только PG, поэтому CSV от
+`predict` переносится в таблицу `game_predictions` командой
+`python -m modeling.cli publish-predictions --task T --model M [--predictions CSV] [--artifacts-root DIR]`
+([`modeling/publish_predictions.py`](../modeling/publish_predictions.py); `predict` при этом
+по-прежнему не касается БД). Гейт — по артефакту, не пересчитывается: нет `latest` или
+`metadata.json` по `latest` имеет `status != ok` → строки этой `task` удаляются, вставки нет,
+код выхода 0. Иначе строки задачи заменяются (delete + insert в одной транзакции), `run_id` берётся
+из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=lgbm]`:
+`build-dataset --mode predict` (по `scheduled_games`, манифест берётся из `latest/metadata.json`
+пары; политика cold-start — дефолтная `allow_with_flag`, как при обучении: она входит в `features_hash`,
+и другое значение роняет build-dataset на `features_hash mismatch`) → `predict` → `publish-predictions`. Цель требует `latest`: без него build-dataset/predict
+падают до публикации, поэтому удаление строк при непройденном гейте через make срабатывает, когда
+`latest` указывает на прогон со `status != ok`; при отсутствии `latest` — только прямым вызовом
+`publish-predictions`.
+
 **Two config gaps found running this end to end on real data (Задача 15), fixed in
 Задача 39 (`plan/tasks/task_39_modeling_config_gaps.md`):**
 

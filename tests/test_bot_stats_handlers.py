@@ -434,7 +434,7 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(bot_mod
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await stats_handlers.callback_tonight_game(update, fake_context)
 
-    mock_preview.assert_called_once_with("DET", "NYR")
+    mock_preview.assert_called_once_with(555, "DET", "NYR")
     assert fake_context.bot.sent_messages[0]["text"] == "PREVIEW"
     assert fake_context.bot.sent_messages[0]["parse_mode"] == "HTML"
 
