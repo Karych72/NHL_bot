@@ -108,7 +108,7 @@ NHL_bot/
 │       └── get_three_stars_game.sql
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
-│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict|publish-predictions`
+│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|promote|predict|publish-predictions`
 │   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
 │   ├── publish_predictions.py           # Задача 22B: CSV predict → таблица game_predictions (гейт по status latest)

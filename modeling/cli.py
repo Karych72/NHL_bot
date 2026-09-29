@@ -110,6 +110,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    train.add_argument(
+        "--no-promote",
+        action="store_true",
+        help="Train and write reports/artifacts but do not create or move `latest` (use `promote` later)",
+    )
+
+    promote = sub.add_parser(
+        "promote",
+        help="Point `latest` of a (task, model) pair at a finished run (also the rollback command)",
+    )
+    promote.add_argument("--task", choices=("home_win", "over_5_5"), required=True)
+    promote.add_argument("--model", choices=("logreg", "lgbm"), required=True)
+    promote.add_argument("--run-id", required=True, help="Run to promote (dir under models/<task>/<model>/)")
+
     predict = sub.add_parser("predict", help="Score a predict dataset with the latest trained model")
     predict.add_argument("--task", choices=("home_win", "over_5_5"), required=True)
     predict.add_argument("--model", choices=("logreg", "lgbm"), required=True)
@@ -220,6 +234,7 @@ def _handle_train(args: argparse.Namespace) -> int:
             model=args.model,
             run_id=args.run_id,
             fail_on_baseline=not args.no_fail_on_baseline,
+            promote=not args.no_promote,
         )
     except (ConfigError, ValueError) as exc:
         print(f"training error: {exc}", file=sys.stderr)
@@ -229,6 +244,18 @@ def _handle_train(args: argparse.Namespace) -> int:
     for item in results:
         print(f"run_id={item.run_id} task={item.task} model={item.model} status={item.status}")
     return exit_code
+
+
+def _handle_promote(args: argparse.Namespace) -> int:
+    from modeling.train_runner import promote_model
+
+    try:
+        promote_model(args.task, args.model, args.run_id, artifacts_root=Path("artifacts"))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"promote error: {exc}", file=sys.stderr)
+        return 1
+    print(f"latest: {args.task}/{args.model} -> {args.run_id}/final")
+    return 0
 
 
 def _handle_predict(args: argparse.Namespace) -> int:
@@ -317,6 +344,9 @@ def main() -> None:
 
     if args.command == "train":
         raise SystemExit(_handle_train(args))
+
+    if args.command == "promote":
+        raise SystemExit(_handle_promote(args))
 
     if args.command == "predict":
         raise SystemExit(_handle_predict(args))

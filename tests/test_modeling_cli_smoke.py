@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -334,6 +335,103 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             self.assertTrue(latest.exists() or latest_txt.exists())
             self.assertTrue((artifacts / "reports" / run_id / "metrics.json").exists())
             self.assertTrue((artifacts / "reports" / run_id / "run.log").exists())
+
+
+    def test_no_promote_keeps_latest_and_default_moves_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            csv_path, meta_path = _write_synthetic_dataset(tmp, n_days=6500, games_per_day=1)
+            cfg = _test_config_yaml()
+            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["models"]["logreg"]["grids"]["C"] = [1.0]
+            cfg["evaluation"]["bootstrap_samples"] = 20
+            cfg["compute"]["num_threads"] = 1
+            cfg_path = tmp / "cfg.yaml"
+            cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+            artifacts = tmp / "artifacts"
+            resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
+            base = artifacts / "models" / "home_win" / "logreg"
+            base.mkdir(parents=True)
+            os.symlink(Path("previous_run") / "final", base / "latest")
+
+            def _train(run_id: str, *, promote: bool) -> str:
+                results = run_training(
+                    resolved,
+                    dataset_csv=csv_path,
+                    metadata_path=meta_path,
+                    task="home_win",
+                    model="logreg",
+                    run_id=run_id,
+                    artifacts_root=artifacts,
+                    promote=promote,
+                )
+                self.assertEqual(results[0].status, "ok")
+                return results[0].run_id
+
+            kept_run = _train(VALID_RUN_ID, promote=False)
+            self.assertTrue((base / kept_run / "final" / "metadata.json").exists())
+            self.assertEqual(os.readlink(base / "latest"), str(Path("previous_run") / "final"))
+
+            moved_run = _train("home_win_logreg_deadbeef_20260102T000000Z", promote=True)
+            self.assertEqual(os.readlink(base / "latest"), str(Path(moved_run) / "final"))
+
+
+class TestPromoteCommand(unittest.TestCase):
+    """``modeling.cli promote`` against a real artifacts tree in a temp cwd."""
+
+    def _write_run(self, tmp: Path, run_id: str, *, status: str | None) -> None:
+        final_dir = tmp / "artifacts" / "models" / "home_win" / "logreg" / run_id / "final"
+        final_dir.mkdir(parents=True)
+        if status is not None:
+            (final_dir / "metadata.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+
+    def _promote(self, tmp: Path, run_id: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "PYTHONPATH": str(ROOT)}
+        cmd = [PY, "-m", "modeling.cli", "promote", "--task", "home_win", "--model", "logreg", "--run-id", run_id]
+        return subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True, check=False)
+
+    def test_promote_ok_run_and_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            self._write_run(tmp, "run_old", status="ok")
+            self._write_run(tmp, "run_new", status="ok")
+            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
+
+            proc = self._promote(tmp, "run_new")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("latest: home_win/logreg -> run_new/final", proc.stdout)
+            self.assertEqual(os.readlink(latest), str(Path("run_new") / "final"))
+
+            proc = self._promote(tmp, "run_old")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(os.readlink(latest), str(Path("run_old") / "final"))
+
+    def test_promote_refuses_non_ok_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            self._write_run(tmp, "run_good", status="ok")
+            self._write_run(tmp, "run_bad", status="failed_baseline_check")
+            self.assertEqual(self._promote(tmp, "run_good").returncode, 0)
+            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
+
+            proc = self._promote(tmp, "run_bad")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("failed_baseline_check", proc.stderr)
+            self.assertEqual(os.readlink(latest), str(Path("run_good") / "final"))
+
+    def test_promote_missing_metadata_fails_and_keeps_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            self._write_run(tmp, "run_good", status="ok")
+            self._write_run(tmp, "run_empty", status=None)
+            self.assertEqual(self._promote(tmp, "run_good").returncode, 0)
+            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
+
+            for run_id in ("run_empty", "run_absent"):
+                proc = self._promote(tmp, run_id)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("metadata.json", proc.stderr)
+                self.assertEqual(os.readlink(latest), str(Path("run_good") / "final"))
 
 
 class TestCalibrationSkipped(unittest.TestCase):

@@ -207,6 +207,8 @@ ls -la artifacts/models/<task>/<model>/latest/
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
+**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair, and skips the `latest` acceptance check. Move `latest` afterwards with `promote` (see §9).
+
 ---
 
 ## 6. Definition of Done (training run)
@@ -217,7 +219,7 @@ Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md
 2. Stage-11 modeling tests pass (`tests/test_modeling_*.py`).
 3. Holdout report for each task includes: log loss, Brier, ECE before and after calibration, block-bootstrap 95% CIs, trivial baseline row, reliability PNG, team error breakdown.
 4. Each artifact `metadata.json` contains `features_hash`, date ranges, sample sizes, library versions, `git_commit`/`null`, `random_seed`, `run_id`.
-5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run.
+5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run (with `--no-promote` — after a manual `promote`, §9).
 6. On holdout, the best family must **strictly beat** `trivial_base_rate` log loss; otherwise `status: failed_baseline_check`.
 
 ---
@@ -398,6 +400,29 @@ per-pair when that pair's own `status != ok`, so `latest` was **not** written fo
   has ever reached `status: ok`.
 
 No manual `latest` symlink existed in the main checkout — no cleanup was needed there.
+
+---
+
+## 9. Retrain по расписанию
+
+### Продвижение и откат
+
+Плановый прогон запускается с `train --no-promote`: модель обучается, отчёт пишется, но `latest`
+остаётся прежним. Сдвигает его человек — отдельной командой:
+
+```bash
+make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
+# то же без make: python -m modeling.cli promote --task home_win --model lgbm --run-id <run_id>
+```
+
+Команда читает `artifacts/models/<task>/<model>/<run_id>/final/metadata.json`: файла нет или
+`status != ok` (гейт не пройден) — отказ, exit 1, `latest` не тронут. Иначе `latest` атомарно
+переставляется на `<run_id>/final`, в stdout — `latest: <task>/<model> -> <run_id>/final`.
+
+**Откат** — та же команда с прежним успешным `run_id`; отдельной команды отката нет.
+
+- Список прогонов пары: `ls artifacts/models/<task>/<model>/` (`latest` в списке — симлинк).
+- Отчёт прогона: `artifacts/reports/<run_id>/summary.md` (первая строка — `status: ...`).
 
 ---
 
