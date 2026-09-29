@@ -126,15 +126,19 @@ def _brightcove_rendition(clip_id: int) -> Optional[tuple]:
     return (best["src"], width, height, duration_sec)
 
 
-def _ffmpeg_bin() -> Optional[str]:
-    return shutil.which("ffmpeg")
+def _ffmpeg_bin() -> str:
+    """Path to the ffmpeg binary; raises RuntimeError when it is not in PATH."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            "ffmpeg not found in PATH: it is required for the faststart remux "
+            "and thumbnail of goal videos (installed in the Docker image)"
+        )
+    return ffmpeg
 
 
-def _remux_faststart_inplace(path: str) -> None:
+def _remux_faststart_inplace(path: str, ffmpeg: str) -> None:
     """Move moov atom to file start (streaming-friendly); no re-encode."""
-    ffmpeg = _ffmpeg_bin()
-    if not ffmpeg:
-        return
     fd, out = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
     try:
@@ -172,13 +176,10 @@ def _remux_faststart_inplace(path: str) -> None:
                 pass
 
 
-def _make_telegram_thumb(video_path: str) -> Optional[str]:
+def _make_telegram_thumb(video_path: str, ffmpeg: str) -> Optional[str]:
     """
     JPEG thumbnail ≤ ~200 KB, max side 320 (Telegram limits).
     """
-    ffmpeg = _ffmpeg_bin()
-    if not ffmpeg:
-        return None
     thumb = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False).name
     for q in (4, 6, 8, 10):
         try:
@@ -222,14 +223,17 @@ def download_goal_video(game_id: int, event_id: int) -> Optional[GoalVideoDelive
     """
     Download goal replay MP4 to a temp file.
 
-    Applies faststart remux and optional JPEG thumb when ffmpeg is available —
-    fixes Telegram inline preview (white bubble) for MP4 with moov at EOF.
+    Applies faststart remux and a JPEG thumb (ffmpeg) — fixes Telegram inline
+    preview (white bubble) for MP4 with moov at EOF.
 
+    Raises RuntimeError, before any network request, if ffmpeg is not in PATH.
     Returns GoalVideoDelivery on success; caller must delete path and thumb_path.
 
     Blocking (HTTP download + two ffmpeg passes, up to ~2 minutes): call it from
     async code via ``asyncio.to_thread`` so the bot's event loop keeps polling.
     """
+    ffmpeg = _ffmpeg_bin()
+
     clip_id = _get_brightcove_clip_id(game_id, event_id)
     if clip_id is None:
         return None
@@ -261,8 +265,8 @@ def download_goal_video(game_id: int, event_id: int) -> Optional[GoalVideoDelive
             pass
         return None
 
-    _remux_faststart_inplace(path)
-    thumb_path = _make_telegram_thumb(path)
+    _remux_faststart_inplace(path, ffmpeg)
+    thumb_path = _make_telegram_thumb(path, ffmpeg)
 
     return GoalVideoDelivery(
         path=path,
