@@ -1521,6 +1521,178 @@ def team_profile(abbrev: str) -> str:
     )
 
 
+# Задача 42: страна игрока — rosters.nationality (трёхбуквенный код NHL, одна на
+# игрока). Справочник покрывает все коды, встречающиеся в БД за все сезоны;
+# неизвестный код показывается как есть.
+COUNTRY_LABELS: Dict[str, str] = {
+    "CAN": "🇨🇦 Канада", "USA": "🇺🇸 США", "SWE": "🇸🇪 Швеция", "RUS": "🇷🇺 Россия",
+    "FIN": "🇫🇮 Финляндия", "CZE": "🇨🇿 Чехия", "CHE": "🇨🇭 Швейцария",
+    "DEU": "🇩🇪 Германия", "SVK": "🇸🇰 Словакия", "DNK": "🇩🇰 Дания",
+    "BLR": "🇧🇾 Беларусь", "LVA": "🇱🇻 Латвия", "AUT": "🇦🇹 Австрия",
+    "FRA": "🇫🇷 Франция", "GBR": "🇬🇧 Великобритания", "NOR": "🇳🇴 Норвегия",
+    "AUS": "🇦🇺 Австралия", "NLD": "🇳🇱 Нидерланды", "BGR": "🇧🇬 Болгария",
+    "SVN": "🇸🇮 Словения", "UZB": "🇺🇿 Узбекистан", "KAZ": "🇰🇿 Казахстан",
+    "POL": "🇵🇱 Польша", "BEL": "🇧🇪 Бельгия", "EST": "🇪🇪 Эстония",
+}
+# Страна с меньшим числом полевых игроков сезона в рейтинг и на кнопки не
+# попадает: у 1–2 игроков «сумма очков страны» — это просто их личная статистика.
+COUNTRY_MIN_PLAYERS = 3
+_COUNTRY_NOT_FOUND = "Страна не найдена в рейтинге этого сезона."
+_COUNTRY_FROM = (
+    "FROM players_season_stats p "
+    "JOIN rosters r ON p.player_id = r.player_id AND p.season_id = r.season_id "
+)
+
+
+def _country_label(code: str) -> str:
+    """Метка страны для HTML: флаг + русское название из `COUNTRY_LABELS`,
+    неизвестный код — сам код; результат экранирован."""
+    return html.escape(COUNTRY_LABELS.get(code, code))
+
+
+def _country_ranking() -> List[Tuple[str, int, int, int]]:
+    """Страны сезона `config.SEASON_ID`, прошедшие порог `COUNTRY_MIN_PLAYERS`,
+    в порядке рейтинга: (код, игроков, очков, голов). Единственный источник
+    списка допустимых кодов страны для остальных экранов (Задача 42)."""
+    stats = cached_fetch_all(
+        "SELECT r.nationality, COUNT(*), SUM(p.points), SUM(p.goals) "
+        + _COUNTRY_FROM
+        + "WHERE p.season_id = %s AND r.position <> 'G' AND r.nationality IS NOT NULL "
+        "GROUP BY r.nationality HAVING COUNT(*) >= %s "
+        "ORDER BY SUM(p.points) DESC, SUM(p.goals) DESC, r.nationality",
+        (config.SEASON_ID, COUNTRY_MIN_PLAYERS),
+        columns=["code", "players", "points", "goals"],
+    )
+    return [
+        (stats["code"][i], int(stats["players"][i]),
+         int(stats["points"][i] or 0), int(stats["goals"][i] or 0))
+        for i in range(stats["count_rows"])
+    ]
+
+
+def country_rankings() -> Tuple[str, List[str]]:
+    """Рейтинг стран по сумме очков полевых игроков текущего сезона (Задача 42).
+
+    Зачем: экран выбора страны — текст рейтинга и коды для кнопок.
+
+    Правило учёта: игрок без строки `rosters` на сезон не учитывается
+    (INNER JOIN); игрок с `rosters.nationality IS NULL` в рейтинг не входит, их
+    число выводится отдельной сноской. Вратари исключены; страны с числом
+    игроков меньше `COUNTRY_MIN_PLAYERS` не показываются. Страна — поле
+    nationality ростера NHL (одна на игрока).
+
+    Возвращает: (текст, коды стран в порядке рейтинга — только прошедшие порог).
+    Пустой сезон — текст с причиной и пустой список кодов (Задача 36).
+    """
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    ranking = _country_ranking()
+    if not ranking:
+        return "В базе нет данных по странам для этого сезона.", []
+    unknown = cached_fetch_all(
+        "SELECT COUNT(*) " + _COUNTRY_FROM
+        + "WHERE p.season_id = %s AND r.position <> 'G' AND r.nationality IS NULL",
+        (config.SEASON_ID,),
+        columns=["n"],
+    )["n"][0]
+    lines = [
+        f"{i}. {_country_label(code)} — игроков: {players}, очков: {points}, "
+        f"голов: {goals}, очков на игрока: {points / players:.1f}"
+        for i, (code, players, points, goals) in enumerate(ranking, start=1)
+    ]
+    text = (
+        f"<b>Рейтинг стран</b> ({season_esc})\n"
+        f"<i>Полевые игроки; страна — поле nationality ростера NHL (одна на игрока); "
+        f"страны от {COUNTRY_MIN_PLAYERS} игроков.</i>\n\n" + "\n".join(lines)
+    )
+    if unknown:
+        text += f"\n\n<i>Страна не указана в данных NHL: {unknown} игроков (не учтены).</i>"
+    return text, [code for code, _, _, _ in ranking]
+
+
+def country_skaters_page(code: str, offset: int) -> Tuple[str, bool, bool]:
+    """Страница топа полевых игроков страны по очкам (Задача 42).
+
+    Аргументы:
+        code: код страны из `country_rankings()`; иной код — текст «Страна не
+            найдена...» и (False, False), в SQL он не попадает.
+        offset: сдвиг страницы (`LEADERBOARD_PAGE_SIZE` строк).
+
+    Возвращает: (текст, есть ли предыдущая страница, есть ли следующая).
+    """
+    if code not in [row[0] for row in _country_ranking()]:
+        return _COUNTRY_NOT_FOUND, False, False
+    offset = max(offset, 0)
+    stats = cached_fetch_all(
+        "SELECT r.lastname, r.position, t.abbreviation, p.goals, p.assists, "
+        "p.points, p.games, COUNT(*) OVER () "
+        + _COUNTRY_FROM
+        + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
+        "WHERE p.season_id = %s AND r.position <> 'G' AND r.nationality = %s "
+        "ORDER BY p.points DESC, p.goals DESC, r.lastname LIMIT %s OFFSET %s",
+        (config.SEASON_ID, code, LEADERBOARD_PAGE_SIZE, offset),
+        columns=["lastname", "position", "team", "goals", "assists", "points", "games", "total"],
+    )
+    n = stats["count_rows"]
+    total = int(stats["total"][0]) if n else 0
+    lines = [
+        f"{offset + i + 1}. {html.escape(stats['lastname'][i] or 'Unknown')} "
+        f"[{html.escape(stats['position'][i] or '—')}] "
+        f"{html.escape(stats['team'][i] or '—')} — "
+        f"{stats['points'][i]} очк. ({stats['goals'][i]}+{stats['assists'][i]}), "
+        f"игр: {stats['games'][i]}"
+        for i in range(n)
+    ]
+    span = _rank_range_label(offset, n)
+    if n == 0:
+        body = "<i>Нет данных в этом диапазоне.</i>"
+        marker = f"<i>{html.escape(span)}</i>"
+    else:
+        body = "\n".join(lines)
+        marker = truncation_marker(html.escape(span), total, item_word="строк")
+    text = (
+        f"<b>Топ бомбардиров: {_country_label(code)}</b> "
+        f"({html.escape(str(config.CURRENT_SEASON))}) — {marker}\n\n{body}"
+    )
+    return text, offset > 0, offset + n < total
+
+
+def country_goalies(code: str) -> str:
+    """Все вратари страны текущего сезона по победам (Задача 42): фамилия,
+    команда, игры, победы, save% (доля 0–1, 3 знака), GAA.
+
+    Аргументы:
+        code: код страны из `country_rankings()`; иной код — текст «Страна не
+            найдена...». Усечение под лимит Telegram — на стороне хендлера.
+    """
+    if code not in [row[0] for row in _country_ranking()]:
+        return _COUNTRY_NOT_FOUND
+    stats = cached_fetch_all(
+        "SELECT r.lastname, t.abbreviation, g.games, g.wins, "
+        "g.save_percentage, g.goal_against_average "
+        "FROM goalies_season_stats g "
+        "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
+        "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
+        "WHERE g.season_id = %s AND r.nationality = %s "
+        "ORDER BY g.wins DESC, r.lastname",
+        (config.SEASON_ID, code),
+        columns=["lastname", "team", "games", "wins", "save_pct", "gaa"],
+    )
+    header = f"<b>Вратари: {_country_label(code)}</b> ({html.escape(str(config.CURRENT_SEASON))})\n\n"
+    if stats["count_rows"] == 0:
+        return header + "У этой страны нет вратарей в этом сезоне."
+    lines = []
+    for i in range(stats["count_rows"]):
+        # save_percentage в БД — шкала 0–100 (как в game_message), показываем долю.
+        sv = f"{float(stats['save_pct'][i]) / 100:.3f}" if stats["save_pct"][i] is not None else "—"
+        gaa = f"{float(stats['gaa'][i]):.2f}" if stats["gaa"][i] is not None else "—"
+        lines.append(
+            f"{i + 1}. {html.escape(stats['lastname'][i] or 'Unknown')} "
+            f"{html.escape(stats['team'][i] or '—')} — игр: {stats['games'][i]}, "
+            f"побед: {stats['wins'][i]}, SV%: {sv}, GAA: {gaa}"
+        )
+    return header + "\n".join(lines)
+
+
 def team_stats_with_count(
     name_stats: str,
     column_name: str,
