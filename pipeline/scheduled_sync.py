@@ -218,7 +218,12 @@ def build_commands(window: Tuple[str, str], with_digest: bool) -> List[SyncComma
     return commands
 
 
-def check(status_file: Path, now: datetime, stale_after: timedelta = STALE_AFTER) -> int:
+def check(
+    status_file: Path,
+    now: datetime,
+    stale_after: timedelta = STALE_AFTER,
+    name: str = "Sync",
+) -> int:
     """Код выхода healthcheck: 0 — данные свежие, иначе 1.
 
     Нездоровые случаи (файла нет / последний прогон неуспешен / устарел)
@@ -228,21 +233,22 @@ def check(status_file: Path, now: datetime, stale_after: timedelta = STALE_AFTER
         status_file: путь JSON-файла статуса, пишет ``run_once``.
         now: текущий момент (UTC), с которым сравнивается ``finished_at``.
         stale_after: порог устаревания статуса (у sync — сутки, у retrain — 8 дней).
+        name: название прогона в строках лога (``scheduled_retrain`` — "Retrain").
     """
     if not status_file.exists():
-        logger.error("Sync status file not found: %s", status_file)
+        logger.error("%s status file not found: %s", name, status_file)
         return 1
 
     data = json.loads(status_file.read_text(encoding="utf-8"))
 
     if not data.get("ok"):
-        logger.error("Last sync run failed: %s", status_file)
+        logger.error("Last %s run failed: %s", name.lower(), status_file)
         return 1
 
     finished_at = datetime.fromisoformat(data["finished_at"])
     if now - finished_at > stale_after:
         logger.error(
-            "Sync status is stale: finished_at=%s older than %s", finished_at, stale_after
+            "%s status is stale: finished_at=%s older than %s", name, finished_at, stale_after
         )
         return 1
 

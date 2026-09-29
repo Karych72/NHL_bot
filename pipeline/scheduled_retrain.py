@@ -1,6 +1,7 @@
 """Планировщик еженедельного retrain (Задача 26).
 
-Сервис ``retrain`` раз в неделю (понедельник ``RETRAIN_HOUR_UTC``:00 UTC) пересобирает
+Сервис ``retrain`` еженедельно (понедельник ``RETRAIN_HOUR_UTC``:00 UTC; ежедневное пробуждение
+догоняет отказанный по предусловию прогон) пересобирает
 датасет обучения и обучает ``home_win`` с ``--no-promote`` — ``latest`` не двигается,
 продвижение делает человек (``make modeling-promote``). Стартует только после
 успешного последнего sync. Расписание, статус-файл и healthcheck — из
@@ -34,16 +35,19 @@ STALE_AFTER = timedelta(days=8)
 # Не чаще раза в неделю, в том числе при перезапусках контейнера (догоняющий прогон).
 MIN_INTERVAL = timedelta(days=7)
 
-STATUS_FILE = Path(__file__).resolve().parents[1] / "all_data" / "retrain_status.json"
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+STATUS_FILE = _REPO_ROOT / "all_data" / "retrain_status.json"
+
+# Значение failed_command при отказе по предусловию sync (см. needs_catch_up).
+PRECONDITION_FAILED = "precondition: last sync run is not ok/fresh"
 
 
 def seconds_until_next_run(now: datetime) -> float:
-    """Секунд до ближайшего понедельника ``RETRAIN_HOUR_UTC``:00 строго после *now*.
+    """Секунд до ближайших ``RETRAIN_HOUR_UTC``:00 строго после *now*.
 
-    Если *now* — понедельник, ровно ``RETRAIN_HOUR_UTC``:00 или позже, возвращает
-    время до следующей недели, а не 0/отрицательное число.
+    Цикл просыпается ежедневно (после утреннего sync), а нужен ли прогон в этот день,
+    решает ``should_run``. Если *now* ровно ``RETRAIN_HOUR_UTC``:00 или позже —
+    возвращает время до завтрашнего слота.
 
     Аргументы:
         now: текущий момент (UTC; tzinfo сохраняется в сравнении).
@@ -51,18 +55,18 @@ def seconds_until_next_run(now: datetime) -> float:
     slot = datetime.combine(
         now.date(), datetime.min.time().replace(hour=RETRAIN_HOUR_UTC), tzinfo=now.tzinfo
     )
-    slot += timedelta(days=(RETRAIN_WEEKDAY - now.weekday()) % 7)
     if slot <= now:
-        slot += timedelta(days=7)
+        slot += timedelta(days=1)
     return (slot - now).total_seconds()
 
 
 def needs_catch_up(status_file: Path, now: datetime) -> bool:
-    """Нужен ли догоняющий прогон при старте цикла.
+    """Нужен ли догоняющий прогон: статуса нет, отказ по предусловию или ему больше 7 дней.
 
-    ``True``, если статуса нет или его ``finished_at`` старше ``MIN_INTERVAL``.
-    Неуспешный статус тоже считается прогоном: перезапуск контейнера не должен
-    превращаться в повтор обучения чаще раза в неделю.
+    Отказ по предусловию (``PRECONDITION_FAILED``) ничего не обучал и потому прогоном
+    не считается: иначе старт retrain одновременно с догоняющей загрузкой sync
+    (статус sync ещё не свеж) отложил бы обучение на неделю. Неуспех самой цепочки
+    прогоном считается — перезапуски контейнера не должны учащать обучение.
 
     Аргументы:
         status_file: путь JSON-файла статуса retrain.
@@ -70,10 +74,20 @@ def needs_catch_up(status_file: Path, now: datetime) -> bool:
     """
     if not status_file.exists():
         return True
-    finished_at = datetime.fromisoformat(
-        json.loads(status_file.read_text(encoding="utf-8"))["finished_at"]
-    )
-    return now - finished_at > MIN_INTERVAL
+    data = json.loads(status_file.read_text(encoding="utf-8"))
+    if data["failed_command"] == PRECONDITION_FAILED:
+        return True
+    return now - datetime.fromisoformat(data["finished_at"]) > MIN_INTERVAL
+
+
+def should_run(status_file: Path, now: datetime) -> bool:
+    """Нужен ли прогон в дневное пробуждение цикла: понедельник или догоняющий прогон.
+
+    Аргументы:
+        status_file: путь JSON-файла статуса retrain.
+        now: текущий момент (UTC).
+    """
+    return now.weekday() == RETRAIN_WEEKDAY or needs_catch_up(status_file, now)
 
 
 def build_commands() -> List[SyncCommand]:
@@ -84,40 +98,16 @@ def build_commands() -> List[SyncCommand]:
     не обучается (не проходит гейт, ``docs/modeling_training.md`` §8), ``--no-promote``
     оставляет ``latest`` человеку.
     """
+    dataset = [
+        "build-dataset", "--mode", "train", "--output-dir", "artifacts/datasets",
+        "--feature-set-version", "v2", "--rolling-windows", "5,10,20", "--min-prior-games", "5",
+    ]  # fmt: skip
+    train = [
+        "train", "--config", "configs/modeling_default.yaml", "--task", "home_win", "--no-promote",
+    ]  # fmt: skip
     return [
-        SyncCommand(
-            argv=[
-                sys.executable,
-                "-m",
-                "modeling.cli",
-                "build-dataset",
-                "--mode",
-                "train",
-                "--output-dir",
-                "artifacts/datasets",
-                "--feature-set-version",
-                "v2",
-                "--rolling-windows",
-                "5,10,20",
-                "--min-prior-games",
-                "5",
-            ],
-            cwd=_REPO_ROOT,
-        ),
-        SyncCommand(
-            argv=[
-                sys.executable,
-                "-m",
-                "modeling.cli",
-                "train",
-                "--config",
-                "configs/modeling_default.yaml",
-                "--task",
-                "home_win",
-                "--no-promote",
-            ],
-            cwd=_REPO_ROOT,
-        ),
+        SyncCommand([sys.executable, "-m", "modeling.cli", *dataset], _REPO_ROOT),
+        SyncCommand([sys.executable, "-m", "modeling.cli", *train], _REPO_ROOT),
     ]
 
 
@@ -144,7 +134,7 @@ def run_retrain(
             {
                 "finished_at": now.isoformat(),
                 "ok": False,
-                "failed_command": "precondition: last sync run is not ok/fresh",
+                "failed_command": PRECONDITION_FAILED,
                 "returncode": None,
                 "window": None,
             },
@@ -172,8 +162,8 @@ def _run_now() -> bool:
 def main(argv: Optional[List[str]] = None) -> int:
     """Точка входа CLI: подкоманды ``loop`` / ``once`` / ``check``.
 
-    - ``loop``: при старте прогон, только если ``needs_catch_up``; затем бесконечно спит
-      до ближайшего понедельника ``RETRAIN_HOUR_UTC``:00 UTC и прогоняет. Неуспешный
+    - ``loop``: при старте прогон, только если ``needs_catch_up``; затем ежедневно в
+      ``RETRAIN_HOUR_UTC``:00 UTC (после sync) прогоняет, если ``should_run``. Неуспешный
       прогон цикл не останавливает (отказ виден через статус-файл и ``check``).
     - ``once``: один прогон (предусловие + цепочка), код выхода 0/1.
     - ``check``: 0, если статус есть, ``ok`` и моложе ``STALE_AFTER``; иначе 1.
@@ -191,7 +181,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.subcommand == "check":
-        return scheduled_sync.check(STATUS_FILE, datetime.now(timezone.utc), STALE_AFTER)
+        return scheduled_sync.check(
+            STATUS_FILE, datetime.now(timezone.utc), STALE_AFTER, name="Retrain"
+        )
 
     if args.subcommand == "once":
         ok = _run_now()
@@ -205,9 +197,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         target, sleep_seconds = scheduled_sync._next_target(
             datetime.now(timezone.utc), target, seconds_until_next_run
         )
-        logger.info("Sleeping %.0f seconds until next retrain run", sleep_seconds)
+        logger.info("Sleeping %.0f seconds until next retrain wake-up", sleep_seconds)
         time.sleep(sleep_seconds)
-        _run_now()
+        if should_run(STATUS_FILE, datetime.now(timezone.utc)):
+            _run_now()
 
 
 if __name__ == "__main__":

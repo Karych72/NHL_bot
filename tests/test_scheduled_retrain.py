@@ -22,20 +22,27 @@ if _PIPELINE_DIR not in sys.path:
 import scheduled_sync  # noqa: E402
 from scheduled_retrain import (  # noqa: E402
     MIN_INTERVAL,
+    PRECONDITION_FAILED,
     STALE_AFTER,
     build_commands,
     needs_catch_up,
     run_retrain,
     seconds_until_next_run,
+    should_run,
 )
 from scheduled_sync import SyncCommand  # noqa: E402
 
 NOW = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)  # вторник
 
 
-def _write_status(path: Path, finished_at: datetime, ok: bool = True) -> None:
+def _write_status(
+    path: Path, finished_at: datetime, ok: bool = True, failed_command: str | None = None
+) -> None:
     path.write_text(
-        json.dumps({"finished_at": finished_at.isoformat(), "ok": ok}), encoding="utf-8"
+        json.dumps(
+            {"finished_at": finished_at.isoformat(), "ok": ok, "failed_command": failed_command}
+        ),
+        encoding="utf-8",
     )
 
 
@@ -54,33 +61,25 @@ class BuildCommandsTest(unittest.TestCase):
 
 
 class SecondsUntilNextRunTest(unittest.TestCase):
-    def test_before_monday_slot_same_day(self) -> None:
-        now = datetime(2026, 9, 28, 11, 0, 0, tzinfo=timezone.utc)  # понедельник
+    def test_before_slot_same_day(self) -> None:
+        now = datetime(2026, 9, 28, 11, 0, 0, tzinfo=timezone.utc)
         self.assertEqual(seconds_until_next_run(now), 3600.0)
 
-    def test_monday_after_slot_rolls_to_next_week(self) -> None:
-        now = datetime(2026, 9, 28, 13, 0, 0, tzinfo=timezone.utc)
-        self.assertEqual(seconds_until_next_run(now), (7 * 24 - 1) * 3600.0)
-
-    def test_exactly_at_slot_rolls_to_next_week(self) -> None:
+    def test_exactly_at_slot_rolls_to_tomorrow(self) -> None:
         now = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
-        self.assertEqual(seconds_until_next_run(now), 7 * 24 * 3600.0)
+        self.assertEqual(seconds_until_next_run(now), 24 * 3600.0)
 
-    def test_midweek_goes_to_coming_monday(self) -> None:
-        now = datetime(2026, 9, 30, 12, 0, 0, tzinfo=timezone.utc)  # среда
-        self.assertEqual(seconds_until_next_run(now), 5 * 24 * 3600.0)
+    def test_after_slot_rolls_to_tomorrow(self) -> None:
+        now = datetime(2026, 9, 28, 13, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(seconds_until_next_run(now), 23 * 3600.0)
 
-    def test_sunday_goes_to_next_day(self) -> None:
-        now = datetime(2026, 9, 27, 18, 0, 0, tzinfo=timezone.utc)
-        self.assertEqual(seconds_until_next_run(now), 18 * 3600.0)
-
-    def test_next_target_uses_weekly_slot_without_double_fire(self) -> None:
+    def test_next_target_uses_daily_slot_without_double_fire(self) -> None:
         target = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
         next_target, sleep_seconds = scheduled_sync._next_target(
             target - timedelta(microseconds=1), target, seconds_until_next_run
         )
-        self.assertEqual(next_target, datetime(2026, 10, 5, 12, 0, 0, tzinfo=timezone.utc))
-        self.assertEqual(sleep_seconds, 7 * 24 * 3600.0)
+        self.assertEqual(next_target, datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(sleep_seconds, 24 * 3600.0)
 
 
 class NeedsCatchUpTest(unittest.TestCase):
@@ -100,9 +99,39 @@ class NeedsCatchUpTest(unittest.TestCase):
         _write_status(self.status, NOW - timedelta(days=1), ok=False)
         self.assertFalse(needs_catch_up(self.status, NOW))
 
+    def test_precondition_refusal_does_not_suppress_catch_up(self) -> None:
+        _write_status(
+            self.status, NOW - timedelta(hours=1), ok=False, failed_command=PRECONDITION_FAILED
+        )
+        self.assertTrue(needs_catch_up(self.status, NOW))
+
     def test_old_status_needs_catch_up(self) -> None:
         _write_status(self.status, NOW - MIN_INTERVAL - timedelta(hours=1))
         self.assertTrue(needs_catch_up(self.status, NOW))
+
+
+class ShouldRunTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.status = Path(self._tmp.name) / "retrain_status.json"
+        self.monday = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
+        self.wednesday = datetime(2026, 9, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_monday_runs_even_with_fresh_status(self) -> None:
+        _write_status(self.status, self.monday - timedelta(days=7, minutes=-1))
+        self.assertTrue(should_run(self.status, self.monday))
+
+    def test_non_monday_with_fresh_status_skips(self) -> None:
+        _write_status(self.status, self.wednesday - timedelta(days=2))
+        self.assertFalse(should_run(self.status, self.wednesday))
+
+    def test_non_monday_with_refused_status_retries(self) -> None:
+        _write_status(
+            self.status, self.wednesday - timedelta(days=1), ok=False,
+            failed_command=PRECONDITION_FAILED,
+        )
+        self.assertTrue(should_run(self.status, self.wednesday))
 
 
 class CheckTest(unittest.TestCase):
