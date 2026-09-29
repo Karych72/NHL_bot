@@ -65,7 +65,8 @@ NHL_bot/
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   ├── load_season_modern.py           # Класс ModernNhlLoader
-│   └── scheduled_sync.py               # Задача 34: ежедневный планировщик (сервис `sync`)
+│   ├── scheduled_sync.py               # Задача 34: ежедневный планировщик (сервис `sync`)
+│   └── scheduled_retrain.py            # Задача 26: еженедельный retrain (сервис `retrain`)
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
@@ -291,6 +292,19 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
 загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением). Тесты —
 `tests/test_scheduled_sync.py`.
+
+### Модуль: `pipeline/scheduled_retrain.py` (Задача 26, еженедельный retrain)
+
+Планировщик retrain — сервис `retrain` в `docker-compose.yml`. Переиспользует из
+`scheduled_sync.py` `SyncCommand`, `run_once`, `check`, `_next_target` и запись статуса
+(параметризованы порогом/названием/функцией слота, без копий). Свои части: недельный слот
+(понедельник 12:00 UTC), предусловие «последний sync успешен и свеж», решение о догоняющем
+прогоне при старте (`needs_catch_up`, не чаще раза в 7 дней) и цепочка
+`build-dataset --mode train` → `train --task home_win --no-promote`. `latest` автоматически
+не двигается. Образ сервиса — стадия `modeling` многостадийного `Dockerfile` (поверх общей
+`base`: `libgomp1` + `requirements-modeling.txt`); стадия `bot` идёт последней, поэтому
+`build: .` у `bot`/`sync` собирает прежний образ без modeling-стека. Подробности —
+`docs/modeling_training.md` §9 и `DEVELOPMENT.md` §Docker. Тесты — `tests/test_scheduled_retrain.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
 устроен и сервис `backup` (Задача 35): ежесуточный `pg_dump` тома `pgdata` на bind mount
