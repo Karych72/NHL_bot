@@ -708,6 +708,25 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
     assert not video_path.exists(), "clip must be deleted even when send_video() raises"
 
 
+def test_download_goal_video_fails_loudly_without_ffmpeg_before_any_network(
+    bot_module, monkeypatch
+):
+    video_replay = bot_module("video_replay")
+    http_calls = []
+
+    def record_get(*args, **kwargs):
+        http_calls.append(args)
+        raise AssertionError("no HTTP request expected when ffmpeg is missing")
+
+    monkeypatch.setattr(video_replay.shutil, "which", lambda name: None)
+    monkeypatch.setattr(video_replay.requests, "get", record_get)
+
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        video_replay.download_goal_video(100, 200)
+
+    assert http_calls == []
+
+
 # ---------------------------------------------------------------------------
 # bot_digest_custom_date — free-text date parsing (not a callback, but the
 # same module's input-parsing surface feeding dispatch_day_digest_messages)

@@ -7,4 +7,3 @@ requests
 psycopg2-binary
 jinja2
 python-telegram-bot==21.11.1
-pytest>=8.0
