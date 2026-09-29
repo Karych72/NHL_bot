@@ -1162,3 +1162,83 @@ def test_season_team_abbrev_help_text_no_marker_when_everything_fits(bot_module)
         text = bot_messages.season_team_abbrev_help_text()
     assert "Показаны" not in text
     assert "BOS" in text
+
+
+# ---------------------------------------------------------------------------
+# Задача 42: статистика по странам — country_rankings / country_skaters_page /
+# country_goalies (БД подменена fake_db_router)
+# ---------------------------------------------------------------------------
+
+_COUNTRY_RANKING = ("GROUP BY r.nationality", [("CAN", 4, 100, 40), ("XXX", 3, 30, 9)])
+
+
+def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footnote(
+    bot_module, fake_db_router
+):
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([_COUNTRY_RANKING, ("r.nationality IS NULL", [(7,)])])
+
+    text, codes = bot_messages.country_rankings()
+
+    assert codes == ["CAN", "XXX"]
+    assert "1. 🇨🇦 Канада — игроков: 4, очков: 100, голов: 40, очков на игрока: 25.0" in text
+    # Неизвестный код показывается как есть, без исключения.
+    assert "2. XXX — игроков: 3, очков: 30, голов: 9, очков на игрока: 10.0" in text
+    assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
+    # Порог уходит в SQL параметром, вратари исключены.
+    query, params = cursor.executed[0]
+    assert params[1] == bot_messages.COUNTRY_MIN_PLAYERS
+    assert "r.position <> 'G'" in query
+
+
+def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, fake_db_router):
+    bot_messages = bot_module("bot_messages")
+    fake_db_router([("GROUP BY r.nationality", [])])
+
+    assert bot_messages.country_rankings() == (
+        "В базе нет данных по странам для этого сезона.",
+        [],
+    )
+
+
+def test_country_skaters_page_shows_marker_rows_and_has_next(bot_module, fake_db_router):
+    bot_messages = bot_module("bot_messages")
+    fake_db_router([
+        _COUNTRY_RANKING,
+        ("OVER ()", [("McDavid", "C", "EDM", 40, 60, 100, 70, 25),
+                     ("Draisaitl", "C", "EDM", 30, 50, 80, 68, 25)]),
+    ])
+
+    text, has_prev, has_next = bot_messages.country_skaters_page("CAN", 10)
+
+    assert "🇨🇦 Канада" in text
+    assert "Показаны 11–12 из 25 строк." in text
+    assert "Игроки без страны в данных NHL не показаны." in text
+    assert "11. McDavid [C] EDM — 100 очк. (40+60), игр: 70" in text
+    assert (has_prev, has_next) == (True, True)
+
+
+def test_country_pages_reject_code_outside_ranking_without_touching_sql(
+    bot_module, fake_db_router
+):
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([_COUNTRY_RANKING])
+
+    assert bot_messages.country_skaters_page("'; DROP", 0) == (
+        "Страна не найдена в рейтинге этого сезона.", False, False,
+    )
+    assert bot_messages.country_goalies("ZZZ") == "Страна не найдена в рейтинге этого сезона."
+    assert len(cursor.executed) == 1  # только запрос рейтинга (кэш), без страницы
+
+
+def test_country_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
+    bot_messages = bot_module("bot_messages")
+    fake_db_router([
+        _COUNTRY_RANKING,
+        ("FROM goalies_season_stats", [("Vejmelka", "UTA", 64, 38, 89.67, 2.74592)]),
+    ])
+    text = bot_messages.country_goalies("CAN")
+    assert "1. Vejmelka UTA — игр: 64, побед: 38, SV%: 89.67%, GAA: 2.75" in text
+
+    fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
+    assert "У этой страны нет вратарей в этом сезоне." in bot_messages.country_goalies("CAN")
