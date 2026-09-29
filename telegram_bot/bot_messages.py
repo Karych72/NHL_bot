@@ -1619,7 +1619,7 @@ def country_rankings() -> Tuple[str, List[str]]:
         f"страны от {COUNTRY_MIN_PLAYERS} игроков.</i>\n\n" + "\n".join(lines)
     )
     if unknown:
-        text += f"\n\n<i>Страна не указана в данных NHL: {unknown} игроков (не учтены).</i>"
+        text += f"\n\n<i>Страна не указана в данных NHL у игроков: {unknown} (не учтены).</i>"
     return text, [code for code, _, _, _ in ranking]
 
 
@@ -1642,7 +1642,8 @@ def country_skaters_page(code: str, offset: int) -> Tuple[str, bool, bool]:
         + _COUNTRY_FROM
         + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
         "WHERE p.season_id = %s AND r.position <> 'G' AND r.nationality = %s "
-        "ORDER BY p.points DESC, p.goals DESC, r.lastname LIMIT %s OFFSET %s",
+        "ORDER BY p.points DESC NULLS LAST, p.goals DESC NULLS LAST, r.lastname, r.player_id "
+        "LIMIT %s OFFSET %s",
         (config.SEASON_ID, code, LEADERBOARD_PAGE_SIZE, offset),
         columns=["lastname", "position", "team", "goals", "assists", "points", "games", "total"],
     )
@@ -1656,8 +1657,9 @@ def country_skaters_page(code: str, offset: int) -> Tuple[str, bool, bool]:
         f"игр: {stats['games'][i]}"
         for i in range(n)
     ]
+    note = "<i>Игроки без страны в данных NHL не показаны.</i>\n"
     return _leaderboard_page_text(
-        f"Топ бомбардиров: {_country_label(code)}", "\n".join(lines), n, total, offset
+        f"Топ бомбардиров: {_country_label(code)}", note + "\n".join(lines), n, total, offset
     )
 
 
@@ -1678,7 +1680,7 @@ def country_goalies(code: str) -> str:
         "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
         "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
         "WHERE g.season_id = %s AND r.nationality = %s "
-        "ORDER BY g.wins DESC, r.lastname",
+        "ORDER BY g.wins DESC NULLS LAST, r.lastname, r.player_id",
         (config.SEASON_ID, code),
         columns=["lastname", "team", "games", "wins", "save_pct", "gaa"],
     )
@@ -1687,8 +1689,8 @@ def country_goalies(code: str) -> str:
         return header + "У этой страны нет вратарей в этом сезоне."
     lines = []
     for i in range(stats["count_rows"]):
-        # save_percentage в БД — шкала 0–100, `_fmt_pct_points` это учитывает.
-        sv = _fmt_pct_points(stats["save_pct"][i])
+        # save_percentage в БД — шкала 0–100, `_fmt_pct_stat` это учитывает.
+        sv = _fmt_pct_stat(stats["save_pct"][i])
         gaa = f"{float(stats['gaa'][i]):.2f}" if stats["gaa"][i] is not None else "—"
         lines.append(
             f"{i + 1}. {html.escape(stats['lastname'][i] or 'Unknown')} "

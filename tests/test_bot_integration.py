@@ -1031,7 +1031,7 @@ async def test_country_rankings_button_lists_countries_and_back_to_player_menu(
     (edited,) = update.callback_query.edited_texts
     assert state == dialog_states.SECOND
     assert "1. 🇨🇦 Канада — игроков: 5, очков: 100" in edited["text"]
-    assert "Страна не указана в данных NHL: 2 игроков (не учтены)" in edited["text"]
+    assert "Страна не указана в данных NHL у игроков: 2 (не учтены)" in edited["text"]
     buttons = _flat_buttons(edited["reply_markup"])
     assert [(b.text, b.callback_data) for b in buttons[:2]] == [
         ("🇨🇦 Канада", "cntr:CAN:0"),

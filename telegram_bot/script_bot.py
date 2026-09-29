@@ -13,6 +13,7 @@ from telegram.ext import CallbackContext, ConversationHandler
 
 from dialog_states import (
     CHOOSE_STATS,
+    COUNTRY_STATS,
     DAY_DIGEST,
     DIGEST_CALENDAR_TODAY,
     DIGEST_CALENDAR_YESTERDAY,
@@ -26,7 +27,6 @@ from dialog_states import (
     PLAYER_ADVANCED_SUBMENU,
     PLAYER_ASSISTS,
     PLAYER_BLOCKS,
-    COUNTRY_STATS,
     PLAYER_FIELD,
     PLAYER_GOALIE,
     PLAYER_GOALS,

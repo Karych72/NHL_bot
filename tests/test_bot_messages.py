@@ -1184,7 +1184,7 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     assert "1. 🇨🇦 Канада — игроков: 4, очков: 100, голов: 40, очков на игрока: 25.0" in text
     # Неизвестный код показывается как есть, без исключения.
     assert "2. XXX — игроков: 3, очков: 30, голов: 9, очков на игрока: 10.0" in text
-    assert "Страна не указана в данных NHL: 7 игроков (не учтены)." in text
+    assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
     # Порог уходит в SQL параметром, вратари исключены.
     query, params = cursor.executed[0]
     assert params[1] == bot_messages.COUNTRY_MIN_PLAYERS
@@ -1213,6 +1213,7 @@ def test_country_skaters_page_shows_marker_rows_and_has_next(bot_module, fake_db
 
     assert "🇨🇦 Канада" in text
     assert "Показаны 11–12 из 25 строк." in text
+    assert "Игроки без страны в данных NHL не показаны." in text
     assert "11. McDavid [C] EDM — 100 очк. (40+60), игр: 70" in text
     assert (has_prev, has_next) == (True, True)
 
