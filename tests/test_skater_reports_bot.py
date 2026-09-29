@@ -96,6 +96,14 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("Corsi", hm)
         self.assertIn("Fenwick", hm)
 
+    def test_start_and_help_note_regular_season_only(self):
+        help_text = _load_help_text()
+        for name in ("START_MESSAGE", "HELP_MESSAGE"):
+            with self.subTest(message=name):
+                msg = getattr(help_text, name)
+                self.assertIn("регулярный чемпионат", msg)
+                self.assertIn("плей-офф", msg)
+
     def test_tonight_reply_intro_escapes_league_date(self):
         nhl = _load_nhl_scoreboard()
         raw_date = "2025-01-01<script>"
