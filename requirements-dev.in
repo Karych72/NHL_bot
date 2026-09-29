@@ -2,6 +2,8 @@
 # Источник для requirements-dev.txt (`make lock`) — requirements-dev.txt руками не редактировать.
 ruff==0.8.4
 mypy==1.14.1
+# тесты (`tests/test_*.py`); в рантайм-образ не попадает
+pytest>=8.0
 # async-хендлеры PTB 21.x: тесты помечаются @pytest.mark.asyncio (строгий режим по умолчанию)
 pytest-asyncio==1.4.0
 types-requests==2.31.0.20240106

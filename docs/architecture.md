@@ -174,7 +174,10 @@ NHL_bot/
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
 | `pandas==2.2.3` | Используется в `modeling/dataset_builder/*` (сборка фичей для моделирования); пин совпадает с `requirements-modeling.in`, иначе совместный резолв слоёв не сходится |
-| `pytest>=8.0` | Тесты (`tests/test_*.py`); юнит-тесты по `pipeline/`, `modeling/`, бот |
+
+`pytest` — dev-зависимость (`requirements-dev.in`), в рантайм-образ не попадает.
+Системный пакет `ffmpeg` ставится в образ через `apt-get` в `Dockerfile` (faststart-ремукс и превью
+видео голов, `telegram_bot/video_replay.py`); без него `download_goal_video` поднимает `RuntimeError`.
 
 ---
 
