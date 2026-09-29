@@ -122,6 +122,16 @@ class ShouldRunTest(unittest.TestCase):
         _write_status(self.status, self.monday - timedelta(days=7, minutes=-1))
         self.assertTrue(should_run(self.status, self.monday))
 
+    def test_monday_morning_catch_up_blocks_noon_slot(self) -> None:
+        _write_status(self.status, self.monday - timedelta(hours=3))
+        self.assertFalse(should_run(self.status, self.monday))
+
+    def test_sunday_catch_up_skips_next_monday_then_next_week_runs(self) -> None:
+        sunday = datetime(2026, 9, 27, 12, 30, 0, tzinfo=timezone.utc)
+        _write_status(self.status, sunday)
+        self.assertFalse(should_run(self.status, self.monday))
+        self.assertTrue(should_run(self.status, self.monday + timedelta(days=7)))
+
     def test_non_monday_with_fresh_status_skips(self) -> None:
         _write_status(self.status, self.wednesday - timedelta(days=2))
         self.assertFalse(should_run(self.status, self.wednesday))

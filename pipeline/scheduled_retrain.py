@@ -35,6 +35,10 @@ STALE_AFTER = timedelta(days=8)
 # Не чаще раза в неделю, в том числе при перезапусках контейнера (догоняющий прогон).
 MIN_INTERVAL = timedelta(days=7)
 
+# Понедельничный слот требует 6 дней с прошлого прогона, а не 7: строгие 7 дней сдвигали бы
+# понедельничный ритм на длительность прогона.
+MONDAY_MIN_INTERVAL = timedelta(days=6)
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 STATUS_FILE = _REPO_ROOT / "all_data" / "retrain_status.json"
 
@@ -60,34 +64,49 @@ def seconds_until_next_run(now: datetime) -> float:
     return (slot - now).total_seconds()
 
 
-def needs_catch_up(status_file: Path, now: datetime) -> bool:
-    """Нужен ли догоняющий прогон: статуса нет, отказ по предусловию или ему больше 7 дней.
+def _last_attempt_age(status_file: Path, now: datetime) -> Optional[timedelta]:
+    """Возраст последнего реального прогона; ``None``, если его нет.
 
-    Отказ по предусловию (``PRECONDITION_FAILED``) ничего не обучал и потому прогоном
-    не считается: иначе старт retrain одновременно с догоняющей загрузкой sync
-    (статус sync ещё не свеж) отложил бы обучение на неделю. Неуспех самой цепочки
-    прогоном считается — перезапуски контейнера не должны учащать обучение.
+    Реальный прогон — статус, не являющийся отказом по предусловию
+    (``PRECONDITION_FAILED``): отказ ничего не обучал и прогоном не считается, иначе
+    старт retrain одновременно с догоняющей загрузкой sync (статус sync ещё не свеж)
+    отложил бы обучение на неделю. Неуспех самой цепочки прогоном считается —
+    перезапуски контейнера не должны учащать обучение.
+    """
+    if not status_file.exists():
+        return None
+    data = json.loads(status_file.read_text(encoding="utf-8"))
+    if data["failed_command"] == PRECONDITION_FAILED:
+        return None
+    return now - datetime.fromisoformat(data["finished_at"])
+
+
+def needs_catch_up(status_file: Path, now: datetime) -> bool:
+    """Нужен ли догоняющий прогон: реального прогона нет или он старше ``MIN_INTERVAL``.
 
     Аргументы:
         status_file: путь JSON-файла статуса retrain.
         now: текущий момент (UTC).
     """
-    if not status_file.exists():
-        return True
-    data = json.loads(status_file.read_text(encoding="utf-8"))
-    if data["failed_command"] == PRECONDITION_FAILED:
-        return True
-    return now - datetime.fromisoformat(data["finished_at"]) > MIN_INTERVAL
+    age = _last_attempt_age(status_file, now)
+    return age is None or age > MIN_INTERVAL
 
 
 def should_run(status_file: Path, now: datetime) -> bool:
-    """Нужен ли прогон в дневное пробуждение цикла: понедельник или догоняющий прогон.
+    """Нужен ли прогон в дневное пробуждение цикла.
+
+    Да, если нужен догоняющий прогон, либо сегодня понедельник и реального прогона не было
+    за ``MONDAY_MIN_INTERVAL``: утренний догон в понедельник не даёт второго прогона в слот
+    12:00, а догон в воскресенье пропускает ближайший понедельник.
 
     Аргументы:
         status_file: путь JSON-файла статуса retrain.
         now: текущий момент (UTC).
     """
-    return now.weekday() == RETRAIN_WEEKDAY or needs_catch_up(status_file, now)
+    if needs_catch_up(status_file, now):
+        return True
+    age = _last_attempt_age(status_file, now)
+    return now.weekday() == RETRAIN_WEEKDAY and age is not None and age > MONDAY_MIN_INTERVAL
 
 
 def build_commands() -> List[SyncCommand]:
