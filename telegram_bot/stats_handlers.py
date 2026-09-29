@@ -19,8 +19,12 @@ from telegram.error import BadRequest
 from telegram.ext import CallbackContext
 
 from bot_messages import (
+    COUNTRY_LABELS,
     LEADERBOARD_PAGE_SIZE,
     conference_summary,
+    country_goalies,
+    country_rankings,
+    country_skaters_page,
     day_digest,
     day_digest_summary_body,
     digest_shown_match_count,
@@ -39,6 +43,7 @@ from bot_messages import (
 )
 from dialog_states import (
     CHOOSE_STATS,
+    COUNTRY_STATS,
     DAY_DIGEST,
     END_CONVERSATION,
     FIRST,
@@ -46,6 +51,7 @@ from dialog_states import (
     PLAYER_ADVANCED_SUBMENU,
     PLAYER_FIELD,
     PLAYER_GOALIE,
+    PLAYER_STATS,
     SECOND,
     TEAM_PROFILE_PICK,
     TEAM_STATS,
@@ -79,6 +85,11 @@ TEAM_PAGE_CALLBACK_PATTERN = r"^tm:([\w_]+):(\d+)$"
 # команды tp:<ABBR>
 TEAM_PROFILE_CALLBACK_PREFIX = "tp:"
 TEAM_PROFILE_CALLBACK_PATTERN = r"^tp:([A-Za-z0-9]{2,4})$"
+
+# Статистика по странам (Задача 42): cntr:<CODE>:<offset> — страница игроков
+# страны, cntg:<CODE> — вратари страны
+COUNTRY_PAGE_CALLBACK_PATTERN = r"^cntr:([A-Z]{3}):(\d+)$"
+COUNTRY_GOALIES_CALLBACK_PATTERN = r"^cntg:([A-Z]{3})$"
 
 # Standalone: /advanced — листание sa:<table>:<col>:<offset>, sa:close
 STANDALONE_SA_CALLBACK_PATTERN = r"^sa:"
@@ -319,6 +330,80 @@ async def bot_team_profile_show(update: Update, context: CallbackContext) -> int
     await query.answer()
     text = truncate_telegram_text(team_profile(m.group(1)))
     markup = InlineKeyboardMarkup([_stats_menu_nav_row(TEAM_PROFILE_PICK)])
+    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+    return SECOND
+
+
+async def bot_country_rankings(update: Update, context: CallbackContext) -> int:
+    """Кнопка «По странам» подменю игроков (Задача 42): рейтинг стран сезона и
+    сетка кнопок `cntr:<CODE>:0` по одной на страну, прошедшую порог. «« Назад»»
+    ведёт на подменю игроков (`PLAYER_STATS`). Тот же хендлер перерисовывает
+    экран при возврате со страницы страны (`COUNTRY_STATS` есть и в FIRST, и в
+    SECOND — см. `bot.py`). Пустой сезон — текст без кнопок стран (Задача 36).
+    """
+    query = update.callback_query
+    assert query is not None
+    await query.answer()
+    text, codes = country_rankings()
+    buttons = [
+        InlineKeyboardButton(COUNTRY_LABELS.get(code, code), callback_data=f"cntr:{code}:0")
+        for code in codes
+    ]
+    rows = build_menu(buttons, n_cols=2, footer_buttons=[_stats_menu_nav_row(PLAYER_STATS)])
+    await query.edit_message_text(
+        text=text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows)
+    )
+    return SECOND
+
+
+async def bot_country_page(update: Update, context: CallbackContext) -> int:
+    """Листает топ полевых игроков страны по `cntr:<CODE>:<offset>`: кнопки
+    prev/next, «Вратари» (`cntg:<CODE>`) и «« Назад»» на рейтинг стран
+    (`COUNTRY_STATS`). Код вне рейтинга сезона `country_skaters_page()` сама
+    превращает в текст «Страна не найдена…». `BadRequest` «message is not
+    modified» — штатный повтор нажатия, глушится, как в `callback_stats_player_page`.
+    """
+    query = update.callback_query
+    assert query is not None and query.data is not None
+    m = re.match(COUNTRY_PAGE_CALLBACK_PATTERN, query.data)
+    assert m is not None
+    code, offset = m.group(1), int(m.group(2))
+    await query.answer()
+    text, has_prev, has_next = country_skaters_page(code, offset)
+    nav: List[InlineKeyboardButton] = []
+    if has_prev:
+        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
+        nav.append(InlineKeyboardButton("← prev", callback_data=f"cntr:{code}:{prev_off}"))
+    if has_next:
+        next_off = offset + LEADERBOARD_PAGE_SIZE
+        nav.append(InlineKeyboardButton("next →", callback_data=f"cntr:{code}:{next_off}"))
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton("Вратари", callback_data=f"cntg:{code}")])
+    rows.append(_stats_menu_nav_row(COUNTRY_STATS))
+    try:
+        await query.edit_message_text(
+            text=text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows)
+        )
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+    return SECOND
+
+
+async def bot_country_goalies(update: Update, context: CallbackContext) -> int:
+    """Вратари страны по `cntg:<CODE>` (Задача 42): «« К игрокам страны»
+    (`cntr:<CODE>:0`) и «« Назад»» на рейтинг стран (`COUNTRY_STATS`)."""
+    query = update.callback_query
+    assert query is not None and query.data is not None
+    m = re.match(COUNTRY_GOALIES_CALLBACK_PATTERN, query.data)
+    assert m is not None
+    code = m.group(1)
+    await query.answer()
+    text = truncate_telegram_text(country_goalies(code))
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("« К игрокам страны", callback_data=f"cntr:{code}:0")],
+        _stats_menu_nav_row(COUNTRY_STATS),
+    ])
     await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     return SECOND
 

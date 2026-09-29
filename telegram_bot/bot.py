@@ -47,6 +47,7 @@ from help_text import ADVANCED_COMMAND_INTRO, HELP_MESSAGE, START_MESSAGE
 from dialog_states import (
     build_menu,
     CHOOSE_STATS,
+    COUNTRY_STATS,
     DAY_DIGEST,
     DIGEST_CALENDAR_TODAY,
     DIGEST_CALENDAR_YESTERDAY,
@@ -109,6 +110,8 @@ from script_bot import (
     stats_root_edit,
 )
 from stats_handlers import (
+    COUNTRY_GOALIES_CALLBACK_PATTERN,
+    COUNTRY_PAGE_CALLBACK_PATTERN,
     DIGEST_BACK_FROM_DATE_CALLBACK,
     DIGEST_EXPAND_CALLBACK_PATTERN,
     LEADERS_PICK_CALLBACK_PATTERN,
@@ -119,6 +122,9 @@ from stats_handlers import (
     TEAM_PROFILE_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
+    bot_country_goalies,
+    bot_country_page,
+    bot_country_rankings,
     bot_digest_calendar_today,
     bot_digest_calendar_yesterday,
     bot_digest_custom_date,
@@ -542,6 +548,7 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_conference_stats, pattern='^' + str(TEAM_CONFERENCE_STATS) + '$'),
                 CallbackQueryHandler(bot_team_division_stats, pattern='^' + str(TEAM_DIVISION_STATS) + '$'),
                 CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
+                CallbackQueryHandler(bot_country_rankings, pattern='^' + str(COUNTRY_STATS) + '$'),
             ],
             SECOND: [
                 CallbackQueryHandler(
@@ -561,6 +568,13 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
                 CallbackQueryHandler(bot_team_profile_show, pattern=TEAM_PROFILE_CALLBACK_PATTERN),
                 CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
+                # Экраны стран (Задача 42): «« Назад»» со страны — на рейтинг
+                # (COUNTRY_STATS), с рейтинга — на подменю игроков (PLAYER_STATS,
+                # возвращает FIRST, поэтому нужен и в SECOND).
+                CallbackQueryHandler(bot_country_page, pattern=COUNTRY_PAGE_CALLBACK_PATTERN),
+                CallbackQueryHandler(bot_country_goalies, pattern=COUNTRY_GOALIES_CALLBACK_PATTERN),
+                CallbackQueryHandler(bot_country_rankings, pattern='^' + str(COUNTRY_STATS) + '$'),
+                CallbackQueryHandler(bot_player_stats, pattern='^' + str(PLAYER_STATS) + '$'),
                 # «« Назад»» результата дайджеста ведёт на меню дайджеста;
                 # та же просроченная кнопка ввода даты, что и в FIRST — сюда
                 # тоже можно вернуться из SECOND.

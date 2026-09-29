@@ -983,3 +983,148 @@ async def test_team_profile_reports_unknown_abbreviation(
     assert state == dialog_states.SECOND
     assert "Команда не найдена в базе для этого сезона." in edited["text"]
     assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_PROFILE_PICK)
+
+
+# ---------------------------------------------------------------------------
+# Сценарий «по странам»: подменю игроков → «По странам» → рейтинг → страна →
+# вратари (Задача 42)
+# ---------------------------------------------------------------------------
+
+# code, players, points, goals — рейтинг стран, прошедших порог
+_COUNTRY_RANKING_ROWS = [("CAN", 5, 100, 40), ("USA", 3, 60, 20)]
+_COUNTRY_ROUTES = [
+    ("r.nationality IS NULL", [(2,)]),
+    ("HAVING COUNT", _COUNTRY_RANKING_ROWS),
+    # lastname, position, team, goals, assists, points, games, total; total=25
+    # при LIMIT 10 — страница со смещением 10 имеет и prev, и next.
+    ("COUNT(*) OVER ()", [("McDavid", "C", "EDM", 30, 60, 90, 70, 25)]),
+    # lastname, team, games, wins, save_pct, gaa
+    ("FROM goalies_season_stats g", [("Hellebuyck", "WPG", 60, 35, 92.1, 2.4)]),
+]
+
+
+@pytest.mark.asyncio
+async def test_player_submenu_has_country_button(
+    bot_module, make_callback_update, fake_context
+):
+    script_bot = bot_module("script_bot")
+    dialog_states = bot_module("dialog_states")
+    update = make_callback_update(str(dialog_states.PLAYER_STATS))
+
+    await script_bot.bot_player_stats(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert str(dialog_states.COUNTRY_STATS) in _callback_data(edited["reply_markup"])
+
+
+@pytest.mark.asyncio
+async def test_country_rankings_button_lists_countries_and_back_to_player_menu(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router(_COUNTRY_ROUTES)
+    update = make_callback_update(str(dialog_states.COUNTRY_STATS))
+
+    state = await stats_handlers.bot_country_rankings(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert "1. 🇨🇦 Канада — игроков: 5, очков: 100" in edited["text"]
+    assert "Страна не указана в данных NHL: 2 игроков (не учтены)" in edited["text"]
+    buttons = _flat_buttons(edited["reply_markup"])
+    assert [(b.text, b.callback_data) for b in buttons[:2]] == [
+        ("🇨🇦 Канада", "cntr:CAN:0"),
+        ("🇺🇸 США", "cntr:USA:0"),
+    ]
+    assert [b.callback_data for b in buttons[2:]] == [
+        str(dialog_states.PLAYER_STATS),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_country_rankings_reports_empty_season_without_country_buttons(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Пустой сезон (Задача 36): текст с причиной, только футер навигации."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router([("HAVING COUNT", [])])
+    update = make_callback_update(str(dialog_states.COUNTRY_STATS))
+
+    await stats_handlers.bot_country_rankings(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert "В базе нет данных по странам для этого сезона." in edited["text"]
+    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.PLAYER_STATS)
+    assert len(_flat_buttons(edited["reply_markup"])) == 3
+
+
+@pytest.mark.asyncio
+async def test_country_page_pages_and_offers_goalies(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    cursor = fake_db_router(_COUNTRY_ROUTES)
+    update = make_callback_update("cntr:CAN:10")
+
+    state = await stats_handlers.bot_country_page(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert "11. McDavid [C] EDM — 90 очк. (30+60), игр: 70" in edited["text"]
+    assert _callback_data(edited["reply_markup"]) == [
+        "cntr:CAN:0",
+        "cntr:CAN:20",
+        "cntg:CAN",
+        str(dialog_states.COUNTRY_STATS),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
+    # Код страны дошёл до БД только параметром, смещение — из callback_data.
+    assert cursor.executed[-1][1] == (bot_module("config").SEASON_ID, "CAN", 10, 10)
+
+
+@pytest.mark.asyncio
+async def test_country_page_rejects_code_outside_ranking(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    """Код прошёл паттерн, но не в рейтинге сезона — текст, не исключение и не
+    запрос по стране; «« Назад»» на рейтинг стран."""
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    cursor = fake_db_router([("HAVING COUNT", _COUNTRY_RANKING_ROWS)])
+    update = make_callback_update("cntr:ZZZ:0")
+
+    state = await stats_handlers.bot_country_page(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert "Страна не найдена в рейтинге этого сезона." in edited["text"]
+    assert str(dialog_states.COUNTRY_STATS) in _callback_data(edited["reply_markup"])
+    assert len(cursor.executed) == 1
+
+
+@pytest.mark.asyncio
+async def test_country_goalies_screen_and_back_buttons(
+    bot_module, fake_db_router, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    dialog_states = bot_module("dialog_states")
+    fake_db_router(_COUNTRY_ROUTES)
+    update = make_callback_update("cntg:CAN")
+
+    state = await stats_handlers.bot_country_goalies(update, fake_context)
+
+    (edited,) = update.callback_query.edited_texts
+    assert state == dialog_states.SECOND
+    assert "1. Hellebuyck WPG — игр: 60, побед: 35, SV%: 92.1%, GAA: 2.40" in edited["text"]
+    assert _callback_data(edited["reply_markup"]) == [
+        "cntr:CAN:0",
+        str(dialog_states.COUNTRY_STATS),
+        str(dialog_states.CHOOSE_STATS),
+        str(dialog_states.END_CONVERSATION),
+    ]
