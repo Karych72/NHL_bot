@@ -77,6 +77,10 @@ services:
     # бота не попадают). Понедельник 12:00 UTC, не в окне sync (08:00 UTC); стартует только
     # после успешного sync. Обучает home_win с --no-promote: latest двигает человек
     # (make modeling-promote). Артефакты — bind mount ./artifacts, статус — в томе syncdata.
+    # profiles: трек B в релиз не входит (решение человека, plan/open_tasks.md), поэтому обычные
+    # `docker compose up -d`/`build` сервис не собирают и не запускают:
+    # `docker compose --profile modeling up -d retrain`.
+    profiles: ["modeling"]
     build:
       context: .
       target: modeling

@@ -118,7 +118,7 @@ class ShouldRunTest(unittest.TestCase):
         self.monday = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
         self.wednesday = datetime(2026, 9, 30, 12, 0, 0, tzinfo=timezone.utc)
 
-    def test_monday_runs_even_with_fresh_status(self) -> None:
+    def test_monday_runs_when_last_attempt_older_than_six_days(self) -> None:
         _write_status(self.status, self.monday - timedelta(days=7, minutes=-1))
         self.assertTrue(should_run(self.status, self.monday))
 
