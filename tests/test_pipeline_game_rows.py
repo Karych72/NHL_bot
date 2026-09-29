@@ -11,7 +11,9 @@ it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 
 from __future__ import annotations
 
+import re
 import unittest
+from datetime import date, datetime, timezone
 
 from tests._pipeline_fixtures import (
     GAME_ID,
@@ -543,6 +545,94 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
         cache_path = loader.RAW_CACHE_DIR / str(SEASON_ID) / f"{GAME_ID}.pbp.json.gz"
         self.assertFalse(cache_path.exists())
+
+
+class ScheduledGamesTest(LoaderApiTestCase):
+    """Задача 22A: будущие игры для ``scheduled_games``."""
+
+    def test_fetch_asks_for_future_states_of_regular_season_in_a_two_day_window(self):
+        instance = make_loader()
+        urls = []
+        instance.fetch_paginated = lambda url, page_size=500: urls.append(url) or []
+
+        instance.fetch_scheduled_games()
+
+        (url,) = urls
+        self.assertIn(f"season={SEASON_ID} and gameType=2", url)
+        self.assertIn("gameStateId in (1,2)", url)
+        first, last = re.findall(r'gameDate[<>]="(\d{4}-\d{2}-\d{2})"', url)
+        self.assertEqual(first, datetime.now(timezone.utc).date().isoformat())
+        self.assertEqual((date.fromisoformat(last) - date.fromisoformat(first)).days, 1)
+
+    def test_rows_from_api_records(self):
+        rows = make_loader().build_scheduled_rows(
+            load_fixture("nhl_scheduled_games_meta.json"), played_game_ids=set()
+        )
+        self.assertEqual(
+            rows,
+            [
+                (2025021080, "2026-03-19", 1, 4, SEASON_ID),
+                (GAME_ID, "2026-03-18", WSH, OTT, SEASON_ID),
+            ],
+        )
+
+    def test_game_already_in_games_is_skipped(self):
+        rows = make_loader().build_scheduled_rows(
+            load_fixture("nhl_scheduled_games_meta.json"), played_game_ids={GAME_ID}
+        )
+        self.assertEqual([r[0] for r in rows], [2025021080])
+
+    def test_replace_deletes_season_and_skips_played_games_and_unknown_teams(self):
+        executed = []
+        answers = {
+            "FROM games": [(GAME_ID,)],  # уже сыграна
+            "FROM teams": [(1,), (4,)],  # WSH/OTT (15/9) в teams сезона нет
+        }
+
+        class Cursor:
+            rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def execute(self, sql, params):
+                executed.append((sql, params))
+                self.rows = next((v for k, v in answers.items() if k in sql), [])
+
+            def fetchall(self):
+                return self.rows
+
+        class Conn:
+            def cursor(self):
+                return Cursor()
+
+        instance = make_loader()
+        inserted = []
+        instance.execute_insert = lambda conn, table, cols, rows, page_size=1000: inserted.append(
+            (table, rows)
+        )
+        meta = load_fixture("nhl_scheduled_games_meta.json") + [
+            dict(load_fixture("nhl_scheduled_games_meta.json")[0], id=2025021081, homeTeamId=15)
+        ]
+
+        with self.assertLogs(loader.logger, level="WARNING") as logs:
+            count = instance.replace_scheduled_games(Conn(), meta)
+
+        self.assertEqual(
+            executed[0], ("DELETE FROM scheduled_games WHERE season_id = %s", (SEASON_ID,))
+        )
+        # GAME_ID сыграна, 2025021081 с хозяином 15 без команды в teams -> остаётся одна игра.
+        self.assertEqual(inserted, [("scheduled_games", [(2025021080, "2026-03-19", 1, 4, SEASON_ID)])])
+        self.assertEqual(count, 1)
+        self.assertIn("Skipped 1 scheduled game", logs.output[0])
+
+    def test_record_without_a_team_raises(self):
+        broken = without(load_fixture("nhl_scheduled_games_meta.json")[0], "homeTeamId")
+        with self.assertRaises(KeyError):
+            make_loader().build_scheduled_rows([broken], played_game_ids=set())
 
 
 if __name__ == "__main__":

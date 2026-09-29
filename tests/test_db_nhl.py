@@ -137,6 +137,8 @@ class TestNhlSchema(unittest.TestCase):
             self.assertEqual(_pk_columns(cur, "players_advanced_stats"), ["player_id", "season_id"])
             self.assertEqual(_pk_columns(cur, "players_shot_types"), ["player_id", "season_id"])
             self.assertEqual(_pk_columns(cur, "games"), ["game_id"])
+            self.assertEqual(_pk_columns(cur, "scheduled_games"), ["game_id"])
+            self.assertEqual(_pk_columns(cur, "game_predictions"), ["game_id", "task"])
 
     def test_games_has_season_id(self):
         with self.conn.cursor() as cur:

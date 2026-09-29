@@ -26,19 +26,25 @@ NHL_bot/
 │   ├── t.all_goals.sql
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
+│   ├── t.game_predictions.sql
 │   ├── t.game_team_stats.sql
 │   ├── t.game_three_stars.sql
 │   ├── t.games.sql
 │   ├── t.goalies_season_stats.sql
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
+│   ├── t.scheduled_games.sql
 │   ├── t.teams.sql
 │   ├── t.teams_stats.sql
 │   └── migrations/                     # Точечные изменения схемы: NNNN_slug.{up,down}.sql (make db-migrate)
 │       ├── 0001_bot_subscriptions.up.sql
 │       ├── 0001_bot_subscriptions.down.sql
 │       ├── 0002_game_three_stars.up.sql
-│       └── 0002_game_three_stars.down.sql
+│       ├── 0002_game_three_stars.down.sql
+│       ├── 0003_scheduled_games.up.sql
+│       ├── 0003_scheduled_games.down.sql
+│       ├── 0004_game_predictions.up.sql
+│       └── 0004_game_predictions.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
@@ -102,9 +108,10 @@ NHL_bot/
 │       └── get_three_stars_game.sql
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
-│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict`
+│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict|publish-predictions`
 │   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
+│   ├── publish_predictions.py           # Задача 22B: CSV predict → таблица game_predictions (гейт по status latest)
 │   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py, config.py, artifacts.py, и др.
 │
 └── artifacts/                           # datasets/, models/, predictions/, reports/*/ — в .gitignore (см. .gitignore)
@@ -278,7 +285,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 Планировщик, который вызывает `load_season_modern.py` (и, после успешной загрузки,
 `push_digest_job.py`) без участия человека — сервис `sync` в `docker-compose.yml`, тот же
 образ, что у бота. Только stdlib, новых зависимостей нет. Расписание, здоровье сервиса,
-том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Тесты —
+том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
+загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением). Тесты —
 `tests/test_scheduled_sync.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
@@ -623,6 +631,37 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 Индекс `idx_games_season_day (season_id, day)` — под фильтры `WHERE season_id = %s`
 (частично — с `day`), которыми пользуются день-дайджест, «форма команды» и датасет-билдер.
+
+#### `scheduled_games` — Будущие игры (Задача 22A)
+
+Цели predict-датасета: незавершённые игры регулярки на сегодня и завтра (UTC). `games` хранит
+только сыгранные, поэтому будущие лежат отдельно; загрузчик заменяет содержимое сезона при каждом прогоне.
+
+| Колонка | Тип | Описание |
+|---|---|---|
+| `game_id` | bigint | PK. NHL game ID |
+| `day` | date | NOT NULL. Дата матча |
+| `home_team_id` | bigint | NOT NULL. FK → teams (team_id, season_id) |
+| `away_team_id` | bigint | NOT NULL. FK → teams (team_id, season_id) |
+| `season_id` | bigint | NOT NULL |
+
+#### `game_predictions` — Вероятности модели (Задача 22B)
+
+Поток: `scheduled_games` → `build-dataset --mode predict` → `predict` (CSV) →
+`publish-predictions` → `game_predictions` → бот (читает только PG; `make modeling-publish`).
+Бот читает `home_win` в превью `/tonight` (`matchup_season_preview`, запрос без кэша по `game_id`
+кнопки) и добавляет строку «Модельная оценка»; нет строки — нет и строки в превью.
+Строки задачи целиком заменяются при каждой публикации; при непройденном гейте
+(нет `latest` / `status != ok`) строки задачи удаляются. FK на `games` нет — игра ещё не сыграна.
+
+| Колонка | Тип | Описание |
+|---|---|---|
+| `game_id` | bigint | PK (с `task`). NHL game ID |
+| `task` | text | PK (с `game_id`). `home_win` / `over_5_5` |
+| `model` | text | NOT NULL. `logreg` / `lgbm` |
+| `run_id` | text | NOT NULL. Прогон обучения, давший вероятность (из `metadata.json`) |
+| `probability` | double precision | NOT NULL, CHECK 0..1 |
+| `computed_at` | timestamptz | NOT NULL, default `now()` |
 
 #### `all_goals` — Все голы
 
