@@ -1,0 +1,77 @@
+# Релиз: тег vX.Y.Z → проверки CI → образ в GHCR → деплой на прод-VM (GCP) по SSH.
+# Откат — «Re-run jobs» у прогона предыдущего тега во вкладке Actions.
+# Настройка VM и секретов окружения production — DEVELOPMENT.md §«Прод-деплой».
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Два деплоя одновременно не идут; новый тег ждёт окончания текущего, а не прерывает его.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/karych72/nhl_bot
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      # На VM: код и docker-compose.yml — из того же тега, что и образ; migrate
+      # применяет функции и миграции до старта bot/sync; --wait роняет деплой,
+      # если bot не стал healthy.
+      - name: Deploy
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/nhl_bot
+          git fetch --tags --force origin
+          git checkout --force "${{ github.ref_name }}"
+          # В .env, а не export: ручной `docker compose ...` на VM видит ту же версию.
+          sed -i '/^NHL_BOT_IMAGE=/d' .env
+          echo "NHL_BOT_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }}" >> .env
+          docker compose pull migrate bot sync
+          docker compose up -d --no-build --remove-orphans
+          docker compose up --no-build --wait --wait-timeout 180 bot
+          docker compose ps
+          docker image prune -af
+          REMOTE

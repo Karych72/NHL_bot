@@ -22,14 +22,14 @@
 - **Еженедельный retrain (Задача 26).** Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `docker compose up -d` и `build` его не собирают и не запускают; поднять — `docker compose --profile modeling up -d retrain`) — образ со стадией `modeling` Dockerfile (`build: {target: modeling}`: lightgbm/sklearn, в образ бота не попадают) и `command: ["python", "-u", "pipeline/scheduled_retrain.py", "loop"]`. Раз в неделю (понедельник 12:00 UTC; цикл просыпается ежедневно в 12:00: повторяет прогон, отказанный по предусловию, а понедельничный слот пропускает, если реальный прогон был менее 6 дней назад) пересобирает датасет обучения и обучает `home_win` с `--no-promote`; стартует только после успешного sync, `latest` сам не двигается (`make modeling-promote`, см. `docs/modeling_training.md` §9). Артефакты — bind mount `./artifacts:/app/artifacts`, статус — `all_data/retrain_status.json` в томе `syncdata`.
   - Результат: `docker compose ps` (health: последний retrain ok и не старше 8 дней), `docker compose logs retrain` (там же `run_id` в строках `run_id=… status=…`), отчёт `artifacts/reports/<run_id>/summary.md`.
   - Ручной прогон: `docker compose --profile modeling run --rm retrain python -u pipeline/scheduled_retrain.py once` (нужен свежий успешный sync — иначе отказ по предусловию).
-- **Развёртывание с нуля (Задача 35).** Площадка — этот Mac, Docker Desktop.
+- **Развёртывание с нуля (Задача 35).** Локальный стек на Mac (Docker Desktop); прод — VM в GCP, см. «Прод-деплой» ниже.
   1. `cp .env.example .env`, заполнить `TELEGRAM_BOT_TOKEN`, `SEASON_ID`, `BACKUP_DIR` (абсолютный путь вне репозитория и вне тома `pgdata` — комментарий в `.env.example`).
   2. `docker compose up -d db` — поднять только БД (том `pgdata` создаётся автоматически).
   3. `make PG_HOST=localhost PG_USER=postgres db-init` — применить DDL и SQL-функции к пустой БД, когда `db` уже слушает `127.0.0.1:5432`.
   4. Первичная загрузка данных с хоста, пока `bot`/`sync` ещё не подняты: `make season-load-full` — весь текущий сезон от даты старта (`SEASON_ID`) до сегодня (другие окна — `README.md`).
   5. `docker compose up -d` — поднять `bot`, `sync`, `backup`; `backup` снимет первый дамп сразу при старте. `retrain` (трек B, в релиз не входит) — отдельно: `docker compose --profile modeling up -d retrain`.
 
-  Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересобирает и пересоздаёт `bot` и `sync` (`build: .`); `retrain` (профиль `modeling`, стадия `modeling` — образ с lightgbm/sklearn) — только с `--profile modeling`; `restart: unless-stopped` вернёт их после падения, но не подхватит новый образ без `up -d`). `db` и `backup` используют готовый образ `postgres:16.6-alpine` — `docker compose build` их не трогает.
+  Обновление образа после изменения кода бота/пайплайна: `docker compose build && docker compose up -d` — пересобирает и пересоздаёт `migrate`, `bot` и `sync` (`build: .`); `migrate` при каждом `up` применяет SQL-функции и новые миграции (`make db-functions db-migrate` внутри образа), и только после его успешного выхода стартуют `bot` и `sync` — на пустой БД он падает, сначала шаг 3; `retrain` (профиль `modeling`, стадия `modeling` — образ с lightgbm/sklearn) — только с `--profile modeling`; `restart: unless-stopped` вернёт их после падения, но не подхватит новый образ без `up -d`. `db` и `backup` используют готовый образ `postgres:16.6-alpine` — `docker compose build` их не трогает.
 - **Бэкап (Задача 35).** Сервис `backup` в `docker-compose.yml` — тот же принцип, что `sync`: долгоживущий контейнер со своим циклом (не host cron), образ `postgres:16.6-alpine`, как у `db`, — версия `pg_dump` совпадает с версией сервера. Раз в сутки, первый дамп — сразу при старте: `pg_dump -h db -U postgres -Fc postgres` пишется во временный файл и переименовывается в `nhl_<UTC-метка>.dump` только после успешного завершения, чтобы оборванный дамп не выглядел свежим. При ошибке `pg_dump` контейнер падает (`set -e`) — `restart: unless-stopped` поднимает его заново, а падение видно в `docker compose ps` (`Exit`/`Restarting`) и `docker compose logs backup`. Хранит 14 последних дампов, более старые удаляются при следующем успешном прогоне. Каталог — bind mount `${BACKUP_DIR}:/backups` (переменная обязательна: без неё `docker compose config`/`up` падает с понятным сообщением); дампы вне дерева репозитория и вне тома `pgdata`, поэтому записи в `.gitignore`/`.dockerignore` не нужны.
   - Проверить: `.env` не экспортируется в интерактивный shell, поэтому сначала `BACKUP_DIR=$(grep '^BACKUP_DIR=' .env | cut -d= -f2-)`, затем `docker compose ps` (колонка health — `healthy`, если в `$BACKUP_DIR` есть дамп моложе 26 часов) и `ls -la "$BACKUP_DIR"`.
 - **Восстановление (Задача 35).** `.env` не экспортируется в интерактивный shell (его читают только compose и `make`), поэтому перед любой командой ниже, где встречается `$BACKUP_DIR` или `$COUNT_QUERY`, выполнить в шелле хоста:
@@ -78,6 +78,31 @@
     ```
 - **`trust` только на loopback (Задача 35).** `POSTGRES_HOST_AUTH_METHOD: trust` у `db` допустим, пока порт опубликован на `127.0.0.1:5432:5432`, а не `0.0.0.0`. Если площадка когда-нибудь потребует открыть порт наружу — `trust` меняется на пароль (`POSTGRES_PASSWORD` в compose) тем же коммитом, что и смена порта; `telegram_bot/database.py` и загрузчик сейчас подключаются без пароля (`config.PG_HOST/PG_PORT/PG_USER/PG_DATABASE`, см. `database.py:120-123`), так что переход на пароль потребует добавить и его чтение в код подключения — это уже отдельная задача, не только смена compose.
 - **Пересоздание `db`** при смене параметров контейнера (образ, переменные, healthcheck) не теряет данные — они на named volume `pgdata`, а не в самом контейнере. Перед командой убедиться в имени тома: `docker volume ls | grep nhl_bot_pgdata`, затем `docker compose up -d --force-recreate db` и перезапустить `bot` (пул соединений): `docker compose restart bot`.
+
+## Прод-деплой
+
+Прод — одна VM в GCP (Compute Engine, `e2-small`, Debian 12) с тем же `docker-compose.yml`, что и локально. Разница одна: `NHL_BOT_IMAGE` в `.env` на VM указывает на образ из GHCR (`ghcr.io/karych72/nhl_bot:<тег>`), и `bot`/`sync`/`migrate` берут его вместо локальной сборки. Порт `db` опубликован только на loopback VM, наружу открыт лишь SSH. `retrain` (профиль `modeling`, трек B) релиз не выкатывает — в прод он не входит.
+
+**Релиз:** `git tag v1.2.3 && git push origin v1.2.3` → `.github/workflows/release.yml`: проверки `ci.yml` → образ `ghcr.io/karych72/nhl_bot:v1.2.3` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
+
+**Разовая настройка.**
+
+1. VM (проект и зона — свои):
+   ```
+   gcloud compute instances create nhl-bot --zone=europe-west1-b --machine-type=e2-small \
+     --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=20GB
+   ```
+2. На VM (`gcloud compute ssh nhl-bot`): Docker (`curl -fsSL https://get.docker.com | sh`), пользователь для деплоя в группе `docker`, чекаут и каталог бэкапов:
+   ```
+   sudo useradd -m -s /bin/bash -G docker deploy
+   sudo install -d -o deploy /opt/nhl_bot /srv/nhl_bot_backups
+   sudo -u deploy git clone https://github.com/Karych72/NHL_bot.git /opt/nhl_bot
+   ```
+   В `/opt/nhl_bot/.env` (`chmod 600`, владелец `deploy`) — как в `.env.example`, с `BACKUP_DIR=/srv/nhl_bot_backups`.
+3. Ключ деплоя: `ssh-keygen -t ed25519 -N '' -f nhl_deploy`; `nhl_deploy.pub` — в `~deploy/.ssh/authorized_keys` на VM.
+4. GitHub → Settings → Environments → `production`, секреты: `DEPLOY_HOST` (внешний IP VM), `DEPLOY_USER` (`deploy`), `DEPLOY_SSH_KEY` (содержимое `nhl_deploy`), `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan <IP>`). Там же можно включить «Required reviewers» — деплой будет ждать подтверждения. Приватный ключ после этого удалить с диска.
+5. Первая БД — до первого тега, образом, собранным на VM (в GHCR его ещё нет): `docker compose up -d db`, `docker compose build migrate`, `docker compose run --rm migrate make db-sync`, затем полная загрузка сезона `docker compose run --rm --no-deps -w /app/pipeline sync python -u load_season_modern.py`.
+6. Первый тег. После первой публикации пакет `nhl_bot` в GHCR сделать публичным (Package settings → Change visibility) — VM тянет образ без логина; секретов в образе нет (`.dockerignore`).
 
 ## Тесты и качество
 
@@ -180,7 +205,7 @@
 
 ## CI
 
-Файл `.github/workflows/ci.yml` (runner `ubuntu-24.04`, Python 3.11), два job:
+Файл `.github/workflows/ci.yml` (runner `ubuntu-24.04`, Python 3.11), два job. Тот же workflow вызывает `release.yml` перед сборкой образа (`workflow_call`) — см. «Прод-деплой»:
 
 - **`quality`** — установка `requirements.txt`, `requirements-dev.txt` и `requirements-modeling.txt` (иначе `tests/test_modeling_*.py` не собираются — нет `sklearn`/`lightgbm`/…), затем **Ruff** (`telegram_bot`, `modeling`, `pipeline`), **mypy** (те же каталоги, настройка в `mypy.ini`), `compileall`, **pytest** без `tests/test_db_nhl.py`. Без БД, гоняется на каждый PR быстро.
 - **`db-tests`** — поднимает service-контейнер `postgres:16.6-alpine` (trust-аутентификация, без пароля, как в `docker-compose.yml`), затем `make setup`, `make db-sync` (применяет `DDL_TABLES`, потом SQL-функции, потом `data_tables/migrations/*.up.sql` — тот же порядок, что `make db-init`) и `make test-db` (схемные проверки `tests/test_db_nhl.py`). Данные в этой БД не загружаются, поэтому `test-db-data` тут не вызывается.

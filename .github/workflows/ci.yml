@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # release.yml гоняет те же проверки перед сборкой образа и деплоем.
+  workflow_call:
 
 jobs:
   quality:
