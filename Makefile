@@ -88,6 +88,12 @@ modeling-publish: modeling-dev
 	$(PY) -m modeling.cli predict --task $(TASK) --model $(MODEL)
 	$(PY) -m modeling.cli publish-predictions --task $(TASK) --model $(MODEL)
 
+# Ручное продвижение latest (Задача 26A): после `train --no-promote` и как откат на прежний run_id.
+# make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
+modeling-promote: modeling-dev
+	@test -n "$(RUN_ID)" || { echo "RUN_ID is required: make modeling-promote TASK=... MODEL=... RUN_ID=<run_id>"; exit 1; }
+	$(PY) -m modeling.cli promote --task $(TASK) --model $(MODEL) --run-id $(RUN_ID)
+
 env-example:
 	cp -n .env.example .env || true
 	@echo ".env created (if it did not exist)"

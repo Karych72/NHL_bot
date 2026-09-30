@@ -628,6 +628,9 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 models=["logreg"],
                 artifacts_root=tmp / "artifacts",
             )
+            model_base = tmp / "artifacts" / "models" / "home_win" / "logreg"
+            (model_base / "latest").unlink()
+            os.symlink("previous_run/final", model_base / "latest")
             update_latest_symlink(
                 "home_win",
                 "logreg",
@@ -637,6 +640,8 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
             )
             self.assertEqual(outcome.result.status, "failed_baseline_check")
             self.assertEqual(outcome.result.exit_code, 1)
+            self.assertEqual(os.readlink(model_base / "latest"), "previous_run/final")
+            self.assertFalse((model_base / "latest.txt").exists())
             self.assertTrue((run.reports_dir / "summary.md").exists())
             self.assertTrue((run.reports_dir / "metrics.json").exists())
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")

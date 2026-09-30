@@ -613,6 +613,40 @@ def update_latest_symlink(
         pointer.write_text(f"{rel_target.as_posix()}\n", encoding="utf-8")
 
 
+def promote_model(task: str, model: str, run_id: str, *, artifacts_root: Path) -> Path:
+    """Manually point ``latest`` of ``(task, model)`` at ``<run_id>/final/`` after a gate check.
+
+    Used after ``train --no-promote`` to publish a scheduled run, and to roll ``latest`` back
+    to an earlier successful run. ``final/metadata.json`` of the run must exist and carry
+    ``status == "ok"``; otherwise ``latest`` is left untouched.
+
+    Args:
+        task: Task name (``home_win`` / ``over_5_5``).
+        model: Model family (``logreg`` / ``lgbm``).
+        run_id: Run to promote, a directory name under ``models/<task>/<model>/``.
+        artifacts_root: Root containing ``models/<task>/<model>/<run_id>/final/metadata.json``.
+
+    Returns:
+        Path of the promoted ``final/`` directory.
+
+    Raises:
+        FileNotFoundError: ``final/metadata.json`` of the run is missing.
+        ValueError: The run's ``status`` is not ``ok`` (gate failed; promotion refused).
+    """
+    final_dir = artifacts_root / "models" / task / model / run_id / "final"
+    metadata_path = final_dir / "metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"no metadata.json for run {run_id} of {task}/{model}: {metadata_path}")
+    status = json.loads(metadata_path.read_text(encoding="utf-8")).get("status")
+    if status != "ok":
+        raise ValueError(
+            f"run {run_id} of {task}/{model} has status={status!r}: the gate was not passed, "
+            "promoting it to latest is refused"
+        )
+    update_latest_symlink(task, model, run_id, artifacts_root=artifacts_root, status="ok")
+    return final_dir
+
+
 def _fit_final_raw_model(
     model_family: str,
     task: str,
@@ -718,8 +752,13 @@ def run_training(
     artifacts_root: Path | None = None,
     run_start_utc: datetime | None = None,
     fail_on_baseline: bool = True,
+    promote: bool = True,
 ) -> list[RunResult]:
-    """Execute walk-forward training for selected task × model pairs."""
+    """Execute walk-forward training for selected task × model pairs.
+
+    With ``promote=False`` (CLI ``--no-promote``) the ``latest`` symlink is neither created nor
+    moved and its acceptance check is skipped; move it later with :func:`promote_model`.
+    """
     if dry_run:
         raise ValueError("use dry_run_training() when dry_run=True")
 
@@ -1015,13 +1054,17 @@ def run_training(
     for item in outcomes:
         if not fail_on_baseline and item.result.status == "failed_baseline_check":
             item.result.exit_code = 0
-        update_latest_symlink(
-            item.task,
-            item.model,
-            item.result.run_id,
-            artifacts_root=artifacts,
-            status=item.result.status,
-        )
+        if promote:
+            update_latest_symlink(
+                item.task,
+                item.model,
+                item.result.run_id,
+                artifacts_root=artifacts,
+                status=item.result.status,
+            )
+
+    if not promote:
+        return results
 
     # Phase 2: symlinks exist only after update_latest_symlink for status=ok pairs.
     apply_latest_symlink_check(

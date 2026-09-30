@@ -207,6 +207,8 @@ ls -la artifacts/models/<task>/<model>/latest/
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
+**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair, and skips the `latest` acceptance check. Move `latest` afterwards with `promote` (see §9).
+
 ---
 
 ## 6. Definition of Done (training run)
@@ -217,7 +219,7 @@ Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md
 2. Stage-11 modeling tests pass (`tests/test_modeling_*.py`).
 3. Holdout report for each task includes: log loss, Brier, ECE before and after calibration, block-bootstrap 95% CIs, trivial baseline row, reliability PNG, team error breakdown.
 4. Each artifact `metadata.json` contains `features_hash`, date ranges, sample sizes, library versions, `git_commit`/`null`, `random_seed`, `run_id`.
-5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run.
+5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run (with `--no-promote` — after a manual `promote`, §9).
 6. On holdout, the best family must **strictly beat** `trivial_base_rate` log loss; otherwise `status: failed_baseline_check`.
 
 ---
@@ -398,6 +400,58 @@ per-pair when that pair's own `status != ok`, so `latest` was **not** written fo
   has ever reached `status: ok`.
 
 No manual `latest` symlink existed in the main checkout — no cleanup was needed there.
+
+---
+
+## 9. Retrain по расписанию
+
+Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `up`/`build` его не трогают,
+запуск — `docker compose --profile modeling up -d retrain`; `pipeline/scheduled_retrain.py`, образ со стадией
+`modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ежедневно 08:00 UTC,
+окна разнесены) — прогоняет цепочку: `build-dataset --mode train` (те же аргументы, что у
+ручного пути, чтобы `features_hash` совпал) → `train --config configs/modeling_default.yaml
+--task home_win --no-promote`. Цикл просыпается **ежедневно в 12:00 UTC** (после
+утреннего sync) и запускает цепочку, если нужен догоняющий прогон или сегодня понедельник и реального прогона не было 6 дней (утренний догон в понедельник не даёт второго прогона в 12:00, воскресный пропускает ближайший понедельник); при старте
+контейнера прогон делается только если нужен догоняющий. Догоняющий прогон нужен, если статуса нет,
+он старше 7 дней или это отказ по предусловию (ниже) — отказ ничего не обучал и прогоном не
+считается, поэтому одновременный старт `retrain` и `sync` после простоя не откладывает обучение
+на неделю: отказавший прогон повторяется на следующий день. Минимальный интервал между прогонами — 6 дней
+(понедельничный слот), а успешный или упавший на цепочке прогон не повторяется догоняющим 7 дней. Отдельного триггера «старт сезона» нет: его покрывает недельный ритм.
+
+- **Предусловие.** Перед цепочкой проверяется статус последнего sync (`sync_status.json`):
+  нет файла, `ok: false` или старше 26 часов — retrain не стартует, в `retrain_status.json`
+  пишется неуспех (`failed_command` = предусловие), в лог — ошибка, `once` возвращает 1.
+  Обучение на недогруженных данных хуже, чем отсутствие обучения.
+- **Только `home_win`.** `over_5_5` ни разу не проходила гейт (§8): включённая в расписание,
+  она делала бы каждый прогон красным. Конфиг не менялся — задача выбирается флагом `--task`.
+- **`latest` автоматически не двигается** (решение человека, 2026-09-29): гейт лишь требует
+  бить `trivial_base_rate`, а запас над константой (~0.003 log loss) — в пределах шума;
+  автозамена дёргала бы прогноз в боте без причины. Champion/challenger не реализован.
+- **Где итог.** `docker compose logs retrain`: строки `run_id=… task=… model=… status=…` из
+  `train`, затем итоговая строка с командой продвижения; отчёт —
+  `artifacts/reports/<run_id>/summary.md`; статус — `retrain_status.json` в томе `syncdata`.
+  Неуспех — `ERROR` в логе и `unhealthy` в `docker compose ps` (healthcheck: статус ok и моложе 8 дней).
+- **Длительность.** Замер 2026-09-29 на 6560 играх (Mac, хост, конфиг по умолчанию, `home_win`):
+  build-dataset ~5 с, train ~40 с — ~45 с на прогон, далеко от недельного интервала.
+
+### Продвижение и откат
+
+Плановый прогон запускается с `train --no-promote`: модель обучается, отчёт пишется, но `latest`
+остаётся прежним. Сдвигает его человек — отдельной командой:
+
+```bash
+make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
+# то же без make: python -m modeling.cli promote --task home_win --model lgbm --run-id <run_id>
+```
+
+Команда читает `artifacts/models/<task>/<model>/<run_id>/final/metadata.json`: файла нет или
+`status != ok` (гейт не пройден) — отказ, exit 1, `latest` не тронут. Иначе `latest` атомарно
+переставляется на `<run_id>/final`, в stdout — `latest: <task>/<model> -> <run_id>/final`.
+
+**Откат** — та же команда с прежним успешным `run_id`; отдельной команды отката нет.
+
+- Список прогонов пары: `ls artifacts/models/<task>/<model>/` (`latest` в списке — симлинк).
+- Отчёт прогона: `artifacts/reports/<run_id>/summary.md` (первая строка — `status: ...`).
 
 ---
 

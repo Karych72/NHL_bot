@@ -1,6 +1,5 @@
 .venv
 .ci_venv
-requirements-modeling.txt
 artifacts/
 all_data/
 __pycache__
