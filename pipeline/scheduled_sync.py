@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,11 @@ def seconds_until_next_run(now: datetime) -> float:
     return (next_run - now).total_seconds()
 
 
-def _next_target(now: datetime, target: datetime) -> Tuple[datetime, float]:
+def _next_target(
+    now: datetime,
+    target: datetime,
+    seconds_until: Callable[[datetime], float] = seconds_until_next_run,
+) -> Tuple[datetime, float]:
     """Следующий целевой момент прогона в цикле и секунды сна до него.
 
     *target* — момент последнего запланированного прогона (или момента старта
@@ -99,12 +103,15 @@ def _next_target(now: datetime, target: datetime) -> Tuple[datetime, float]:
     Аргументы:
         now: текущий момент (UTC).
         target: момент последнего прогона/старта цикла (UTC).
+        seconds_until: расчёт секунд до ближайшего слота после переданного
+            момента; по умолчанию суточный слот sync (``scheduled_retrain``
+            подставляет недельный).
 
     Возвращает: ``(next_target, sleep_seconds)`` — момент следующего прогона
     (передать как *target* следующему вызову) и секунды сна до него.
     """
     effective = max(now, target)
-    sleep_seconds = seconds_until_next_run(effective)
+    sleep_seconds = seconds_until(effective)
     next_target = effective + timedelta(seconds=sleep_seconds)
     return next_target, sleep_seconds
 
@@ -123,7 +130,12 @@ def _write_status_atomic(status_file: Path, status: dict) -> None:
     os.replace(tmp_path, status_file)
 
 
-def run_once(commands: Sequence[SyncCommand], status_file: Path, window: Tuple[str, str]) -> bool:
+def run_once(
+    commands: Sequence[SyncCommand],
+    status_file: Path,
+    window: Optional[Tuple[str, str]] = None,
+    name: str = "Sync",
+) -> bool:
     """Выполняет *commands* по очереди, останавливаясь на первой ошибке.
 
     Каждая команда запускается через ``subprocess.run(..., check=False)``;
@@ -135,7 +147,8 @@ def run_once(commands: Sequence[SyncCommand], status_file: Path, window: Tuple[s
         commands: команды в порядке выполнения (см. ``build_commands``).
         status_file: путь JSON-файла статуса для healthcheck (``check``).
         window: ``(date_from, date_to)`` — сохраняется в статусе как контекст
-            прогона, на выполнение команд не влияет.
+            прогона, на выполнение команд не влияет; ``None`` — у прогонов без окна дат.
+        name: название прогона в строках лога (``scheduled_retrain`` — "Retrain").
 
     Возвращает: ``True``, если все команды завершились кодом 0.
     """
@@ -156,15 +169,16 @@ def run_once(commands: Sequence[SyncCommand], status_file: Path, window: Tuple[s
         "ok": ok,
         "failed_command": failed_command,
         "returncode": returncode,
-        "window": list(window),
+        "window": list(window) if window else None,
     }
     _write_status_atomic(status_file, status)
 
     if ok:
-        logger.info("Sync run succeeded (window=%s)", window)
+        logger.info("%s run succeeded (window=%s)", name, window)
     else:
         logger.error(
-            "Sync run failed: command=%r returncode=%s (window=%s)",
+            "%s run failed: command=%r returncode=%s (window=%s)",
+            name,
             failed_command,
             returncode,
             window,
@@ -204,7 +218,12 @@ def build_commands(window: Tuple[str, str], with_digest: bool) -> List[SyncComma
     return commands
 
 
-def check(status_file: Path, now: datetime) -> int:
+def check(
+    status_file: Path,
+    now: datetime,
+    stale_after: timedelta = STALE_AFTER,
+    name: str = "Sync",
+) -> int:
     """Код выхода healthcheck: 0 — данные свежие, иначе 1.
 
     Нездоровые случаи (файла нет / последний прогон неуспешен / устарел)
@@ -213,21 +232,23 @@ def check(status_file: Path, now: datetime) -> int:
     Аргументы:
         status_file: путь JSON-файла статуса, пишет ``run_once``.
         now: текущий момент (UTC), с которым сравнивается ``finished_at``.
+        stale_after: порог устаревания статуса (у sync — сутки, у retrain — 8 дней).
+        name: название прогона в строках лога (``scheduled_retrain`` — "Retrain").
     """
     if not status_file.exists():
-        logger.error("Sync status file not found: %s", status_file)
+        logger.error("%s status file not found: %s", name, status_file)
         return 1
 
     data = json.loads(status_file.read_text(encoding="utf-8"))
 
     if not data.get("ok"):
-        logger.error("Last sync run failed: %s", status_file)
+        logger.error("Last %s run failed: %s", name.lower(), status_file)
         return 1
 
     finished_at = datetime.fromisoformat(data["finished_at"])
-    if now - finished_at > STALE_AFTER:
+    if now - finished_at > stale_after:
         logger.error(
-            "Sync status is stale: finished_at=%s older than %s", finished_at, STALE_AFTER
+            "%s status is stale: finished_at=%s older than %s", name, finished_at, stale_after
         )
         return 1
 

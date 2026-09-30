@@ -65,7 +65,8 @@ NHL_bot/
 │
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   ├── load_season_modern.py           # Класс ModernNhlLoader
-│   └── scheduled_sync.py               # Задача 34: ежедневный планировщик (сервис `sync`)
+│   ├── scheduled_sync.py               # Задача 34: ежедневный планировщик (сервис `sync`)
+│   └── scheduled_retrain.py            # Задача 26: еженедельный retrain (сервис `retrain`)
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
@@ -108,7 +109,7 @@ NHL_bot/
 │       └── get_three_stars_game.sql
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
-│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|predict|publish-predictions`
+│   ├── cli.py                           # `python -m modeling.cli build-dataset|train|promote|predict|publish-predictions`
 │   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
 │   ├── publish_predictions.py           # Задача 22B: CSV predict → таблица game_predictions (гейт по status latest)
@@ -291,6 +292,20 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
 загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением). Тесты —
 `tests/test_scheduled_sync.py`.
+
+### Модуль: `pipeline/scheduled_retrain.py` (Задача 26, еженедельный retrain)
+
+Планировщик retrain — сервис `retrain` в `docker-compose.yml` (профиль `modeling`: не входит в обычные `up`/`build`, поднимается `docker compose --profile modeling up -d retrain`). Переиспользует из
+`scheduled_sync.py` `SyncCommand`, `run_once`, `check`, `_next_target` и запись статуса
+(параметризованы порогом/названием/функцией слота, без копий). Свои части: недельный слот
+(понедельник 12:00 UTC; цикл просыпается ежедневно, `should_run`: догон либо понедельник без прогона за 6 дней; при старте — только догон), предусловие «последний sync
+успешен и свеж», догоняющий прогон (`needs_catch_up`: нет статуса / старше 7 дней / отказ по
+предусловию, который прогоном не считается) и цепочка
+`build-dataset --mode train` → `train --task home_win --no-promote`. `latest` автоматически
+не двигается. Образ сервиса — стадия `modeling` многостадийного `Dockerfile` (поверх общей
+`base`: `libgomp1` + `requirements-modeling.txt`); стадия `bot` идёт последней, поэтому
+`build: .` у `bot`/`sync` собирает прежний образ без modeling-стека. Подробности —
+`docs/modeling_training.md` §9 и `DEVELOPMENT.md` §Docker. Тесты — `tests/test_scheduled_retrain.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
 устроен и сервис `backup` (Задача 35): ежесуточный `pg_dump` тома `pgdata` на bind mount

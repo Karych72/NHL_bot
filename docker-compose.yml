@@ -96,6 +96,45 @@ services:
       start_period: 30m
       retries: 3
 
+  retrain:
+    # Еженедельный retrain (Задача 26): тот же механизм, что у sync (pipeline/scheduled_retrain.py
+    # переиспользует scheduled_sync), но образ со стадией modeling (lightgbm/sklearn — в образ
+    # бота не попадают). Понедельник 12:00 UTC, не в окне sync (08:00 UTC); стартует только
+    # после успешного sync. Обучает home_win с --no-promote: latest двигает человек
+    # (make modeling-promote). Артефакты — bind mount ./artifacts, статус — в томе syncdata.
+    # profiles: трек B в релиз не входит (решение человека, plan/open_tasks.md), поэтому обычные
+    # `docker compose up -d`/`build` сервис не собирают и не запускают:
+    # `docker compose --profile modeling up -d retrain`.
+    profiles: ["modeling"]
+    build:
+      context: .
+      target: modeling
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    working_dir: /app
+    command: ["python", "-u", "pipeline/scheduled_retrain.py", "loop"]
+    volumes:
+      - syncdata:/app/all_data
+      - ./artifacts:/app/artifacts
+    # Здоров = последний retrain ok и не старше 8 дней (scheduled_retrain.py check).
+    # start_period покрывает догоняющий прогон при старте (замер: ~45 с на 6560 играх;
+    # запас с учётом более медленного CPU контейнера).
+    healthcheck:
+      test: ["CMD", "python", "pipeline/scheduled_retrain.py", "check"]
+      interval: 1h
+      timeout: 30s
+      start_period: 10m
+      retries: 3
+
   backup:
     # Compose-сервис вместо host cron (Задача 35, решение контроллера п.1) — тот же
     # долгоживущий-контейнер-со-своим-циклом, что и sync. Образ — тот же postgres:16.6-alpine,
