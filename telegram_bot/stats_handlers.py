@@ -615,6 +615,11 @@ _DIGEST_MORE_HINT = (
     "/team — команды, /stats — меню, /help — справка."
 )
 
+# Кнопки видео голов («▶ 1:0 Nelson 6:33») в два столбца: столбик из десятка
+# кнопок на всю ширину визуально сливался со следующей карточкой матча.
+_GOAL_VIDEO_COLUMNS = 2
+
+
 def _goal_video_buttons(goals_meta: List[Dict]) -> List[InlineKeyboardButton]:
     return [
         InlineKeyboardButton(
@@ -645,7 +650,7 @@ async def send_game_card_message(
     if reply_markup is not None:
         markup = reply_markup
     elif gbtn:
-        markup = InlineKeyboardMarkup(build_menu(gbtn, n_cols=1))
+        markup = InlineKeyboardMarkup(build_menu(gbtn, n_cols=_GOAL_VIDEO_COLUMNS))
     else:
         markup = None
     await context.bot.send_message(
@@ -702,8 +707,12 @@ async def dispatch_day_digest_messages(
     if len(real_games) == 1:
         _gid, text, goals_meta = real_games[0]
         goal_buttons = _goal_video_buttons(goals_meta)
-        buttons = goal_buttons + (nav_buttons if attach_conv_nav_on_last else [])
-        markup = InlineKeyboardMarkup(build_menu(buttons, n_cols=1)) if buttons else None
+        rows = build_menu(
+            goal_buttons,
+            n_cols=_GOAL_VIDEO_COLUMNS,
+            footer_buttons=[[b] for b in nav_buttons] if attach_conv_nav_on_last else None,
+        )
+        markup = InlineKeyboardMarkup(rows) if rows else None
         sent = await context.bot.send_message(
             chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
         )
@@ -716,7 +725,8 @@ async def dispatch_day_digest_messages(
         return
 
     day_str = day_label or "—"
-    body = day_digest_summary_body(real_games)
+    game_ids = [gid for gid, _t, _m in real_games]
+    body = day_digest_summary_body(game_ids)
     header = (
         f"<b>Матчи {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
     )
@@ -724,16 +734,19 @@ async def dispatch_day_digest_messages(
         f"{header}{body}\n\n"
         "<i>Кнопка матча — полная карточка и видео голов.</i>"
     )
-    # Обрезка режет по символам, а не по заголовкам матчей — маркер должен
-    # назвать реальное число попавших в текст матчей, а не молчать о них.
-    # Решение «нужна ли обрезка вообще» остаётся в truncate_telegram_text: на
-    # коротком тексте он вернёт intro как есть и проигнорирует footer_note.
+    # Строка сводки несёт HTML-теги (<code>, <b>): резать её по символам
+    # нельзя — Telegram отвергнет незакрытый тег. Не влезло — оставляем
+    # целые строки, сколько уместилось, и маркер «показаны N из M».
     total_games = len(real_games)
-    shown_games = digest_shown_match_count(header, body.split("\n"), total_games)
-    footer_note = "\n\n" + truncation_marker(shown_games, total_games, item_word="матчей")
-    summary_text = truncate_telegram_text(intro, footer_note=footer_note)
+    lines = body.split("\n")
+    shown_games = digest_shown_match_count(header, lines, total_games)
+    if shown_games < total_games:
+        summary_text = header + "\n".join(lines[:shown_games]) + "\n\n" + truncation_marker(
+            shown_games, total_games, item_word="матчей"
+        )
+    else:
+        summary_text = intro
 
-    game_ids = [gid for gid, _t, _m in real_games]
     expand_buttons = [
         InlineKeyboardButton(label, callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")
         for label, gid in zip(digest_game_button_labels(game_ids), game_ids)

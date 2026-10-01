@@ -819,12 +819,26 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
 # record the same way, so one parametrized test asserts both.
 # ---------------------------------------------------------------------------
 
+def _digest_db_routes(home, away):
+    """Маршруты сводки дня: подписи кнопок «AAA – BBB» любому game_id и счёт
+    1:0 (гол в первом периоде) с командами `home(gid)`/`away(gid)`."""
+    return [
+        ("JOIN teams th", lambda params: [(gid, "AAA", "BBB") for gid in params[0]]),
+        ("get_game_stats", lambda params: [
+            (1, 0, 0, 0, 0, False, False, "home", home(params[0])),
+            (0, 0, 0, 0, 0, False, False, "away", away(params[0])),
+        ]),
+        ("get_goals_game", [
+            ("X", "C", None, None, None, None, None, 1, "01:00", 1, 0,
+             False, False, False, True, 1, 1),
+        ]),
+    ]
+
+
 @pytest.fixture
 def digest_labels_db(fake_db_router):
-    """БД для подписей кнопок матчей: любому game_id — пара «AAA – BBB»."""
-    return fake_db_router(
-        [("JOIN teams th", lambda params: [(gid, "AAA", "BBB") for gid in params[0]])]
-    )
+    """БД сводки дня: матч game_id — «H<id> 1:0 A<id>», кнопки «AAA – BBB»."""
+    return fake_db_router(_digest_db_routes(lambda gid: f"H{gid}", lambda gid: f"A{gid}"))
 
 
 @pytest.mark.asyncio
@@ -889,14 +903,17 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
     )
 
     summary = fake_context.bot.sent_messages[0]
-    assert "1. <b>H1 1:0 A1</b>\n2. <b>H2 1:0 A2</b>" in summary["text"]
+    assert (
+        "<code>1. H1</code> <b>1:0</b> <code>A1</code> (1:0, 0:0, 0:0)\n"
+        "<code>2. H2</code> <b>1:0</b> <code>A2</code> (1:0, 0:0, 0:0)"
+    ) in summary["text"]
     assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
     rows = summary["reply_markup"].inline_keyboard
     assert [len(r) for r in rows] == [3, 1]
     assert [b.text for r in rows for b in r] == [f"{n}. AAA – BBB" for n in range(1, 5)]
     assert [b.callback_data for r in rows for b in r] == [f"dg:{n}" for n in range(1, 5)]
     # Подписи — один запрос на все матчи дня, а не по запросу на кнопку.
-    assert len(digest_labels_db.executed) == 1
+    assert sum("JOIN teams th" in q for q, _ in digest_labels_db.executed) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -918,18 +935,19 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
     sent_text = fake_context.bot.sent_messages[0]["text"]
     assert "Показаны" not in sent_text
-    assert "1. Матч 1 текст" in sent_text
-    assert "2. Матч 2 текст" in sent_text
+    assert "<code>1. H1</code>" in sent_text
+    assert "<code>2. H2</code>" in sent_text
 
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
-    bot_module, fake_context, digest_labels_db
+    bot_module, fake_context, fake_db_router
 ):
     """Сводка дня, которая не влезает в лимит Telegram, должна честно сказать,
     сколько из всех матчей дня реально попало в текст, а не молчать про
     отброшенные заголовки."""
     stats_handlers = bot_module("stats_handlers")
+    fake_db_router(_digest_db_routes(lambda gid: "Х" * 40, lambda gid: "Y" * 40))
     total_games = 80
     games = [
         (
@@ -951,6 +969,9 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     shown, total = int(match.group(1)), int(match.group(2))
     assert total == total_games
     assert 0 < shown < total_games
+    # Обрезка — целыми строками: ни одного незакрытого тега (Telegram отверг бы HTML).
+    assert sent_text.count("<code>") == sent_text.count("</code>") == 2 * shown
+    assert sent_text.count("<b>") == sent_text.count("</b>")
 
 
 # ---------------------------------------------------------------------------

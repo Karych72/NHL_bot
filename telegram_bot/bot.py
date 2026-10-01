@@ -33,6 +33,7 @@ from bot_messages import (
     last_night_day,
     leaders_menu_intro,
     team_list_text,
+    team_full_stats,
     team_profile,
     team_table,
     truncate_telegram_text,
@@ -189,10 +190,11 @@ _TELEGRAM_INLINE_BUTTON_CAP = 100
 # Как у кнопок матчей в /today.
 _TONIGHT_BUTTON_COLUMNS = 3
 
-# `/BOS`, `/WSH`… из списка `/team`: три латинские буквы — ни одна служебная
-# команда бота под этот шаблон не попадает. Вариант `/BOS@bot` не принимается:
-# regex не знает имени бота и отвечал бы на команды, адресованные чужим ботам.
-TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})$"
+# `/BOS`, `/WSH`… из списка `/team` и `/BOS_FULL` из конца профиля клуба: три
+# латинские буквы (+ `_FULL`) — ни одна служебная команда бота под этот шаблон
+# не попадает. Вариант `/BOS@bot` не принимается: regex не знает имени бота и
+# отвечал бы на команды, адресованные чужим ботам.
+TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})(_[Ff][Uu][Ll][Ll])?$"
 
 
 def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
@@ -319,12 +321,14 @@ async def cmd_team(update: Update, context: CallbackContext) -> None:
 
 
 async def cmd_team_profile(update: Update, context: CallbackContext) -> None:
-    """`/BOS` и т.п.: статистика клуба (`team_profile()`); неизвестную
-    аббревиатуру `team_profile()` сама превращает в текст с причиной."""
+    """`/BOS` и т.п.: статистика клуба (`team_profile()`), `/BOS_FULL` — все
+    его игроки (`team_full_stats()`); неизвестную аббревиатуру обе функции
+    сами превращают в текст с причиной."""
     message = _message(update)
     assert context.matches
-    abbrev = context.matches[0].group(1)
-    text = truncate_telegram_text(team_profile(abbrev) + "\n\nВсе команды: /team")
+    abbrev, full = context.matches[0].group(1), context.matches[0].group(2)
+    body = team_full_stats(abbrev) if full else team_profile(abbrev)
+    text = truncate_telegram_text(body + "\n\nВсе команды: /team")
     await message.reply_text(text, parse_mode="HTML")
 
 

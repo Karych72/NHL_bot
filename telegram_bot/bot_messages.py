@@ -133,7 +133,11 @@ def _goal_situation_suffix(
     is_ppg: Optional[bool],
     is_shg: Optional[bool],
     empty_net: Optional[bool],
+    winner_goal: Optional[bool],
 ) -> str:
+    """Пометки гола в карточке: ПВ/МБ/ББ (пустые ворота, меньшинство,
+    большинство — одна, по приоритету) и ПШ (победная шайба). Раньше
+    победную отмечала «★», которую путали со звёздами матча."""
     parts: List[str] = []
     if empty_net:
         parts.append("ПВ")
@@ -141,9 +145,62 @@ def _goal_situation_suffix(
         parts.append("МБ")
     elif is_ppg:
         parts.append("ББ")
+    if winner_goal:
+        parts.append("ПШ")
     if not parts:
         return ""
     return " (" + ", ".join(parts) + ")"
+
+
+_RUSSIAN_NATIONALITY = "RUS"
+
+
+def _goal_player_name(lastname: Optional[str], nationality: Optional[str]) -> str:
+    """Фамилия игрока в строке гола; русский игрок (`rosters.nationality`)
+    пишется капсом — так его видно в списке голов."""
+    name = lastname or "Unknown"
+    return name.upper() if nationality == _RUSSIAN_NATIONALITY else name
+
+
+def _aligned_columns(rows: Sequence[Sequence[str]], align: str) -> List[str]:
+    """Строки таблицы: каждая колонка добита пробелами до самой широкой ячейки.
+
+    Зачем: Telegram выравнивает пробелами только моноширинный текст (`<pre>`) —
+    общий рендер для списка голов карточки, сравнения в превью матча, топов
+    профиля клуба и /BOS_FULL.
+
+    Аргументы:
+        rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
+        align: по символу на колонку — `l` (влево) или `r` (вправо).
+    """
+    widths = [max(len(r[c]) for r in rows) for c in range(len(align))]
+    return [
+        " ".join(
+            cell.rjust(w) if a == "r" else cell.ljust(w)
+            for cell, w, a in zip(r, widths, align)
+        ).rstrip()
+        for r in rows
+    ]
+
+
+def _pre_block(lines: Sequence[str]) -> str:
+    """Строки (сырые, без HTML) одним экранированным блоком `<pre>`."""
+    body = "\n".join(lines)
+    return f"<pre>{html.escape(body)}</pre>"
+
+
+def _pre_table(rows: Sequence[Sequence[str]], align: str) -> str:
+    """`_aligned_columns()` одним экранированным блоком `<pre>`."""
+    return _pre_block(_aligned_columns(rows, align))
+
+
+def _record_str(
+    wins: Union[int, float, Decimal, None],
+    losses: Union[int, float, Decimal, None],
+    ot: Union[int, float, Decimal, None],
+) -> str:
+    """Баланс «W-L-OT» (`7-3-0`) — общий для профиля клуба, превью матча и вратарей."""
+    return "-".join(_format_leader_value(v) for v in (wins, losses, ot))
 
 
 def _format_three_star_line(
@@ -181,58 +238,66 @@ def _format_three_star_line(
     return f"{line} — {tail}" if tail else line
 
 
-def game_message(game_id: int) -> Tuple[str, List[Dict]]:
-    """Return (rendered_text, goal_video_metadata)."""
+_GAME_STATS_COLUMNS = [
+    'goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
+    'is_shootouts', 'field', 'team_name',
+]
+_GOALS_GAME_COLUMNS = [
+    "scorer",
+    "scorer_position",
+    "scorer_nationality",
+    "assist_1",
+    "assist_1_nationality",
+    "assist_2",
+    "assist_2_nationality",
+    "period",
+    "goal_time",
+    "home_score",
+    "away_score",
+    "is_ppg",
+    "is_shg",
+    "empty_net",
+    "winner_goal",
+    "goal_game_id",
+    "goal_event_id",
+]
+
+
+def _fetch_game_score_rows(game_id: int) -> Tuple[Dict, Dict]:
+    """Строки `get_game_stats` (хозяева, гости) и `get_goals_game` матча —
+    всё, из чего считается счёт: для карточки (`game_message`) и сводки дня
+    (`day_digest_summary_body`)."""
     game_stats = fetch_all(
-        "SELECT * FROM get_game_stats(%s)", (game_id,),
-        ['goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
-         'is_shootouts', 'field', 'team_name'],
-    )
-    teams_row = fetch_all(
-        "SELECT home_team_id, away_team_id FROM games WHERE game_id = %s LIMIT 1",
-        (game_id,),
-        columns=["home_team_id", "away_team_id"],
-    )
-    away_tid = (
-        int(teams_row["away_team_id"][0])
-        if teams_row["count_rows"] and teams_row["away_team_id"][0] is not None
-        else None
-    )
-    home_tid = (
-        int(teams_row["home_team_id"][0])
-        if teams_row["count_rows"] and teams_row["home_team_id"][0] is not None
-        else None
+        "SELECT * FROM get_game_stats(%s)", (game_id,), _GAME_STATS_COLUMNS,
     )
     game_goals = fetch_all(
-        "SELECT * FROM get_goals_game(%s)", (game_id,),
-        [
-            "scorer",
-            "scorer_position",
-            "assist_1",
-            "assist_2",
-            "period",
-            "goal_time",
-            "home_score",
-            "away_score",
-            "is_ppg",
-            "is_shg",
-            "empty_net",
-            "winner_goal",
-            "goal_game_id",
-            "goal_event_id",
-        ],
+        "SELECT * FROM get_goals_game(%s)", (game_id,), _GOALS_GAME_COLUMNS,
     )
-    game_goalies = fetch_all(
-        "SELECT * FROM get_goalies_game(%s)", (game_id,),
-        ['shots', 'saves', 'timeonice', 'lastname',
-         'save_percentage', 'is_home'],
-    )
-    game_three_stars = fetch_all(
-        "SELECT * FROM get_three_stars_game(%s)", (game_id,),
-        ['star', 'lastname', 'player_position', 'abbreviation',
-         'goals', 'assists', 'saves', 'shots', 'save_percentage'],
-    )
+    return game_stats, game_goals
 
+
+def _running_scores(game_goals: Dict) -> List[Tuple[int, int]]:
+    """Счёт после каждого гола; пропуск счёта в строке (NULL) — счёт
+    предыдущего гола."""
+    scores = []
+    h, a = 0, 0
+    for i in range(game_goals['count_rows']):
+        if game_goals['home_score'][i] is not None:
+            h = game_goals['home_score'][i]
+        if game_goals['away_score'][i] is not None:
+            a = game_goals['away_score'][i]
+        scores.append((h, a))
+    return scores
+
+
+def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
+    """Счёт матча по частям, сырыми строками (без HTML): `home`, `away`,
+    `home_score`, `away_score`, `extra` (« (OT)»/« (Б)»/пусто),
+    `period_scores` («(2:1, 4:2, 2:1)»).
+
+    Единственная точка расчёта шапки карточки матча и строки сводки /today —
+    иначе две копии счёта по периодам разойдутся.
+    """
     is_overtime = game_stats['is_overtime'][0]
     is_shootouts = game_stats['is_shootouts'][0]
     if not is_overtime:
@@ -245,22 +310,61 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     period_home: dict[int, int] = defaultdict(int)
     period_away: dict[int, int] = defaultdict(int)
     prev_h, prev_a = 0, 0
-
-    goals = []
-    goals_meta = []
-    scorer_counts: Dict[str, int] = defaultdict(int)
-    for i in range(game_goals['count_rows']):
-        h_raw = game_goals['home_score'][i]
-        a_raw = game_goals['away_score'][i]
+    for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
-        h = h_raw if h_raw is not None else prev_h
-        a = a_raw if a_raw is not None else prev_a
         if p is not None:
             period_home[p] += h - prev_h
             period_away[p] += a - prev_a
         prev_h, prev_a = h, a
+    num_periods = 4 if is_overtime and not is_shootouts else 3
+    parts = [f"{period_home[p]}:{period_away[p]}" for p in range(1, num_periods + 1)]
+    return {
+        'home': str(game_stats['team_name'][0] or ""),
+        'away': str(game_stats['team_name'][1] or ""),
+        'home_score': str(game_stats['goals'][0]),
+        'away_score': str(game_stats['goals'][1]),
+        'extra': extra,
+        'period_scores': f"({', '.join(parts)})",
+    }
 
-        scorer = game_goals['scorer'][i] or 'Unknown'
+
+def game_message(game_id: int) -> Tuple[str, List[Dict]]:
+    """Return (rendered_text, goal_video_metadata)."""
+    game_stats, game_goals = _fetch_game_score_rows(game_id)
+    header = _game_score_header(game_stats, game_goals)
+    teams_row = fetch_all(
+        "SELECT home_team_id, away_team_id, day::text FROM games WHERE game_id = %s LIMIT 1",
+        (game_id,),
+        columns=["home_team_id", "away_team_id", "day"],
+    )
+    game_day = teams_row["day"][0] if teams_row["count_rows"] else None
+    away_tid = (
+        int(teams_row["away_team_id"][0])
+        if teams_row["count_rows"] and teams_row["away_team_id"][0] is not None
+        else None
+    )
+    home_tid = (
+        int(teams_row["home_team_id"][0])
+        if teams_row["count_rows"] and teams_row["home_team_id"][0] is not None
+        else None
+    )
+    game_goalies = fetch_all(
+        "SELECT * FROM get_goalies_game(%s)", (game_id,),
+        ['shots', 'saves', 'timeonice', 'lastname',
+         'save_percentage', 'is_home'],
+    )
+    game_three_stars = fetch_all(
+        "SELECT * FROM get_three_stars_game(%s)", (game_id,),
+        ['star', 'lastname', 'player_position', 'abbreviation',
+         'goals', 'assists', 'saves', 'shots', 'save_percentage'],
+    )
+
+    goal_rows: List[List[str]] = []
+    goals_meta = []
+    scorer_counts: Dict[str, int] = defaultdict(int)
+    for i, (h, a) in enumerate(_running_scores(game_goals)):
+        p = game_goals['period'][i]
+        scorer = _goal_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
         pos_raw = game_goals['scorer_position'][i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
         scorer_counts[scorer] += 1
@@ -268,45 +372,35 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             game_goals['is_ppg'][i],
             game_goals['is_shg'][i],
             game_goals['empty_net'][i],
+            game_goals['winner_goal'][i],
         )
-        winner_mark = " ★" if game_goals['winner_goal'][i] else ""
 
+        # Время от начала матча; период в строке не пишется — он виден по минуте.
         time_str = game_goals['goal_time'][i]
         if p is not None and time_str:
             t_m = str((p - 1) * 20 + int(time_str.split(':')[0]))
             t_all = t_m + ':' + time_str.split(':')[1]
         else:
             t_all = '?:??'
-        period_label = f"P{p}" if p is not None else "?"
-        assists = ''
-        if game_goals['assist_2'][i] is not None:
-            assists = f"({game_goals['assist_1'][i]}, {game_goals['assist_2'][i]})"
-        elif game_goals['assist_1'][i] is not None:
-            assists = f"({game_goals['assist_1'][i]})"
+        assist_names = [
+            _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
+            for key in ("assist_1", "assist_2")
+            if game_goals[key][i] is not None
+        ]
+        assists = f"({', '.join(assist_names)})" if assist_names else ""
 
         score = f"{h}:{a}"
-        scorer_line = scorer + (f" [{pos}]" if pos else "") + assists + situation + winner_mark
-        goals.append({
-            'home_score': h,
-            'away_score': a,
-            'scorer': html.escape(scorer_line),
-            'time': html.escape(t_all),
-            'period_label': html.escape(period_label),
-        })
+        detail = (f"[{pos}]" if pos else "") + assists + situation
+        goal_rows.append([score, scorer, detail, t_all])
 
         evt = game_goals['goal_event_id'][i]
         if evt is not None:
             goals_meta.append({
                 'game_id': game_goals['goal_game_id'][i],
                 'event_id': evt,
-                'label': f"{score} {scorer}{assists} {t_all}",
+                'label': f"▶ {score} {scorer} {t_all}",
             })
-
-    num_periods = 3
-    if is_overtime and not is_shootouts:
-        num_periods = 4
-    parts = [f"{period_home[p]}:{period_away[p]}" for p in range(1, num_periods + 1)]
-    period_scores = f"({', '.join(parts)})"
+    goals_block = _pre_table(goal_rows, "lllr") if goal_rows else ""
 
     hat_lines = [
         f"<b>Хет-трик</b>: {html.escape(name)} (×{n})"
@@ -317,8 +411,13 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
 
     away_abbr = (game_stats['team_name'][1] or "").strip()
     home_abbr = (game_stats['team_name'][0] or "").strip()
-    form_away = _last_n_form_record(away_tid, 5) if away_tid is not None else "—"
-    form_home = _last_n_form_record(home_tid, 5) if home_tid is not None else "—"
+    # Форма — до этого матча: игры строго раньше его игрового дня.
+    form_away = (
+        _last_n_form_record(away_tid, 5, before_day=game_day) if away_tid is not None else "—"
+    )
+    form_home = (
+        _last_n_form_record(home_tid, 5, before_day=game_day) if home_tid is not None else "—"
+    )
     # Порядок команд — как в шапке карточки (хозяева первыми).
     recent_form = (
         "<i>Форма (5 игр, W-L-OTL)</i>: "
@@ -370,18 +469,18 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
 
     to_template = {
-        'team_home': html.escape(str(game_stats['team_name'][0] or "")),
-        'team_away': html.escape(str(game_stats['team_name'][1] or "")),
-        'home_score': html.escape(str(game_stats['goals'][0])),
-        'away_score': html.escape(str(game_stats['goals'][1])),
+        'team_home': html.escape(header['home']),
+        'team_away': html.escape(header['away']),
+        'home_score': html.escape(header['home_score']),
+        'away_score': html.escape(header['away_score']),
         'home_shots': html.escape(str(game_stats['shots'][0])),
         'away_shots': html.escape(str(game_stats['shots'][1])),
         'home_penalties': html.escape(str(game_stats['pim'][0])),
         'away_penalties': html.escape(str(game_stats['pim'][1])),
-        'goals': goals,
+        'goals_block': goals_block,
         'goalkeepers': goalkeepers,
-        'extra': html.escape(extra),
-        'period_scores': html.escape(period_scores),
+        'extra': html.escape(header['extra']),
+        'period_scores': html.escape(header['period_scores']),
         'hat_tricks': hat_tricks,
         'recent_form': recent_form,
         'three_stars': three_stars,
@@ -492,7 +591,9 @@ def _team_game_outcome(
     return "L"
 
 
-def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
+def _recent_team_outcomes(
+    team_id: int, limit: int, before_day: Optional[str] = None
+) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
     сезона команды `team_id`, от новой игры к старой.
 
@@ -506,6 +607,8 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     Аргументы:
         team_id: команда, для которой отбираются игры.
         limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
+        before_day: только игры раньше этого игрового дня (`YYYY-MM-DD`) —
+            форма «до матча» в его карточке; None — все игры сезона.
 
     Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
     пустой список, если в текущем сезоне у команды нет завершённых игр.
@@ -516,8 +619,9 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
         "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
         "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
+        "AND (%s::date IS NULL OR day < %s::date) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
-        (config.SEASON_ID, team_id, team_id, limit),
+        (config.SEASON_ID, team_id, team_id, before_day, before_day, limit),
         columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
     return [
@@ -532,16 +636,16 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     ]
 
 
-def _last_n_form_record(team_id: int, n: int = 5) -> str:
-    """Формат W-L-OTL по последним n завершённым играм (как в таблице очков).
+def _last_n_form_record(team_id: int, n: int = 5, before_day: Optional[str] = None) -> str:
+    """Формат W-L-OTL по последним n завершённым играм (как в таблице очков);
+    без игр — `0-0-0` (первый матч сезона в карточке).
 
     Игры и их разряды берёт `_recent_team_outcomes()` (правило NHL 84.2 —
     см. `_team_game_outcome()`), чтобы форма и текущая серия
-    (`_current_streak()`) не могли разойтись в подсчёте ПО.
+    (`_current_streak()`) не могли разойтись в подсчёте ПО. `before_day` —
+    см. `_recent_team_outcomes()`.
     """
-    outcomes = _recent_team_outcomes(team_id, n)
-    if not outcomes:
-        return "—"
+    outcomes = _recent_team_outcomes(team_id, n, before_day)
     w = outcomes.count("W")
     losses = outcomes.count("L")
     otl = outcomes.count("OTL")
@@ -577,24 +681,9 @@ def _current_streak(team_id: int) -> str:
     return f"{streak_outcome}{streak_len}"
 
 
-def _matchup_aligned_compare_rows(pairs: List[Tuple[str, str, str]], min_gap: int = 4) -> List[str]:
-    """Строки «• метрика: … значение — значение»; числа начинаются в одной колонке (моноширинно в Telegram)."""
-    prefixes = [f"• {lbl}:" for lbl, _, _ in pairs]
-    w = max(len(p) for p in prefixes)
-    value_start = w + min_gap
-    rows: List[str] = []
-    for (lbl, left, right), p in zip(pairs, prefixes):
-        gap = value_start - len(p)
-        if gap < 1:
-            gap = 1
-        rows.append(f"{p}{' ' * gap}{left} — {right}")
-    return rows
-
-
-def _h2h_season_wins(
-    tid_a: int, tid_b: int, abbrev_a: str, abbrev_b: str
-) -> Optional[str]:
-    """Строка «побед в личных встречах» или None, если матчей не было."""
+def _h2h_season_wins(tid_a: int, tid_b: int) -> Optional[Tuple[int, int]]:
+    """Победы команд `tid_a` и `tid_b` в личных встречах сезона или None,
+    если они ещё не встречались."""
     row = cached_fetch_all(
         "SELECT winner_id FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND ((home_team_id = %s AND away_team_id = %s) "
@@ -604,15 +693,18 @@ def _h2h_season_wins(
     )
     if row["count_rows"] == 0:
         return None
-    wa = wb = 0
-    for i in range(row["count_rows"]):
-        wid = row["winner_id"][i]
-        if wid == tid_a:
-            wa += 1
-        elif wid == tid_b:
-            wb += 1
-    ea, eb = html.escape(abbrev_a), html.escape(abbrev_b)
-    return f"<b>{ea}</b> {wa} — {wb} <b>{eb}</b>"
+    winners = row["winner_id"][: row["count_rows"]]
+    return winners.count(tid_a), winners.count(tid_b)
+
+
+def _points_word(points: Union[int, float, Decimal, None]) -> str:
+    """«очко»/«очка»/«очков» под число очков (1 очко, 2 очка, 5 очков)."""
+    n = int(points or 0)
+    if n % 10 == 1 and n % 100 != 11:
+        return "очко"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "очка"
+    return "очков"
 
 
 def _team_record_line(
@@ -628,9 +720,9 @@ def _team_record_line(
     (Фаза D) — единственная точка сборки этого формата, чтобы он не разошёлся
     между экранами.
     """
-    rec = f"{_format_leader_value(wins)}-{_format_leader_value(losses)}-{_format_leader_value(ot)}"
+    rec = _record_str(wins, losses, ot)
     ppct = _fmt_pct_points(procent_points)
-    return f"{rec}, {_format_leader_value(points)} очков ({ppct})"
+    return f"{rec}, {_format_leader_value(points)} {_points_word(points)} ({ppct})"
 
 
 def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
@@ -649,6 +741,79 @@ def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
         return None
     pct = round(float(row["probability"][0]) * 100)
     return f"🤖 Модельная оценка (не совет): победа {esc_home} — {pct}%"
+
+
+def _fmt_signed(val: Union[int, float, None]) -> str:
+    """Число со знаком («+1», «-0.5», «0») — разница шайб, чтобы минус не
+    сливался с тире-разделителем колонок."""
+    s = _fmt_num_max2(val)
+    return f"+{s}" if val is not None and float(val) > 0 else s
+
+
+def _matchup_compare_table(
+    away_abbr: str,
+    home_abbr: str,
+    ra: Dict[str, Union[int, float, None]],
+    rh: Dict[str, Union[int, float, None]],
+) -> str:
+    """Таблица превью матча `<pre>`: шапка «Сравнение команд: EDM VS VAN»,
+    затем строки «• метрика: гости — хозяева» с тире в одной колонке —
+    очки, баланс, форма и серия, личные встречи (если были), метрики сезона.
+    """
+    def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
+        gf, ga = r["goals_per_game"], r["goals_against_per_game"]
+        return None if gf is None or ga is None else round(float(gf) - float(ga), 2)
+
+    tid_a = _team_id_for_abbrev(away_abbr)
+    tid_h = _team_id_for_abbrev(home_abbr)
+    tids = (tid_a, tid_h)
+    form = [_last_n_form_record(t, 5) if t is not None else "—" for t in tids]
+    streak = [_current_streak(t) if t is not None else "—" for t in tids]
+    pairs: List[Tuple[str, str, str]] = [
+        ("Очки", _format_leader_value(ra["points"]), _format_leader_value(rh["points"])),
+        ("% очков", _fmt_pct_points(ra["procent_points"]), _fmt_pct_points(rh["procent_points"])),
+        (
+            "Баланс W-L-OT",
+            _record_str(ra["wins"], ra["losses"], ra["ot"]),
+            _record_str(rh["wins"], rh["losses"], rh["ot"]),
+        ),
+        ("Форма (5 игр)", form[0], form[1]),
+        ("Серия", streak[0], streak[1]),
+    ]
+    h2h = _h2h_season_wins(tid_a, tid_h) if tid_a is not None and tid_h is not None else None
+    if h2h:
+        pairs.append(("Личные встречи", str(h2h[0]), str(h2h[1])))
+    pairs += [
+        ("Голы за игру", _fmt_num_max2(ra["goals_per_game"]), _fmt_num_max2(rh["goals_per_game"])),
+        (
+            "Пропущенные голы за игру",
+            _fmt_num_max2(ra["goals_against_per_game"]),
+            _fmt_num_max2(rh["goals_against_per_game"]),
+        ),
+        (
+            "Большинство",
+            _fmt_pct_stat(ra["power_play_percentage"]),
+            _fmt_pct_stat(rh["power_play_percentage"]),
+        ),
+        (
+            "Меньшинство",
+            _fmt_pct_stat(ra["penalty_kill_percentage"]),
+            _fmt_pct_stat(rh["penalty_kill_percentage"]),
+        ),
+        ("Броски за игру", _fmt_num_max2(ra["shots_per_game"]), _fmt_num_max2(rh["shots_per_game"])),
+        (
+            "Вбрасывания",
+            _fmt_pct_stat(ra["face_off_win_percentage"]),
+            _fmt_pct_stat(rh["face_off_win_percentage"]),
+        ),
+        ("Разница шайб за игру", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
+    ]
+    rows = [["• Сравнение команд:", away_abbr, "—", home_abbr]]
+    rows += [[f"• {label}:", left, "—", right] for label, left, right in pairs]
+    lines = _aligned_columns(rows, "lrll")
+    # «VS» шире тире: в колонке тире он раздвигал бы все строки двойным пробелом.
+    lines[0] = lines[0].replace(" — ", " VS ", 1)
+    return _pre_block(lines)
 
 
 def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
@@ -736,83 +901,12 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
             f"({season_esc})."
         )
 
-    parts: List[str] = [
-        header.rstrip("\n"),
-        _one_line_team_html(away_abbr, ra),
-        _one_line_team_html(home_abbr, rh),
-    ]
-
-    if ra and rh:
-        gf_a = ra["goals_per_game"]
-        gf_h = rh["goals_per_game"]
-        ga_a = ra["goals_against_per_game"]
-        ga_h = rh["goals_against_per_game"]
-        diff_a = (
-            None
-            if gf_a is None or ga_a is None
-            else round(float(gf_a) - float(ga_a), 2)
-        )
-        diff_h = (
-            None
-            if gf_h is None or ga_h is None
-            else round(float(gf_h) - float(ga_h), 2)
-        )
-
-        parts.append("")
-        parts.append("<b>Сравнение</b>")
-        parts.append(f"<b>{esc_a} VS {esc_h}</b>")
-        parts.append("")
-        compare_pairs: List[Tuple[str, str, str]] = [
-            ("Голы за игру", _fmt_num_max2(gf_a), _fmt_num_max2(gf_h)),
-            ("Пропущенные голы за игру", _fmt_num_max2(ga_a), _fmt_num_max2(ga_h)),
-            (
-                "Большинство",
-                _fmt_pct_stat(ra["power_play_percentage"]),
-                _fmt_pct_stat(rh["power_play_percentage"]),
-            ),
-            (
-                "Меньшинство",
-                _fmt_pct_stat(ra["penalty_kill_percentage"]),
-                _fmt_pct_stat(rh["penalty_kill_percentage"]),
-            ),
-            (
-                "Броски за игру",
-                _fmt_num_max2(ra["shots_per_game"]),
-                _fmt_num_max2(rh["shots_per_game"]),
-            ),
-            (
-                "Вбрасывания",
-                _fmt_pct_stat(ra["face_off_win_percentage"]),
-                _fmt_pct_stat(rh["face_off_win_percentage"]),
-            ),
-            (
-                "Разница шайб за игру",
-                _fmt_num_max2(diff_a),
-                _fmt_num_max2(diff_h),
-            ),
-        ]
-        pre_raw = "\n".join(_matchup_aligned_compare_rows(compare_pairs, min_gap=4))
-        parts.append(f"<pre>{html.escape(pre_raw)}</pre>")
-
-        tid_a = _team_id_for_abbrev(a)
-        tid_h = _team_id_for_abbrev(h)
-        parts.append("")
-        parts.append("<b>Форма (последние 5 игр)</b>")
-        fa = _last_n_form_record(tid_a, 5) if tid_a is not None else "—"
-        fh = _last_n_form_record(tid_h, 5) if tid_h is not None else "—"
-        streak_a = _current_streak(tid_a) if tid_a is not None else "—"
-        streak_h = _current_streak(tid_h) if tid_h is not None else "—"
-        streak_a_suffix = f" (серия {html.escape(streak_a)})" if streak_a != "—" else ""
-        streak_h_suffix = f" (серия {html.escape(streak_h)})" if streak_h != "—" else ""
-        parts.append(f"<b>{esc_a}</b>: {html.escape(fa)}{streak_a_suffix}")
-        parts.append(f"<b>{esc_h}</b>: {html.escape(fh)}{streak_h_suffix}")
-
-        if tid_a is not None and tid_h is not None:
-            h2h = _h2h_season_wins(tid_a, tid_h, away_abbr, home_abbr)
-            if h2h:
-                parts.append("")
-                parts.append("<b>Личные встречи в сезоне (победы)</b>")
-                parts.append(h2h)
+    parts: List[str] = [header.rstrip("\n")]
+    if ra is None or rh is None:
+        parts.append(_one_line_team_html(away_abbr, ra))
+        parts.append(_one_line_team_html(home_abbr, rh))
+    else:
+        parts.append(_matchup_compare_table(a, h, ra, rh))
 
     prediction = _model_prediction_line(game_id, esc_h)
     if prediction:
@@ -1442,7 +1536,75 @@ def team_list_text() -> str:
     )
 
 
-_TEAM_PROFILE_TOP_SCORERS = 5
+_TEAM_PROFILE_TOP = 5
+
+# Порядок полевых игроков клуба — два фиксированных литерала модуля, не ввод
+# пользователя: по очкам и по среднему времени на льду («м:сс» → секунды).
+_BY_POINTS = "pss.points DESC NULLS LAST, pss.goals DESC NULLS LAST, pss.games"
+_BY_TOI = (
+    "split_part(pss.time_on_ice_per_game, ':', 1)::int * 60 "
+    "+ split_part(pss.time_on_ice_per_game, ':', 2)::int DESC NULLS LAST, pss.games DESC"
+)
+_TEAM_SKATER_COLUMNS = [
+    "lastname", "position", "games", "goals", "assists", "points", "plus_minus", "toi",
+]
+_TEAM_STATS_LEGEND = (
+    "<i>И — игры, Г — голы, П — передачи, О — очки, ВП — среднее время на льду за игру; "
+    "вратари: В-П-ОТ — победы, поражения, поражения в овертайме, %ОБ — процент "
+    "отражённых бросков, КН — коэффициент надёжности.</i>"
+)
+
+
+def _team_skaters(team_id: int, order_by: str, limit: Optional[int]) -> Dict:
+    """Полевые игроки клуба сезона (`rosters ⋈ players_season_stats` при
+    `current_team_id = team_id`) в порядке `order_by` (`_BY_POINTS`/`_BY_TOI`);
+    `limit=None` — все. Колонки — `_TEAM_SKATER_COLUMNS`."""
+    return cached_fetch_all(
+        "SELECT r.lastname, r.position, pss.games, pss.goals, pss.assists, pss.points, "
+        "pss.plus_minus, pss.time_on_ice_per_game "
+        "FROM rosters r "
+        "JOIN players_season_stats pss "
+        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id "
+        f"WHERE r.current_team_id = %s AND r.season_id = %s ORDER BY {order_by} LIMIT %s",
+        (team_id, config.SEASON_ID, limit),
+        columns=_TEAM_SKATER_COLUMNS,
+    )
+
+
+def _skater_label(skaters: Dict, i: int) -> str:
+    """«Forsling [D]» — фамилия и позиция i-й строки `_team_skaters()`."""
+    pos = (skaters["position"][i] or "—").strip()
+    return f"{skaters['lastname'][i] or 'Unknown'} [{pos}]"
+
+
+def _team_goalies_table(team_id: int) -> str:
+    """Вратари клуба сезона с хотя бы одной игрой — `<pre>`-таблица (игры,
+    В-П-ОТ, %ОБ, КН), пустая строка, если таких нет."""
+    goalies = cached_fetch_all(
+        "SELECT r.lastname, gs.games, gs.wins, gs.losses, gs.ot, "
+        "gs.save_percentage, gs.goal_against_average "
+        "FROM rosters r "
+        "JOIN goalies_season_stats gs "
+        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id "
+        "WHERE r.current_team_id = %s AND r.season_id = %s AND gs.games > 0 "
+        "ORDER BY gs.games DESC, gs.wins DESC",
+        (team_id, config.SEASON_ID),
+        columns=["lastname", "games", "wins", "losses", "ot", "sv", "gaa"],
+    )
+    if goalies["count_rows"] == 0:
+        return ""
+    fmt = _format_leader_value
+    rows = [["Вратарь", "И", "В-П-ОТ", "%ОБ", "КН"]] + [
+        [
+            goalies["lastname"][i] or "Unknown",
+            fmt(goalies["games"][i]),
+            _record_str(goalies["wins"][i], goalies["losses"][i], goalies["ot"][i]),
+            _fmt_pct_stat(goalies["sv"][i]),
+            _fmt_num_max2(goalies["gaa"][i]),
+        ]
+        for i in range(goalies["count_rows"])
+    ]
+    return _pre_table(rows, "lrrrr")
 
 _TEAM_PROFILE_STATS_COLUMNS = [
     "team_id", "name", "short_name", "division_name", "conference_name", "games_played",
@@ -1517,42 +1679,18 @@ def team_profile(abbrev: str) -> str:
         )
     me, div_place, conf_place, league_place = _team_places(team_id, rows)
 
-    scorers = cached_fetch_all(
-        "SELECT r.lastname, r.position, pss.goals, pss.assists, pss.points, pss.games "
-        "FROM rosters r "
-        "JOIN players_season_stats pss "
-        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id "
-        "WHERE r.current_team_id = %s AND r.season_id = %s "
-        "ORDER BY pss.points DESC NULLS LAST, pss.goals DESC NULLS LAST, pss.games "
-        "LIMIT %s",
-        (team_id, config.SEASON_ID, _TEAM_PROFILE_TOP_SCORERS),
-        columns=["lastname", "position", "goals", "assists", "points", "games"],
-    )
-    goalies = cached_fetch_all(
-        "SELECT r.lastname, gs.games, gs.wins, gs.losses, gs.ot, "
-        "gs.save_percentage, gs.goal_against_average "
-        "FROM rosters r "
-        "JOIN goalies_season_stats gs "
-        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id "
-        "WHERE r.current_team_id = %s AND r.season_id = %s AND gs.games > 0 "
-        "ORDER BY gs.games DESC, gs.wins DESC",
-        (team_id, config.SEASON_ID),
-        columns=["lastname", "games", "wins", "losses", "ot", "sv", "gaa"],
-    )
-
     fmt = _format_leader_value
-    scorer_lines = [
-        f"{i + 1}. {html.escape(scorers['lastname'][i] or 'Unknown')} "
-        f"[{html.escape((scorers['position'][i] or '—').strip())}] — "
-        f"{fmt(scorers['points'][i])} ({fmt(scorers['goals'][i])}+{fmt(scorers['assists'][i])}), "
-        f"игр: {fmt(scorers['games'][i])}"
+    scorers = _team_skaters(team_id, _BY_POINTS, _TEAM_PROFILE_TOP)
+    toi_leaders = _team_skaters(team_id, _BY_TOI, _TEAM_PROFILE_TOP)
+    scorer_rows = [["", "Игрок", "И", "Г", "П", "О"]] + [
+        [f"{i + 1}.", _skater_label(scorers, i)]
+        + [fmt(scorers[k][i]) for k in ("games", "goals", "assists", "points")]
         for i in range(scorers["count_rows"])
     ]
-    goalie_lines = [
-        f"{html.escape(goalies['lastname'][i] or 'Unknown')} — игр: {fmt(goalies['games'][i])}, "
-        f"{fmt(goalies['wins'][i])}-{fmt(goalies['losses'][i])}-{fmt(goalies['ot'][i])}, "
-        f"{_fmt_pct_stat(goalies['sv'][i])}, КН {_fmt_num_max2(goalies['gaa'][i])}"
-        for i in range(goalies["count_rows"])
+    toi_rows = [["", "Игрок", "И", "ВП"]] + [
+        [f"{i + 1}.", _skater_label(toi_leaders, i), fmt(toi_leaders["games"][i]),
+         fmt(toi_leaders["toi"][i])]
+        for i in range(toi_leaders["count_rows"])
     ]
 
     return output_text(
@@ -1580,10 +1718,45 @@ def team_profile(abbrev: str) -> str:
             "pp": _fmt_pct_stat(me["power_play_percentage"]),
             "pk": _fmt_pct_stat(me["penalty_kill_percentage"]),
             "fo": _fmt_pct_stat(me["face_off_win_percentage"]),
-            "scorer_lines": scorer_lines,
-            "goalie_lines": goalie_lines,
+            "scorers_table": _pre_table(scorer_rows, "llrrrr") if scorers["count_rows"] else "",
+            "toi_table": _pre_table(toi_rows, "llrr") if toi_leaders["count_rows"] else "",
+            "goalies_table": _team_goalies_table(team_id),
+            "legend": _TEAM_STATS_LEGEND,
+            "full_command": f"/{html.escape(a)}_FULL",
         },
     )
+
+
+def team_full_stats(abbrev: str) -> str:
+    """Ответ `/BOS_FULL`: все полевые игроки клуба сезона `config.SEASON_ID`
+    (игры, голы, передачи, очки, +/-, среднее время на льду; по очкам) и все
+    его вратари — ссылка на него стоит в конце `team_profile()`.
+
+    Аргументы:
+        abbrev: аббревиатура команды из команды `/ABBR_FULL`; неизвестная —
+            текст с причиной.
+    """
+    a = abbrev.strip().upper()
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    team_id = _team_id_for_abbrev(a)
+    if team_id is None:
+        return f"<b>{html.escape(a)}</b> ({season_esc})\nКоманда не найдена в базе для этого сезона."
+    fmt = _format_leader_value
+    sk = _team_skaters(team_id, _BY_POINTS, None)
+    head = f"<b>{html.escape(a)}: все игроки</b> · сезон {season_esc}"
+    if sk["count_rows"] == 0:
+        return head + "\n\nУ команды пока нет статистики игроков в этом сезоне."
+    rows = [["Игрок", "И", "Г", "П", "О", "+/-", "ВП"]] + [
+        [_skater_label(sk, i)]
+        + [fmt(sk[k][i]) for k in ("games", "goals", "assists", "points", "plus_minus", "toi")]
+        for i in range(sk["count_rows"])
+    ]
+    parts = [head, "", "<b>Полевые</b>", _pre_table(rows, "lrrrrrr")]
+    goalies = _team_goalies_table(team_id)
+    if goalies:
+        parts += ["", "<b>Вратари</b>", goalies]
+    parts += ["", _TEAM_STATS_LEGEND, f"Профиль клуба: /{html.escape(a)}"]
+    return "\n".join(parts)
 
 
 # Задача 42: страна игрока — rosters.nationality (трёхбуквенный код NHL, одна на
@@ -1921,13 +2094,38 @@ def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]
     return (day_label, results)
 
 
-def day_digest_summary_body(real_games: List[Tuple[int, str, List[Dict]]]) -> str:
-    """Нумерованные первые строки карточек матчей — сжатая сводка дайджеста;
-    номер совпадает с номером на кнопке матча (`digest_game_button_labels`)."""
+# Пробел шириной в цифру — добивка счёта в пропорциональном жирном шрифте.
+_FIGURE_SPACE = "\u2007"
+
+
+def day_digest_summary_body(game_ids: Sequence[int]) -> str:
+    """Сжатая сводка дайджеста: по строке на матч, номер совпадает с номером
+    на кнопке матча (`digest_game_button_labels`).
+
+    Зачем так сложно: Telegram выравнивает пробелами только моноширинный
+    текст и не даёт жирного внутри `<pre>`/`<code>`. Поэтому номер и хозяева —
+    `<code>` по правому краю, счёт — `<b>`, добитый до общей ширины figure
+    space (U+2007, шириной в цифру: «10:2» и «3:2» не сдвигают колонку
+    гостей), гости — `<code>` по левому краю, дальше счёт по периодам.
+
+    Аргументы:
+        game_ids: матчи дня в порядке сводки, непустой список.
+    """
+    headers = [_game_score_header(*_fetch_game_score_rows(gid)) for gid in game_ids]
+    num_w = len(f"{len(headers)}.")
+    home_w = max(len(h['home'].strip()) for h in headers)
+    away_w = max(len(h['away'].strip()) for h in headers)
+    hs_w = max(len(h['home_score']) for h in headers)
+    as_w = max(len(h['away_score']) for h in headers)
     lines = []
-    for i, (_gid, full_text, _) in enumerate(real_games, start=1):
-        header = full_text.strip().split("\n", 1)[0].strip()
-        lines.append(f"{i}. {header}")
+    for i, h in enumerate(headers, start=1):
+        left = f"{f'{i}.':<{num_w}} {h['home'].strip():>{home_w}}"
+        score = f"{h['home_score'].rjust(hs_w, _FIGURE_SPACE)}:{h['away_score'].ljust(as_w, _FIGURE_SPACE)}"
+        lines.append(
+            f"<code>{html.escape(left)}</code> <b>{html.escape(score)}</b> "
+            f"<code>{html.escape(h['away'].strip().ljust(away_w))}</code> "
+            f"{html.escape(h['period_scores'] + h['extra'])}"
+        )
     return "\n".join(lines)
 
 

@@ -1,13 +1,14 @@
-<b>{{ team_home }} {{ home_score }}:{{ away_score }} {{ team_away }}</b>{{ extra }} {{ period_scores }}
+🏒 <b>{{ team_home }} {{ home_score }}:{{ away_score }} {{ team_away }}</b>{{ extra }} {{ period_scores }}
 {%- if recent_form %}
 {{ recent_form }}
 {%- endif %}
 {%- if hat_tricks %}
 {{ hat_tricks }}
 {%- endif %}
-{%- for goal in goals %}
-{{ "\n" if loop.first }}{{ goal['home_score'] }}:{{ goal['away_score'] }} {{ goal['scorer'] }} {{ goal['period_label'] }} {{ goal['time'] }}
-{%- endfor %}
+{%- if goals_block %}
+
+{{ goals_block }}
+{%- endif %}
 
 <b>Броски</b>: {{ home_shots }} - {{ away_shots }}
 <b>Штрафное время</b>: {{ home_penalties }} - {{ away_penalties }}
