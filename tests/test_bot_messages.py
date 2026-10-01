@@ -74,14 +74,17 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "team_name": ["BOS", "TOR<script>alert(1)</script>"],
             "count_rows": 2,
         }
-    if "away_team_id FROM games" in q:
+    if "home_team_id, away_team_id" in q:
         return {"count_rows": 0}
     if "get_goals_game" in q:
         return {
             "scorer": [_EVIL_SCORER, _EVIL_SCORER, _EVIL_SCORER],
             "scorer_position": ["C", "C", "C"],
+            "scorer_nationality": ["CAN", "CAN", "CAN"],
             "assist_1": ["Sm'th", None, None],
+            "assist_1_nationality": [None, None, None],
             "assist_2": [None, None, None],
+            "assist_2_nationality": [None, None, None],
             "period": [1, 1, 2],
             "goal_time": ["05:30", "10:15", "02:00"],
             "home_score": [1, 2, 3],
@@ -279,6 +282,16 @@ def _recent_games_rows(outcomes):
     }
 
 
+@pytest.mark.parametrize(
+    "points, word",
+    [(1, "очко"), (2, "очка"), (4, "очка"), (5, "очков"), (11, "очков"),
+     (12, "очков"), (21, "очко"), (22, "очка"), (0, "очков")],
+)
+def test_points_word_agrees_with_number(bot_module, points, word):
+    """Отзыв UI: «1 очков» в превью — слово согласуется с числом."""
+    assert bot_module("bot_messages")._points_word(points) == word
+
+
 def test_current_streak_three_wins_in_a_row(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = _recent_games_rows([
@@ -441,10 +454,15 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     bot_messages = bot_module("bot_messages")
     text, _ = _render_preview(bot_messages)
 
-    assert "<b>AAA</b> — 7-3-0, 14 очков (70%)" in text
-    assert "<b>BBB</b> — 3-7-0, 6 очков (30%)" in text
-    assert "<b>Сравнение</b>" in text
-    assert "<pre>" in text
+    # Одна выровненная таблица: шапка «AAA VS BBB», тире — в одной колонке,
+    # разница шайб со знаком (минус не сливается с тире).
+    assert (
+        "<pre>• Сравнение команд:           AAA VS BBB\n"
+        "• Очки:                        14 — 6\n"
+        "• % очков:                    70% — 30%\n"
+        "• Баланс W-L-OT:            7-3-0 — 3-7-0\n"
+    ) in text
+    assert "• Разница шайб за игру:      +1.5 — -0.9</pre>" in text
     # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
     assert "Модельная" not in text
     assert "н/д" not in text
@@ -468,9 +486,9 @@ def test_matchup_season_preview_escapes_home_abbrev_in_prediction_line(bot_modul
     assert text.splitlines()[-1] == "🤖 Модельная оценка (не совет): победа B&amp;B — 50%"
 
 
-def test_matchup_season_preview_shows_streak_in_form_block_and_omits_dash_parens(bot_module):
-    """Задача 24: серия печатается в скобках рядом с формой (`AAA: 3-1-1 (серия W3)`),
-    а у команды без игр — форма и серия «—» и скобки вовсе не выводятся."""
+def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
+    """Задача 24: форма и серия — строками таблицы сравнения; у команды без
+    игр форма 0-0-0, а серии нет («—»). Личные встречи — строка с победами."""
     bot_messages = bot_module("bot_messages")
     stats_row = _preview_stats_row()
     team_ids = {"AAA": 111, "BBB": 222}
@@ -480,7 +498,7 @@ def test_matchup_season_preview_shows_streak_in_form_block_and_omits_dash_parens
         (111, False, False, False),
         (222, False, False, False),
     ])
-    # BBB: в сезоне пока нет завершённых игр -> форма и серия "—".
+    # BBB: в сезоне пока нет завершённых игр -> форма 0-0-0, серия "—".
     bbb_games = _recent_games_rows([])
 
     def fake_fetch(query, params=None, columns=None):
@@ -493,17 +511,16 @@ def test_matchup_season_preview_shows_streak_in_form_block_and_omits_dash_parens
             tid = team_ids.get(params[1])
             return {"count_rows": 1 if tid else 0, "team_id": [tid] if tid else []}
         if "((home_team_id" in q:
-            return {"count_rows": 0, "winner_id": []}
+            return {"count_rows": 1, "winner_id": [222]}
         raise AssertionError(f"unexpected query: {q}")
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
             patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "probability": []}):
         text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
 
-    assert "<b>AAA</b>: 2-1-0 (серия W2)" in text
-    assert "<b>BBB</b>: —" in text
-    assert "(серия —)" not in text
-    assert "<b>BBB</b>: — (серия" not in text
+    assert "• Форма (5 игр):            2-1-0 — 0-0-0\n" in text
+    assert "• Серия:                       W2 — —\n" in text
+    assert "• Личные встречи:               0 — 1\n" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1014,14 +1031,58 @@ def test_digest_shown_match_count_empty_lines_returns_zero(bot_module):
 # day_digest_summary_body()
 # ---------------------------------------------------------------------------
 
-def test_day_digest_summary_body_takes_first_line_of_each_game(bot_module):
+def _goal_row(period, home, away):
+    """Строка get_goals_game: важны только период и счёт после гола."""
+    return ("X", "C", None, None, None, None, None, period, "01:00", home, away,
+            False, False, False, False, 1, 1)
+
+
+def test_day_digest_summary_body_aligns_scores_in_one_column(bot_module, fake_db_router):
+    """Хозяева — по правому краю, гости — по левому, оба моноширинным
+    `<code>`, чтобы жирный счёт стоял в одной колонке; OT — после периодов."""
     bot_messages = bot_module("bot_messages")
-    games = [
-        (1, "<b>BOS TOR</b> 3:2\n\n<i>details...</i>", []),
-        (2, "<b>NYR OTT</b> 1:1 (OT)\nmore stuff", []),
-    ]
-    body = bot_messages.day_digest_summary_body(games)
-    assert body == "1. <b>BOS TOR</b> 3:2\n2. <b>NYR OTT</b> 1:1 (OT)"
+    stats = {
+        1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers"),
+            (2, 0, 0, 0, 0, False, False, "away", "Penguins")],
+        2: [(2, 0, 0, 0, 0, True, False, "home", "Maple Leafs"),
+            (1, 0, 0, 0, 0, True, False, "away", "Kings")],
+    }
+    goals = {
+        1: [_goal_row(1, 0, 1), _goal_row(3, 0, 2)],
+        2: [_goal_row(1, 1, 0), _goal_row(2, 1, 1), _goal_row(4, 2, 1)],
+    }
+    fake_db_router([
+        ("get_game_stats", lambda params: stats[params[0]]),
+        ("get_goals_game", lambda params: goals[params[0]]),
+    ])
+
+    body = bot_messages.day_digest_summary_body([1, 2])
+
+    assert body == (
+        "<code>1.      Flyers</code> <b>0:2</b> <code>Penguins</code> (0:1, 0:0, 0:1)\n"
+        "<code>2. Maple Leafs</code> <b>2:1</b> <code>Kings   </code> (1:0, 0:1, 0:0, 1:0) (OT)"
+    )
+
+
+def test_day_digest_summary_body_pads_two_digit_score_with_figure_spaces(
+    bot_module, fake_db_router
+):
+    """«10:2» рядом с «3:2»: счёт добит пробелом шириной в цифру (U+2007),
+    иначе колонка гостей в пропорциональном шрифте съехала бы."""
+    bot_messages = bot_module("bot_messages")
+    stats = {
+        1: [(10, 0, 0, 0, 0, False, False, "home", "A"), (2, 0, 0, 0, 0, False, False, "away", "B")],
+        2: [(3, 0, 0, 0, 0, False, False, "home", "C"), (2, 0, 0, 0, 0, False, False, "away", "D")],
+    }
+    fake_db_router([
+        ("get_game_stats", lambda params: stats[params[0]]),
+        ("get_goals_game", []),
+    ])
+
+    lines = bot_messages.day_digest_summary_body([1, 2]).split("\n")
+
+    assert "<b>10:2</b>" in lines[0]
+    assert "<b>\u20073:2</b>" in lines[1]
 
 
 def test_digest_game_button_labels_number_games_in_summary_order_with_home_first(

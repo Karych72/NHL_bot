@@ -145,19 +145,25 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
 
 
 @pytest.mark.parametrize(
-    "text, abbrev",
-    [("/BOS", "BOS"), ("/bos", "bos"), ("/WSH", "WSH")],
+    "text, abbrev, full",
+    [("/BOS", "BOS", False), ("/bos", "bos", False), ("/WSH", "WSH", False),
+     ("/BOS_FULL", "BOS", True), ("/bos_full", "bos", True)],
 )
-def test_team_command_pattern_extracts_three_letter_abbreviation(bot_module, text, abbrev) -> None:
+def test_team_command_pattern_extracts_three_letter_abbreviation(
+    bot_module, text, abbrev, full
+) -> None:
+    """`/BOS` — профиль клуба, `/BOS_FULL` — все его игроки (группа 2)."""
     import re
 
     bot = bot_module("bot")
     match = re.match(bot.TEAM_COMMAND_PATTERN, text)
     assert match is not None and match.group(1) == abbrev
+    assert bool(match.group(2)) is full
 
 
 @pytest.mark.parametrize(
-    "text", ["/team", "/today", "/help", "/stats", "/game", "/TO", "/BOSS", "BOS", "/BOS 1", "/B0S", "/BOS@OtherBot"]
+    "text", ["/team", "/today", "/help", "/stats", "/game", "/TO", "/BOSS", "BOS", "/BOS 1", "/B0S", "/BOS@OtherBot",
+             "/BOS_FUL", "/BOS_FULL@OtherBot"]
 )
 def test_team_command_pattern_ignores_service_commands_and_malformed_input(bot_module, text) -> None:
     import re

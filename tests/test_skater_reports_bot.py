@@ -93,6 +93,11 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
+        # По отзыву статистику по странам в /help не находили — путь отдельной строкой.
+        self.assertIn("/stats → «Статистика игроков» → «По странам»", hm)
+        # Пометки голов карточки, в том числе ПШ вместо прежней «★».
+        self.assertIn("ПШ — победная шайба", hm)
+        self.assertIn("/BOS_FULL", hm)
         self.assertIn("Corsi", hm)
         self.assertIn("Fenwick", hm)
 
@@ -243,6 +248,8 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         ]
         with patch.object(
             stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
+        ), patch.object(
+            stats_handlers, "day_digest_summary_body", return_value="1. <b>Home Away</b>\n2. B C"
         ):
             await stats_handlers.dispatch_day_digest_messages(
                 FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True

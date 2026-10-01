@@ -2,8 +2,11 @@ DROP FUNCTION IF EXISTS get_goals_game(int);
 CREATE OR REPLACE FUNCTION get_goals_game (now_game_id int)
     RETURNS TABLE(scorer varchar(50),
                   scorer_position varchar(5),
+                  scorer_nationality varchar(10),
                   assist_1 varchar(50),
+                  assist_1_nationality varchar(10),
                   assist_2 varchar(50),
+                  assist_2_nationality varchar(10),
                   period int,
                   goal_time varchar(20),
                   home_score int,
@@ -19,8 +22,11 @@ BEGIN
     RETURN QUERY SELECT
                gs.lastname as scorer,
                gs.position as scorer_position,
+               gs.nationality as scorer_nationality,
 	           a1.lastname as assist_1,
+	           a1.nationality as assist_1_nationality,
 	           a2.lastname as assist_2,
+	           a2.nationality as assist_2_nationality,
 	           g.period,
 	           g.time as goal_time,
 	           goals_home as home_score,

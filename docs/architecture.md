@@ -728,7 +728,7 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 #### `get_goals_game(game_id)` → all_goals + rosters (JOIN по scorer, assist1, assist2)
 
-Возвращает: `scorer`, `assist_1`, `assist_2` (фамилии), `period`, `goal_time`, `home_score`, `away_score`. Сортировка: `period, time`.
+Возвращает: `scorer`, `scorer_position`, `assist_1`, `assist_2` (фамилии), `*_nationality` для каждого из троих (`rosters.nationality` — карточка пишет российских игроков капсом), `period`, `goal_time`, `home_score`, `away_score`, `is_ppg`, `is_shg`, `empty_net`, `winner_goal`, `goal_game_id`, `goal_event_id`. Сортировка: `period, time`.
 
 #### `get_goalies_game(game_id)` → game_goalie_stats + rosters + games
 
@@ -747,11 +747,11 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ### `game_message.txt` — Карточка матча
 
 ```
-Rangers 3:2 Lightning (OT) (1:1, 0:0, 1:1, 1:0)      ← хозяева первыми, счёт между командами
-Форма (5 игр, W-L-OTL): Rangers 3-1-1 · Lightning 2-2-1
+🏒 Rangers 3:2 Lightning (OT) (1:1, 0:0, 1:1, 1:0)   ← хозяева первыми, счёт между командами
+Форма (5 игр, W-L-OTL): Rangers 3-1-1 · Lightning 2-2-1   ← игры до дня этого матча
 
-1:0 Panarin [L](Fox, Zibanejad) P1 5:23
-1:1 Kucherov [R](Point) P1 12:45
+1:0 PANARIN  [L](Fox, Zibanejad)  5:23   ← <pre>, колонки выровнены; россияне капсом
+1:1 KUCHEROV [R](Point) (ББ)     12:45   ← ББ/МБ/ПВ + ПШ (победная шайба), без периода
 ...
 
 Броски: 32 - 28
@@ -763,6 +763,11 @@ Rangers 3:2 Lightning (OT) (1:1, 0:0, 1:1, 1:0)      ← хозяева перв
 ★2 Kucherov (TBL) — 1+2
 ★3 Shesterkin (NYR) — 26/28, 92.86%
 ```
+
+Шапка и сводка `/today` считаются одной функцией `_game_score_header()`; сводка
+(`day_digest_summary_body(game_ids)`) выравнивает счёт в колонку: хозяева и гости — `<code>`,
+счёт — `<b>` (жирного внутри `<pre>`/`<code>` Telegram не допускает). Кнопки видео голов —
+«▶ 1:0 PANARIN 5:23» в два столбца.
 
 ### `season_leaders_players.txt` — Лидеры сезона (шаблон не используется в проде)
 
@@ -833,8 +838,11 @@ TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STAT
 
 `bot_messages.team_profile(abbrev)`: места в дивизионе/конференции/лиге (`teams_stats ⋈ teams`
 всей лиги, сортировка как в турнирной таблице), баланс, форма и серия, голы и броски за игру,
-большинство/меньшинство/вбрасывания, топ-5 бомбардиров (`rosters ⋈ players_season_stats`) и
-вратари (`rosters ⋈ goalies_season_stats`) для `current_team_id`/`season_id = config.SEASON_ID`.
+большинство/меньшинство/вбрасывания, топ-5 бомбардиров и топ-5 по среднему времени на льду
+(`rosters ⋈ players_season_stats`, `_team_skaters()`) и вратари (`rosters ⋈ goalies_season_stats`)
+для `current_team_id`/`season_id = config.SEASON_ID` — таблицами `<pre>` (`_pre_table()`).
+В конце — `/BOS_FULL`: `team_full_stats()`, все полевые (И/Г/П/О/+/-/время) и вратари клуба,
+тот же хендлер `cmd_team_profile` (группа `_FULL` в `TEAM_COMMAND_PATTERN`).
 Два входа: команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
 `bot.py` по `TEAM_COMMAND_PATTERN`) и инлайн-кнопка аббревиатуры в меню `/stats` (`tp:<ABBR>`,
 `bot_team_profile_pick()` в `stats_handlers.py`); обе резолвят аббревиатуру через

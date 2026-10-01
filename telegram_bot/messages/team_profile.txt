@@ -7,17 +7,21 @@
 Голы за игру: {{ gf }} забито / {{ ga }} пропущено
 Броски за игру: {{ sf }} своих / {{ sa }} соперника
 Большинство: {{ pp }} · Меньшинство: {{ pk }} · Вбрасывания: {{ fo }}
-{%- if scorer_lines %}
+{%- if scorers_table %}
 
 <b>Бомбардиры</b>
-{%- for line in scorer_lines %}
-{{ line }}
-{%- endfor %}
+{{ scorers_table }}
 {%- endif %}
-{%- if goalie_lines %}
+{%- if toi_table %}
+
+<b>Игровое время</b>
+{{ toi_table }}
+{%- endif %}
+{%- if goalies_table %}
 
 <b>Вратари</b>
-{%- for line in goalie_lines %}
-{{ line }}
-{%- endfor %}
+{{ goalies_table }}
 {%- endif %}
+
+{{ legend }}
+Все игроки: {{ full_command }}
