@@ -1,13 +1,28 @@
-# Релиз: тег vX.Y.Z → проверки CI → образ в GHCR → деплой на прод-VM (GCP) по SSH.
+# Релиз: мерж в master с изменениями кода прода (или ручной тег vX.Y.Z) → проверки CI →
+# образ в GHCR → деплой на прод-VM (GCP) по SSH. При мерже job `tag` сам ставит следующий
+# patch-тег (v1.2.0 → v1.2.1); ручной тег — для minor/major и хотфиксов.
 # Откат — «Re-run jobs» у прогона предыдущего тега во вкладке Actions.
 # Настройка VM и секретов окружения production — DEVELOPMENT.md §«Прод-деплой».
 name: Release
 
 on:
   push:
+    branches: [master]
     tags: ["v*"]
+    # Только то, что попадает в прод-образ и compose: мерж плана или документации
+    # прод не передеплоивает. На пуш тега фильтр путей GitHub не применяет.
+    paths:
+      - "telegram_bot/**"
+      - "pipeline/**"
+      - "data_tables/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - "Makefile"
+      - "requirements.txt"
 
-# Два деплоя одновременно не идут; новый тег ждёт окончания текущего, а не прерывает его.
+# Два деплоя одновременно не идут: идущий не прерывается, но ждать может только один
+# прогон — новый вытесняет (отменяет) ожидающий. Серия быстрых мержей выкатит последний.
 concurrency:
   group: production
   cancel-in-progress: false
@@ -15,12 +30,54 @@ concurrency:
 env:
   IMAGE: ghcr.io/karych72/nhl_bot
 
+# По умолчанию токен только на чтение; запись — у job `tag` (тег) и `image` (GHCR).
+permissions:
+  contents: read
+
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  image:
+  # Тег релиза: при пуше тега — он сам; при мерже в master — следующий patch от
+  # последнего v*-тега, поставленный на этот коммит. Тег, запушенный GITHUB_TOKEN,
+  # новый прогон этого workflow не запускает — деплой идёт в этом же прогоне.
+  tag:
     needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      name: ${{ steps.tag.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "name=$REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Перезапуск прогона (откат «Re-run») выкатывает уже поставленный тег, а не новый.
+          existing=$(git tag --points-at "$GITHUB_SHA" --list 'v*' --sort=-v:refname | head -1)
+          if [ -n "$existing" ]; then
+            echo "name=$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          [ -n "$last" ] || { echo "Нет тега вида vX.Y.Z — первый релиз ставится вручную" >&2; exit 1; }
+          IFS=. read -r major minor patch <<< "${last#v}"
+          next="v${major}.${minor}.$((patch + 1))"
+          git tag "$next" "$GITHUB_SHA"
+          git push origin "$next"
+          echo "name=$next" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: tag
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -40,12 +97,12 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          tags: ${{ env.IMAGE }}:${{ needs.tag.outputs.name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: image
+    needs: [tag, image]
     runs-on: ubuntu-24.04
     environment: production
     steps:
@@ -65,10 +122,10 @@ jobs:
           set -euo pipefail
           cd /opt/nhl_bot
           git fetch --tags --force origin
-          git checkout --force "${{ github.ref_name }}"
+          git checkout --force "${{ needs.tag.outputs.name }}"
           # В .env, а не export: ручной `docker compose ...` на VM видит ту же версию.
           sed -i '/^NHL_BOT_IMAGE=/d' .env
-          echo "NHL_BOT_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }}" >> .env
+          echo "NHL_BOT_IMAGE=${{ env.IMAGE }}:${{ needs.tag.outputs.name }}" >> .env
           docker compose pull migrate bot sync
           docker compose up -d --no-build --remove-orphans
           docker compose up --no-build --wait --wait-timeout 180 bot
