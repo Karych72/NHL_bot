@@ -68,14 +68,11 @@ class Phase1UxCommandsTest(unittest.TestCase):
         help_text = _load_help_text()
         hm = help_text.HELP_MESSAGE
         self.assertIn("<b>Команды</b>", hm)
-        self.assertIn("<code>/day_games</code>", hm)
         self.assertNotIn("/day\\_games", hm)
         self.assertNotIn("\\_", hm)
         for fragment in (
-            "/day_games",
             "/today",
             "/tonight",
-            "/table",
             "/standings",
             "/team",
             "/leaders",
@@ -92,9 +89,22 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
+        for removed in ("/day_games", "/table"):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
         self.assertIn("Corsi", hm)
         self.assertIn("Fenwick", hm)
+
+    def test_start_and_help_use_plain_clickable_commands(self):
+        """`<code>/cmd</code>` в Telegram не кликается — команды пишутся голыми."""
+        help_text = _load_help_text()
+        for name in ("START_MESSAGE", "HELP_MESSAGE"):
+            with self.subTest(message=name):
+                self.assertNotIn("<code>/", getattr(help_text, name))
+        for cmd, _desc in help_text.BOT_COMMANDS:
+            with self.subTest(cmd=cmd):
+                self.assertIn(f"/{cmd} — ", help_text.HELP_MESSAGE)
 
     def test_start_and_help_note_regular_season_only(self):
         help_text = _load_help_text()
@@ -231,15 +241,18 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
             (102, "<b>B C</b> 2:2\n", []),
         ]
-        await stats_handlers.dispatch_day_digest_messages(
-            FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
-        )
+        with patch.object(
+            stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
+        ):
+            await stats_handlers.dispatch_day_digest_messages(
+                FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
+            )
         self.assertEqual(len(sent), 1)
         self.assertIn("2 игр", sent[0]["text"])
-        self.assertIn("<b>Home Away</b>", sent[0]["text"])
+        self.assertIn("1. <b>Home Away</b>", sent[0]["text"])
         self.assertEqual(sent[0].get("parse_mode"), "HTML")
         kb = sent[0]["reply_markup"].inline_keyboard
-        self.assertTrue(any("Матч 1" in row[0].text for row in kb if row))
+        self.assertEqual([b.text for b in kb[0]], ["1. HOM – AWY", "2. B – C"])
         ds = importlib.import_module("dialog_states")
         # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
         # сразу в корень; «В начало»/«Закрыть меню» — следом.

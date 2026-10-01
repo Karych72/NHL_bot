@@ -57,11 +57,13 @@ def test_pagination_keyboard_offsets_and_prev_floor(
 
     markup = builder(*args, 20, has_prev=True, has_next=True)
     nav_row = markup.inline_keyboard[0]
-    assert [b.callback_data for b in nav_row] == [f"{prefix}10", f"{prefix}30"]
+    # С третьей страницы первой кнопкой идёт «« 1–10» на начало списка.
+    assert [b.callback_data for b in nav_row] == [f"{prefix}0", f"{prefix}10", f"{prefix}30"]
 
     # prev never goes negative, even near the start of the list
     markup_floor = builder(*args, 5, has_prev=True, has_next=False)
     assert markup_floor.inline_keyboard[0][0].callback_data == f"{prefix}0"
+    assert len(markup_floor.inline_keyboard[0]) == 1
 
     footer = markup.inline_keyboard[-1]
     if footer_kind == "menu_nav":
@@ -138,8 +140,32 @@ def test_leaderboard_nav_keyboard_prepends_pagination_row(bot_module):
     stats_handlers = bot_module("stats_handlers")
     markup = stats_handlers.leaderboard_nav_keyboard("goals", 20, has_prev=True, has_next=True)
     nav_row = markup.inline_keyboard[0]
-    assert [b.callback_data for b in nav_row] == ["pl:goals:10", "pl:goals:30"]
+    assert [b.callback_data for b in nav_row] == ["pl:goals:0", "pl:goals:10", "pl:goals:30"]
     assert markup.inline_keyboard[-1][0].callback_data == "pl:pick:points"
+
+
+@pytest.mark.parametrize(
+    "offset, has_prev, has_next, expected",
+    [
+        (0, False, True, [("11–20 →", "p:10")]),
+        (10, True, True, [("← 1–10", "p:0"), ("21–30 →", "p:20")]),
+        (20, True, True, [("« 1–10", "p:0"), ("← 11–20", "p:10"), ("31–40 →", "p:30")]),
+        (50, True, False, [("« 1–10", "p:0"), ("← 41–50", "p:40")]),
+    ],
+)
+def test_page_nav_rows_label_ranges_and_offer_first_page_only_from_offset_twenty(
+    bot_module, offset, has_prev, has_next, expected
+):
+    stats_handlers = bot_module("stats_handlers")
+
+    [row] = stats_handlers._page_nav_rows("p", offset, has_prev, has_next)
+
+    assert [(b.text, b.callback_data) for b in row] == expected
+
+
+def test_page_nav_rows_empty_without_neighbouring_pages(bot_module):
+    stats_handlers = bot_module("stats_handlers")
+    assert stats_handlers._page_nav_rows("p", 0, False, False) == []
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +222,7 @@ async def test_stats_player_page_parses_offset_and_renders_known_stat(bot_module
     assert edit["parse_mode"] == "HTML"
     nav_row = edit["reply_markup"].inline_keyboard[0]
     assert [b.callback_data for b in nav_row] == [
+        "st:players_season_stats:points:0",
         "st:players_season_stats:points:10",
         "st:players_season_stats:points:30",
     ]
@@ -516,7 +543,7 @@ async def test_leaderboard_page_parses_kind_and_offset_from_data(bot_module, mak
 
     mock_kind.assert_called_once_with("assists", 30)
     nav = update.callback_query.edited_texts[0]["reply_markup"].inline_keyboard[0]
-    assert nav[0].callback_data == "pl:assists:20"
+    assert [b.callback_data for b in nav] == ["pl:assists:0", "pl:assists:20"]
 
 
 @pytest.mark.asyncio
@@ -792,6 +819,14 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
 # record the same way, so one parametrized test asserts both.
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def digest_labels_db(fake_db_router):
+    """БД для подписей кнопок матчей: любому game_id — пара «AAA – BBB»."""
+    return fake_db_router(
+        [("JOIN teams th", lambda params: [(gid, "AAA", "BBB") for gid in params[0]])]
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "games",
@@ -803,7 +838,7 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, m
     ],
 )
 async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
-    bot_module, fake_context, games
+    bot_module, fake_context, digest_labels_db, games
 ):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
@@ -824,9 +859,9 @@ async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_id(
-    bot_module, fake_context
+    bot_module, fake_context, digest_labels_db
 ):
-    """`/day_games` и `/today` вызывают с `attach_conv_nav_on_last=False` — вне
+    """`/today` вызывает с `attach_conv_nav_on_last=False` — вне
     диалога `/stats`, никакая FSM-клавиатура не рисуется, поэтому и записывать
     в `user_data` нечего (иначе /cancel начал бы снимать клавиатуру с чужого,
     не диалогового сообщения)."""
@@ -839,6 +874,29 @@ async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_
     )
 
     assert dialog_states.LAST_MENU_MESSAGE_ID_KEY not in fake_context.user_data
+    assert fake_context.bot.sent_messages[-1]["text"] == stats_handlers._DIGEST_MORE_HINT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons_in_three_columns(
+    bot_module, fake_context, digest_labels_db
+):
+    stats_handlers = bot_module("stats_handlers")
+    games = [(i, f"<b>H{i} 1:0 A{i}</b>\nдетали", []) for i in range(1, 5)]
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
+    )
+
+    summary = fake_context.bot.sent_messages[0]
+    assert "1. <b>H1 1:0 A1</b>\n2. <b>H2 1:0 A2</b>" in summary["text"]
+    assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
+    rows = summary["reply_markup"].inline_keyboard
+    assert [len(r) for r in rows] == [3, 1]
+    assert [b.text for r in rows for b in r] == [f"{n}. AAA – BBB" for n in range(1, 5)]
+    assert [b.callback_data for r in rows for b in r] == [f"dg:{n}" for n in range(1, 5)]
+    # Подписи — один запрос на все матчи дня, а не по запросу на кнопку.
+    assert len(digest_labels_db.executed) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -849,7 +907,7 @@ async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
-    bot_module, fake_context
+    bot_module, fake_context, digest_labels_db
 ):
     stats_handlers = bot_module("stats_handlers")
     games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
@@ -860,13 +918,13 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
     sent_text = fake_context.bot.sent_messages[0]["text"]
     assert "Показаны" not in sent_text
-    assert "Матч 1 текст" in sent_text
-    assert "Матч 2 текст" in sent_text
+    assert "1. Матч 1 текст" in sent_text
+    assert "2. Матч 2 текст" in sent_text
 
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
-    bot_module, fake_context
+    bot_module, fake_context, digest_labels_db
 ):
     """Сводка дня, которая не влезает в лимит Telegram, должна честно сказать,
     сколько из всех матчей дня реально попало в текст, а не молчать про

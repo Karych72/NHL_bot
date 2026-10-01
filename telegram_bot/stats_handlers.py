@@ -11,7 +11,7 @@ import html
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -27,7 +27,9 @@ from bot_messages import (
     country_skaters_page,
     day_digest,
     day_digest_summary_body,
+    digest_game_button_labels,
     digest_shown_match_count,
+    last_night_day,
     division_summary,
     game_exists,
     game_message,
@@ -115,21 +117,30 @@ def _stats_menu_nav_row(parent_state: int) -> List[InlineKeyboardButton]:
 def _page_nav_rows(
     prefix: str, offset: int, has_prev: bool, has_next: bool
 ) -> List[List[InlineKeyboardButton]]:
-    """Ряд «← prev»/«next →» для листания таблиц; пустой список, если соседних
-    страниц нет.
+    """Ряд листания таблиц: «« 1–10» (с третьей страницы и дальше), «← 11–20»,
+    «31–40 →» — подпись называет места, на которые ведёт кнопка. Пустой
+    список, если соседних страниц нет.
 
     Args:
         prefix: callback_data без смещения — кнопки несут `{prefix}:{offset}`.
         offset: смещение текущей страницы (шаг — `LEADERBOARD_PAGE_SIZE`).
         has_prev, has_next: есть ли соседняя страница в эту сторону.
     """
+    size = LEADERBOARD_PAGE_SIZE
+
+    def span(off: int) -> str:
+        return f"{off + 1}–{off + size}"
+
     nav: List[InlineKeyboardButton] = []
+    # Со второй страницы «назад» и так ведёт на 1–10 — отдельная кнопка не нужна.
+    if offset >= 2 * size:
+        nav.append(InlineKeyboardButton(f"« {span(0)}", callback_data=f"{prefix}:0"))
     if has_prev:
-        prev_off = max(0, offset - LEADERBOARD_PAGE_SIZE)
-        nav.append(InlineKeyboardButton("← prev", callback_data=f"{prefix}:{prev_off}"))
+        prev_off = max(0, offset - size)
+        nav.append(InlineKeyboardButton(f"← {span(prev_off)}", callback_data=f"{prefix}:{prev_off}"))
     if has_next:
-        next_off = offset + LEADERBOARD_PAGE_SIZE
-        nav.append(InlineKeyboardButton("next →", callback_data=f"{prefix}:{next_off}"))
+        next_off = offset + size
+        nav.append(InlineKeyboardButton(f"{span(next_off)} →", callback_data=f"{prefix}:{next_off}"))
     return [nav] if nav else []
 
 
@@ -183,7 +194,7 @@ def conversation_player_stat_keyboard(
 ) -> InlineKeyboardMarkup:
     """Клавиатура страницы статистики игрока/вратаря внутри диалога `/stats`.
 
-    Кнопки «← prev»/«next →» несут callback_data `st:{table}:{column}:{offset}`,
+    Кнопки листания (`_page_nav_rows`) несут callback_data `st:{table}:{column}:{offset}`,
     которую разбирает `callback_stats_player_page`; нижний ряд — «« Назад»» на
     родительское подменю (`_player_stat_parent_state`), «В начало» и «Готово».
 
@@ -596,7 +607,13 @@ bot_player_shot_wrap = _make_paginated_player_stat_open_handler(
     "players_shot_types", "goals_wrap_around"
 )
 
-# --- Day digest: один матч — полная карточка; несколько — сводка + «Матч N» ---
+# --- Day digest: один матч — полная карточка; несколько — сводка + кнопки матчей ---
+
+# Подсказка после дайджеста вне диалога /stats (из /today и утренней рассылки).
+_DIGEST_MORE_HINT = (
+    "Ещё: /tonight — расписание NHL, /standings — таблица, /leaders — лидеры, "
+    "/team — команды, /stats — меню, /help — справка."
+)
 
 def _goal_video_buttons(goals_meta: List[Dict]) -> List[InlineKeyboardButton]:
     return [
@@ -678,10 +695,7 @@ async def dispatch_day_digest_messages(
             _record_menu_message(context, sent.message_id)
         await _pause()
         if not attach_conv_nav_on_last:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
-            )
+            await context.bot.send_message(chat_id=chat_id, text=_DIGEST_MORE_HINT)
             await _pause()
         return
 
@@ -697,10 +711,7 @@ async def dispatch_day_digest_messages(
             _record_menu_message(context, sent.message_id)
         await _pause()
         if not attach_conv_nav_on_last:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /help — справка.",
-            )
+            await context.bot.send_message(chat_id=chat_id, text=_DIGEST_MORE_HINT)
             await _pause()
         return
 
@@ -711,7 +722,7 @@ async def dispatch_day_digest_messages(
     )
     intro = (
         f"{header}{body}\n\n"
-        "<i>Нажмите «Матч N» для полной карточки и кнопок видео голов.</i>"
+        "<i>Кнопка матча — полная карточка и видео голов.</i>"
     )
     # Обрезка режет по символам, а не по заголовкам матчей — маркер должен
     # назвать реальное число попавших в текст матчей, а не молчать о них.
@@ -722,11 +733,12 @@ async def dispatch_day_digest_messages(
     footer_note = "\n\n" + truncation_marker(shown_games, total_games, item_word="матчей")
     summary_text = truncate_telegram_text(intro, footer_note=footer_note)
 
+    game_ids = [gid for gid, _t, _m in real_games]
     expand_buttons = [
-        InlineKeyboardButton(f"Матч {i + 1}", callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")
-        for i, (gid, _t, _m) in enumerate(real_games)
+        InlineKeyboardButton(label, callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")
+        for label, gid in zip(digest_game_button_labels(game_ids), game_ids)
     ]
-    rows = build_menu(expand_buttons, n_cols=4)
+    rows = build_menu(expand_buttons, n_cols=3)
     if attach_conv_nav_on_last:
         rows.append(nav_buttons)
     markup = InlineKeyboardMarkup(rows)
@@ -739,10 +751,7 @@ async def dispatch_day_digest_messages(
     await _pause()
 
     if not attach_conv_nav_on_last:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Ещё: /stats — меню, /table — таблица, /leaders — лидеры, /day_games — матчи из базы, /tonight — расписание NHL, /help — справка.",
-        )
+        await context.bot.send_message(chat_id=chat_id, text=_DIGEST_MORE_HINT)
         await _pause()
 
 
@@ -786,7 +795,7 @@ async def callback_tonight_game(update: Update, context: CallbackContext) -> Non
 
 
 async def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:
-    """Обрабатывает кнопку «Матч N» сжатой сводки дайджеста (`dg:<game_id>`) —
+    """Обрабатывает кнопку матча сжатой сводки дайджеста (`dg:<game_id>`) —
     досылает полную карточку конкретного матча отдельным сообщением.
     """
     query = update.callback_query
@@ -886,16 +895,17 @@ async def bot_league_standings(update: Update, context: CallbackContext) -> int:
 
 async def bot_digest_calendar_today(update: Update, context: CallbackContext) -> int:
     """Кнопка «Сегодня» меню дайджеста дня (диалог `/stats`): собирает и
-    рассылает дайджест за текущую календарную дату.
+    рассылает дайджест матчей прошедшей ночи по Москве (`last_night_day()`),
+    как `/today`.
 
     Returns:
         `SECOND` — там же обрабатываются «« Назад»» и «В начало»; кнопки
-        «Матч N» (`dg:`) — глобальный хендлер вне диалога.
+        матчей (`dg:`) — глобальный хендлер вне диалога.
     """
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
-    day_label, games = day_digest(date.today().isoformat())
+    day_label, games = day_digest(last_night_day())
     await dispatch_day_digest_messages(
         context,
         query.message.chat.id,
@@ -908,7 +918,7 @@ async def bot_digest_calendar_today(update: Update, context: CallbackContext) ->
 
 async def bot_digest_calendar_yesterday(update: Update, context: CallbackContext) -> int:
     """Кнопка «Вчера» меню дайджеста дня — то же самое, что
-    `bot_digest_calendar_today`, но за вчерашнюю календарную дату.
+    `bot_digest_calendar_today`, но на ночь раньше.
 
     Returns:
         `SECOND`.
@@ -916,7 +926,7 @@ async def bot_digest_calendar_yesterday(update: Update, context: CallbackContext
     query = update.callback_query
     assert query is not None and query.message is not None
     await query.answer()
-    day_label, games = day_digest((date.today() - timedelta(days=1)).isoformat())
+    day_label, games = day_digest(last_night_day(nights_back=1))
     await dispatch_day_digest_messages(
         context,
         query.message.chat.id,
@@ -1012,7 +1022,7 @@ def leaders_category_keyboard() -> InlineKeyboardMarkup:
 def leaderboard_nav_keyboard(
     kind: str, offset: int, has_prev: bool, has_next: bool
 ) -> InlineKeyboardMarkup:
-    """Клавиатура страницы лидерборда `/leaders`: ряд «← prev»/«next →» с
+    """Клавиатура страницы лидерборда `/leaders`: ряд листания (`_page_nav_rows`) с
     callback_data `pl:<kind>:<offset>` (разбирает `callback_leaderboard_page`),
     под ним — ряд смены категории, переиспользованный из
     `leaders_category_keyboard`.
