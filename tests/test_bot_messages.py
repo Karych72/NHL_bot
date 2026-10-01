@@ -845,6 +845,33 @@ def test_player_stat_leaderboard_page_advanced_stats_joins_pss_for_tail(
     assert "Identifier('pss'), SQL('.'), Identifier('shifts')" in query_text
 
 
+@pytest.mark.parametrize(
+    "column, by_seconds",
+    [("time_on_ice_per_game", True), ("points", False), ("hits", False)],
+)
+def test_player_stat_leaderboard_page_sorts_mmss_time_by_seconds(
+    bot_module, fake_db_router, column, by_seconds
+):
+    """Задача 44: «м:сс» строкой сортируется неверно («9:57» > «25:00») — для
+    колонки времени ORDER BY идёт по секундам, числовые колонки не меняются."""
+    bot_messages = bot_module("bot_messages")
+    row = ("Hughes", "D", "27:44", "NJD", 17, 400, 1)
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
+
+    bot_messages.player_stat_leaderboard_page("x", "players_season_stats", column, 0)
+
+    query_text, _params = cursor.executed[-1]
+    order_by = query_text.split("ORDER BY", 1)[1]
+    seconds_sort = (
+        f"SQL('(split_part('), Composed([Identifier('pl'), SQL('.'), Identifier('{column}')])"
+    )
+    plain_sort = f"Composed([Identifier('pl'), SQL('.'), Identifier('{column}')]), SQL(' DESC NULLS LAST"
+    # Первый ключ ORDER BY — секунды для «м:сс» и сама колонка для остальных.
+    first_key = f"Composed([{seconds_sort}" if by_seconds else plain_sort
+    assert order_by.startswith(f" '), {first_key}")
+    assert ("split_part" in query_text) is by_seconds
+
+
 def test_player_stat_leaderboard_page_shot_types_joins_pss_for_tail(
     bot_module, fake_db_router
 ):
