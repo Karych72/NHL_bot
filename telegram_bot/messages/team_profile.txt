@@ -1,11 +1,23 @@
-<b>{{ team_name }}</b> — профиль команды ({{ season }})
-{{ season_line }}
+<b>{{ team_name }}</b> ({{ abbrev }}) · сезон {{ season }}
+{{ division }}: {{ div_place }}-е место · {{ conference }}: {{ conf_place }}-е · лига: {{ league_place }}-е из {{ league_size }} сыгравших
 
-<b>Состав по позициям</b>
-{% for line in position_lines -%}
+<b>Сезон</b>
+Игр: {{ games }} · {{ record }}
+Форма (5 игр, W-L-OTL): {{ form }} · серия {{ streak }}
+Голы за игру: {{ gf }} забито / {{ ga }} пропущено
+Броски за игру: {{ sf }} своих / {{ sa }} соперника
+Большинство: {{ pp }} · Меньшинство: {{ pk }} · Вбрасывания: {{ fo }}
+{%- if scorer_lines %}
+
+<b>Бомбардиры</b>
+{%- for line in scorer_lines %}
 {{ line }}
-{% endfor %}
-<b>Топ-3 бомбардира клуба</b>
-{% for line in top_lines -%}
+{%- endfor %}
+{%- endif %}
+{%- if goalie_lines %}
+
+<b>Вратари</b>
+{%- for line in goalie_lines %}
 {{ line }}
-{% endfor -%}
+{%- endfor %}
+{%- endif %}

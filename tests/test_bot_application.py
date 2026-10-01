@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, List, Sequence, Tuple
 
 import pytest
@@ -118,12 +119,11 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
     assert _describe_all(application.handlers[bot.STANDALONE_GROUP]) == [
         ("command", ["start"], bot.cmd_start),
         ("command", ["help"], bot.cmd_help),
-        ("command", ["day_games"], bot.cmd_day_games),
         ("command", ["today"], bot.cmd_today),
         ("command", ["tonight"], bot.cmd_tonight),
-        ("command", ["table"], bot.cmd_table),
         ("command", ["standings"], bot.cmd_standings),
         ("command", ["team"], bot.cmd_team),
+        ("message", bot.cmd_team_profile),
         ("command", ["leaders"], bot.cmd_leaders),
         ("command", ["game"], bot.cmd_game),
         ("command", ["advanced"], bot.cmd_advanced),
@@ -142,6 +142,66 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
         ),
         _cq("^gv:", stats_handlers.handle_goal_video),
     ]
+
+
+@pytest.mark.parametrize(
+    "text, abbrev",
+    [("/BOS", "BOS"), ("/bos", "bos"), ("/WSH", "WSH")],
+)
+def test_team_command_pattern_extracts_three_letter_abbreviation(bot_module, text, abbrev) -> None:
+    import re
+
+    bot = bot_module("bot")
+    match = re.match(bot.TEAM_COMMAND_PATTERN, text)
+    assert match is not None and match.group(1) == abbrev
+
+
+@pytest.mark.parametrize(
+    "text", ["/team", "/today", "/help", "/stats", "/game", "/TO", "/BOSS", "BOS", "/BOS 1", "/B0S", "/BOS@OtherBot"]
+)
+def test_team_command_pattern_ignores_service_commands_and_malformed_input(bot_module, text) -> None:
+    import re
+
+    bot = bot_module("bot")
+    assert re.match(bot.TEAM_COMMAND_PATTERN, text) is None
+
+
+def test_every_bot_command_is_a_registered_command_handler(bot_module, application) -> None:
+    """Меню команд Telegram и /help строятся из `BOT_COMMANDS`: команда без
+    хендлера показывалась бы пользователю и молчала."""
+    bot = bot_module("bot")
+    help_text = bot_module("help_text")
+    conversation = application.handlers[0][0]
+    registered = {
+        cmd
+        for h in [
+            *application.handlers[bot.STANDALONE_GROUP],
+            *application.handlers[0][1:],
+            *conversation.entry_points,
+        ]
+        if isinstance(h, CommandHandler)
+        for cmd in h.commands
+    }
+    menu = [cmd for cmd, _desc in help_text.BOT_COMMANDS]
+    assert len(menu) == len(set(menu))
+    # /start — точка входа, в меню команд не выводится; всё остальное — ровно меню.
+    assert set(menu) == registered - {"start"}
+
+
+@pytest.mark.asyncio
+async def test_post_init_publishes_bot_commands_to_telegram_menu(bot_module, application) -> None:
+    bot = bot_module("bot")
+    help_text = bot_module("help_text")
+    published: List[Any] = []
+
+    class _FakeBot:
+        async def set_my_commands(self, commands: Any) -> None:
+            published.extend(commands)
+
+    assert application.post_init is bot._publish_command_menu
+    await application.post_init(SimpleNamespace(bot=_FakeBot()))
+
+    assert [(c.command, c.description) for c in published] == list(help_text.BOT_COMMANDS)
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +614,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
     # Страховка от «проверили пустой список»: 17 регистраций колбэков bot.py
-    # (15 standalone-команд, cmd_cancel_outside_conversation в группе 0,
+    # (14 standalone-хендлеров — 13 команд и regex-хендлер /ABBR, cmd_cancel_outside_conversation в группе 0,
     # cmd_cancel_in_conversation в fallbacks), 23 регистрации script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
     # висят «« Назад»» на родительские подменю: bot_player_field/
@@ -565,7 +625,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D;
     # bot_country_rankings ×2, bot_country_page, bot_country_goalies — Задача 42;
     # bot_player_stats в SECOND — «« Назад»» с рейтинга стран, это +1 к script_bot.py).
-    assert len(registered) == 91
+    assert len(registered) == 90
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",

@@ -9,11 +9,10 @@
 
 import asyncio
 import logging
-from datetime import date
 from typing import List, Optional
 
 import psycopg2
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     BaseHandler,
@@ -31,8 +30,10 @@ import subscription_repo
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
     day_digest,
+    last_night_day,
     leaders_menu_intro,
-    season_team_abbrev_help_text,
+    team_list_text,
+    team_profile,
     team_table,
     truncate_telegram_text,
 )
@@ -43,7 +44,7 @@ from nhl_scoreboard import (
     tonight_match_button_label,
     tonight_reply_intro,
 )
-from help_text import ADVANCED_COMMAND_INTRO, HELP_MESSAGE, START_MESSAGE
+from help_text import ADVANCED_COMMAND_INTRO, BOT_COMMANDS, HELP_MESSAGE, START_MESSAGE
 from dialog_states import (
     build_menu,
     CHOOSE_STATS,
@@ -185,8 +186,13 @@ THROTTLE_GROUP = STANDALONE_GROUP - 1
 
 # Лимит Bot API на число кнопок в одном inline-сообщении.
 _TELEGRAM_INLINE_BUTTON_CAP = 100
-# Как у кнопок «Матч N» в /day_games.
-_TONIGHT_BUTTON_COLUMNS = 4
+# Как у кнопок матчей в /today.
+_TONIGHT_BUTTON_COLUMNS = 3
+
+# `/BOS`, `/WSH`… из списка `/team`: три латинские буквы — ни одна служебная
+# команда бота под этот шаблон не попадает. Вариант `/BOS@bot` не принимается:
+# regex не знает имени бота и отвечал бы на команды, адресованные чужим ботам.
+TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})$"
 
 
 def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
@@ -256,19 +262,6 @@ async def cmd_help(update: Update, context: CallbackContext) -> None:
     await _message(update).reply_text(HELP_MESSAGE, parse_mode="HTML")
 
 
-async def cmd_day_games(update: Update, context: CallbackContext) -> None:
-    """`/day_games`: дайджест последнего игрового дня, который есть в базе."""
-    message = _message(update)
-    day_label, games = day_digest()
-    await dispatch_day_digest_messages(
-        context,
-        message.chat_id,
-        day_label,
-        games,
-        attach_conv_nav_on_last=False,
-    )
-
-
 async def cmd_tonight(update: Update, context: CallbackContext) -> None:
     """`/tonight`: расписание сегодняшнего дня из NHL API плюс кнопки матчей."""
     message = _message(update)
@@ -291,20 +284,26 @@ async def cmd_tonight(update: Update, context: CallbackContext) -> None:
     )
 
 
-async def cmd_table(update: Update, context: CallbackContext) -> None:
-    """`/table`: турнирная таблица лиги."""
+async def cmd_standings(update: Update, context: CallbackContext) -> None:
+    """`/standings`: турнирная таблица лиги."""
     await _message(update).reply_text(team_table(), parse_mode="HTML")
 
 
-async def cmd_standings(update: Update, context: CallbackContext) -> None:
-    """`/standings`: синоним `/table`."""
-    await cmd_table(update, context)
-
-
 async def cmd_today(update: Update, context: CallbackContext) -> None:
-    """`/today`: дайджест за сегодняшнюю календарную дату."""
+    """`/today`: дайджест матчей прошедшей ночи по Москве (`last_night_day()`).
+
+    Ночь без матчей (выходной день лиги или данные ещё не загружены) — честная
+    пометка и последний игровой день в базе, а не голое «матчей не найдено»:
+    иначе последние результаты нечем посмотреть.
+    """
     message = _message(update)
-    day_label, games = day_digest(date.today().isoformat())
+    night = last_night_day()
+    day_label, games = day_digest(night)
+    if all(gid == 0 for gid, _text, _meta in games):
+        await message.reply_text(
+            f"Прошедшей ночью ({night}) матчей в базе нет — показываю последний игровой день."
+        )
+        day_label, games = day_digest()
     await dispatch_day_digest_messages(
         context,
         message.chat_id,
@@ -315,8 +314,18 @@ async def cmd_today(update: Update, context: CallbackContext) -> None:
 
 
 async def cmd_team(update: Update, context: CallbackContext) -> None:
-    """`/team`: справка по аббревиатурам команд текущего сезона."""
-    await _message(update).reply_text(season_team_abbrev_help_text(), parse_mode="HTML")
+    """`/team`: команды сезона кликабельными командами `/ABBR`."""
+    await _message(update).reply_text(team_list_text(), parse_mode="HTML")
+
+
+async def cmd_team_profile(update: Update, context: CallbackContext) -> None:
+    """`/BOS` и т.п.: статистика клуба (`team_profile()`); неизвестную
+    аббревиатуру `team_profile()` сама превращает в текст с причиной."""
+    message = _message(update)
+    assert context.matches
+    abbrev = context.matches[0].group(1)
+    text = truncate_telegram_text(team_profile(abbrev) + "\n\nВсе команды: /team")
+    await message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_leaders(update: Update, context: CallbackContext) -> None:
@@ -333,7 +342,7 @@ async def cmd_game(update: Update, context: CallbackContext) -> None:
     message = _message(update)
     if not context.args:
         await message.reply_text(
-            "Карточку матча проще открыть так: отправьте <code>/day_games</code> "
+            "Карточку матча проще открыть так: отправьте /today "
             "и нажмите кнопку нужной игры под сводкой.",
             parse_mode="HTML",
         )
@@ -402,7 +411,7 @@ async def cmd_subscribe_digest(update: Update, context: CallbackContext) -> None
         await _subscriptions_db_error_reply(update)
         return
     await _message(update).reply_text(
-        "Вы подписаны на утренний дайджест (тот же контент, что даёт /day_games по последнему игровому дню в базе). "
+        "Вы подписаны на утренний дайджест (матчи последнего игрового дня в базе). "
         "Отписка: /unsubscribe_digest. Фактическая отправка по расписанию включается администратором (`ENABLE_PUSH_DIGEST=1`)."
     )
 
@@ -609,12 +618,11 @@ def build_standalone_handlers() -> List[BaseHandler]:
     return [
         CommandHandler("start", cmd_start),
         CommandHandler("help", cmd_help),
-        CommandHandler("day_games", cmd_day_games),
         CommandHandler("today", cmd_today),
         CommandHandler("tonight", cmd_tonight),
-        CommandHandler("table", cmd_table),
         CommandHandler("standings", cmd_standings),
         CommandHandler("team", cmd_team),
+        MessageHandler(filters.Regex(TEAM_COMMAND_PATTERN), cmd_team_profile),
         CommandHandler("leaders", cmd_leaders),
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
@@ -635,6 +643,16 @@ def build_standalone_handlers() -> List[BaseHandler]:
     ]
 
 
+async def _publish_command_menu(application: Application) -> None:
+    """Публикует список команд в Telegram (`set_my_commands`) при старте бота.
+
+    Зачем: без него кнопка «Меню» клиента пуста или показывает устаревший
+    список — пользователь не видит, какие команды есть. Источник —
+    `help_text.BOT_COMMANDS`, тот же, что у `/help`.
+    """
+    await application.bot.set_my_commands([BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS])
+
+
 def build_application(token: str) -> Application:
     """Собирает `Application` 21.x со всеми хендлерами бота.
 
@@ -648,7 +666,7 @@ def build_application(token: str) -> Application:
     `ApplicationHandlerStop`, не давая дойти до standalone-хендлеров и
     `ConversationHandler`.
     """
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(_publish_command_menu).build()
     application.add_handler(TypeHandler(Update, enforce_callback_rate_limit), group=THROTTLE_GROUP)
     for handler in build_standalone_handlers():
         application.add_handler(handler, group=STANDALONE_GROUP)

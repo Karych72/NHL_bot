@@ -291,8 +291,8 @@ async def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
     await query.edit_message_text(
         text=(
             "Дайджест по завершённым матчам в базе.\n"
-            "<i>Сегодня</i> и <i>Вчера</i> — календарные даты "
-            "(UTC может отличаться от «игрового дня» NHL)."
+            "<i>Сегодня</i> — матчи прошедшей ночи по Москве, <i>Вчера</i> — ночью раньше. "
+            "Своя дата — игровой день NHL (дата по Северной Америке)."
         ),
         reply_markup=reply_markup,
         parse_mode="HTML",

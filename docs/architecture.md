@@ -80,7 +80,7 @@ NHL_bot/
 │   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
 │   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
 │   ├── test_pipeline_game_rows.py      # Сборка строк пер-игровых таблиц (games, all_goals, …)
-│   ├── test_bot_integration.py         # Сквозные сценарии бота: /table, /leaders, /game, /day_games
+│   ├── test_bot_integration.py         # Сквозные сценарии бота: /standings, /leaders, /game, /today
 │   ├── test_bot_*.py, test_modeling_*.py, test_db_nhl.py, …
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
@@ -325,7 +325,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 группе 0; `main()` запускает `run_polling()`. Состав и порядок регистрации закреплены в
 `tests/test_bot_application.py`. Основной механизм диалога — `ConversationHandler` с состояниями FSM.
 
-Сквозные сценарии «запрос → ответ» (`/table`, `/leaders` с пагинацией, `/game`, `/day_games`)
+Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, `/game`, `/today`)
 и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
 подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
 соединение psycopg2 и TTL-обёртка над ним), остальной стек — от разбора
@@ -747,15 +747,18 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ### `game_message.txt` — Карточка матча
 
 ```
-*Rangers Lightning 3:2 (OT)*
-1:0 Panarin(Fox, Zibanejad) 5:23
-1:1 Kucherov(Point) 12:45
-...
-*Броски:* 32 - 28
-*Штрафное время:* 6 - 8
-*Вратари:* Shesterkin (26/28, 92.86%, 65:00) - Vasilevskiy (29/32, 90.63%, 65:00)
+Rangers 3:2 Lightning (OT) (1:1, 0:0, 1:1, 1:0)      ← хозяева первыми, счёт между командами
+Форма (5 игр, W-L-OTL): Rangers 3-1-1 · Lightning 2-2-1
 
-*Звёзды матча*
+1:0 Panarin [L](Fox, Zibanejad) P1 5:23
+1:1 Kucherov [R](Point) P1 12:45
+...
+
+Броски: 32 - 28
+Штрафное время: 6 - 8
+Вратари: Shesterkin (26/28, 92.86%, 65:00) - Vasilevskiy (29/32, 90.63%, 65:00)
+
+Звёзды матча
 ★1 Panarin (NYR) — 2+1
 ★2 Kucherov (TBL) — 1+2
 ★3 Shesterkin (NYR) — 26/28, 92.86%
@@ -808,7 +811,10 @@ Panthers        28.5  70
 
 ### `league_table.txt` — Турнирная таблица
 
-Группировка по конференциям и дивизионам: Atlantic, Metropolitan, Central, Pacific. Колонки: Команда / Очки / Игры / % очков.
+Группировка по конференциям и дивизионам: Atlantic, Metropolitan, Central, Pacific. Колонки: место / Команда / Очки / Игры / % очков.
+Блок Wild Card конференции — все команды вне топ-3 своих дивизионов: `WC1`, `WC2`, затем черта
+«линия плей-офф» и остальные претенденты. Команды, ещё не сыгравшие в сезоне, в `teams_stats`
+отсутствуют и в таблицу не попадают.
 
 ### `conference_stats.txt` / `division_stats.txt` — Сводки по конференциям и дивизионам (Задача 41, Фаза B)
 
@@ -816,21 +822,24 @@ Panthers        28.5  70
 `t.division_name` над `teams_stats ⋈ teams` по `(team_id, season_id)` для `config.SEASON_ID` —
 число команд и средние по группе `goals_per_game`/`power_play_percentage`/
 `penalty_kill_percentage`/`points` (только то, что уже есть в `teams_stats`, без вычисляемых
-«рейтингов»). Не дублирует `/table` (`team_table()`, строка на команду) — здесь усреднение по
+«рейтингов»). Не дублирует `/standings` (`team_table()`, строка на команду) — здесь усреднение по
 группе. Пустой сезон — текст с причиной вместо пустой таблицы. Экраны: кнопки «По конференциям» /
 «По дивизионам» в подменю команд (`TEAM_STATS`, рядом с TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
 TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`
 (`dialog_states.py`), хендлеры `bot_team_conference_stats`/`bot_team_division_stats`
 (`stats_handlers.py`); «« Назад»» — на `TEAM_STATS`, как у соседних командных экранов.
 
-### `team_profile.txt` — Профиль команды (Задача 41, Фаза D)
+### `team_profile.txt` — Статистика клуба (Задача 41, Фаза D; переделан 2026-10-01)
 
-`bot_messages.team_profile(abbrev)`: `rosters ⋈ players_season_stats` для `current_team_id`/
-`season_id = config.SEASON_ID` — состав по позициям и топ-3 бомбардира клуба, плюс строка
-сезона из `teams_stats`. Команда выбирается инлайн-кнопкой аббревиатуры (`tp:<ABBR>`,
-`bot_team_profile_pick()` в `stats_handlers.py`) → `_team_id_for_abbrev()`, как в
-`matchup_season_preview()` (Фаза C). «« Назад»» со списка — на `TEAM_STATS`, с карточки
-(`bot_team_profile_show()`) — обратно на список (`TEAM_PROFILE_PICK`).
+`bot_messages.team_profile(abbrev)`: места в дивизионе/конференции/лиге (`teams_stats ⋈ teams`
+всей лиги, сортировка как в турнирной таблице), баланс, форма и серия, голы и броски за игру,
+большинство/меньшинство/вбрасывания, топ-5 бомбардиров (`rosters ⋈ players_season_stats`) и
+вратари (`rosters ⋈ goalies_season_stats`) для `current_team_id`/`season_id = config.SEASON_ID`.
+Два входа: команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
+`bot.py` по `TEAM_COMMAND_PATTERN`) и инлайн-кнопка аббревиатуры в меню `/stats` (`tp:<ABBR>`,
+`bot_team_profile_pick()` в `stats_handlers.py`); обе резолвят аббревиатуру через
+`_team_id_for_abbrev()`, как `matchup_season_preview()` (Фаза C). «« Назад»» со списка — на
+`TEAM_STATS`, с карточки (`bot_team_profile_show()`) — обратно на список (`TEAM_PROFILE_PICK`).
 
 `players_season_stats` не хранит команду игрока — очки/голы за весь сезон целиком относятся
 к тому `current_team_id`, что сейчас стоит в `rosters` (последний обработанный ростер,

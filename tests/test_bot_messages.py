@@ -167,7 +167,7 @@ def test_game_message_escapes_assist_name_with_apostrophe(game_message_text):
 
 def test_game_message_renders_hat_trick_line_with_escaped_name(game_message_text):
     text, _ = game_message_text
-    assert "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*: хет-трик (×3)" in text
+    assert "<b>Хет-трик</b>: O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* (×3)" in text
 
 
 def test_game_message_escapes_goalie_lastname(game_message_text):
@@ -1021,7 +1021,58 @@ def test_day_digest_summary_body_takes_first_line_of_each_game(bot_module):
         (2, "<b>NYR OTT</b> 1:1 (OT)\nmore stuff", []),
     ]
     body = bot_messages.day_digest_summary_body(games)
-    assert body == "<b>BOS TOR</b> 3:2\n<b>NYR OTT</b> 1:1 (OT)"
+    assert body == "1. <b>BOS TOR</b> 3:2\n2. <b>NYR OTT</b> 1:1 (OT)"
+
+
+def test_digest_game_button_labels_number_games_in_summary_order_with_home_first(
+    bot_module, fake_db_router
+):
+    """Подпись — «N. HOME – AWAY» в порядке game_ids (не в порядке выдачи БД),
+    одним запросом на все матчи; номер тот же, что в сводке."""
+    bot_messages = bot_module("bot_messages")
+    # БД отдаёт строки в другом порядке, чем запрошены game_id.
+    cursor = fake_db_router([("JOIN teams th", [(2, "TOR ", "MTL"), (1, "NYR", "BOS")])])
+
+    labels = bot_messages.digest_game_button_labels([1, 2])
+
+    assert labels == ["1. NYR – BOS", "2. TOR – MTL"]
+    assert len(cursor.executed) == 1
+    assert cursor.executed[0][1] == ([1, 2],)
+
+
+# ---------------------------------------------------------------------------
+# last_night_day() — игровой день NHL прошедшей ночи по Москве (UTC+3)
+# ---------------------------------------------------------------------------
+
+def _freeze_utc_now(monkeypatch, bot_messages, frozen_utc):
+    """Подменяет `bot_messages.datetime`: `now(tz)` отдаёт замороженный момент в
+    переданном поясе — как настоящий `datetime.now(tz)`."""
+    class _FrozenDatetime(bot_messages.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_utc.astimezone(tz)
+
+    monkeypatch.setattr(bot_messages, "datetime", _FrozenDatetime)
+
+
+@pytest.mark.parametrize(
+    "utc_now, nights_back, expected",
+    [
+        ((2026, 10, 2, 9, 0), 0, "2026-10-01"),   # 12:00 МСК, 2 октября → день NHL 1 октября
+        ((2026, 10, 2, 9, 0), 1, "2026-09-30"),   # ночь раньше
+        ((2026, 10, 1, 23, 30), 0, "2026-10-01"),  # 02:30 МСК 2 октября — в МСК уже новый день
+        ((2026, 10, 1, 20, 59), 0, "2026-09-30"),  # 23:59 МСК 1 октября — ещё 1 октября
+    ],
+)
+def test_last_night_day_is_moscow_date_minus_one_night(
+    bot_module, monkeypatch, utc_now, nights_back, expected
+):
+    from datetime import datetime, timezone
+
+    bot_messages = bot_module("bot_messages")
+    _freeze_utc_now(monkeypatch, bot_messages, datetime(*utc_now, tzinfo=timezone.utc))
+
+    assert bot_messages.last_night_day(nights_back) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1142,26 +1193,80 @@ def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
 
 
 # ---------------------------------------------------------------------------
-# season_team_abbrev_help_text() — маркер на молчаливо обрезанный список
+# team_list_text() — команды сезона по дивизионам кликабельными /ABBR
 # ---------------------------------------------------------------------------
 
-def test_season_team_abbrev_help_text_marks_dropped_teams_when_over_budget(bot_module):
+def test_team_list_text_groups_teams_by_division_as_clickable_commands(bot_module):
     bot_messages = bot_module("bot_messages")
-    abbrevs = [f"AB{i:03d}" for i in range(250)]  # шире бюджета в 3500 символов
-    rows = {"ab": abbrevs, "count_rows": len(abbrevs)}
+    rows = {
+        "abbr": ["BOS", "TOR", "NYR"],
+        "name": ["Boston Bruins", "Toronto Maple Leafs", "New York Rangers"],
+        "division": ["Atlantic", "Atlantic", "Metropolitan"],
+        "count_rows": 3,
+    }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text = bot_messages.season_team_abbrev_help_text()
-    assert "Показаны" in text
-    assert f"из {len(abbrevs)} команд" in text
+        text = bot_messages.team_list_text()
+    assert "/BOS — Boston Bruins\n/TOR — Toronto Maple Leafs" in text
+    assert text.index("<b>Atlantic</b>") < text.index("/BOS") < text.index("<b>Metropolitan</b>")
+    assert "<b>Metropolitan</b>\n/NYR — New York Rangers" in text
+    assert "<code>" not in text, "в <code> команда не кликабельна"
 
 
-def test_season_team_abbrev_help_text_no_marker_when_everything_fits(bot_module):
+def test_team_list_text_reports_empty_season(bot_module):
     bot_messages = bot_module("bot_messages")
-    rows = {"ab": ["BOS", "TOR", "NYR"], "count_rows": 3}
+    rows = {"abbr": [], "name": [], "division": [], "count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text = bot_messages.season_team_abbrev_help_text()
-    assert "Показаны" not in text
-    assert "BOS" in text
+        text = bot_messages.team_list_text()
+    assert "В базе пока нет списка команд для этого сезона." in text
+
+
+# ---------------------------------------------------------------------------
+# Wild Card: линия плей-офф после WC2
+# ---------------------------------------------------------------------------
+
+def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
+    bot_module, fake_db_router
+):
+    """Метрополитен из шести команд: топ-3 дивизиона вне гонки, остальные три —
+    WC1, WC2, затем линия плей-офф и третий претендент с обычным номером."""
+    bot_messages = bot_module("bot_messages")
+    # short_name, games_played, points, procent_points, wins, losses, ot,
+    # division_name, conference_name — очки убывают с номером команды.
+    rows = [
+        (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(6)
+    ]
+    fake_db_router([
+        ("FROM teams_stats ts", rows),
+        ("SELECT max(day)::text AS d", [("2026-04-01",)]),
+    ])
+
+    text = bot_messages.team_table()
+
+    wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
+    assert wc.index("WC1 T3") < wc.index("WC2 T4") < wc.index("- - линия плей-офф") < wc.index(" 3. T5")
+    assert "T0" not in wc, "топ-3 дивизиона в гонку Wild Card не входят"
+    assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
+
+
+# ---------------------------------------------------------------------------
+# Порог расширенной статистики: смягчается в начале сезона
+# ---------------------------------------------------------------------------
+
+def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
+    bot_module, fake_db_router
+):
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", [("Makar", "D", 58.2, "COL", 5, 120, 1)])])
+
+    bot_messages.player_stat_leaderboard_page(
+        "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
+    )
+
+    query_text, _params = cursor.executed[-1]
+    assert (
+        "pss.games >= LEAST(20, (SELECT CEIL(MAX(ts.games_played) / 2.0) "
+        "FROM teams_stats ts WHERE ts.season_id = pl.season_id))"
+    ) in query_text
 
 
 # ---------------------------------------------------------------------------
