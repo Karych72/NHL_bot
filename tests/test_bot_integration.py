@@ -920,7 +920,7 @@ _WSH_FORM = [(5, False, False, False)] * 3 + [(9, False, False, False)] * 2
 _PROFILE_ROUTES = [
     ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
     ("FROM teams_stats ts", _LEAGUE_ROWS),
-    ("ORDER BY split_part", _TOI_ROWS),
+    ("ORDER BY (split_part", _TOI_ROWS),
     ("JOIN players_season_stats pss", _SCORER_ROWS),
     ("JOIN goalies_season_stats gs", _GOALIE_ROWS),
     ("ORDER BY day DESC NULLS LAST", _WSH_FORM),

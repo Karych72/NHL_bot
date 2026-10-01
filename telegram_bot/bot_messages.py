@@ -57,6 +57,13 @@ def _format_leader_value(value: Union[int, float, Decimal, str, None]) -> str:
     return str(value)
 
 
+# Колонки времени «м:сс» (varchar, пишет `optional_seconds_to_mmss` загрузчика): строкой
+# «9:57» > «25:00», поэтому сортировать их можно только по секундам (Задача 44).
+_MMSS_COLUMNS = frozenset({"time_on_ice_per_game"})
+# Секунды из «м:сс»; `{col}` — колонка из белого списка или литерал модуля. NULL → NULL.
+_MMSS_SECONDS_SQL = "(split_part({col}, ':', 1)::int * 60 + split_part({col}, ':', 2)::int)"
+
+
 def _resolve_secondary_sort(table_name: str, secondary_sort: Optional[str]) -> str:
     if secondary_sort is not None:
         return secondary_sort
@@ -967,6 +974,9 @@ def player_stats_with_count(
     join_pss = _pss_join_sql(table_name)
     second_alias = _second_order_table_alias(table_name, second_order)
     pl_col = sql.SQL(".").join([sql.Identifier("pl"), sql.Identifier(column_name)])
+    order_col = (
+        sql.SQL(_MMSS_SECONDS_SQL).format(col=pl_col) if column_name in _MMSS_COLUMNS else pl_col
+    )
     second_col = sql.SQL(".").join(
         [sql.Identifier(second_alias), sql.Identifier(second_order)]
     )
@@ -983,10 +993,11 @@ def player_stats_with_count(
         "WHERE pl.season_id = %s "
         # NULLS LAST keeps unranked players (no value reported) at the bottom of
         # leaderboards instead of at the top under DESC's default NULLS FIRST.
-        "ORDER BY {pl_col} DESC NULLS LAST, {second_col} DESC NULLS LAST "
+        "ORDER BY {order_col} DESC NULLS LAST, {second_col} DESC NULLS LAST "
         "LIMIT %s OFFSET %s"
     ).format(
         pl_col=pl_col,
+        order_col=order_col,
         table=sql.Identifier(table_name),
         join_pss=join_pss,
         second_col=second_col,
@@ -1542,8 +1553,7 @@ _TEAM_PROFILE_TOP = 5
 # пользователя: по очкам и по среднему времени на льду («м:сс» → секунды).
 _BY_POINTS = "pss.points DESC NULLS LAST, pss.goals DESC NULLS LAST, pss.games"
 _BY_TOI = (
-    "split_part(pss.time_on_ice_per_game, ':', 1)::int * 60 "
-    "+ split_part(pss.time_on_ice_per_game, ':', 2)::int DESC NULLS LAST, pss.games DESC"
+    _MMSS_SECONDS_SQL.format(col="pss.time_on_ice_per_game") + " DESC NULLS LAST, pss.games DESC"
 )
 _TEAM_SKATER_COLUMNS = [
     "lastname", "position", "games", "goals", "assists", "points", "plus_minus", "toi",
