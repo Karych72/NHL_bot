@@ -72,10 +72,11 @@ async def test_standings_command_renders_divisions_with_ranked_rows_sorted_by_po
         assert f"<b>{title}</b>" in text
     # Строки дивизиона отсортированы по очкам, а не по порядку выдачи БД.
     assert text.index("Rangers") < text.index("Devils") < text.index("Islanders")
-    # Колонки моноширинной таблицы: место « 1. », имя дополнено до 14, очки/игры до 3, %очк до 5.
-    assert " 1. Rangers         28  20  70.0" in text
-    assert " 2. Devils          22  20  55.0" in text
-    assert " 3. Islanders       19  20  47.5" in text
+    # Колонки моноширинной таблицы через «|»: место « 1.», имя дополнено до 14,
+    # очки/игры до 3, %очк до 5.
+    assert " 1.|Rangers       | 28| 20| 70.0" in text
+    assert " 2.|Devils        | 22| 20| 55.0" in text
+    assert " 3.|Islanders     | 19| 20| 47.5" in text
     assert "reply_markup" not in reply, "у /standings вне диалога клавиатуры нет"
 
 
@@ -149,8 +150,9 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     assert edited["parse_mode"] == "HTML"
     assert "<b>Топ бомбардиров</b>" in text
     assert "<i>Показаны 1–10 из 25 строк.</i>" in text
-    assert " 1. Player01 [C] NYR   99 82 1501" in text
-    assert "10. Player10 [C] NYR   90 82 1510" in text
+    assert "<pre>   |Игрок       |Ком|Очки| И|Смен\n" in text
+    assert " 1.|Player01 [C]|NYR|  99|82|1501" in text
+    assert "10.|Player10 [C]|NYR|  90|82|1510" in text
     assert "11. Player11" not in text
     assert _callback_data(edited["reply_markup"])[0] == "pl:points:10", "первая страница — только «вперёд»"
 
@@ -173,8 +175,8 @@ async def test_leaders_next_page_asks_db_for_offset_ten_and_renders_ranks_eleven
     (edited,) = update.callback_query.edited_texts
     text = edited["text"]
     assert "<i>Показаны 11–20 из 25 строк.</i>" in text
-    assert "11. Player11 [C] NYR   89 82 1511" in text
-    assert "20. Player20 [C] NYR   80 82 1520" in text
+    assert "11.|Player11 [C]|NYR|  89|82|1511" in text
+    assert "20.|Player20 [C]|NYR|  80|82|1520" in text
     assert "Player10" not in text
     assert _callback_data(edited["reply_markup"])[:2] == ["pl:points:0", "pl:points:20"]
     # Смещение не «нарисовано» в тексте, а действительно ушло в БД параметром.
@@ -434,11 +436,10 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
 
     summary, hint = fake_context.bot.sent_messages
     assert "<b>Матчи 2026-04-01</b> (2 игр)" in summary["text"]
+    # Матчи — жирной строкой, периоды под ней; между матчами пустая строка.
     assert (
-        "<code>1. NYR</code> <b>3:2</b> <code>BOS</code>\n<code>   </code><i>1:0, 1:1, 1:1</i>"
-    ) in summary["text"]
-    assert (
-        "<code>2. TOR</code> <b>1:0</b> <code>MTL</code>\n<code>   </code><i>1:0, 0:0, 0:0</i>"
+        "1. <b>NYR 3:2 BOS</b>\n  1:0, 1:1, 1:1\n\n"
+        "2. <b>TOR 1:0 MTL</b>\n  1:0, 0:0, 0:0\n\n"
     ) in summary["text"]
     assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
     # Кнопки несут те же номера, что и сводка, и команды вместо «Матч N».
@@ -630,7 +631,7 @@ async def test_standings_command_on_partial_season_shows_only_teams_with_games(
     (reply,) = update.message.replies
     text = reply["text"]
     assert "Сезон ещё не начался" not in text
-    assert " 1. Rangers          4   2 100.0" in text
+    assert " 1.|Rangers       |  4|  2|100.0" in text
     # Разделы западной конференции остаются на месте (нет исключения), но
     # каждый дивизион без единой сыгранной игры несёт текст-причину, а не
     # заголовки пустой таблицы.
@@ -673,8 +674,8 @@ async def test_leaders_pick_on_partial_season_shows_short_page_without_next_butt
     (edited,) = update.callback_query.edited_texts
     text = edited["text"]
     assert "<i>Показаны 1–4 из 4 строк.</i>" in text
-    assert "1. Panarin [LW]  NYR    5 2   45" in text
-    assert "4. Matthews [C]  TOR    1 1   18" in text
+    assert "1.|Panarin [LW] |NYR|   5|2|  45" in text
+    assert "4.|Matthews [C] |TOR|   1|1|  18" in text
     # Ни prev, ни next — показаны все 4 строки; остаётся только смена категории.
     assert _callback_data(edited["reply_markup"]) == [
         "pl:pick:points", "pl:pick:goals", "pl:pick:assists",
@@ -832,9 +833,9 @@ async def test_team_submenu_conference_button_renders_summary_and_back_to_team_s
     assert "<b>Сводка по конференциям</b>" in text
     # Выровненная таблица в ширину телефона, легенда сокращений под ней.
     assert (
-        "<pre>        Ком    О Г/и   Бол   Мен\n"
-        "Eastern  16 55.2 3.1 21.5% 79.5%\n"
-        "Western  16 50.1 3.0 19.9% 80.2%</pre>"
+        "<pre>       |Ком|   О|Г/и|  Бол|  Мен\n"
+        "Eastern| 16|55.2|3.1|21.5%|79.5%\n"
+        "Western| 16|50.1|3.0|19.9%|80.2%</pre>"
     ) in text
     assert "Бол — реализация большинства" in text
     # «« Назад»» ведёт на родительское подменю команд, как у TEAM_PROCENT_WINS и соседей.
@@ -861,7 +862,7 @@ async def test_team_submenu_division_button_renders_summary_table(
     assert state == dialog_states.SECOND
     assert "<b>Сводка по дивизионам</b>" in text
     # Шире экрана телефона с числом команд — оно уходит, средние остаются.
-    table = "                О Г/и   Бол   Мен\nMetropolitan 91.4 3.1 21.5% 79.9%"
+    table = "            |   О|Г/и|  Бол|  Мен\nMetropolitan|91.4|3.1|21.5%|79.9%"
     assert f"<pre>{table}</pre>" in text
     assert all(len(line) <= 36 for line in table.splitlines())
     assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
@@ -1004,20 +1005,20 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     assert "Большинство: 21.5% · Меньшинство: 80% · Вбрасывания: 51.25%" in text
     # Бомбардиры — в порядке выдачи БД (по очкам), колонки выровнены в <pre>.
     assert (
-        "<b>Бомбардиры</b>\n<pre>   Игрок          И  Г  П  О\n"
-        "1. Ovechkin [L]  17 38  4 42\n"
-        "2. Backstrom [C] 17 10 20 30\n"
-        "3. Carlson [D]   16  5 20 25</pre>"
+        "<b>Бомбардиры</b>\n<pre>  |Игрок        | И| Г| П| О\n"
+        "1.|Ovechkin [L] |17|38| 4|42\n"
+        "2.|Backstrom [C]|17|10|20|30\n"
+        "3.|Carlson [D]  |16| 5|20|25</pre>"
     ) in text
     assert (
-        "<b>Игровое время</b>\n<pre>   Игрок          И    ВП\n"
-        "1. Carlson [D]   16 24:31\n"
-        "2. Ovechkin [L]  17 19:05\n"
-        "3. Backstrom [C] 17 17:40</pre>"
+        "<b>Игровое время</b>\n<pre>  |Игрок        | И|   ВП\n"
+        "1.|Carlson [D]  |16|24:31\n"
+        "2.|Ovechkin [L] |17|19:05\n"
+        "3.|Backstrom [C]|17|17:40</pre>"
     ) in text
     assert (
-        "<b>Вратари</b>\n<pre>Вратарь   И В-П-ОТ   %ОБ  КН\n"
-        "Samsonov 15  9-4-2 91.5% 2.6</pre>"
+        "<b>Вратари</b>\n<pre>Вратарь | И|В-П-ОТ|  %ОБ| КН\n"
+        "Samsonov|15| 9-4-2|91.5%|2.6</pre>"
     ) in text
     assert "Все игроки: /WSH_FULL" in text
     assert _callback_data(edited["reply_markup"]) == [
@@ -1090,10 +1091,21 @@ async def test_team_abbreviation_command_replies_with_profile_and_link_to_team_l
 async def test_team_full_command_lists_every_skater_and_goalie(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
-    """`/WSH_FULL` из конца профиля: тот же regex-хендлер, полный список
-    игроков без LIMIT (параметр `None`) и вратари; ссылка назад на профиль."""
+    """`/WSH_FULL` из конца профиля: тот же regex-хендлер; нападающие,
+    защитники и вратари отдельными таблицами с колонками экрана страны, полный
+    список без LIMIT (параметр `None`); ссылка назад на профиль."""
     bot = bot_module("bot")
-    cursor = fake_db_router(_PROFILE_ROUTES)
+    cursor = fake_db_router([
+        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        # lastname, team, goals, points, games, toi, hits, shots, blocked, total
+        ("r.position IN ('C', 'L', 'R')", [
+            ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 2),
+            ("Backstrom", "WSH", 10, 30, 17, "17:40", 8, 40, 9, 2),
+        ]),
+        ("r.position = 'D'", [("Carlson", "WSH", 5, 25, 16, "24:31", 20, 50, 33, 1)]),
+        # lastname, team, wins, save_pct, gaa, games, shutouts, total
+        ("FROM goalies_season_stats g", [("Samsonov", "WSH", 9, 91.5, 2.6, 15, 1, 1)]),
+    ])
     update = make_message_update("/WSH_FULL")
     fake_context.matches = [re.match(bot.TEAM_COMMAND_PATTERN, "/WSH_FULL")]
 
@@ -1102,16 +1114,63 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     (reply,) = update.message.replies
     text = reply["text"]
     assert "<b>WSH: все игроки</b>" in text
+    # Без колонок места и команды все показатели страны влезают в ширину телефона.
     assert (
-        "<pre>Игрок          И  Г  П  О +/-    ВП\n"
-        "Ovechkin [L]  17 38  4 42  12 19:05\n"
-        "Backstrom [C] 17 10 20 30  -3 17:40\n"
-        "Carlson [D]   16  5 20 25   4 24:31</pre>"
+        "<b>Нападающие</b>\n<pre>Игрок    | Г| О| И|   ВП|Хит| Бр\n"
+        "Ovechkin |38|42|17|19:05| 30|120\n"
+        "Backstrom|10|30|17|17:40|  8| 40</pre>\n"
+        "<i>Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
+        "Бр — броски.</i>"
     ) in text
-    assert "Samsonov 15  9-4-2 91.5% 2.6" in text
+    assert (
+        "<b>Защитники</b>\n<pre>Игрок  |Г| О| И|   ВП|Хит|Бл\n"
+        "Carlson|5|25|16|24:31| 20|33</pre>"
+    ) in text
+    assert (
+        "<b>Вратари</b>\n<pre>Вратарь |В|  %ОБ| КН| И|Сух\n"
+        "Samsonov|9|91.5%|2.6|15|  1</pre>"
+    ) in text
+    assert text.index("Нападающие") < text.index("Защитники") < text.index("Вратари")
     assert "Профиль клуба: /WSH" in text
-    skaters_query = next(q for q in cursor.executed if "JOIN players_season_stats" in q[0])
-    assert skaters_query[1][-1] is None, "полный список — без LIMIT"
+    group_queries = [q for q in cursor.executed if "r.current_team_id = %s" in q[0]]
+    assert len(group_queries) == 3
+    # Игроки клуба — по team_id параметром, полный список — без LIMIT.
+    assert all(params[1:3] == (5, None) for _sql, params in group_queries)
+    goalie_sql = next(q for q, _ in group_queries if "goalies_season_stats" in q)
+    assert "g.games > 0" in goalie_sql, "вратарь без игр в списке клуба не нужен"
+
+
+@pytest.mark.asyncio
+async def test_team_full_command_skips_empty_groups(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    """Группа без игроков (у клуба ещё не сыграл ни один вратарь) — без
+    заголовка и пустой таблицы; совсем пустой клуб — текст с причиной."""
+    bot = bot_module("bot")
+    fake_db_router([
+        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 1)]),
+        ("r.position = 'D'", []),
+        ("FROM goalies_season_stats g", []),
+    ])
+    update = make_message_update("/WSH_FULL")
+    fake_context.matches = [re.match(bot.TEAM_COMMAND_PATTERN, "/WSH_FULL")]
+
+    await bot.cmd_team_profile(update, fake_context)
+
+    text = update.message.replies[0]["text"]
+    assert "<b>Нападающие</b>" in text
+    assert "Защитники" not in text and "Вратари" not in text
+
+    fake_db_router([
+        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("r.position IN ('C', 'L', 'R')", []),
+        ("r.position = 'D'", []),
+        ("FROM goalies_season_stats g", []),
+    ])
+    update = make_message_update("/WSH_FULL")
+    await bot.cmd_team_profile(update, fake_context)
+    assert "У команды пока нет статистики игроков в этом сезоне." in update.message.replies[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -1164,7 +1223,7 @@ async def test_countries_command_lists_countries_with_buttons(
 
     (reply,) = update.message.replies
     assert reply["parse_mode"] == "HTML"
-    assert "1. 🇨🇦 Канада   5 100 40 20.0" in reply["text"]
+    assert "1.|🇨🇦 Канада|  5|100|40|20.0" in reply["text"]
     assert "Страна не указана в данных NHL у игроков: 2 (не учтены)" in reply["text"]
     assert [(b.text, b.callback_data) for b in _flat_buttons(reply["reply_markup"])] == [
         ("🇨🇦 Канада", "cn:CAN:F:0"),
@@ -1201,7 +1260,7 @@ async def test_country_page_pages_and_switches_groups(
     (edited,) = update.callback_query.edited_texts
     assert "<b>Защитники: 🇨🇦 Канада</b>" in edited["text"]
     # С блоками строка 37 символов — они уходят первыми, игры остаются.
-    assert "11. McDavid EDM 30 90 70 21:30  40</pre>" in edited["text"]
+    assert "11.|McDavid|EDM|30|90|70|21:30| 40</pre>" in edited["text"]
     buttons = _flat_buttons(edited["reply_markup"])
     assert [(b.text, b.callback_data) for b in buttons] == [
         ("← 1–10", "cn:CAN:D:0"),
@@ -1244,7 +1303,7 @@ async def test_country_goalies_and_back_to_rankings(
     await stats_handlers.callback_country(update, fake_context)
 
     (edited,) = update.callback_query.edited_texts
-    assert "1. Hellebuyck WPG 35 92.1% 2.4 60</pre>" in edited["text"]
+    assert "1.|Hellebuyck|WPG|35|92.1%|2.4|60</pre>" in edited["text"]
 
     back = make_callback_update("cn:list")
     await stats_handlers.callback_country(back, fake_context)

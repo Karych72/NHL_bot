@@ -1,4 +1,5 @@
-"""Заголовки для пагинируемых таблиц лидеров: ключ (таблица, колонка) → название в чате."""
+"""Заголовки для пагинируемых таблиц лидеров: ключ (таблица, колонка) → название в чате,
+и подписи колонки показателя в самой таблице."""
 
 from typing import Dict, Tuple
 
@@ -37,6 +38,37 @@ TEAM_STAT_TITLES: Dict[str, str] = {
     "procent_points": "Статистика процента набранных очков",
     "power_play_percentage": "Статистика большинства",
     "penalty_kill_percentage": "Статистика меньшинства",
+}
+
+# Шапка колонки сортируемого показателя в таблице лидерборда — ключ колонка БД
+# (игроков, вратарей и команд). Коротко: строка `<pre>` не шире экрана телефона.
+STAT_COLUMN_LABELS: Dict[str, str] = {
+    "points": "Очки",
+    "goals": "Голы",
+    "assists": "Пасы",
+    "hits": "Хиты",
+    "plus_minus": "+/-",
+    "pim": "Штраф",
+    "blocked": "Блоки",
+    "time_on_ice_per_game": "ВП",
+    "shootout_pct": "Бул%",
+    "sat_pct": "SAT%",
+    "usat_pct": "USAT%",
+    "goals_pct": "GF%",
+    "oz_start_pct": "OZ%",
+    "goals_wrist": "Голы",
+    "goals_slap": "Голы",
+    "goals_snap": "Голы",
+    "goals_backhand": "Голы",
+    "goals_tip_in": "Голы",
+    "goals_deflected": "Голы",
+    "goals_wrap_around": "Голы",
+    "wins": "Побед",
+    "save_percentage": "%ОБ",
+    "shutouts": "Сух",
+    "procent_points": "%очк",
+    "power_play_percentage": "%бол",
+    "penalty_kill_percentage": "%мен",
 }
 
 # Короткие ключи для /advanced → (таблица, колонка)

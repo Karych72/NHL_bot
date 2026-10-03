@@ -59,7 +59,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
                     text = bot_messages.player_stats(title, table, col)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
-                self.assertIn("Ovechkin [LW] WSH 58.2 82 1700", text)
+                self.assertRegex(text, r"1\.\|Ovechkin \[LW\]\|WSH\| ?58\.2\|82\|1700")
                 self.assertTrue(mock_fetch.called)
 
 
@@ -186,7 +186,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             )
         self.assertIn("Топ бомбардиров", text)
         self.assertIn("Ovechkin", text)
-        self.assertIn("Ovechkin [LW] WSH   99 79 1650", text)
+        self.assertIn("1.|Ovechkin [LW]|WSH|  99|79|1650", text)
         self.assertFalse(has_prev)
         self.assertFalse(has_next)
 
