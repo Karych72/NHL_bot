@@ -904,8 +904,10 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
 
     summary = fake_context.bot.sent_messages[0]
     assert (
-        "<code>1. H1</code> <b>1:0</b> <code>A1</code> (1:0, 0:0, 0:0)\n"
-        "<code>2. H2</code> <b>1:0</b> <code>A2</code> (1:0, 0:0, 0:0)"
+        "<code>1. H1</code> <b>1:0</b> <code>A1</code>\n"
+        "<code>   </code><i>1:0, 0:0, 0:0</i>\n"
+        "<code>2. H2</code> <b>1:0</b> <code>A2</code>\n"
+        "<code>   </code><i>1:0, 0:0, 0:0</i>"
     ) in summary["text"]
     assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
     rows = summary["reply_markup"].inline_keyboard
@@ -969,8 +971,10 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     shown, total = int(match.group(1)), int(match.group(2))
     assert total == total_games
     assert 0 < shown < total_games
-    # Обрезка — целыми строками: ни одного незакрытого тега (Telegram отверг бы HTML).
-    assert sent_text.count("<code>") == sent_text.count("</code>") == 2 * shown
+    # Обрезка — целыми матчами (две строки, три <code>): ни одного незакрытого
+    # тега (Telegram отверг бы HTML) и ни одного матча без строки периодов.
+    assert sent_text.count("<code>") == sent_text.count("</code>") == 3 * shown
+    assert sent_text.count("<i>1:0, 0:0, 0:0</i>") == shown
     assert sent_text.count("<b>") == sent_text.count("</b>")
 
 

@@ -59,7 +59,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
                     text = bot_messages.player_stats(title, table, col)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
-                self.assertIn("игр: 82, смен: 1700", text)
+                self.assertIn("Ovechkin [LW] WSH 58.2 82 1700", text)
                 self.assertTrue(mock_fetch.called)
 
 
@@ -81,6 +81,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/help",
             "/game",
             "/advanced",
+            "/countries",
             "/subscribe_digest",
             "/unsubscribe_digest",
             "/subscribe_team",
@@ -93,8 +94,6 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
-        # По отзыву статистику по странам в /help не находили — путь отдельной строкой.
-        self.assertIn("/stats → «Статистика игроков» → «По странам»", hm)
         # Пометки голов карточки, в том числе ПШ вместо прежней «★».
         self.assertIn("ПШ — победная шайба", hm)
         self.assertIn("/BOS_FULL", hm)
@@ -187,7 +186,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             )
         self.assertIn("Топ бомбардиров", text)
         self.assertIn("Ovechkin", text)
-        self.assertIn("игр: 79, смен: 1650", text)
+        self.assertIn("Ovechkin [LW] WSH   99 79 1650", text)
         self.assertFalse(has_prev)
         self.assertFalse(has_next)
 
@@ -249,7 +248,7 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
         ), patch.object(
-            stats_handlers, "day_digest_summary_body", return_value="1. <b>Home Away</b>\n2. B C"
+            stats_handlers, "day_digest_summary_body", return_value=["1. <b>Home Away</b>", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
                 FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True

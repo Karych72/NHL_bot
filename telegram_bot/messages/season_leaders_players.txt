@@ -1,5 +1,0 @@
-{% if name_stats %}*{{ name_stats }}*
-{% endif -%}
-{% for player in players -%}
-{{ player.rank }}. {{ player.lastname }} — {{ player.value }} ({{ player.team }})
-{% endfor %}

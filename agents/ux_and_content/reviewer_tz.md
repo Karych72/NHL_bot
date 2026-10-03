@@ -54,7 +54,7 @@
 | 6.1.2 Чеклист плана | **Частично:** `refactoring_plan_2.md` обновляют по факту; явный «остаток Фазы 7» вынесен в подпункт «Отложено». |
 | 6.2.3 `/leaders` без клавиатуры | **Закрыто:** `leaderboard_nav_keyboard` всегда добавляет строки `leaders_category_keyboard()`. |
 | 6.2.4 Дайджест «дата» | **Закрыто:** `bot_digest_pick_date_prompt` + `DIGEST_BACK_FROM_DATE_CALLBACK`, обработчик в состоянии `THIRD`. |
-| 6.3.5 Markdown + БД | **Закрыто для лидербордов и карточки матча:** HTML + `html.escape`; `player_stats()` переведён на HTML; шаблон `season_leaders_players.txt` — запасной путь при `use_html=False`. |
+| 6.3.5 Markdown + БД | **Закрыто для лидербордов и карточки матча:** HTML + `html.escape`; `player_stats()` переведён на HTML; jinja-шаблон лидербордов и ветка `use_html=False` удалены (Задача 47). |
 | 6.3.6 Фрагментарный 7.7 | **Частично закрыто:** меню `/stats` и текст выбора даты дайджеста на HTML (`script_bot.py`). Оставшееся — **[`html_parse_mode_polish_tz.md`](html_parse_mode_polish_tz.md)** (`/help`, `/tonight`, `/team`, `/advanced`, …). |
 | 6.3.7 Вычисляемые фичи | **Закрыто:** подписи в `game_message.txt`, блок `_COMPUTED_FEATURES_NOTE` в `help_text.py`. |
 | 6.4.8 Два сообщения после таблицы | **Nit (по желанию):** `bot_league_standings` отправляет новое сообщение. |

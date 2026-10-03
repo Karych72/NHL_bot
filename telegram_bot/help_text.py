@@ -8,7 +8,7 @@ START_MESSAGE = (
     "Привет! Я бот со статистикой NHL: результаты дня, турнирная таблица, "
     "лидеры сезона и подробные отчёты через меню.\n"
     "Данные охватывают только регулярный чемпионат NHL — матчи плей-офф в базе не отражены.\n\n"
-    "Быстрый старт: /today, /tonight, /standings, /leaders, /team, /advanced, /stats.\n"
+    "Быстрый старт: /today, /tonight, /standings, /leaders, /team, /countries, /advanced, /stats.\n"
     "Все команды — /help."
 )
 
@@ -20,8 +20,9 @@ BOT_COMMANDS = (
     ("standings", "Турнирная таблица"),
     ("leaders", "Лидеры: очки, голы, передачи"),
     ("team", "Команды: статистика по клубу"),
+    ("countries", "Статистика по странам"),
     ("advanced", "Расширенная статистика игроков"),
-    ("stats", "Меню статистики, рейтинг стран"),
+    ("stats", "Меню статистики"),
     ("game", "Карточка матча по id"),
     ("subscribe_digest", "Подписка на утренний дайджест"),
     ("unsubscribe_digest", "Отписка от дайджеста"),
@@ -40,18 +41,12 @@ _COMMAND_DETAILS = {
     "game": "проще открыть из /today кнопкой под сводкой",
     "subscribe_digest": "матчи последнего игрового дня в базе; отправка при ENABLE_PUSH_DIGEST",
     "subscribe_team": "например /subscribe_team WSH",
+    "countries": "рейтинг стран; у страны — нападающие, защитники и вратари",
 }
 
 _COMMAND_LINES = "\n".join(
     f"/{cmd} — {desc}" + (f" ({_COMMAND_DETAILS[cmd]})" if cmd in _COMMAND_DETAILS else "")
     for cmd, desc in BOT_COMMANDS
-)
-
-# Разделы меню /stats, которых нет среди команд: по отзыву их не находили в /help.
-_STATS_MENU_NOTE = (
-    "<b>Где что найти в /stats</b>\n"
-    "Статистика по странам: /stats → «Статистика игроков» → «По странам» — рейтинг стран, "
-    "игроки и вратари каждой страны.\n\n"
 )
 
 _COMPUTED_FEATURES_NOTE = (
@@ -97,5 +92,5 @@ ADVANCED_COMMAND_INTRO = (
 )
 
 HELP_MESSAGE = (
-    f"{START_MESSAGE}\n\n<b>Команды</b>\n{_COMMAND_LINES}\n\n{_STATS_MENU_NOTE}{_COMPUTED_FEATURES_NOTE}{ADVANCED_STATS_EXPLAINED}"
+    f"{START_MESSAGE}\n\n<b>Команды</b>\n{_COMMAND_LINES}\n\n{_COMPUTED_FEATURES_NOTE}{ADVANCED_STATS_EXPLAINED}"
 )

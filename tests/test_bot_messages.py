@@ -557,7 +557,7 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
         )
     assert has_prev is False
     assert has_next is True
-    assert "1. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
+    assert "<pre>    Игрок       Ком Знач  И Смен\n 1. Player0 [C] WSH  100 82 1500\n" in text
     assert "Показаны 1–10 из 25" in text
 
 
@@ -572,7 +572,7 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     assert has_prev is True
     assert has_next is True
     assert "Показаны 11–20 из 25" in text
-    assert "11. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
+    assert "11. Player0 [C] WSH  100 82 1500" in text
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
@@ -586,7 +586,7 @@ def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     assert has_prev is True
     assert has_next is False
     assert "Показаны 11–13 из 13" in text
-    assert "11. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
+    assert "11. Player0 [C] WSH  100 82 1500" in text
 
 
 def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
@@ -602,7 +602,7 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         )
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert "1. Player0 [C] — 100 (WSH, игр: 82, смен: 1500)" in text
+    assert " 1. Player0 [C] WSH  100 82 1500" in text
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
@@ -630,7 +630,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
             "Статистика большинства", "power_play_percentage", 0
         )
     assert "Статистика большинства" in text
-    assert "1. BOS — 55.5 (игр: 40, 30-8-2, 62 очк.)" in text
+    assert "<pre>   Ком Знач  И В-П-ОТ  О\n1. BOS 55.5 40 30-8-2 62</pre>" in text
     assert has_prev is False
     assert has_next is True
     assert "Показаны 1 из 12" in text
@@ -653,7 +653,7 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert "1. T0 — 0 (игр: 40, 10-5-1, 0 очк.)" in text
+    assert " 1. T0     0 40 10-5-1 0" in text
 
 
 def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
@@ -664,7 +664,7 @@ def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
 
 # ---------------------------------------------------------------------------
 # Задача 18 — «спящие» данные: постоянный хвост строки лидерборда
-# (games/shifts у игроков, games/saves/shots_against/time_on_ice у вратарей,
+# (games/shifts у игроков, games/saves/shots_against у вратарей,
 # wins-losses-ot/points у команд). Одна и та же механика на всех трёх
 # поверхностях, нулевой риск неверной сортировки — сама сортировка не меняется.
 # ---------------------------------------------------------------------------
@@ -679,7 +679,7 @@ def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1. BOS — 55 (игр: 40, 25-10-5, 55 очк.)" in text
+    assert "1. BOS   55 40 25-10-5 55" in text
 
 
 def test_team_stat_leaderboard_page_null_record_fields_render_dash(
@@ -695,8 +695,25 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1. BOS — — (игр: 40, —-—-—, — очк.)" in text
+    assert "1. BOS    — 40  —-—-— —" in text
     assert "None" not in text
+
+
+def test_player_stat_leaderboard_page_season_end_goalie_drops_saves_to_fit_phone(bot_module):
+    """Конец сезона, 10-е место: «10. Vasilevsk… TBL 92.52 58 1353/1483» —
+    37 символов, шире экрана телефона: колонка сейвов уходит, игры остаются."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Vasilevskiy"], "roster_position": ["G"],
+        "points": [92.52], "team": ["TBL"],
+        "tail_games": [58], "tail_saves": [1353], "tail_shots_against": [1483],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "goalies_season_stats", "save_percentage", 9
+        )
+    assert "<pre>    Вратарь    Ком  Знач  И\n10. Vasilevsk… TBL 92.52 58</pre>" in text
 
 
 # ---------------------------------------------------------------------------
@@ -738,7 +755,7 @@ def test_conference_summary_escapes_html_in_group_name(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text = bot_messages.conference_summary()
-    assert "<b>&lt;i&gt;Western</b>" in text
+    assert "<pre>           Ком    О Г/и   Бол   Мен\n&lt;i&gt;Western  16 50.0 3.0 20.0% 80.0%</pre>" in text
     assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 
@@ -755,7 +772,7 @@ def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1. McDavid [C] — 153 (EDM, игр: 82, смен: 1800)" in text
+    assert "1. McDavid [C] EDM  153 82 1800" in text
 
 
 def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
@@ -775,7 +792,7 @@ def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1. Rookie [C] — 10 (CHI, игр: 5, смен: —)" in text
+    assert "1. Rookie [C] CHI   10 5    —" in text
     assert "None" not in text
 
 
@@ -794,7 +811,7 @@ def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
         )
-    assert "1. Makar [D] — 58.2 (COL, игр: 70, смен: 1600)" in text
+    assert "1. Makar [D] COL 58.2 70 1600" in text
 
 
 def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_module):
@@ -810,7 +827,7 @@ def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_mod
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Голы с кистевого", "players_shot_types", "goals_wrist", 0
         )
-    assert "1. Kucherov [RW] — 12 (TBL, игр: 78, смен: 1700)" in text
+    assert "1. Kucherov [RW] TBL   12 78 1700" in text
 
 
 # ---------------------------------------------------------------------------
@@ -899,8 +916,8 @@ def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
     JOIN на players_season_stats, хвост qualified алиасом `pl`."""
     bot_messages = bot_module("bot_messages")
     # lastname, roster_position, points(pl.wins), team,
-    # tail_games, tail_saves, tail_shots_against, tail_toi, tail_toi_pg, total
-    row = ("Vasilevskiy", "G", 39, "TBL", 58, 1353, 1483, "3430:45", "59:09", 1)
+    # tail_games, tail_saves, tail_shots_against, total
+    row = ("Vasilevskiy", "G", 39, "TBL", 58, 1353, 1483, 1)
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
 
     bot_messages.player_stat_leaderboard_page(
@@ -911,16 +928,16 @@ def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
     assert "players_season_stats pss" not in query_text
     assert "Identifier('pl'), SQL('.'), Identifier('games')" in query_text
     assert "Identifier('pl'), SQL('.'), Identifier('shots_against')" in query_text
+    assert "time_on_ice" not in query_text, "время вратаря в лидерборде не показывается"
 
 
 def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
-    """(C) Лидерборд вратарей: игр/сейвов/времени на льду."""
+    """(C) Лидерборд вратарей: игры и сейвы/броски; позиции [G] и времени нет."""
     bot_messages = bot_module("bot_messages")
     rows = {
         "lastname": ["Shesterkin"], "roster_position": ["G"],
         "points": [0.925], "team": ["NYR"],
         "tail_games": [55], "tail_saves": [1500], "tail_shots_against": [1620],
-        "tail_toi": ["3200:15"], "tail_toi_pg": ["58:11"],
         "total": [1], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
@@ -928,24 +945,22 @@ def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert (
-        "1. Shesterkin [G] — 0.925 (NYR, игр: 55, сейвы: 1500/1620, "
-        "время: 3200:15 (58:11/игра))"
+        "<pre>   Вратарь    Ком  Знач  И     Сейвы\n"
+        "1. Shesterkin NYR 0.925 55 1500/1620</pre>"
     ) in text
 
 
 def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
     bot_module, monkeypatch: pytest.MonkeyPatch
 ):
-    """goalies_season_stats.time_on_ice/time_on_ice_per_game — 0 NULL в живой
-    БД (проверено координатором), но рендер всё равно не должен полагаться
-    на это и обязан пережить NULL в любом поле хвоста."""
+    """Рендер не должен полагаться на заполненность хвоста вратаря и обязан
+    пережить NULL в любом его поле."""
     bot_messages = bot_module("bot_messages")
     monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "lastname": ["Backup"], "roster_position": ["G"],
         "points": [0.0], "team": ["CHI"],
         "tail_games": [1], "tail_saves": [None], "tail_shots_against": [None],
-        "tail_toi": [None], "tail_toi_pg": [None],
         "total": [1], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
@@ -953,7 +968,7 @@ def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert (
-        "1. Backup [G] — 0 (CHI, игр: 1, сейвы: —/—, время: — (—/игра))" in text
+        "1. Backup  CHI    0 1   —/—" in text
     )
     assert "None" not in text
 
@@ -1065,8 +1080,9 @@ def _goal_row(period, home, away):
 
 
 def test_day_digest_summary_body_aligns_scores_in_one_column(bot_module, fake_db_router):
-    """Хозяева — по правому краю, гости — по левому, оба моноширинным
-    `<code>`, чтобы жирный счёт стоял в одной колонке; OT — после периодов."""
+    """Хозяева — по правому краю, гости — после счёта, оба моноширинным
+    `<code>`, чтобы жирный счёт стоял в одной колонке; периоды и OT — второй
+    строкой матча (в одну строку на телефоне не влезают)."""
     bot_messages = bot_module("bot_messages")
     stats = {
         1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers"),
@@ -1085,10 +1101,12 @@ def test_day_digest_summary_body_aligns_scores_in_one_column(bot_module, fake_db
 
     body = bot_messages.day_digest_summary_body([1, 2])
 
-    assert body == (
-        "<code>1.      Flyers</code> <b>0:2</b> <code>Penguins</code> (0:1, 0:0, 0:1)\n"
-        "<code>2. Maple Leafs</code> <b>2:1</b> <code>Kings   </code> (1:0, 0:1, 0:0, 1:0) (OT)"
-    )
+    assert body == [
+        "<code>1.      Flyers</code> <b>0:2</b> <code>Penguins</code>\n"
+        "<code>   </code><i>0:1, 0:0, 0:1</i>",
+        "<code>2. Maple Leafs</code> <b>2:1</b> <code>Kings</code>\n"
+        "<code>   </code><i>1:0, 0:1, 0:0, 1:0 (OT)</i>",
+    ]
 
 
 def test_day_digest_summary_body_pads_two_digit_score_with_figure_spaces(
@@ -1106,7 +1124,7 @@ def test_day_digest_summary_body_pads_two_digit_score_with_figure_spaces(
         ("get_goals_game", []),
     ])
 
-    lines = bot_messages.day_digest_summary_body([1, 2]).split("\n")
+    lines = bot_messages.day_digest_summary_body([1, 2])
 
     assert "<b>10:2</b>" in lines[0]
     assert "<b>\u20073:2</b>" in lines[1]
@@ -1336,6 +1354,30 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
 
 
+
+def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
+    bot_module, fake_db_router
+):
+    """Дивизион из девяти команд: черта плей-офф после 3-го места; в Wild Card
+    из шести оставшихся показаны пять — WC1, WC2 и три претендента."""
+    bot_messages = bot_module("bot_messages")
+    rows = [
+        (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(9)
+    ]
+    fake_db_router([
+        ("FROM teams_stats ts", rows),
+        ("SELECT max(day)::text AS d", [("2026-04-01",)]),
+    ])
+
+    text = bot_messages.team_table()
+
+    div = text.split("METROPOLITAN DIVISION", 1)[1].split("WILD CARD — EASTERN", 1)[0]
+    assert div.index(" 3. T2") < div.index("- - линия плей-офф") < div.index(" 4. T3")
+    assert div.count("линия плей-офф") == 1
+    wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
+    assert " 5. T7" in wc
+    assert "T8" not in wc, "Wild Card обрезан до пяти команд"
+
 # ---------------------------------------------------------------------------
 # Порог расширенной статистики: смягчается в начале сезона
 # ---------------------------------------------------------------------------
@@ -1358,8 +1400,8 @@ def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
 
 
 # ---------------------------------------------------------------------------
-# Задача 42: статистика по странам — country_rankings / country_skaters_page /
-# country_goalies (БД подменена fake_db_router)
+# Задачи 42, 49: статистика по странам — country_rankings / country_page
+# (БД подменена fake_db_router)
 # ---------------------------------------------------------------------------
 
 _COUNTRY_RANKING = ("GROUP BY r.nationality", [("CAN", 4, 100, 40), ("XXX", 3, 30, 9)])
@@ -1374,9 +1416,12 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     text, codes = bot_messages.country_rankings()
 
     assert codes == ["CAN", "XXX"]
-    assert "1. 🇨🇦 Канада — игроков: 4, очков: 100, голов: 40, очков на игрока: 25.0" in text
-    # Неизвестный код показывается как есть, без исключения.
-    assert "2. XXX — игроков: 3, очков: 30, голов: 9, очков на игрока: 10.0" in text
+    # Выровненная таблица; неизвестный код показывается как есть, без исключения.
+    assert (
+        "<pre>   Страна    Игр   О  Г  О/и\n"
+        "1. 🇨🇦 Канада   4 100 40 25.0\n"
+        "2. XXX         3  30  9 10.0</pre>"
+    ) in text
     assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
     # Порог уходит в SQL параметром, вратари исключены.
     query, params = cursor.executed[0]
@@ -1394,21 +1439,55 @@ def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, f
     )
 
 
-def test_country_skaters_page_shows_marker_rows_and_has_next(bot_module, fake_db_router):
+def _country_skater_row(lastname, goals, points, hits, shots, blocked):
+    # lastname, team, goals, points, toi, hits, shots, blocked, total (total=25)
+    return (lastname, "EDM", goals, points, "21:30", hits, shots, blocked, 25)
+
+
+@pytest.mark.parametrize(
+    "group, position_sql, extra_header",
+    [("F", "r.position IN ('C', 'L', 'R')", "Бр"), ("D", "r.position = 'D'", "Бл")],
+)
+def test_country_page_skaters_show_group_stats_and_has_next(
+    bot_module, fake_db_router, group, position_sql, extra_header
+):
+    """Нападающие — броски, защитники — блоки; группа уходит в SQL условием."""
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([
+        _COUNTRY_RANKING,
+        ("OVER ()", [_country_skater_row("McDavid", 4, 8, 5, 20, 2)]),
+    ])
+
+    text, has_prev, has_next = bot_messages.country_page("CAN", group, 10)
+
+    assert "🇨🇦 Канада" in text
+    assert "Показаны 11 из 25 строк." in text
+    assert f"<pre>    Игрок   Ком Г О    ВП Хит {extra_header}\n" in text
+    extra = "20" if group == "F" else " 2"
+    assert f"11. McDavid EDM 4 8 21:30   5 {extra}</pre>" in text
+    assert (has_prev, has_next) == (True, True)
+    assert position_sql in cursor.executed[-1][0]
+
+
+def test_country_page_drops_least_important_columns_to_fit_phone_width(
+    bot_module, fake_db_router
+):
+    """Строка шире экрана телефона: первыми уходят броски — по отзыву они
+    дополнение к голам, очкам, времени и силовым; фамилия обрезается."""
     bot_messages = bot_module("bot_messages")
     fake_db_router([
         _COUNTRY_RANKING,
-        ("OVER ()", [("McDavid", "C", "EDM", 40, 60, 100, 70, 25),
-                     ("Draisaitl", "C", "EDM", 30, 50, 80, 68, 25)]),
+        ("OVER ()", [_country_skater_row("Nugent-Hopkins", 64, 153, 150, 300, 20)]),
     ])
 
-    text, has_prev, has_next = bot_messages.country_skaters_page("CAN", 10)
+    text, _, _ = bot_messages.country_page("CAN", "F", 0)
 
-    assert "🇨🇦 Канада" in text
-    assert "Показаны 11–12 из 25 строк." in text
-    assert "Игроки без страны в данных NHL не показаны." in text
-    assert "11. McDavid [C] EDM — 100 очк. (40+60), игр: 70" in text
-    assert (has_prev, has_next) == (True, True)
+    table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
+    assert table.splitlines() == [
+        "   Игрок      Ком  Г   О    ВП Хит",
+        "1. Nugent-Ho… EDM 64 153 21:30 150",
+    ]
+    assert all(len(line) <= 36 for line in table.splitlines())
 
 
 def test_country_pages_reject_code_outside_ranking_without_touching_sql(
@@ -1417,21 +1496,24 @@ def test_country_pages_reject_code_outside_ranking_without_touching_sql(
     bot_messages = bot_module("bot_messages")
     cursor = fake_db_router([_COUNTRY_RANKING])
 
-    assert bot_messages.country_skaters_page("'; DROP", 0) == (
-        "Страна не найдена в рейтинге этого сезона.", False, False,
-    )
-    assert bot_messages.country_goalies("ZZZ") == "Страна не найдена в рейтинге этого сезона."
+    for group in ("F", "G"):
+        assert bot_messages.country_page("'; DROP", group, 0) == (
+            "Страна не найдена в рейтинге этого сезона.", False, False,
+        )
     assert len(cursor.executed) == 1  # только запрос рейтинга (кэш), без страницы
 
 
-def test_country_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
+def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
     bot_messages = bot_module("bot_messages")
     fake_db_router([
         _COUNTRY_RANKING,
-        ("FROM goalies_season_stats", [("Vejmelka", "UTA", 64, 38, 89.67, 2.74592)]),
+        # lastname, team, wins, save_pct, gaa, games, shutouts, total
+        ("FROM goalies_season_stats", [("Vejmelka", "UTA", 38, 89.67, 2.74592, 64, 3, 1)]),
     ])
-    text = bot_messages.country_goalies("CAN")
-    assert "1. Vejmelka UTA — игр: 64, побед: 38, SV%: 89.67%, GAA: 2.75" in text
+    text, _, _ = bot_messages.country_page("CAN", "G", 0)
+    # С «Сух» строка — 37 символов, шире экрана: сухие уходят первыми.
+    assert "<pre>   Вратарь  Ком  В    %ОБ   КН  И\n1. Vejmelka UTA 38 89.67% 2.75 64</pre>" in text
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
-    assert "У этой страны нет вратарей в этом сезоне." in bot_messages.country_goalies("CAN")
+    text, _, _ = bot_messages.country_page("CAN", "G", 0)
+    assert "Нет данных в этом диапазоне." in text

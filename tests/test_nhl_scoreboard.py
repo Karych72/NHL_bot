@@ -80,5 +80,40 @@ class TonightIntroAndButtonsTest(unittest.TestCase):
         self.assertIn("матчей нет", text)
 
 
+class LeagueTodayTest(unittest.TestCase):
+    """Игровой день лиги — дата по ET со сменой в 03:00 ET, а не currentDate из score/now."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_nhl_scoreboard()
+
+    def _at_utc(self, iso):
+        from datetime import datetime
+        return datetime.fromisoformat(iso + "+00:00")
+
+    def test_moscow_morning_is_already_the_new_league_day(self):
+        # 2026-10-03 13:55 MSK = 06:55 ET: score/now ещё отдавал 2026-10-02 (бага).
+        self.assertEqual(str(self.mod.league_today(self._at_utc("2026-10-03T10:55:00"))), "2026-10-03")
+
+    def test_after_midnight_et_late_games_keep_previous_day(self):
+        # 01:30 ET — западные матчи вчерашнего слейта ещё могут идти.
+        self.assertEqual(str(self.mod.league_today(self._at_utc("2026-10-03T05:30:00"))), "2026-10-02")
+
+    def test_rollover_at_three_am_et(self):
+        self.assertEqual(str(self.mod.league_today(self._at_utc("2026-10-03T06:59:00"))), "2026-10-02")
+        self.assertEqual(str(self.mod.league_today(self._at_utc("2026-10-03T07:00:00"))), "2026-10-03")
+
+    def test_fetch_score_requests_explicit_day(self):
+        from datetime import date
+        from unittest import mock
+
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"currentDate": "2026-10-03", "games": []}
+        with mock.patch.object(self.mod.requests, "get", return_value=resp) as get:
+            payload = self.mod.fetch_score(date(2026, 10, 3))
+        self.assertEqual(get.call_args.args[0], "https://api-web.nhle.com/v1/score/2026-10-03")
+        self.assertEqual(payload["currentDate"], "2026-10-03")
+
+
 if __name__ == "__main__":
     unittest.main()

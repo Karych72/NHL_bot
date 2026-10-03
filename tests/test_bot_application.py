@@ -125,6 +125,7 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
         ("command", ["team"], bot.cmd_team),
         ("message", bot.cmd_team_profile),
         ("command", ["leaders"], bot.cmd_leaders),
+        ("command", ["countries"], bot.cmd_countries),
         ("command", ["game"], bot.cmd_game),
         ("command", ["advanced"], bot.cmd_advanced),
         ("command", ["subscribe_digest"], bot.cmd_subscribe_digest),
@@ -135,6 +136,7 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
         _cq(stats_handlers.LEADERBOARD_PAGE_CALLBACK_PATTERN, stats_handlers.callback_leaderboard_page),
         _cq(r"^dg:\d+$", stats_handlers.callback_expand_digest_game),
         _cq(stats_handlers.TONIGHT_GAME_CALLBACK_PATTERN, stats_handlers.callback_tonight_game),
+        _cq(stats_handlers.COUNTRY_CALLBACK_PATTERN, stats_handlers.callback_country),
         _cq(stats_handlers.STANDALONE_SA_CALLBACK_PATTERN, stats_handlers.callback_standalone_sa),
         _cq(
             r"^adv:(sat|usat|gf|oz|so|wrist|slap|snap|back|tip|defl|wrap|close)$",
@@ -288,7 +290,6 @@ def test_state_first_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.TEAM_CONFERENCE_STATS), sh.bot_team_conference_stats),
         _cq(_state(ds.TEAM_DIVISION_STATS), sh.bot_team_division_stats),
         _cq(_state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
-        _cq(_state(ds.COUNTRY_STATS), sh.bot_country_rankings),
     ]
 
 
@@ -307,10 +308,6 @@ def test_state_second_handlers_and_their_order(bot_module, application) -> None:
         _cq(_state(ds.TEAM_STATS), sb.bot_team_stats),
         _cq(sh.TEAM_PROFILE_CALLBACK_PATTERN, sh.bot_team_profile_show),
         _cq(_state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
-        _cq(sh.COUNTRY_PAGE_CALLBACK_PATTERN, sh.bot_country_page),
-        _cq(sh.COUNTRY_GOALIES_CALLBACK_PATTERN, sh.bot_country_goalies),
-        _cq(_state(ds.COUNTRY_STATS), sh.bot_country_rankings),
-        _cq(_state(ds.PLAYER_STATS), sb.bot_player_stats),
         _cq(_state(ds.DAY_DIGEST), sb.bot_digest_date_menu),
         _cq(f"^{sh.DIGEST_BACK_FROM_DATE_CALLBACK}$", sb.bot_digest_date_menu),
         _cq(_state(ds.CHOOSE_STATS), sb.stats_over),
@@ -619,19 +616,18 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         callback = handler.callback
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: 17 регистраций колбэков bot.py
-    # (14 standalone-хендлеров — 13 команд и regex-хендлер /ABBR, cmd_cancel_outside_conversation в группе 0,
+    # Страховка от «проверили пустой список»: 18 регистраций колбэков bot.py
+    # (15 standalone-хендлеров — 14 команд и regex-хендлер /ABBR, cmd_cancel_outside_conversation в группе 0,
     # cmd_cancel_in_conversation в fallbacks), 23 регистрации script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
     # висят «« Назад»» на родительские подменю: bot_player_field/
     # bot_player_goalie/bot_player_advanced_menu/bot_team_stats по 2 раза
     # каждый, bot_digest_date_menu 5 раз — FIRST×2, SECOND×2, THIRD×1)
-    # и 51 регистрация stats_handlers.py (в т.ч. bot_team_conference_stats/
-    # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST; и
+    # и 48 регистраций stats_handlers.py (в т.ч. bot_team_conference_stats/
+    # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST;
     # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D;
-    # bot_country_rankings ×2, bot_country_page, bot_country_goalies — Задача 42;
-    # bot_player_stats в SECOND — «« Назад»» с рейтинга стран, это +1 к script_bot.py).
-    assert len(registered) == 90
+    # standalone callback_country — /countries, Задача 49).
+    assert len(registered) == 87
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",
