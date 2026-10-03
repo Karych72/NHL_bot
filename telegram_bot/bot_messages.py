@@ -16,6 +16,7 @@ from psycopg2 import sql
 
 import config
 from database import cached_fetch_all, fetch_all, validate_table, validate_column
+from leaderboard_specs import STAT_COLUMN_LABELS
 from template_funcs import output_text
 
 # Telegram message text limit (UTF-16 length can differ; stay under safe byte-ish budget)
@@ -169,20 +170,21 @@ def _goal_player_name(lastname: Optional[str], nationality: Optional[str]) -> st
     return name.upper() if nationality == _RUSSIAN_NATIONALITY else name
 
 
-def _aligned_columns(rows: Sequence[Sequence[str]], align: str) -> List[str]:
+def _aligned_columns(rows: Sequence[Sequence[str]], align: str, sep: str = " ") -> List[str]:
     """Строки таблицы: каждая колонка добита пробелами до самой широкой ячейки.
 
     Зачем: Telegram выравнивает пробелами только моноширинный текст (`<pre>`) —
-    общий рендер для списка голов карточки, сравнения в превью матча, топов
-    профиля клуба и /BOS_FULL.
+    общий рендер для списка голов карточки, сравнения в превью матча и таблиц
+    (`_pre_table`, `_pre_table_fit`).
 
     Аргументы:
         rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
         align: по символу на колонку — `l` (влево) или `r` (вправо).
+        sep: разделитель колонок; таблицы передают `_TABLE_SEP`.
     """
     widths = [max(len(r[c]) for r in rows) for c in range(len(align))]
     return [
-        " ".join(
+        sep.join(
             cell.rjust(w) if a == "r" else cell.ljust(w)
             for cell, w, a in zip(r, widths, align)
         ).rstrip()
@@ -206,9 +208,14 @@ def _pre_block(lines: Sequence[str]) -> str:
     return f"<pre>{html.escape(body)}</pre>"
 
 
+# Разделитель колонок `<pre>`-таблиц: на месте пробела, ширину строки не меняет,
+# а соседние числа («Знач И Смен») больше не сливаются (отзыв 2026-10-03).
+_TABLE_SEP = "|"
+
+
 def _pre_table(rows: Sequence[Sequence[str]], align: str) -> str:
-    """`_aligned_columns()` одним экранированным блоком `<pre>`."""
-    return _pre_block(_aligned_columns(rows, align))
+    """`_aligned_columns()` с разделителем `_TABLE_SEP` одним блоком `<pre>`."""
+    return _pre_block(_aligned_columns(rows, align, _TABLE_SEP))
 
 
 # Столько моноширинных символов помещается в строку `<pre>` на экране телефона.
@@ -231,7 +238,7 @@ def _pre_table_fit(rows: Sequence[Sequence[str]], align: str, drop_order: Sequen
         if col is not None:
             keep.remove(col)
         lines = _aligned_columns(
-            [[r[c] for c in keep] for r in rows], "".join(align[c] for c in keep)
+            [[r[c] for c in keep] for r in rows], "".join(align[c] for c in keep), _TABLE_SEP
         )
         if max(len(line) for line in lines) <= _MOBILE_PRE_WIDTH:
             break
@@ -1066,7 +1073,7 @@ def player_stats_with_count(
     # Вратарская таблица — позиция [G] у всех, колонка лишняя; время на льду
     # тоже: игр достаточно (отзыв по UI, Задача 47).
     rows: List[List[str]] = [
-        ["", "Вратарь" if is_goalie else "Игрок", "Ком", "Знач", "И",
+        ["", "Вратарь" if is_goalie else "Игрок", "Ком", STAT_COLUMN_LABELS[column_name], "И",
          "Сейвы" if is_goalie else "Смен"],
     ]
     for i in range(stats['count_rows']):
@@ -1267,7 +1274,7 @@ def _fmt_standings_row(
     pts = int(team.get("points") or 0)
     gp = int(team.get("games_played") or 0)
     pct = _fmt_standings_pct(team.get("procent_points"))
-    return f"{nm:<{name_w}} {pts:>3} {gp:>3} {pct}"
+    return _TABLE_SEP.join([f"{nm:<{name_w}}", f"{pts:>3}", f"{gp:>3}", pct])
 
 
 def _wild_card_lines(
@@ -1303,7 +1310,7 @@ def _wild_card_lines(
             # Две путёвки Wild Card: ниже черты — претенденты, а не участники плей-офф.
             lines.append(_standings_cut_line(hdr))
         label = f"WC{i + 1}" if i < 2 else f"{i + 1:>2}."
-        lines.append(f"{label} " + row_fmt(t))
+        lines.append(label + _TABLE_SEP + row_fmt(t))
     return lines
 
 
@@ -1317,8 +1324,8 @@ def _standings_cut_line(hdr: str) -> str:
 
 
 def _standings_header(name_w: int) -> str:
-    """Шапка блока таблицы; первые 4 символа — под колонку места (« 1. », «WC1 »)."""
-    return f"{'':4}{'Команда':<{name_w}} {'Очк':>3} {'Игр':>3} {'%очк':>5}"
+    """Шапка блока таблицы; первые 4 символа — под колонку места (« 1.|», «WC1|»)."""
+    return _TABLE_SEP.join(["   ", f"{'Команда':<{name_w}}", "Очк", "Игр", f"{'%очк':>5}"])
 
 
 def _standings_md_code_block(lines: List[str]) -> str:
@@ -1367,7 +1374,7 @@ def _build_standings_table_body(
                     if rank == 4:
                         # Топ-3 дивизиона проходят в плей-офф напрямую.
                         block_lines.append(_standings_cut_line(hdr))
-                    block_lines.append(f"{rank:>2}. " + row_fmt(t))
+                    block_lines.append(f"{rank:>2}." + _TABLE_SEP + row_fmt(t))
             else:
                 # Дивизион без единой сыгранной игры (частичный сезон,
                 # Задача 36) — текст-причина вместо заголовков пустой
@@ -1611,10 +1618,10 @@ _TEAM_STATS_LEGEND = (
 )
 
 
-def _team_skaters(team_id: int, order_by: str, limit: Optional[int]) -> Dict:
+def _team_skaters(team_id: int, order_by: str, limit: int) -> Dict:
     """Полевые игроки клуба сезона (`rosters ⋈ players_season_stats` при
     `current_team_id = team_id`) в порядке `order_by` (`_BY_POINTS`/`_BY_TOI`);
-    `limit=None` — все. Колонки — `_TEAM_SKATER_COLUMNS`."""
+    первые `limit`. Колонки — `_TEAM_SKATER_COLUMNS`."""
     return cached_fetch_all(
         "SELECT r.lastname, r.position, pss.games, pss.goals, pss.assists, pss.points, "
         "pss.plus_minus, pss.time_on_ice_per_game "
@@ -1784,9 +1791,10 @@ def team_profile(abbrev: str) -> str:
 
 
 def team_full_stats(abbrev: str) -> str:
-    """Ответ `/BOS_FULL`: все полевые игроки клуба сезона `config.SEASON_ID`
-    (игры, голы, передачи, очки, +/-, среднее время на льду; по очкам) и все
-    его вратари — ссылка на него стоит в конце `team_profile()`.
+    """Ответ `/BOS_FULL`: все игроки клуба сезона `config.SEASON_ID` тремя
+    таблицами — нападающие, защитники, вратари — с теми же колонками, что на
+    экране страны (`_player_group_table`); ссылка на него стоит в конце
+    `team_profile()`.
 
     Аргументы:
         abbrev: аббревиатура команды из команды `/ABBR_FULL`; неизвестная —
@@ -1797,21 +1805,14 @@ def team_full_stats(abbrev: str) -> str:
     team_id = _team_id_for_abbrev(a)
     if team_id is None:
         return f"<b>{html.escape(a)}</b> ({season_esc})\nКоманда не найдена в базе для этого сезона."
-    fmt = _format_leader_value
-    sk = _team_skaters(team_id, _BY_POINTS, None)
-    head = f"<b>{html.escape(a)}: все игроки</b> · сезон {season_esc}"
-    if sk["count_rows"] == 0:
-        return head + "\n\nУ команды пока нет статистики игроков в этом сезоне."
-    rows = [["Игрок", "И", "Г", "П", "О", "+/-", "ВП"]] + [
-        [_skater_label(sk, i)]
-        + [fmt(sk[k][i]) for k in ("games", "goals", "assists", "points", "plus_minus", "toi")]
-        for i in range(sk["count_rows"])
-    ]
-    parts = [head, "", "<b>Полевые</b>", _pre_table(rows, "lrrrrrr")]
-    goalies = _team_goalies_table(team_id)
-    if goalies:
-        parts += ["", "<b>Вратари</b>", goalies]
-    parts += ["", _TEAM_STATS_LEGEND, f"Профиль клуба: /{html.escape(a)}"]
+    parts = [f"<b>{html.escape(a)}: все игроки</b> · сезон {season_esc}"]
+    for group, (label, _cond) in PLAYER_GROUPS.items():
+        table, n, _total = _player_group_table(_BY_TEAM, team_id, group, None, 0, ranked=False)
+        if n:
+            parts += ["", f"<b>{label}</b>", table, f"<i>{_GROUP_LEGEND[group]}.</i>"]
+    if len(parts) == 1:
+        return parts[0] + "\n\nУ команды пока нет статистики игроков в этом сезоне."
+    parts += ["", f"Профиль клуба: /{html.escape(a)}"]
     return "\n".join(parts)
 
 
@@ -1906,32 +1907,37 @@ def country_rankings() -> Tuple[str, List[str]]:
     return text, [code for code, _, _, _ in ranking]
 
 
-# Группы экрана страны: код в callback_data → (подпись, условие на `r.position`).
-COUNTRY_GROUPS: Dict[str, Tuple[str, str]] = {
+# Группы игроков экрана страны и `/BOS_FULL`: код (в callback_data страны) →
+# (подпись, условие на `r.position`).
+PLAYER_GROUPS: Dict[str, Tuple[str, str]] = {
     "F": ("Нападающие", "r.position IN ('C', 'L', 'R')"),
     "D": ("Защитники", "r.position = 'D'"),
     "G": ("Вратари", "r.position = 'G'"),
 }
-_COUNTRY_SKATERS_SQL = (
+# Чьи игроки в таблице группы — фиксированные литералы модуля для `{owner}`,
+# значение идёт параметром запроса.
+_BY_COUNTRY = "r.nationality = %s"
+_BY_TEAM = "r.current_team_id = %s"
+_GROUP_SKATERS_SQL = (
     "SELECT r.lastname, t.abbreviation, p.goals, p.points, p.games, p.time_on_ice_per_game, "
     "p.hits, p.shots, p.blocked, COUNT(*) OVER () "
     + _COUNTRY_FROM
     + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
-    "WHERE p.season_id = %s AND r.nationality = %s AND {group} "
+    "WHERE p.season_id = %s AND {owner} AND {group} "
     "ORDER BY p.points DESC NULLS LAST, p.goals DESC NULLS LAST, r.lastname, r.player_id "
     "LIMIT %s OFFSET %s"
 )
-_COUNTRY_GOALIES_SQL = (
+_GROUP_GOALIES_SQL = (
     "SELECT r.lastname, t.abbreviation, g.wins, g.save_percentage, "
     "g.goal_against_average, g.games, g.shutouts, COUNT(*) OVER () "
     "FROM goalies_season_stats g "
     "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
     "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
-    "WHERE g.season_id = %s AND r.nationality = %s "
+    "WHERE g.season_id = %s AND {owner} AND g.games > 0 "
     "ORDER BY g.wins DESC NULLS LAST, r.lastname, r.player_id "
     "LIMIT %s OFFSET %s"
 )
-_COUNTRY_LEGEND = {
+_GROUP_LEGEND = {
     "F": "Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
          "Бр — броски",
     "D": "Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
@@ -1941,32 +1947,39 @@ _COUNTRY_LEGEND = {
 }
 
 
-def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
-    """Страница игроков страны одной группы — выровненная таблица (Задача 49).
+def _player_group_table(
+    owner: str,
+    owner_value: Union[int, str],
+    group: str,
+    limit: Optional[int],
+    offset: int,
+    *,
+    ranked: bool,
+) -> Tuple[str, int, int]:
+    """Выровненная `<pre>`-таблица игроков одной группы — общая для экрана страны
+    и `/BOS_FULL`.
 
-    Зачем: экран `/countries` после выбора страны; у каждой группы свои главные
-    показатели: нападающие — голы, очки, игры, время, силовые, броски; защитники — то же
-    с блоками вместо бросков; вратари — победы, %ОБ, КН, игры, сухие. Не влезающие
+    Зачем: у каждой группы свои главные показатели — нападающие: голы, очки,
+    игры, время, силовые, броски; защитники — то же с блоками вместо бросков;
+    вратари (с хотя бы одной игрой): победы, %ОБ, КН, игры, сухие. Не влезающие
     в ширину телефона колонки убираются с наименее важной (`_pre_table_fit`).
 
     Аргументы:
-        code: код страны из `country_rankings()`; иной код — текст «Страна не
-            найдена...» и (False, False), в SQL он не попадает.
-        group: ключ `COUNTRY_GROUPS` (F / D / G).
-        offset: сдвиг страницы (`LEADERBOARD_PAGE_SIZE` строк).
+        owner: `_BY_COUNTRY` или `_BY_TEAM` — чьи игроки.
+        owner_value: код страны или `team_id`; в SQL — только параметром.
+        group: ключ `PLAYER_GROUPS` (F / D / G).
+        limit, offset: страница выборки; `limit=None` — все строки.
+        ranked: колонки места и команды (экран страны); без них — `/BOS_FULL`.
 
-    Возвращает: (текст, есть ли предыдущая страница, есть ли следующая).
+    Возвращает: (таблица — пусто при 0 строк, строк в таблице, полный размер выборки).
     """
-    if code not in [row[0] for row in _country_ranking()]:
-        return _COUNTRY_NOT_FOUND, False, False
-    offset = max(offset, 0)
-    params = (config.SEASON_ID, code, LEADERBOARD_PAGE_SIZE, offset)
+    params = (config.SEASON_ID, owner_value, limit, offset)
     fmt = _format_leader_value
     if group == "G":
         cols = ["lastname", "team", "wins", "sv", "gaa", "games", "shutouts", "total"]
-        stats = cached_fetch_all(_COUNTRY_GOALIES_SQL, params, columns=cols)
-        header = ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"]
-        drop_order = (7, 5, 6)  # сухие, КН, игры — игры важнее (Задача 50)
+        stats = cached_fetch_all(_GROUP_GOALIES_SQL.format(owner=owner), params, columns=cols)
+        name_header, header = "Вратарь", ["В", "%ОБ", "КН", "И", "Сух"]
+        drop_order: Tuple[int, ...] = (4, 2, 3)  # сухие, КН, игры — игры важнее (Задача 50)
         cells = [
             [fmt(stats["wins"][i]), _fmt_pct_stat(stats["sv"][i]),
              _fmt_num_max2(stats["gaa"][i]), fmt(stats["games"][i]), fmt(stats["shutouts"][i])]
@@ -1975,27 +1988,53 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     else:
         cols = ["lastname", "team", "goals", "points", "games", "toi", "hits", "shots",
                 "blocked", "total"]
-        sql_text = _COUNTRY_SKATERS_SQL.format(group=COUNTRY_GROUPS[group][1])
+        sql_text = _GROUP_SKATERS_SQL.format(owner=owner, group=PLAYER_GROUPS[group][1])
         stats = cached_fetch_all(sql_text, params, columns=cols)
         extra_key, extra_label = ("shots", "Бр") if group == "F" else ("blocked", "Бл")
-        header = ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", extra_label]
+        name_header, header = "Игрок", ["Г", "О", "И", "ВП", "Хит", extra_label]
         # Важность — из отзыва: голы, очки, игры, время, силовые; броски/блоки — дополнение.
-        drop_order = (8, 7, 6)
+        drop_order = (5, 4, 3)
         cells = [
             [fmt(stats[k][i]) for k in ("goals", "points", "games", "toi", "hits", extra_key)]
             for i in range(stats["count_rows"])
         ]
     n = stats["count_rows"]
-    total = int(stats["total"][0]) if n else 0
-    rows = [header] + [
-        [f"{offset + i + 1}.", _clip_cell(stats["lastname"][i] or "Unknown", _LEADER_NAME_WIDTH),
-         stats["team"][i] or "—", *cells[i]]
-        for i in range(n)
-    ]
-    body = (
-        _pre_table_fit(rows, "rll" + "r" * (len(header) - 3), drop_order) if n else ""
-    ) + f"\n<i>{_COUNTRY_LEGEND[group]}.</i>"
-    heading = f"{COUNTRY_GROUPS[group][0]}: {_country_label(code)}"
+    if not n:
+        return "", 0, 0
+
+    def prefix(i: int) -> List[str]:
+        name = _clip_cell(stats["lastname"][i] or "Unknown", _LEADER_NAME_WIDTH)
+        return [f"{offset + i + 1}.", name, stats["team"][i] or "—"] if ranked else [name]
+
+    lead = ["", name_header, "Ком"] if ranked else [name_header]
+    rows = [lead + header] + [prefix(i) + cells[i] for i in range(n)]
+    align = ("rll" if ranked else "l") + "r" * len(header)
+    table = _pre_table_fit(rows, align, [len(lead) + c for c in drop_order])
+    return table, n, int(stats["total"][0])
+
+
+def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
+    """Страница игроков страны одной группы — выровненная таблица (Задача 49).
+
+    Зачем: экран `/countries` после выбора страны; таблица и колонки групп —
+    `_player_group_table`.
+
+    Аргументы:
+        code: код страны из `country_rankings()`; иной код — текст «Страна не
+            найдена...» и (False, False), в SQL он не попадает.
+        group: ключ `PLAYER_GROUPS` (F / D / G).
+        offset: сдвиг страницы (`LEADERBOARD_PAGE_SIZE` строк).
+
+    Возвращает: (текст, есть ли предыдущая страница, есть ли следующая).
+    """
+    if code not in [row[0] for row in _country_ranking()]:
+        return _COUNTRY_NOT_FOUND, False, False
+    offset = max(offset, 0)
+    table, n, total = _player_group_table(
+        _BY_COUNTRY, code, group, LEADERBOARD_PAGE_SIZE, offset, ranked=True
+    )
+    body = f"{table}\n<i>{_GROUP_LEGEND[group]}.</i>"
+    heading = f"{PLAYER_GROUPS[group][0]}: {_country_label(code)}"
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
@@ -2045,7 +2084,7 @@ def team_stats_with_count(
 
     total = int(stats['total'][0]) if stats['count_rows'] else 0
 
-    rows: List[List[str]] = [["", "Ком", "Знач", "И", "В-П-ОТ", "О"]]
+    rows: List[List[str]] = [["", "Ком", STAT_COLUMN_LABELS[column_name], "И", "В-П-ОТ", "О"]]
     for i in range(stats['count_rows']):
         rows.append([
             f"{offset + i + 1}.",
@@ -2135,43 +2174,37 @@ def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]
     return (day_label, results)
 
 
-# Пробел шириной в цифру — добивка счёта в пропорциональном жирном шрифте.
+# Пробел шириной в цифру: им сдвинут счёт по периодам под строкой матча —
+# обычные пробелы в начале строки клиенты Telegram могут съесть.
 _FIGURE_SPACE = "\u2007"
+
+# Между матчами сводки — пустая строка: подряд идущие пары строк сливались.
+DIGEST_GAME_SEPARATOR = "\n\n"
 
 
 def day_digest_summary_body(game_ids: Sequence[int]) -> List[str]:
-    """Сжатая сводка дайджеста: по строке на матч, номер совпадает с номером
+    """Сжатая сводка дайджеста: по элементу на матч, номер совпадает с номером
     на кнопке матча (`digest_game_button_labels`).
 
-    Зачем так сложно: Telegram выравнивает пробелами только моноширинный
-    текст и не даёт жирного внутри `<pre>`/`<code>`. Поэтому номер и хозяева —
-    `<code>` по правому краю, счёт — `<b>`, добитый до общей ширины figure
-    space (U+2007, шириной в цифру: «10:2» и «3:2» не сдвигают колонку
-    гостей), гости — `<code>` по левому краю. Счёт по периодам — отдельной
-    строкой под матчем: в одной строке с командами он не влезает в ширину
-    телефона и переносится, ломая колонки.
+    Зачем так: матч — «1. <b>Хозяева 3:2 Гости</b>» обычным шрифтом по левому
+    краю, счёт по периодам — строкой ниже с отступом. Моноширинное выравнивание
+    команд по счёту на телефоне выглядело криво (отзыв 2026-10-03), а в одной
+    строке с командами счёт по периодам не влезает в ширину экрана.
 
-    Возвращает: по элементу на матч (две строки через `\n`) — обрезка под
-    лимит Telegram (`digest_shown_match_count`) отбрасывает матч целиком.
+    Возвращает: по элементу на матч (две строки через `\n`); элементы склеиваются
+    через `DIGEST_GAME_SEPARATOR`, обрезка под лимит Telegram
+    (`digest_shown_match_count`) отбрасывает матч целиком.
 
     Аргументы:
         game_ids: матчи дня в порядке сводки, непустой список.
     """
     headers = [_game_score_header(*_fetch_game_score_rows(gid)) for gid in game_ids]
-    num_w = len(f"{len(headers)}.")
-    home_w = max(len(h['home'].strip()) for h in headers)
-    hs_w = max(len(h['home_score']) for h in headers)
-    as_w = max(len(h['away_score']) for h in headers)
-    lines = []
-    for i, h in enumerate(headers, start=1):
-        left = f"{f'{i}.':<{num_w}} {h['home'].strip():>{home_w}}"
-        score = f"{h['home_score'].rjust(hs_w, _FIGURE_SPACE)}:{h['away_score'].ljust(as_w, _FIGURE_SPACE)}"
-        lines.append(
-            f"<code>{html.escape(left)}</code> <b>{html.escape(score)}</b> "
-            f"<code>{html.escape(h['away'].strip())}</code>\n"
-            f"<code>{' ' * (num_w + 1)}</code><i>{html.escape(h['period_scores'] + h['extra'])}</i>"
-        )
-    return lines
+    return [
+        f"{i}. <b>{html.escape(h['home'].strip())} {html.escape(h['home_score'])}:"
+        f"{html.escape(h['away_score'])} {html.escape(h['away'].strip())}</b>\n"
+        f"{_FIGURE_SPACE * 2}{html.escape(h['period_scores'] + h['extra'])}"
+        for i, h in enumerate(headers, start=1)
+    ]
 
 
 def digest_game_button_labels(game_ids: Sequence[int]) -> List[str]:
@@ -2278,7 +2311,7 @@ def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
     while shown > 0:
         note = "\n\n" + truncation_marker(shown, total, item_word="матчей")
         cut = _telegram_cut_budget(note)
-        prefix_len = len(header) + len("\n".join(lines[:shown]))
+        prefix_len = len(header) + len(DIGEST_GAME_SEPARATOR.join(lines[:shown]))
         if prefix_len <= cut:
             return shown
         shown -= 1

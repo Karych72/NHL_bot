@@ -43,7 +43,7 @@ from telegram.error import BadRequest
             "standalone_player_stat_keyboard",
             ("players_season_stats", "points"),
             "sa:players_season_stats:points:",
-            "close",
+            "standalone",
             None,
         ),
     ],
@@ -75,7 +75,8 @@ def test_pagination_keyboard_offsets_and_prev_floor(
             str(dialog_states.END_CONVERSATION),
         ]
     else:
-        assert [b.callback_data for b in footer] == ["sa:close"]
+        # /advanced: возврат к меню статистик и «Сохранить» вместо «Готово».
+        assert [b.callback_data for b in footer] == ["sa:menu", "sa:save"]
 
 
 @pytest.mark.parametrize(
@@ -273,14 +274,59 @@ async def test_stats_team_page_parses_column_and_offset(bot_module, make_callbac
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_standalone_sa_close_clears_markup(bot_module, make_callback_update, fake_context):
+async def test_standalone_sa_menu_returns_advanced_menu_in_place(
+    bot_module, make_callback_update, fake_context
+):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("sa:close")
+    help_text = bot_module("help_text")
+    update = make_callback_update("sa:menu")
 
     await stats_handlers.callback_standalone_sa(update, fake_context)
 
-    assert update.callback_query.answers == [None]
+    [edit] = update.callback_query.edited_texts
+    assert edit["text"] == help_text.ADVANCED_COMMAND_INTRO
+    assert edit["parse_mode"] == "HTML"
+    assert edit["reply_markup"] == stats_handlers.advanced_standalone_keyboard()
+    assert fake_context.bot.sent_messages == [], "меню — в том же сообщении"
+
+
+@pytest.mark.asyncio
+async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard(
+    bot_module, make_callback_update, fake_context
+):
+    """«Сохранить»: текущая страница остаётся в чате без кнопок (как прежнее
+    «Готово»), её копия с теми же кнопками уходит новым сообщением ниже."""
+    from datetime import datetime, timezone
+
+    from telegram import Chat, Message, MessageEntity
+
+    stats_handlers = bot_module("stats_handlers")
+    markup = stats_handlers.standalone_player_stat_keyboard(
+        "players_advanced_stats", "sat_pct", 10, has_prev=True, has_next=True
+    )
+    head, table = "Лидеры по Corsi", "1.|Makar|COL"
+    text = f"{head}\n\n{table}"
+    update = make_callback_update("sa:save")
+    update.callback_query.message = Message(
+        message_id=900,
+        date=datetime.now(timezone.utc),
+        chat=Chat(100, "private"),
+        text=text,
+        entities=[
+            MessageEntity(MessageEntity.BOLD, 0, len(head)),
+            MessageEntity(MessageEntity.PRE, len(head) + 2, len(table)),
+        ],
+        reply_markup=markup,
+    )
+
+    await stats_handlers.callback_standalone_sa(update, fake_context)
+
     assert update.callback_query.edited_markups == [None]
+    [sent] = fake_context.bot.sent_messages
+    assert sent["chat_id"] == 100
+    assert sent["parse_mode"] == "HTML"
+    assert sent["text"] == "<b>Лидеры по Corsi</b>\n\n<pre>1.|Makar|COL</pre>"
+    assert sent["reply_markup"] == markup
 
 
 @pytest.mark.asyncio
@@ -306,7 +352,7 @@ async def test_standalone_sa_answers_without_rendering_unknown_stat(bot_module, 
 
 
 @pytest.mark.asyncio
-async def test_standalone_sa_renders_known_stat_with_close_only_footer(bot_module, make_callback_update, fake_context):
+async def test_standalone_sa_renders_known_stat_with_menu_and_save_footer(bot_module, make_callback_update, fake_context):
     stats_handlers = bot_module("stats_handlers")
     update = make_callback_update("sa:players_season_stats:goals:0")
 
@@ -317,7 +363,7 @@ async def test_standalone_sa_renders_known_stat_with_close_only_footer(bot_modul
 
     edit = update.callback_query.edited_texts[0]
     assert edit["text"] == "GOALS PAGE"
-    assert [b.callback_data for b in edit["reply_markup"].inline_keyboard[-1]] == ["sa:close"]
+    assert [b.callback_data for b in edit["reply_markup"].inline_keyboard[-1]] == ["sa:menu", "sa:save"]
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +510,127 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(bot_mod
     mock_preview.assert_called_once_with(555, "DET", "NYR")
     assert fake_context.bot.sent_messages[0]["text"] == "PREVIEW"
     assert fake_context.bot.sent_messages[0]["parse_mode"] == "HTML"
+
+
+async def _tap_tonight(stats_handlers, make_callback_update, fake_context, data="tn:555:DET:NYR"):
+    await stats_handlers.callback_tonight_game(make_callback_update(data), fake_context)
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
+    bot_module, make_callback_update, fake_context
+):
+    """Повторное нажатие той же кнопки — не вторая карточка, а ответ-цитата на
+    уже отправленную; третье нажатие убирает прошлую ссылку, чтобы ссылки не
+    копились (отзыв 2026-10-03)."""
+    stats_handlers = bot_module("stats_handlers")
+    sent = fake_context.bot.sent_messages
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+        assert [m["text"] for m in sent] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT]
+        assert sent[1]["reply_parameters"].message_id == 1, "цитата — на первую карточку"
+        assert fake_context.bot.deleted_messages == []
+
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+    assert [m["text"] for m in sent].count("CARD") == 1
+    assert sent[2]["reply_parameters"].message_id == 1
+    assert fake_context.bot.deleted_messages == [{"chat_id": 100, "message_id": 2}]
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_resends_card_when_original_was_deleted(
+    bot_module, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    sent = fake_context.bot.sent_messages
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        fake_context.bot.send_message_errors.append(BadRequest("Message to be replied not found"))
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        # Следующее нажатие ссылается уже на новую карточку.
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+    assert [m["text"] for m in sent] == ["CARD", "CARD", stats_handlers._TONIGHT_ALREADY_SENT]
+    assert sent[2]["reply_parameters"].message_id == 2
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_resend_removes_pointer_to_deleted_card(
+    bot_module, make_callback_update, fake_context
+):
+    """Карточку удалили, а ссылка на неё осталась — при повторной отправке
+    карточки ссылка на удалённую тоже удаляется."""
+    stats_handlers = bot_module("stats_handlers")
+    sent = fake_context.bot.sent_messages
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        fake_context.bot.send_message_errors.append(BadRequest("Message to be replied not found"))
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+    assert [m["text"] for m in sent] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT, "CARD"]
+    assert fake_context.bot.deleted_messages == [{"chat_id": 100, "message_id": 2}]
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_pointer_delete_tolerates_only_gone_messages(
+    bot_module, make_callback_update, fake_context
+):
+    """Прошлую ссылку уже удалили — нажатие проходит; посторонняя ошибка
+    удаления всплывает."""
+    stats_handlers = bot_module("stats_handlers")
+    sent = fake_context.bot.sent_messages
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        fake_context.bot.delete_message_errors.append(BadRequest("Message to delete not found"))
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        assert len(sent) == 3, "третье нажатие отправило ссылку, ошибка удаления не помешала"
+
+        fake_context.bot.delete_message_errors.append(BadRequest("Chat not found"))
+        with pytest.raises(BadRequest, match="Chat not found"):
+            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_pointer_reraises_unrelated_bad_request(
+    bot_module, make_callback_update, fake_context
+):
+    stats_handlers = bot_module("stats_handlers")
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        fake_context.bot.send_message_errors.append(BadRequest("Chat not found"))
+        with pytest.raises(BadRequest, match="Chat not found"):
+            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+
+
+@pytest.mark.asyncio
+async def test_tonight_game_card_after_preview_is_a_new_answer(
+    bot_module, make_callback_update, fake_context
+):
+    """Превью (матча ещё нет в БД) и карточка — разные ответы: после загрузки
+    матча то же нажатие шлёт карточку, а не ссылку на превью."""
+    stats_handlers = bot_module("stats_handlers")
+    sent = fake_context.bot.sent_messages
+    with patch.object(stats_handlers, "matchup_season_preview", return_value="PREVIEW"), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        with patch.object(stats_handlers, "game_exists", return_value=False):
+            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        with patch.object(stats_handlers, "game_exists", return_value=True):
+            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        # Другой матч — свой ответ, не ссылка.
+        with patch.object(stats_handlers, "game_exists", return_value=True):
+            await _tap_tonight(stats_handlers, make_callback_update, fake_context, "tn:556:BOS:MIN")
+
+    assert [m["text"] for m in sent] == ["PREVIEW", "CARD", "CARD"]
 
 
 # ---------------------------------------------------------------------------
@@ -903,11 +1070,11 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
     )
 
     summary = fake_context.bot.sent_messages[0]
+    # Матчи разделены пустой строкой (DIGEST_GAME_SEPARATOR).
     assert (
-        "<code>1. H1</code> <b>1:0</b> <code>A1</code>\n"
-        "<code>   </code><i>1:0, 0:0, 0:0</i>\n"
-        "<code>2. H2</code> <b>1:0</b> <code>A2</code>\n"
-        "<code>   </code><i>1:0, 0:0, 0:0</i>"
+        "1. <b>H1 1:0 A1</b>\n  1:0, 0:0, 0:0\n\n"
+        "2. <b>H2 1:0 A2</b>\n  1:0, 0:0, 0:0\n\n"
+        "3. <b>H3 1:0 A3</b>"
     ) in summary["text"]
     assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
     rows = summary["reply_markup"].inline_keyboard
@@ -937,8 +1104,8 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
     sent_text = fake_context.bot.sent_messages[0]["text"]
     assert "Показаны" not in sent_text
-    assert "<code>1. H1</code>" in sent_text
-    assert "<code>2. H2</code>" in sent_text
+    assert "1. <b>H1 1:0 A1</b>" in sent_text
+    assert "2. <b>H2 1:0 A2</b>" in sent_text
 
 
 @pytest.mark.asyncio
@@ -971,11 +1138,11 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     shown, total = int(match.group(1)), int(match.group(2))
     assert total == total_games
     assert 0 < shown < total_games
-    # Обрезка — целыми матчами (две строки, три <code>): ни одного незакрытого
-    # тега (Telegram отверг бы HTML) и ни одного матча без строки периодов.
-    assert sent_text.count("<code>") == sent_text.count("</code>") == 3 * shown
-    assert sent_text.count("<i>1:0, 0:0, 0:0</i>") == shown
-    assert sent_text.count("<b>") == sent_text.count("</b>")
+    # Обрезка — целыми матчами (строка матча в <b> и строка периодов): ни
+    # одного незакрытого тега (Telegram отверг бы HTML) и ни одного матча без
+    # строки периодов. <b> ещё у заголовка «Матчи …».
+    assert sent_text.count("<b>") == sent_text.count("</b>") == 1 + shown
+    assert sent_text.count("  1:0, 0:0, 0:0") == shown
 
 
 # ---------------------------------------------------------------------------

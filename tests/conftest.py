@@ -258,10 +258,24 @@ class FakeBot:
         self.sent_messages: List[dict] = []
         self.sent_videos: List[dict] = []
         self.edited_markups: List[dict] = []
+        self.deleted_messages: List[dict] = []
+        # Исключения, которые бросят следующие вызовы send_message (по одному
+        # на вызов) — ошибки Telegram вроде «Message to be replied not found».
+        self.send_message_errors: List[Exception] = []
+        # То же для delete_message («Message to delete not found»).
+        self.delete_message_errors: List[Exception] = []
 
     async def send_message(self, **kwargs: Any) -> SimpleNamespace:
+        if self.send_message_errors:
+            raise self.send_message_errors.pop(0)
         self.sent_messages.append(kwargs)
         return SimpleNamespace(message_id=len(self.sent_messages))
+
+    async def delete_message(self, **kwargs: Any) -> bool:
+        if self.delete_message_errors:
+            raise self.delete_message_errors.pop(0)
+        self.deleted_messages.append(kwargs)
+        return True
 
     async def send_video(self, **kwargs: Any) -> SimpleNamespace:
         self.sent_videos.append(kwargs)
@@ -319,9 +333,10 @@ class FakeMessage:
 
 @pytest.fixture
 def fake_context() -> SimpleNamespace:
-    """A CallbackContext-shaped object exposing ``.bot`` (a FakeBot) and
-    ``.user_data`` (a plain dict, as PTB gives every per-user handler call)."""
-    return SimpleNamespace(bot=FakeBot(), user_data={})
+    """A CallbackContext-shaped object exposing ``.bot`` (a FakeBot),
+    ``.user_data`` and ``.chat_data`` (plain dicts, as PTB gives every
+    per-user/per-chat handler call)."""
+    return SimpleNamespace(bot=FakeBot(), user_data={}, chat_data={})
 
 
 @pytest.fixture

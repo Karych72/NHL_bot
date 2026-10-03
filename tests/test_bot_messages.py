@@ -557,7 +557,8 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
         )
     assert has_prev is False
     assert has_next is True
-    assert "<pre>    Игрок       Ком Знач  И Смен\n 1. Player0 [C] WSH  100 82 1500\n" in text
+    # Колонки через «|», колонка показателя подписана им самим, а не «Знач».
+    assert "<pre>   |Игрок      |Ком|Очки| И|Смен\n 1.|Player0 [C]|WSH| 100|82|1500\n" in text
     assert "Показаны 1–10 из 25" in text
 
 
@@ -572,7 +573,7 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     assert has_prev is True
     assert has_next is True
     assert "Показаны 11–20 из 25" in text
-    assert "11. Player0 [C] WSH  100 82 1500" in text
+    assert "11.|Player0 [C]|WSH| 100|82|1500" in text
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
@@ -586,7 +587,7 @@ def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     assert has_prev is True
     assert has_next is False
     assert "Показаны 11–13 из 13" in text
-    assert "11. Player0 [C] WSH  100 82 1500" in text
+    assert "11.|Player0 [C]|WSH| 100|82|1500" in text
 
 
 def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
@@ -602,7 +603,7 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         )
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert " 1. Player0 [C] WSH  100 82 1500" in text
+    assert " 1.|Player0 [C]|WSH| 100|82|1500" in text
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
@@ -630,7 +631,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
             "Статистика большинства", "power_play_percentage", 0
         )
     assert "Статистика большинства" in text
-    assert "<pre>   Ком Знач  И В-П-ОТ  О\n1. BOS 55.5 40 30-8-2 62</pre>" in text
+    assert "<pre>  |Ком|%бол| И|В-П-ОТ| О\n1.|BOS|55.5|40|30-8-2|62</pre>" in text
     assert has_prev is False
     assert has_next is True
     assert "Показаны 1 из 12" in text
@@ -653,7 +654,16 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert " 1. T0     0 40 10-5-1 0" in text
+    assert " 1.|T0 |   0|40|10-5-1|0" in text
+
+
+def test_stat_column_labels_cover_every_leaderboard_column(bot_module):
+    """Шапка колонки показателя берётся по ключу без запасного значения —
+    у каждого лидерборда меню должна быть своя подпись вместо «Знач»."""
+    specs = bot_module("leaderboard_specs")
+    columns = {col for _table, col in specs.PLAYER_STAT_TITLES} | set(specs.TEAM_STAT_TITLES)
+    assert columns <= set(specs.STAT_COLUMN_LABELS)
+    assert all(len(label) <= 5 for label in specs.STAT_COLUMN_LABELS.values())
 
 
 def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
@@ -679,7 +689,7 @@ def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1. BOS   55 40 25-10-5 55" in text
+    assert "1.|BOS|  55|40|25-10-5|55" in text
 
 
 def test_team_stat_leaderboard_page_null_record_fields_render_dash(
@@ -695,7 +705,7 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1. BOS    — 40  —-—-— —" in text
+    assert "1.|BOS|   —|40| —-—-—|—" in text
     assert "None" not in text
 
 
@@ -713,7 +723,7 @@ def test_player_stat_leaderboard_page_season_end_goalie_drops_saves_to_fit_phone
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 9
         )
-    assert "<pre>    Вратарь    Ком  Знач  И\n10. Vasilevsk… TBL 92.52 58</pre>" in text
+    assert "<pre>   |Вратарь   |Ком|  %ОБ| И\n10.|Vasilevsk…|TBL|92.52|58</pre>" in text
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +765,7 @@ def test_conference_summary_escapes_html_in_group_name(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text = bot_messages.conference_summary()
-    assert "<pre>           Ком    О Г/и   Бол   Мен\n&lt;i&gt;Western  16 50.0 3.0 20.0% 80.0%</pre>" in text
+    assert "<pre>          |Ком|   О|Г/и|  Бол|  Мен\n&lt;i&gt;Western| 16|50.0|3.0|20.0%|80.0%</pre>" in text
     assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 
@@ -772,7 +782,7 @@ def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1. McDavid [C] EDM  153 82 1800" in text
+    assert "1.|McDavid [C]|EDM| 153|82|1800" in text
 
 
 def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
@@ -792,7 +802,7 @@ def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1. Rookie [C] CHI   10 5    —" in text
+    assert "1.|Rookie [C]|CHI|  10|5|   —" in text
     assert "None" not in text
 
 
@@ -811,7 +821,7 @@ def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
         )
-    assert "1. Makar [D] COL 58.2 70 1600" in text
+    assert "<pre>  |Игрок    |Ком|SAT%| И|Смен\n1.|Makar [D]|COL|58.2|70|1600</pre>" in text
 
 
 def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_module):
@@ -827,7 +837,7 @@ def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_mod
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Голы с кистевого", "players_shot_types", "goals_wrist", 0
         )
-    assert "1. Kucherov [RW] TBL   12 78 1700" in text
+    assert "<pre>  |Игрок        |Ком|Голы| И|Смен\n1.|Kucherov [RW]|TBL|  12|78|1700</pre>" in text
 
 
 # ---------------------------------------------------------------------------
@@ -945,8 +955,8 @@ def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert (
-        "<pre>   Вратарь    Ком  Знач  И     Сейвы\n"
-        "1. Shesterkin NYR 0.925 55 1500/1620</pre>"
+        "<pre>  |Вратарь   |Ком|  %ОБ| И|    Сейвы\n"
+        "1.|Shesterkin|NYR|0.925|55|1500/1620</pre>"
     ) in text
 
 
@@ -968,7 +978,7 @@ def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert (
-        "1. Backup  CHI    0 1   —/—" in text
+        "1.|Backup |CHI|  0|1|  —/—" in text
     )
     assert "None" not in text
 
@@ -1079,10 +1089,10 @@ def _goal_row(period, home, away):
             False, False, False, False, 1, 1)
 
 
-def test_day_digest_summary_body_aligns_scores_in_one_column(bot_module, fake_db_router):
-    """Хозяева — по правому краю, гости — после счёта, оба моноширинным
-    `<code>`, чтобы жирный счёт стоял в одной колонке; периоды и OT — второй
-    строкой матча (в одну строку на телефоне не влезают)."""
+def test_day_digest_summary_body_bold_matchup_and_indented_periods(bot_module, fake_db_router):
+    """Матч — «N. <b>Хозяева счёт Гости</b>» обычным шрифтом по левому краю
+    (моноширинное выравнивание по счёту выглядело криво, отзыв 2026-10-03);
+    периоды и OT — второй строкой с отступом figure space."""
     bot_messages = bot_module("bot_messages")
     stats = {
         1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers"),
@@ -1102,22 +1112,20 @@ def test_day_digest_summary_body_aligns_scores_in_one_column(bot_module, fake_db
     body = bot_messages.day_digest_summary_body([1, 2])
 
     assert body == [
-        "<code>1.      Flyers</code> <b>0:2</b> <code>Penguins</code>\n"
-        "<code>   </code><i>0:1, 0:0, 0:1</i>",
-        "<code>2. Maple Leafs</code> <b>2:1</b> <code>Kings</code>\n"
-        "<code>   </code><i>1:0, 0:1, 0:0, 1:0 (OT)</i>",
+        "1. <b>Flyers 0:2 Penguins</b>\n  0:1, 0:0, 0:1",
+        "2. <b>Maple Leafs 2:1 Kings</b>\n  1:0, 0:1, 0:0, 1:0 (OT)",
     ]
 
 
-def test_day_digest_summary_body_pads_two_digit_score_with_figure_spaces(
+def test_day_digest_summary_body_keeps_scores_unpadded_and_escapes_names(
     bot_module, fake_db_router
 ):
-    """«10:2» рядом с «3:2»: счёт добит пробелом шириной в цифру (U+2007),
-    иначе колонка гостей в пропорциональном шрифте съехала бы."""
+    """Без выравнивания по колонке «10:2» и «3:2» идут как есть — никакой
+    добивки; имена команд из БД экранируются."""
     bot_messages = bot_module("bot_messages")
     stats = {
         1: [(10, 0, 0, 0, 0, False, False, "home", "A"), (2, 0, 0, 0, 0, False, False, "away", "B")],
-        2: [(3, 0, 0, 0, 0, False, False, "home", "C"), (2, 0, 0, 0, 0, False, False, "away", "D")],
+        2: [(3, 0, 0, 0, 0, False, False, "home", "C&C"), (2, 0, 0, 0, 0, False, False, "away", "D")],
     }
     fake_db_router([
         ("get_game_stats", lambda params: stats[params[0]]),
@@ -1126,8 +1134,8 @@ def test_day_digest_summary_body_pads_two_digit_score_with_figure_spaces(
 
     lines = bot_messages.day_digest_summary_body([1, 2])
 
-    assert "<b>10:2</b>" in lines[0]
-    assert "<b>\u20073:2</b>" in lines[1]
+    assert lines[0].startswith("1. <b>A 10:2 B</b>\n")
+    assert lines[1].startswith("2. <b>C&amp;C 3:2 D</b>\n")
 
 
 def test_digest_game_button_labels_number_games_in_summary_order_with_home_first(
@@ -1349,7 +1357,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     text = bot_messages.team_table()
 
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
-    assert wc.index("WC1 T3") < wc.index("WC2 T4") < wc.index("- - линия плей-офф") < wc.index(" 3. T5")
+    assert wc.index("WC1|T3") < wc.index("WC2|T4") < wc.index("- - линия плей-офф") < wc.index(" 3.|T5")
     assert "T0" not in wc, "топ-3 дивизиона в гонку Wild Card не входят"
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
 
@@ -1372,10 +1380,12 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
     text = bot_messages.team_table()
 
     div = text.split("METROPOLITAN DIVISION", 1)[1].split("WILD CARD — EASTERN", 1)[0]
-    assert div.index(" 3. T2") < div.index("- - линия плей-офф") < div.index(" 4. T3")
+    assert div.index(" 3.|T2") < div.index("- - линия плей-офф") < div.index(" 4.|T3")
     assert div.count("линия плей-офф") == 1
+    # Шапка и строки — колонки через «|», место занимает те же 4 символа.
+    assert "   |Команда       |Очк|Игр| %очк\n" in div
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
-    assert " 5. T7" in wc
+    assert " 5.|T7" in wc
     assert "T8" not in wc, "Wild Card обрезан до пяти команд"
 
 # ---------------------------------------------------------------------------
@@ -1418,9 +1428,9 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     assert codes == ["CAN", "XXX"]
     # Выровненная таблица; неизвестный код показывается как есть, без исключения.
     assert (
-        "<pre>   Страна    Игр   О  Г  О/и\n"
-        "1. 🇨🇦 Канада   4 100 40 25.0\n"
-        "2. XXX         3  30  9 10.0</pre>"
+        "<pre>  |Страна   |Игр|  О| Г| О/и\n"
+        "1.|🇨🇦 Канада|  4|100|40|25.0\n"
+        "2.|XXX      |  3| 30| 9|10.0</pre>"
     ) in text
     assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
     # Порог уходит в SQL параметром, вратари исключены.
@@ -1463,9 +1473,9 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     assert "🇨🇦 Канада" in text
     assert "Показаны 11 из 25 строк." in text
     # Игры — сразу после голов и очков (Задача 50).
-    assert f"<pre>    Игрок   Ком Г О И    ВП Хит {extra_header}\n" in text
+    assert f"<pre>   |Игрок  |Ком|Г|О|И|   ВП|Хит|{extra_header}\n" in text
     extra = "20" if group == "F" else " 2"
-    assert f"11. McDavid EDM 4 8 7 21:30   5 {extra}</pre>" in text
+    assert f"11.|McDavid|EDM|4|8|7|21:30|  5|{extra}</pre>" in text
     assert (has_prev, has_next) == (True, True)
     assert position_sql in cursor.executed[-1][0]
 
@@ -1485,8 +1495,8 @@ def test_country_page_drops_least_important_columns_to_fit_phone_width(
 
     table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
     assert table.splitlines() == [
-        "   Игрок      Ком  Г   О  И    ВП",
-        "1. Nugent-Ho… EDM 64 153 82 21:30",
+        "  |Игрок     |Ком| Г|  О| И|   ВП",
+        "1.|Nugent-Ho…|EDM|64|153|82|21:30",
     ]
     assert all(len(line) <= 36 for line in table.splitlines())
 
@@ -1513,7 +1523,7 @@ def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db
     ])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)
     # С «Сух» строка — 37 символов, шире экрана: сухие уходят первыми.
-    assert "<pre>   Вратарь  Ком  В    %ОБ   КН  И\n1. Vejmelka UTA 38 89.67% 2.75 64</pre>" in text
+    assert "<pre>  |Вратарь |Ком| В|   %ОБ|  КН| И\n1.|Vejmelka|UTA|38|89.67%|2.75|64</pre>" in text
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)

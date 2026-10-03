@@ -14,13 +14,14 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters, Update
 from telegram.error import BadRequest
 from telegram.ext import CallbackContext
 
 from bot_messages import (
-    COUNTRY_GROUPS,
+    PLAYER_GROUPS,
     COUNTRY_LABELS,
+    DIGEST_GAME_SEPARATOR,
     LEADERBOARD_PAGE_SIZE,
     conference_summary,
     country_page,
@@ -58,6 +59,7 @@ from dialog_states import (
     THIRD,
     build_menu,
 )
+from help_text import ADVANCED_COMMAND_INTRO
 from leaderboard_specs import (
     ADV_STANDALONE_TO_STAT,
     PLAYER_STAT_TITLES,
@@ -90,7 +92,7 @@ TEAM_PROFILE_CALLBACK_PATTERN = r"^tp:([A-Za-z0-9]{2,4})$"
 # страница группы игроков страны, cn:list — назад к рейтингу стран
 COUNTRY_CALLBACK_PATTERN = r"^cn:(?:list|([A-Z]{3}):([FDG]):(\d+))$"
 
-# Standalone: /advanced — листание sa:<table>:<col>:<offset>, sa:close
+# Standalone: /advanced — листание sa:<table>:<col>:<offset>, sa:menu, sa:save
 STANDALONE_SA_CALLBACK_PATTERN = r"^sa:"
 
 ADV_CALLBACK_PREFIX = "adv:"
@@ -360,7 +362,7 @@ async def callback_country(update: Update, context: CallbackContext) -> None:
             InlineKeyboardButton(
                 ("• " if key == group else "") + label, callback_data=f"cn:{code}:{key}:0"
             )
-            for key, (label, _cond) in COUNTRY_GROUPS.items()
+            for key, (label, _cond) in PLAYER_GROUPS.items()
         ])
         rows.append([InlineKeyboardButton("« Страны", callback_data="cn:list")])
         markup = InlineKeyboardMarkup(rows)
@@ -449,27 +451,47 @@ def standalone_player_stat_keyboard(
     кнопки `sa:...`), вне диалога `/stats`.
 
     От `conversation_player_stat_keyboard` отличается тем, что нет состояний
-    FSM: вместо родительской навигации — одна кнопка «Готово» (`sa:close`),
-    снимающая клавиатуру у сообщения.
+    FSM: «« К списку статистик» (`sa:menu`) возвращает меню `/advanced` в том же
+    сообщении, «Сохранить» (`sa:save`) оставляет страницу в чате без кнопок и
+    продолжает листание в её копии ниже.
     """
     rows = _page_nav_rows(f"sa:{table}:{column}", offset, has_prev, has_next)
-    rows.append(
-        [InlineKeyboardButton("Готово", callback_data="sa:close")]
-    )
+    rows.append([
+        InlineKeyboardButton("« К списку статистик", callback_data="sa:menu"),
+        InlineKeyboardButton("Сохранить", callback_data="sa:save"),
+    ])
     return InlineKeyboardMarkup(rows)
 
 
 async def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
-    """Обрабатывает нажатия кнопок `sa:...` вне диалога `/stats`: `sa:close`
-    снимает клавиатуру у сообщения, `sa:<table>:<column>:<offset>` листает
-    страницу статистики так же, как `callback_stats_player_page`, но без
-    состояний FSM.
+    """Обрабатывает нажатия кнопок `sa:...` вне диалога `/stats`:
+    `sa:menu` — меню `/advanced` на месте страницы; `sa:save` — страница
+    остаётся в чате без кнопок, а её копия с теми же кнопками уходит новым
+    сообщением; `sa:<table>:<column>:<offset>` листает страницу статистики так
+    же, как `callback_stats_player_page`, но без состояний FSM.
     """
     query = update.callback_query
     if not query or not query.data:
         return
-    if query.data == "sa:close":
+    if query.data == "sa:menu":
         await query.answer()
+        await query.edit_message_text(
+            text=ADVANCED_COMMAND_INTRO,
+            parse_mode="HTML",
+            reply_markup=advanced_standalone_keyboard(),
+        )
+        return
+    if query.data == "sa:save":
+        await query.answer("Сохранено")
+        message = query.message
+        assert isinstance(message, Message)
+        # Сначала копия, потом снятие кнопок: упади отправка — страница останется живой.
+        await context.bot.send_message(
+            chat_id=message.chat.id,
+            text=message.text_html,
+            parse_mode="HTML",
+            reply_markup=message.reply_markup,
+        )
         await query.edit_message_reply_markup(reply_markup=None)
         return
     m = re.match(r"^sa:([\w_]+):([\w_]+):(\d+)$", query.data)
@@ -610,15 +632,15 @@ async def send_game_card_message(
     game_id: int,
     *,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
-) -> None:
-    """Полная карточка матча (текст + опционально клавиатура)."""
+) -> Message:
+    """Полная карточка матча (текст + опционально клавиатура); возвращает
+    отправленное сообщение."""
     if not game_exists(game_id):
-        await context.bot.send_message(
+        return await context.bot.send_message(
             chat_id=chat_id,
             text="Такого матча нет в базе бота.",
             parse_mode="HTML",
         )
-        return
     text, goals_meta = game_message(game_id)
     gbtn = _goal_video_buttons(goals_meta)
     if reply_markup is not None:
@@ -627,7 +649,7 @@ async def send_game_card_message(
         markup = InlineKeyboardMarkup(build_menu(gbtn, n_cols=_GOAL_VIDEO_COLUMNS))
     else:
         markup = None
-    await context.bot.send_message(
+    return await context.bot.send_message(
         chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
     )
 
@@ -701,7 +723,7 @@ async def dispatch_day_digest_messages(
     day_str = day_label or "—"
     game_ids = [gid for gid, _t, _m in real_games]
     lines = day_digest_summary_body(game_ids)
-    body = "\n".join(lines)
+    body = DIGEST_GAME_SEPARATOR.join(lines)
     header = (
         f"<b>Матчи {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
     )
@@ -709,13 +731,13 @@ async def dispatch_day_digest_messages(
         f"{header}{body}\n\n"
         "<i>Кнопка матча — полная карточка и видео голов.</i>"
     )
-    # Матч сводки несёт HTML-теги (<code>, <b>): резать его по символам
+    # Матч сводки несёт HTML-тег <b>: резать его по символам
     # нельзя — Telegram отвергнет незакрытый тег. Не влезло — оставляем
     # целые матчи, сколько уместилось, и маркер «показаны N из M».
     total_games = len(real_games)
     shown_games = digest_shown_match_count(header, lines, total_games)
     if shown_games < total_games:
-        summary_text = header + "\n".join(lines[:shown_games]) + "\n\n" + truncation_marker(
+        summary_text = header + DIGEST_GAME_SEPARATOR.join(lines[:shown_games]) + "\n\n" + truncation_marker(
             shown_games, total_games, item_word="матчей"
         )
     else:
@@ -742,12 +764,76 @@ async def dispatch_day_digest_messages(
         await _pause()
 
 
+# Ответы на кнопки матчей /tonight в этом чате (`chat_data`): ключ (game_id,
+# карточка ли это) → [id ответа, id последней ссылки на него или None]. Превью и
+# карточка — разные ответы: матч, сыгранный после превью, открывается карточкой.
+_TONIGHT_SENT_KEY = "tonight_sent"
+_TONIGHT_ALREADY_SENT = "↑ Этот матч уже открыт — нажмите на цитату, чтобы перейти к нему."
+
+
+async def _delete_tonight_pointer(
+    context: CallbackContext, chat_id: int, pointer_id: Optional[int]
+) -> None:
+    """Удаляет прошлую ссылку-reply на ответ `/tonight` (`pointer_id`, None —
+    ссылки не было) в чате `chat_id`."""
+    if pointer_id is None:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=pointer_id)
+    except BadRequest as exc:
+        # «Message to delete not found» / «message can't be deleted» (старше 48 ч):
+        # убирать нечего; остальные ошибки — наверх.
+        text = str(exc).lower()
+        if "to delete not found" not in text and "can't be deleted" not in text:
+            raise
+
+
+async def _point_to_tonight_answer(
+    context: CallbackContext, chat_id: int, entry: List[Optional[int]]
+) -> bool:
+    """Повторное нажатие кнопки матча `/tonight`: вместо новой копии ответа —
+    короткое сообщение-ответ (reply) на уже отправленный; тап по цитате
+    прокручивает чат к нему (отзыв 2026-10-03).
+
+    Зачем удалять прошлую ссылку: иначе каждое нажатие всё равно добавляет
+    сообщение в чат — так на матч остаётся не больше одной ссылки.
+
+    Аргументы:
+        context, chat_id: как у `callback_tonight_game`.
+        entry: значение `chat_data[_TONIGHT_SENT_KEY]` для матча — обновляется
+            на месте id новой ссылки.
+
+    Возвращает: False, если исходного ответа в чате уже нет (пользователь его
+    удалил) — тогда ответ нужно отправить заново; ссылка на удалённый ответ
+    при этом тоже удаляется.
+    """
+    answer_id, pointer_id = entry
+    assert answer_id is not None
+    try:
+        pointer = await context.bot.send_message(
+            chat_id=chat_id,
+            text=_TONIGHT_ALREADY_SENT,
+            reply_parameters=ReplyParameters(message_id=answer_id),
+        )
+    except BadRequest as exc:
+        # «Message to be replied not found»: ответ удалён из чата.
+        if "replied not found" not in str(exc).lower():
+            raise
+        await _delete_tonight_pointer(context, chat_id, pointer_id)
+        return False
+    await _delete_tonight_pointer(context, chat_id, pointer_id)
+    entry[1] = pointer.message_id
+    return True
+
+
 async def callback_tonight_game(update: Update, context: CallbackContext) -> None:
     """Обрабатывает нажатие кнопки матча `/tonight` (`tn:<game_id>:<away>:<home>`).
 
     Если матч уже есть в базе — шлёт полную карточку (`send_game_card_message`);
     иначе шлёт текстовое превью сезонных встреч команд (`matchup_season_preview`)
-    — матч из расписания NHL API мог ещё не попасть в БД.
+    — матч из расписания NHL API мог ещё не попасть в БД. Повторное нажатие
+    не шлёт копию, а ссылается на уже отправленный ответ
+    (`_point_to_tonight_answer`).
     """
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("tn:"):
@@ -771,14 +857,23 @@ async def callback_tonight_game(update: Update, context: CallbackContext) -> Non
             text="Некорректная кнопка.",
         )
         return
-    if game_exists(game_id):
-        await send_game_card_message(context, chat_id, game_id)
+    is_card = game_exists(game_id)
+    assert context.chat_data is not None
+    sent: Dict[Tuple[int, bool], List[Optional[int]]] = context.chat_data.setdefault(
+        _TONIGHT_SENT_KEY, {}
+    )
+    key = (game_id, is_card)
+    if key in sent and await _point_to_tonight_answer(context, chat_id, sent[key]):
         return
-    # Проза без счётных элементов — сноска без чисел, но текст берётся из
-    # того же единственного хелпера (truncate_telegram_text по умолчанию),
-    # а не из литерала, продублированного здесь и в bot.py.
-    text = truncate_telegram_text(matchup_season_preview(game_id, away_a, home_a))
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    if is_card:
+        answer = await send_game_card_message(context, chat_id, game_id)
+    else:
+        # Проза без счётных элементов — сноска без чисел, но текст берётся из
+        # того же единственного хелпера (truncate_telegram_text по умолчанию),
+        # а не из литерала, продублированного здесь и в bot.py.
+        text = truncate_telegram_text(matchup_season_preview(game_id, away_a, home_a))
+        answer = await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    sent[key] = [answer.message_id, None]
 
 
 async def callback_expand_digest_game(update: Update, context: CallbackContext) -> None:
