@@ -1966,7 +1966,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
         cols = ["lastname", "team", "wins", "sv", "gaa", "games", "shutouts", "total"]
         stats = cached_fetch_all(_COUNTRY_GOALIES_SQL, params, columns=cols)
         header = ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"]
-        drop_order = (7, 6, 5)  # сухие, игры, КН
+        drop_order = (7, 5, 6)  # сухие, КН, игры — игры важнее (Задача 50)
         cells = [
             [fmt(stats["wins"][i]), _fmt_pct_stat(stats["sv"][i]),
              _fmt_num_max2(stats["gaa"][i]), fmt(stats["games"][i]), fmt(stats["shutouts"][i])]
