@@ -3,26 +3,40 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import requests
 
 NHL_API_BASE = "https://api-web.nhle.com/v1"
-SCORE_NOW_PATH = "/score/now"
 
 # US/Eastern — один согласованный пояс для времени старта в выводе.
 _DISPLAY_TZ = ZoneInfo("America/New_York")
+
+# Игровой день лиги сменяется в 03:00 ET: к этому часу доигрывают поздние матчи
+# западного побережья (старт до 22:30 ET). `score/now` сам переключает дату позже —
+# утром по Москве (07:00 ET) он ещё отдавал вчерашний, уже сыгранный слейт.
+_LEAGUE_DAY_ROLLOVER = timedelta(hours=3)
 
 
 class ScoreboardFetchError(Exception):
     """Не удалось получить или разобрать ответ score API."""
 
 
-def fetch_score_now() -> dict:
-    """GET /v1/score/now. Редиректы включены (requests по умолчанию)."""
-    url = NHL_API_BASE + SCORE_NOW_PATH
+def league_today(now: Optional[datetime] = None) -> date:
+    """Текущий игровой день лиги: дата по ET со сменой в 03:00 ET.
+
+    Зачем: `/tonight` должен показывать предстоящий слейт, а не вчерашний.
+    Аргументы: now — aware-момент (для тестов); по умолчанию текущее время.
+    """
+    moment = now if now is not None else datetime.now(timezone.utc)
+    return (moment.astimezone(_DISPLAY_TZ) - _LEAGUE_DAY_ROLLOVER).date()
+
+
+def fetch_score(day: date) -> dict:
+    """GET /v1/score/{day} — слейт игрового дня лиги. Редиректы включены (requests по умолчанию)."""
+    url = f"{NHL_API_BASE}/score/{day.isoformat()}"
     try:
         resp = requests.get(url, timeout=15, allow_redirects=True)
     except requests.RequestException as e:

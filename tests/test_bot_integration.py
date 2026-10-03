@@ -149,8 +149,8 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     assert edited["parse_mode"] == "HTML"
     assert "<b>Топ бомбардиров</b>" in text
     assert "<i>Показаны 1–10 из 25 строк.</i>" in text
-    assert "1. Player01 [C] — 99 (NYR, игр: 82, смен: 1501)" in text
-    assert "10. Player10 [C] — 90 (NYR, игр: 82, смен: 1510)" in text
+    assert " 1. Player01 [C] NYR   99 82 1501" in text
+    assert "10. Player10 [C] NYR   90 82 1510" in text
     assert "11. Player11" not in text
     assert _callback_data(edited["reply_markup"])[0] == "pl:points:10", "первая страница — только «вперёд»"
 
@@ -173,8 +173,8 @@ async def test_leaders_next_page_asks_db_for_offset_ten_and_renders_ranks_eleven
     (edited,) = update.callback_query.edited_texts
     text = edited["text"]
     assert "<i>Показаны 11–20 из 25 строк.</i>" in text
-    assert "11. Player11 [C] — 89 (NYR, игр: 82, смен: 1511)" in text
-    assert "20. Player20 [C] — 80 (NYR, игр: 82, смен: 1520)" in text
+    assert "11. Player11 [C] NYR   89 82 1511" in text
+    assert "20. Player20 [C] NYR   80 82 1520" in text
     assert "Player10" not in text
     assert _callback_data(edited["reply_markup"])[:2] == ["pl:points:0", "pl:points:20"]
     # Смещение не «нарисовано» в тексте, а действительно ушло в БД параметром.
@@ -348,25 +348,29 @@ async def test_game_command_renders_full_card(
     # Семь разных запросов, восемь обращений: форма спрашивается на каждую команду.
     assert len(cursor.executed) == 8
     assert sent["parse_mode"] == "HTML"
-    assert "🏒 <b>NYR 3:2 BOS</b> (1:0, 1:1, 1:1)" in text
+    assert "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>" in text
     # 3-0-2 / 1-0-4, а не 3-1-1 / 1-3-1: см. комментарий к _FORM_BY_TEAM (Д1).
     # Хозяева первыми, как в шапке карточки.
-    assert "<i>Форма (5 игр, W-L-OTL)</i>: NYR 3-0-2 · BOS 1-0-4" in text
+    assert "<i>Форма (5 игр, W-L-OTL)</i>:\nNYR 3-0-2 · BOS 1-0-4" in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
-    # Голы — выровненный <pre> без номера периода; российский игрок (в том
-    # числе в передачах) капсом; победная шайба — «ПШ», а не «★».
+    # Голы — выровненный <pre> в ширину телефона: время без номера периода,
+    # счёт, автор; ассистенты — строкой ниже. Российский игрок (в том числе в
+    # передачах) капсом; победная шайба — «ПШ», а не «★».
     assert (
-        "<pre>1:0 PANARIN   [LW](Fox) (ББ)          5:12\n"
-        "1:1 Marchand  [LW]                   31:40\n"
-        "2:1 Zibanejad [C](PANARIN, Fox) (МБ) 35:20\n"
-        "2:2 Pastrnak  [RW](Marchand)         44:10\n"
-        "3:2 PANARIN   [LW] (ПШ)              58:03</pre>"
+        "<pre> 5:12 1:0 PANARIN [LW] (ББ)\n"
+        "          Fox\n"
+        "31:40 1:1 Marchand [LW]\n"
+        "35:20 2:1 Zibanejad [C] (МБ)\n"
+        "          PANARIN, Fox\n"
+        "44:10 2:2 Pastrnak [RW]\n"
+        "          Marchand\n"
+        "58:03 3:2 PANARIN [LW] (ПШ)</pre>"
     ) in text
     assert "<b>Броски</b>: 31 - 27" in text
     assert "<b>Штрафное время</b>: 8 - 6" in text
     assert (
-        "<b>Вратари</b>: Shesterkin (25/27, 92.59%, 60:00) - "
-        "Swayman (28/31, 90.32%, 60:00)"
+        "<b>Вратари</b>\nShesterkin — 25/27, 92.59%, 60:00\n"
+        "Swayman — 28/31, 90.32%, 60:00"
     ) in text
     assert "<b>Звёзды матча</b>" in text
     assert "★1 Panarin (NYR) — 2+1" in text
@@ -430,8 +434,12 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
 
     summary, hint = fake_context.bot.sent_messages
     assert "<b>Матчи 2026-04-01</b> (2 игр)" in summary["text"]
-    assert "<code>1. NYR</code> <b>3:2</b> <code>BOS</code> (1:0, 1:1, 1:1)" in summary["text"]
-    assert "<code>2. TOR</code> <b>1:0</b> <code>MTL</code> (1:0, 0:0, 0:0)" in summary["text"]
+    assert (
+        "<code>1. NYR</code> <b>3:2</b> <code>BOS</code>\n<code>   </code><i>1:0, 1:1, 1:1</i>"
+    ) in summary["text"]
+    assert (
+        "<code>2. TOR</code> <b>1:0</b> <code>MTL</code>\n<code>   </code><i>1:0, 0:0, 0:0</i>"
+    ) in summary["text"]
     assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
     # Кнопки несут те же номера, что и сводка, и команды вместо «Матч N».
     buttons = _flat_buttons(summary["reply_markup"])
@@ -462,7 +470,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
     card = fake_context.bot.sent_messages[-1]
     assert "<b>TOR 1:0 MTL</b>" in card["text"]
-    assert "<pre>1:0 Matthews [C](Nylander) (ПШ) 12:00</pre>" in card["text"]
+    assert "<pre>12:00 1:0 Matthews [C] (ПШ)\n          Nylander</pre>" in card["text"]
     assert _callback_data(card["reply_markup"]) == [f"gv:{GAME_TWO}:201"]
 
 
@@ -665,8 +673,8 @@ async def test_leaders_pick_on_partial_season_shows_short_page_without_next_butt
     (edited,) = update.callback_query.edited_texts
     text = edited["text"]
     assert "<i>Показаны 1–4 из 4 строк.</i>" in text
-    assert "1. Panarin [LW] — 5 (NYR, игр: 2, смен: 45)" in text
-    assert "4. Matthews [C] — 1 (TOR, игр: 1, смен: 18)" in text
+    assert "1. Panarin [LW]  NYR    5 2   45" in text
+    assert "4. Matthews [C]  TOR    1 1   18" in text
     # Ни prev, ни next — показаны все 4 строки; остаётся только смена категории.
     assert _callback_data(edited["reply_markup"]) == [
         "pl:pick:points", "pl:pick:goals", "pl:pick:assists",
@@ -764,10 +772,10 @@ async def test_game_command_on_partial_season_renders_card_with_low_game_count_f
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
-    assert "<b>TOR 1:3 NYR</b> (1:0, 0:1, 0:2)" in text
+    assert "<b>TOR 1:3 NYR</b>\n<i>Периоды: 1:0, 0:1, 0:2</i>" in text
     # Форма до матча: у TOR это первая игра сезона (0-0-0, не «—» и не
     # засчитанное поражение в этой же игре), у NYR — одна победа до неё.
-    assert "<i>Форма (5 игр, W-L-OTL)</i>: TOR 0-0-0 · NYR 1-0-0" in text
+    assert "<i>Форма (5 игр, W-L-OTL)</i>:\nTOR 0-0-0 · NYR 1-0-0" in text
 
 
 @pytest.mark.asyncio
@@ -1127,8 +1135,8 @@ async def test_team_profile_reports_unknown_abbreviation(
 
 
 # ---------------------------------------------------------------------------
-# Сценарий «по странам»: подменю игроков → «По странам» → рейтинг → страна →
-# вратари (Задача 42)
+# Сценарий «по странам»: /countries → рейтинг → страна → группа игроков
+# (Задача 49)
 # ---------------------------------------------------------------------------
 
 # code, players, points, goals — рейтинг стран, прошедших порог
@@ -1136,94 +1144,71 @@ _COUNTRY_RANKING_ROWS = [("CAN", 5, 100, 40), ("USA", 3, 60, 20)]
 _COUNTRY_ROUTES = [
     ("r.nationality IS NULL", [(2,)]),
     ("HAVING COUNT", _COUNTRY_RANKING_ROWS),
-    # lastname, position, team, goals, assists, points, games, total; total=25
+    # lastname, team, wins, save_pct, gaa, games, shutouts, total
+    ("FROM goalies_season_stats g", [("Hellebuyck", "WPG", 35, 92.1, 2.4, 60, 5, 1)]),
+    # lastname, team, goals, points, toi, hits, shots, blocked, total; total=25
     # при LIMIT 10 — страница со смещением 10 имеет и prev, и next.
-    ("COUNT(*) OVER ()", [("McDavid", "C", "EDM", 30, 60, 90, 70, 25)]),
-    # lastname, team, games, wins, save_pct, gaa
-    ("FROM goalies_season_stats g", [("Hellebuyck", "WPG", 60, 35, 92.1, 2.4)]),
+    ("COUNT(*) OVER ()", [("McDavid", "EDM", 30, 90, "21:30", 40, 200, 30, 25)]),
 ]
 
 
 @pytest.mark.asyncio
-async def test_player_submenu_has_country_button(
-    bot_module, make_callback_update, fake_context
+async def test_countries_command_lists_countries_with_buttons(
+    bot_module, fake_db_router, make_message_update, fake_context
 ):
-    script_bot = bot_module("script_bot")
-    dialog_states = bot_module("dialog_states")
-    update = make_callback_update(str(dialog_states.PLAYER_STATS))
-
-    await script_bot.bot_player_stats(update, fake_context)
-
-    (edited,) = update.callback_query.edited_texts
-    assert str(dialog_states.COUNTRY_STATS) in _callback_data(edited["reply_markup"])
-
-
-@pytest.mark.asyncio
-async def test_country_rankings_button_lists_countries_and_back_to_player_menu(
-    bot_module, fake_db_router, make_callback_update, fake_context
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
+    bot = bot_module("bot")
     fake_db_router(_COUNTRY_ROUTES)
-    update = make_callback_update(str(dialog_states.COUNTRY_STATS))
+    update = make_message_update("/countries")
 
-    state = await stats_handlers.bot_country_rankings(update, fake_context)
+    await bot.cmd_countries(update, fake_context)
 
-    (edited,) = update.callback_query.edited_texts
-    assert state == dialog_states.SECOND
-    assert "1. 🇨🇦 Канада — игроков: 5, очков: 100" in edited["text"]
-    assert "Страна не указана в данных NHL у игроков: 2 (не учтены)" in edited["text"]
-    buttons = _flat_buttons(edited["reply_markup"])
-    assert [(b.text, b.callback_data) for b in buttons[:2]] == [
-        ("🇨🇦 Канада", "cntr:CAN:0"),
-        ("🇺🇸 США", "cntr:USA:0"),
-    ]
-    assert [b.callback_data for b in buttons[2:]] == [
-        str(dialog_states.PLAYER_STATS),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
+    (reply,) = update.message.replies
+    assert reply["parse_mode"] == "HTML"
+    assert "1. 🇨🇦 Канада   5 100 40 20.0" in reply["text"]
+    assert "Страна не указана в данных NHL у игроков: 2 (не учтены)" in reply["text"]
+    assert [(b.text, b.callback_data) for b in _flat_buttons(reply["reply_markup"])] == [
+        ("🇨🇦 Канада", "cn:CAN:F:0"),
+        ("🇺🇸 США", "cn:USA:F:0"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_country_rankings_reports_empty_season_without_country_buttons(
-    bot_module, fake_db_router, make_callback_update, fake_context
+async def test_countries_command_reports_empty_season_without_buttons(
+    bot_module, fake_db_router, make_message_update, fake_context
 ):
-    """Пустой сезон (Задача 36): текст с причиной, только футер навигации."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
+    """Пустой сезон (Задача 36): текст с причиной, без кнопок стран."""
+    bot = bot_module("bot")
     fake_db_router([("HAVING COUNT", [])])
-    update = make_callback_update(str(dialog_states.COUNTRY_STATS))
+    update = make_message_update("/countries")
 
-    await stats_handlers.bot_country_rankings(update, fake_context)
+    await bot.cmd_countries(update, fake_context)
 
-    (edited,) = update.callback_query.edited_texts
-    assert "В базе нет данных по странам для этого сезона." in edited["text"]
-    assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.PLAYER_STATS)
-    assert len(_flat_buttons(edited["reply_markup"])) == 3
+    (reply,) = update.message.replies
+    assert "В базе нет данных по странам для этого сезона." in reply["text"]
+    assert _flat_buttons(reply["reply_markup"]) == []
 
 
 @pytest.mark.asyncio
-async def test_country_page_pages_and_offers_goalies(
+async def test_country_page_pages_and_switches_groups(
     bot_module, fake_db_router, make_callback_update, fake_context
 ):
     stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
     cursor = fake_db_router(_COUNTRY_ROUTES)
-    update = make_callback_update("cntr:CAN:10")
+    update = make_callback_update("cn:CAN:D:10")
 
-    state = await stats_handlers.bot_country_page(update, fake_context)
+    await stats_handlers.callback_country(update, fake_context)
 
     (edited,) = update.callback_query.edited_texts
-    assert state == dialog_states.SECOND
-    assert "11. McDavid [C] EDM — 90 очк. (30+60), игр: 70" in edited["text"]
-    assert _callback_data(edited["reply_markup"]) == [
-        "cntr:CAN:0",
-        "cntr:CAN:20",
-        "cntg:CAN",
-        str(dialog_states.COUNTRY_STATS),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
+    assert "<b>Защитники: 🇨🇦 Канада</b>" in edited["text"]
+    assert "11. McDavid EDM 30 90 21:30  40 30" in edited["text"]
+    buttons = _flat_buttons(edited["reply_markup"])
+    assert [(b.text, b.callback_data) for b in buttons] == [
+        ("← 1–10", "cn:CAN:D:0"),
+        ("21–30 →", "cn:CAN:D:20"),
+        ("Нападающие", "cn:CAN:F:0"),
+        ("• Защитники", "cn:CAN:D:0"),
+        ("Вратари", "cn:CAN:G:0"),
+        ("« Страны", "cn:list"),
     ]
     # Код страны дошёл до БД только параметром, смещение — из callback_data.
     assert cursor.executed[-1][1] == (bot_module("config").SEASON_ID, "CAN", 10, 10)
@@ -1234,38 +1219,34 @@ async def test_country_page_rejects_code_outside_ranking(
     bot_module, fake_db_router, make_callback_update, fake_context
 ):
     """Код прошёл паттерн, но не в рейтинге сезона — текст, не исключение и не
-    запрос по стране; «« Назад»» на рейтинг стран."""
+    запрос по стране; «« Страны»» на рейтинг."""
     stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
     cursor = fake_db_router([("HAVING COUNT", _COUNTRY_RANKING_ROWS)])
-    update = make_callback_update("cntr:ZZZ:0")
+    update = make_callback_update("cn:ZZZ:F:0")
 
-    state = await stats_handlers.bot_country_page(update, fake_context)
+    await stats_handlers.callback_country(update, fake_context)
 
     (edited,) = update.callback_query.edited_texts
-    assert state == dialog_states.SECOND
     assert "Страна не найдена в рейтинге этого сезона." in edited["text"]
-    assert str(dialog_states.COUNTRY_STATS) in _callback_data(edited["reply_markup"])
+    assert "cn:list" in _callback_data(edited["reply_markup"])
     assert len(cursor.executed) == 1
 
 
 @pytest.mark.asyncio
-async def test_country_goalies_screen_and_back_buttons(
+async def test_country_goalies_and_back_to_rankings(
     bot_module, fake_db_router, make_callback_update, fake_context
 ):
     stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
     fake_db_router(_COUNTRY_ROUTES)
-    update = make_callback_update("cntg:CAN")
+    update = make_callback_update("cn:CAN:G:0")
 
-    state = await stats_handlers.bot_country_goalies(update, fake_context)
+    await stats_handlers.callback_country(update, fake_context)
 
     (edited,) = update.callback_query.edited_texts
-    assert state == dialog_states.SECOND
-    assert "1. Hellebuyck WPG — игр: 60, побед: 35, SV%: 92.1%, GAA: 2.40" in edited["text"]
-    assert _callback_data(edited["reply_markup"]) == [
-        "cntr:CAN:0",
-        str(dialog_states.COUNTRY_STATS),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
+    assert "1. Hellebuyck WPG 35 92.1% 2.4 60</pre>" in edited["text"]
+
+    back = make_callback_update("cn:list")
+    await stats_handlers.callback_country(back, fake_context)
+    (edited,) = back.callback_query.edited_texts
+    assert "<b>Рейтинг стран</b>" in edited["text"]
+    assert _callback_data(edited["reply_markup"]) == ["cn:CAN:F:0", "cn:USA:F:0"]

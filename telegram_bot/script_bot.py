@@ -13,7 +13,6 @@ from telegram.ext import CallbackContext, ConversationHandler
 
 from dialog_states import (
     CHOOSE_STATS,
-    COUNTRY_STATS,
     DAY_DIGEST,
     DIGEST_CALENDAR_TODAY,
     DIGEST_CALENDAR_YESTERDAY,
@@ -168,16 +167,14 @@ async def bot_team_stats(update: Update, context: CallbackContext) -> int:
 
 
 async def bot_player_stats(update: Update, context: CallbackContext) -> int:
-    """Выбор типа игроков: полевые (PLAYER_FIELD), вратари (PLAYER_GOALIE) или
-    рейтинг по странам (COUNTRY_STATS, Задача 42). «« Назад»» ведёт в корень
-    меню (CHOOSE_STATS)."""
+    """Выбор типа игроков: полевые (PLAYER_FIELD) или вратари (PLAYER_GOALIE).
+    «« Назад»» ведёт в корень меню (CHOOSE_STATS). Страны — команда /countries."""
     query = update.callback_query
     assert query is not None
     await query.answer()
     keyboard = [
         InlineKeyboardButton("Статистика полевых игроков", callback_data=str(PLAYER_FIELD)),
         InlineKeyboardButton("Статистика вратарей", callback_data=str(PLAYER_GOALIE)),
-        InlineKeyboardButton("По странам", callback_data=str(COUNTRY_STATS)),
     ]
     footer = [[InlineKeyboardButton("« Назад", callback_data=str(CHOOSE_STATS))]]
     reply_markup = InlineKeyboardMarkup(

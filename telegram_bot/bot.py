@@ -40,7 +40,8 @@ from bot_messages import (
 )
 from nhl_scoreboard import (
     ScoreboardFetchError,
-    fetch_score_now,
+    fetch_score,
+    league_today,
     slate_games_sorted,
     tonight_match_button_label,
     tonight_reply_intro,
@@ -49,7 +50,6 @@ from help_text import ADVANCED_COMMAND_INTRO, BOT_COMMANDS, HELP_MESSAGE, START_
 from dialog_states import (
     build_menu,
     CHOOSE_STATS,
-    COUNTRY_STATS,
     DAY_DIGEST,
     DIGEST_CALENDAR_TODAY,
     DIGEST_CALENDAR_YESTERDAY,
@@ -112,8 +112,7 @@ from script_bot import (
     stats_root_edit,
 )
 from stats_handlers import (
-    COUNTRY_GOALIES_CALLBACK_PATTERN,
-    COUNTRY_PAGE_CALLBACK_PATTERN,
+    COUNTRY_CALLBACK_PATTERN,
     DIGEST_BACK_FROM_DATE_CALLBACK,
     DIGEST_EXPAND_CALLBACK_PATTERN,
     LEADERS_PICK_CALLBACK_PATTERN,
@@ -124,9 +123,8 @@ from stats_handlers import (
     TEAM_PROFILE_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
-    bot_country_goalies,
-    bot_country_page,
-    bot_country_rankings,
+    callback_country,
+    country_rankings_reply,
     bot_digest_calendar_today,
     bot_digest_calendar_yesterday,
     bot_digest_custom_date,
@@ -268,9 +266,9 @@ async def cmd_tonight(update: Update, context: CallbackContext) -> None:
     """`/tonight`: расписание сегодняшнего дня из NHL API плюс кнопки матчей."""
     message = _message(update)
     try:
-        payload = await asyncio.to_thread(fetch_score_now)
+        payload = await asyncio.to_thread(fetch_score, league_today())
     except ScoreboardFetchError:
-        logger.exception("NHL score/now request failed")
+        logger.exception("NHL score request failed")
         await message.reply_text(
             "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже."
         )
@@ -339,6 +337,12 @@ async def cmd_leaders(update: Update, context: CallbackContext) -> None:
         parse_mode="HTML",
         reply_markup=leaders_category_keyboard(),
     )
+
+
+async def cmd_countries(update: Update, context: CallbackContext) -> None:
+    """`/countries`: рейтинг стран сезона и кнопки стран (Задача 49)."""
+    text, markup = country_rankings_reply()
+    await _message(update).reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 
 async def cmd_game(update: Update, context: CallbackContext) -> None:
@@ -561,7 +565,6 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_conference_stats, pattern='^' + str(TEAM_CONFERENCE_STATS) + '$'),
                 CallbackQueryHandler(bot_team_division_stats, pattern='^' + str(TEAM_DIVISION_STATS) + '$'),
                 CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
-                CallbackQueryHandler(bot_country_rankings, pattern='^' + str(COUNTRY_STATS) + '$'),
             ],
             SECOND: [
                 CallbackQueryHandler(
@@ -581,13 +584,6 @@ def build_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(bot_team_stats, pattern='^' + str(TEAM_STATS) + '$'),
                 CallbackQueryHandler(bot_team_profile_show, pattern=TEAM_PROFILE_CALLBACK_PATTERN),
                 CallbackQueryHandler(bot_team_profile_pick, pattern='^' + str(TEAM_PROFILE_PICK) + '$'),
-                # Экраны стран (Задача 42): «« Назад»» со страны — на рейтинг
-                # (COUNTRY_STATS), с рейтинга — на подменю игроков (PLAYER_STATS,
-                # возвращает FIRST, поэтому нужен и в SECOND).
-                CallbackQueryHandler(bot_country_page, pattern=COUNTRY_PAGE_CALLBACK_PATTERN),
-                CallbackQueryHandler(bot_country_goalies, pattern=COUNTRY_GOALIES_CALLBACK_PATTERN),
-                CallbackQueryHandler(bot_country_rankings, pattern='^' + str(COUNTRY_STATS) + '$'),
-                CallbackQueryHandler(bot_player_stats, pattern='^' + str(PLAYER_STATS) + '$'),
                 # «« Назад»» результата дайджеста ведёт на меню дайджеста;
                 # та же просроченная кнопка ввода даты, что и в FIRST — сюда
                 # тоже можно вернуться из SECOND.
@@ -628,6 +624,7 @@ def build_standalone_handlers() -> List[BaseHandler]:
         CommandHandler("team", cmd_team),
         MessageHandler(filters.Regex(TEAM_COMMAND_PATTERN), cmd_team_profile),
         CommandHandler("leaders", cmd_leaders),
+        CommandHandler("countries", cmd_countries),
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
         CommandHandler("subscribe_digest", cmd_subscribe_digest),
@@ -638,6 +635,7 @@ def build_standalone_handlers() -> List[BaseHandler]:
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=DIGEST_EXPAND_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_tonight_game, pattern=TONIGHT_GAME_CALLBACK_PATTERN),
+        CallbackQueryHandler(callback_country, pattern=COUNTRY_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),
         CallbackQueryHandler(
             callback_standalone_adv,

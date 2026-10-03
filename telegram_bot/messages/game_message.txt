@@ -1,4 +1,5 @@
-🏒 <b>{{ team_home }} {{ home_score }}:{{ away_score }} {{ team_away }}</b>{{ extra }} {{ period_scores }}
+🏒 <b>{{ team_home }} {{ home_score }}:{{ away_score }} {{ team_away }}</b>{{ extra }}
+<i>Периоды: {{ period_scores }}</i>
 {%- if recent_form %}
 {{ recent_form }}
 {%- endif %}
@@ -12,7 +13,8 @@
 
 <b>Броски</b>: {{ home_shots }} - {{ away_shots }}
 <b>Штрафное время</b>: {{ home_penalties }} - {{ away_penalties }}
-<b>Вратари</b>: {{ goalkeepers }}
+<b>Вратари</b>
+{{ goalkeepers }}
 {%- if three_stars %}
 
 <b>Звёзды матча</b>
