@@ -1087,7 +1087,9 @@ def player_stats_with_count(
             _format_leader_value(stats['points'][i]), games, extra,
         ])
 
-    body = _pre_table(rows, "rllrrr") if stats['count_rows'] else ""
+    # Конец сезона («1353/1483», «100.») не влезает в телефон — первым уходит
+    # хвост (сейвы/смены), затем игры.
+    body = _pre_table_fit(rows, "rllrrr", drop_order=(5, 4)) if stats['count_rows'] else ""
     if name_stats:
         body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
@@ -1454,23 +1456,23 @@ _GROUP_BY_COLUMNS = {
 }
 
 
-def _team_group_summary(group_by: str, heading: str, template_file: str) -> str:
+def _team_group_summary(group_by: str, heading: str) -> str:
     """Общий скелет сводки по конференциям/дивизионам сезона `config.SEASON_ID`:
     число команд и средние командные метрики (`teams_stats` ⋈ `teams` по
-    `(team_id, season_id)`) — голы за игру, % большинства/меньшинства, очки на
-    команду. Только то, что уже лежит в `teams_stats` — без вычисляемых
+    `(team_id, season_id)`) — очки на команду, голы за игру, % большинства/
+    меньшинства. Только то, что уже лежит в `teams_stats` — без вычисляемых
     «рейтингов». Не дублирует турнирную таблицу `/standings` (`team_table()`): там
-    строка на каждую команду, здесь — усреднение по группе. Пустой сезон —
-    текст с причиной, а не пустая таблица (Задача 36).
+    строка на каждую команду, здесь — усреднение по группе. Строка группы —
+    выровненная таблица в ширину телефона (`_pre_table_fit`: первой уходит число
+    команд). Пустой сезон — текст с причиной, а не пустая таблица (Задача 36).
 
     Args:
         group_by: `_CONFERENCE_GROUP_BY` или `_DIVISION_GROUP_BY` — единственные
             допустимые значения (ключ `_GROUP_BY_COLUMNS`), подставляются в
             `GROUP BY`/`ORDER BY` как есть, т.к. это фиксированные литералы
-            модуля, а не значения от пользователя.
+            модуля, а не значения от пользователя. Имя группы в таблице —
+            последняя колонка группировки (конференция или дивизион).
         heading: заголовок сообщения («Сводка по конференциям»/«...дивизионам»).
-        template_file: путь к Jinja2-шаблону строк (`row.conference_name` и,
-            для дивизионов, ещё `row.division_name` — остальные поля общие).
     """
     group_columns = _GROUP_BY_COLUMNS[group_by]
     season_esc = html.escape(str(config.CURRENT_SEASON))
@@ -1497,26 +1499,29 @@ def _team_group_summary(group_by: str, heading: str, template_file: str) -> str:
             f"<b>{heading}</b> ({season_esc})\n"
             "В базе нет командной статистики для этого сезона."
         )
-    rows = []
-    for i in range(stats["count_rows"]):
-        row = {
-            col: html.escape((stats[col][i] or "—").strip()) for col in group_columns
-        }
-        row["team_count"] = _format_leader_value(stats["team_count"][i])
-        row["goals_per_game"] = _fmt_num_max2(stats["avg_goals_per_game"][i])
-        row["power_play_percentage"] = _fmt_pct_stat(stats["avg_power_play_percentage"][i])
-        row["penalty_kill_percentage"] = _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i])
-        row["avg_points"] = _fmt_num_max2(stats["avg_points"][i])
-        rows.append(row)
-    return output_text(template_file, {"season": season_esc, "rows": rows})
+    rows = [["", "Ком", "О", "Г/и", "Бол", "Мен"]] + [
+        [
+            (stats[group_columns[-1]][i] or "—").strip(),
+            _format_leader_value(stats["team_count"][i]),
+            _fmt_num_max2(stats["avg_points"][i]),
+            _fmt_num_max2(stats["avg_goals_per_game"][i]),
+            _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
+            _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
+        ]
+        for i in range(stats["count_rows"])
+    ]
+    return (
+        f"<b>{heading}</b> ({season_esc})\n\n"
+        + _pre_table_fit(rows, "lrrrrr", drop_order=(1,))
+        + "\n<i>Средние по команде: О — очки, Г/и — голы за игру, Бол — реализация "
+        "большинства, Мен — игра в меньшинстве; Ком — число команд.</i>"
+    )
 
 
 def conference_summary() -> str:
     """Сводка по конференциям — тонкая обёртка над `_team_group_summary()`
     с группировкой по конференции; см. докстринг `_team_group_summary()`."""
-    return _team_group_summary(
-        _CONFERENCE_GROUP_BY, "Сводка по конференциям", "messages/conference_stats.txt"
-    )
+    return _team_group_summary(_CONFERENCE_GROUP_BY, "Сводка по конференциям")
 
 
 def division_summary() -> str:
@@ -1524,9 +1529,7 @@ def division_summary() -> str:
     группировкой по конференции+дивизиону (дивизион однозначно лежит в одной
     конференции, но `GROUP BY` требует явного столбца); см. докстринг
     `_team_group_summary()`."""
-    return _team_group_summary(
-        _DIVISION_GROUP_BY, "Сводка по дивизионам", "messages/division_stats.txt"
-    )
+    return _team_group_summary(_DIVISION_GROUP_BY, "Сводка по дивизионам")
 
 
 def season_team_abbrevs() -> List[str]:
@@ -1968,8 +1971,8 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
         stats = cached_fetch_all(sql_text, params, columns=cols)
         extra_key, extra_label = ("shots", "Бр") if group == "F" else ("blocked", "Бл")
         header = ["", "Игрок", "Ком", "Г", "О", "ВП", "Хит", extra_label]
-        # Броски / блоки отличают нападающих от защитников — уходят после силовых.
-        drop_order = (6, 7, 5)
+        # Важность — из отзыва: голы, очки, время, силовые; броски/блоки — дополнение.
+        drop_order = (7, 6, 5)
         cells = [
             [fmt(stats[k][i]) for k in ("goals", "points", "toi", "hits", extra_key)]
             for i in range(stats["count_rows"])

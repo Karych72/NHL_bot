@@ -699,6 +699,23 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     assert "None" not in text
 
 
+def test_player_stat_leaderboard_page_season_end_goalie_drops_saves_to_fit_phone(bot_module):
+    """Конец сезона, 10-е место: «10. Vasilevsk… TBL 92.52 58 1353/1483» —
+    37 символов, шире экрана телефона: колонка сейвов уходит, игры остаются."""
+    bot_messages = bot_module("bot_messages")
+    rows = {
+        "lastname": ["Vasilevskiy"], "roster_position": ["G"],
+        "points": [92.52], "team": ["TBL"],
+        "tail_games": [58], "tail_saves": [1353], "tail_shots_against": [1483],
+        "total": [1], "count_rows": 1,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = bot_messages.player_stat_leaderboard_page(
+            "Топ", "goalies_season_stats", "save_percentage", 9
+        )
+    assert "<pre>    Вратарь    Ком  Знач  И\n10. Vasilevsk… TBL 92.52 58</pre>" in text
+
+
 # ---------------------------------------------------------------------------
 # conference_summary() / division_summary() — Задача 41, Фаза B
 #
@@ -738,7 +755,7 @@ def test_conference_summary_escapes_html_in_group_name(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text = bot_messages.conference_summary()
-    assert "<b>&lt;i&gt;Western</b>" in text
+    assert "<pre>           Ком  О Г/и Бол Мен\n&lt;i&gt;Western  16 50   3 20% 80%</pre>" in text
     assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 
@@ -1383,8 +1400,8 @@ def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
 
 
 # ---------------------------------------------------------------------------
-# Задача 42: статистика по странам — country_rankings / country_skaters_page /
-# country_goalies (БД подменена fake_db_router)
+# Задачи 42, 49: статистика по странам — country_rankings / country_page
+# (БД подменена fake_db_router)
 # ---------------------------------------------------------------------------
 
 _COUNTRY_RANKING = ("GROUP BY r.nationality", [("CAN", 4, 100, 40), ("XXX", 3, 30, 9)])
@@ -1455,8 +1472,8 @@ def test_country_page_skaters_show_group_stats_and_has_next(
 def test_country_page_drops_least_important_columns_to_fit_phone_width(
     bot_module, fake_db_router
 ):
-    """Строка шире экрана телефона: первыми уходят силовые, броски остаются —
-    они отличают экран нападающих от защитников; фамилия обрезается."""
+    """Строка шире экрана телефона: первыми уходят броски — по отзыву они
+    дополнение к голам, очкам, времени и силовым; фамилия обрезается."""
     bot_messages = bot_module("bot_messages")
     fake_db_router([
         _COUNTRY_RANKING,
@@ -1467,8 +1484,8 @@ def test_country_page_drops_least_important_columns_to_fit_phone_width(
 
     table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
     assert table.splitlines() == [
-        "   Игрок      Ком  Г   О    ВП  Бр",
-        "1. Nugent-Ho… EDM 64 153 21:30 300",
+        "   Игрок      Ком  Г   О    ВП Хит",
+        "1. Nugent-Ho… EDM 64 153 21:30 150",
     ]
     assert all(len(line) <= 36 for line in table.splitlines())
 

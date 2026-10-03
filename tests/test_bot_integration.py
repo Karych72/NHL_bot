@@ -829,14 +829,13 @@ async def test_team_submenu_conference_button_renders_summary_and_back_to_team_s
     assert state == dialog_states.SECOND
     assert edited["parse_mode"] == "HTML"
     assert "<b>Сводка по конференциям</b>" in text
+    # Выровненная таблица в ширину телефона, легенда сокращений под ней.
     assert (
-        "<b>Eastern</b> — команд: 16, очки (среднее): 55.25, "
-        "голы/игра: 3.12, большинство: 21.5%, меньшинство: 79.5%"
+        "<pre>        Ком     О  Г/и   Бол    Мен\n"
+        "Eastern  16 55.25 3.12 21.5%  79.5%\n"
+        "Western  16  50.1 2.98 19.9% 80.25%</pre>"
     ) in text
-    assert (
-        "<b>Western</b> — команд: 16, очки (среднее): 50.1, "
-        "голы/игра: 2.98, большинство: 19.9%, меньшинство: 80.25%"
-    ) in text
+    assert "Бол — реализация большинства" in text
     # «« Назад»» ведёт на родительское подменю команд, как у TEAM_PROCENT_WINS и соседей.
     assert _callback_data(edited["reply_markup"]) == [
         str(dialog_states.TEAM_STATS),
@@ -846,7 +845,7 @@ async def test_team_submenu_conference_button_renders_summary_and_back_to_team_s
 
 
 @pytest.mark.asyncio
-async def test_team_submenu_division_button_renders_summary_with_conference_label(
+async def test_team_submenu_division_button_renders_summary_table(
     bot_module, fake_db_router, make_callback_update, fake_context
 ):
     stats_handlers = bot_module("stats_handlers")
@@ -860,10 +859,7 @@ async def test_team_submenu_division_button_renders_summary_with_conference_labe
     text = edited["text"]
     assert state == dialog_states.SECOND
     assert "<b>Сводка по дивизионам</b>" in text
-    assert (
-        "<b>Metropolitan</b> (Eastern) — команд: 8, очки (среднее): 52.5, "
-        "голы/игра: 3, большинство: 20%, меньшинство: 80%"
-    ) in text
+    assert "<pre>             Ком    О Г/и Бол Мен\nMetropolitan   8 52.5   3 20% 80%</pre>" in text
     assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
 
 

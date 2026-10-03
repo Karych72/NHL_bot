@@ -95,8 +95,6 @@ NHL_bot/
 │   ├── bot_messages.py                 # Формирование текстов ответов (SQL + шаблоны)
 │   ├── template_funcs.py              # Обёртка Jinja2
 │   ├── messages/                       # Jinja2-шаблоны сообщений
-│   │   ├── conference_stats.txt
-│   │   ├── division_stats.txt
 │   │   ├── game_message.txt
 │   │   ├── league_table.txt
 │   │   └── team_profile.txt
@@ -343,7 +341,7 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 Единственный event loop обслуживает и polling, и обработчики, поэтому блокирующая
 работа выносится в поток: скачивание MP4 + два прохода ffmpeg
 (`video_replay.download_goal_video`, до ~2 минут) вызывается из `stats_handlers`
-через `asyncio.to_thread`. Запросы psycopg2 и `nhl_scoreboard.fetch_score`
+через `asyncio.to_thread`, как и `nhl_scoreboard.fetch_score` (`/tonight`). Запросы psycopg2
 пока идут в loop'е синхронно.
 
 ### Троттлинг callback-кнопок: `throttle.py`
@@ -451,7 +449,7 @@ bot.py
   │   │
   │   └── bot_messages.py    Бизнес-логика формирования текстов:
   │       │                  day_digest(), player_stats(),
-  │       │                  team_table(), team_stats(), game_message()
+  │       │                  team_table(), country_page(), game_message()
   │       │
   │       ├── database.py    Пул (SimpleConnectionPool 1–5 conn),
   │       │                  get_connection(), fetch_all(), cached_fetch_all(),
@@ -751,16 +749,22 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ### `game_message.txt` — Карточка матча
 
 ```
-🏒 Rangers 3:2 Lightning (OT) (1:1, 0:0, 1:1, 1:0)   ← хозяева первыми, счёт между командами
-Форма (5 игр, W-L-OTL): Rangers 3-1-1 · Lightning 2-2-1   ← игры до дня этого матча
+🏒 Rangers 3:2 Lightning (OT)            ← хозяева первыми, счёт между командами
+Периоды: 1:1, 0:0, 1:1, 1:0
+Форма (5 игр, W-L-OTL):
+Rangers 3-1-1 · Lightning 2-2-1         ← игры до дня этого матча
 
-1:0 PANARIN  [L](Fox, Zibanejad)  5:23   ← <pre>, колонки выровнены; россияне капсом
-1:1 KUCHEROV [R](Point) (ББ)     12:45   ← ББ/МБ/ПВ + ПШ (победная шайба), без периода
+ 5:23 1:0 PANARIN [L]                   ← <pre> в ширину телефона: время без периода,
+          Fox, Zibanejad                   счёт, автор; ассистенты строкой ниже; россияне капсом
+12:45 1:1 KUCHEROV [R] (ББ)             ← ББ/МБ/ПВ + ПШ (победная шайба)
+          Point
 ...
 
 Броски: 32 - 28
 Штрафное время: 6 - 8
-Вратари: Shesterkin (26/28, 92.86%, 65:00) - Vasilevskiy (29/32, 90.63%, 65:00)
+Вратари                                 ← по строке на вратаря, хозяева первыми
+Shesterkin — 26/28, 92.86%, 65:00
+Vasilevskiy — 29/32, 90.63%, 65:00
 
 Звёзды матча
 ★1 Panarin (NYR) — 2+1
@@ -769,15 +773,18 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ```
 
 Шапка и сводка `/today` считаются одной функцией `_game_score_header()`; сводка
-(`day_digest_summary_body(game_ids)`) выравнивает счёт в колонку: хозяева и гости — `<code>`,
-счёт — `<b>` (жирного внутри `<pre>`/`<code>` Telegram не допускает). Кнопки видео голов —
+(`day_digest_summary_body(game_ids)`, элемент на матч) выравнивает счёт в колонку: хозяева и
+гости — `<code>`, счёт — `<b>` (жирного внутри `<pre>`/`<code>` Telegram не допускает); периоды —
+второй строкой матча, чтобы строка помещалась на экране телефона; обрезка под лимит Telegram —
+целыми матчами. Кнопки видео голов —
 «▶ 1:0 PANARIN 5:23» в два столбца.
 
 ### Лидерборды (без шаблона)
 
 `player_stats_with_count()` / `team_stats_with_count()` рисуют страницу выровненной таблицей в
-`<pre>` (`_pre_table`) с шапкой: строка не длиннее ~36 символов, чтобы помещаться на экране
-телефона (фамилия обрезается до 10 символов). Значение сортировки — колонка «Знач», рядом
+`<pre>` с шапкой: строка не длиннее 36 символов (`_MOBILE_PRE_WIDTH`), чтобы помещаться на экране
+телефона — фамилия обрезается до 10 символов, а если строка всё равно шире (конец сезона,
+места от 10-го), `_pre_table_fit` убирает хвост (сейвы/смены), затем игры. Значение сортировки — колонка «Знач», рядом
 постоянный «хвост» (Задача 18): игры/смены для полевых (players_season_stats и, через
 `LEFT/INNER JOIN players_season_stats`, players_advanced_stats/players_shot_types),
 игры и сейвы/броски против для вратарей, игры/баланс/очки для команд (аббревиатура клуба):
@@ -799,13 +806,14 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 `WC2`, затем черта и три ближайших претендента. Команды, ещё не сыгравшие в сезоне, в `teams_stats`
 отсутствуют и в таблицу не попадают.
 
-### `conference_stats.txt` / `division_stats.txt` — Сводки по конференциям и дивизионам (Задача 41, Фаза B)
+### Сводки по конференциям и дивизионам (Задача 41, Фаза B; без шаблона)
 
 `bot_messages.conference_summary()` / `division_summary()`: `GROUP BY t.conference_name` /
 `t.division_name` над `teams_stats ⋈ teams` по `(team_id, season_id)` для `config.SEASON_ID` —
 число команд и средние по группе `goals_per_game`/`power_play_percentage`/
 `penalty_kill_percentage`/`points` (только то, что уже есть в `teams_stats`, без вычисляемых
-«рейтингов»). Не дублирует `/standings` (`team_table()`, строка на команду) — здесь усреднение по
+«рейтингов»), выровненной таблицей в ширину телефона (`_pre_table_fit`: первым уходит число
+команд) с легендой сокращений. Не дублирует `/standings` (`team_table()`, строка на команду) — здесь усреднение по
 группе. Пустой сезон — текст с причиной вместо пустой таблицы. Экраны: кнопки «По конференциям» /
 «По дивизионам» в подменю команд (`TEAM_STATS`, рядом с TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
 TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`
