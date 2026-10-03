@@ -1439,9 +1439,9 @@ def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, f
     )
 
 
-def _country_skater_row(lastname, goals, points, hits, shots, blocked):
-    # lastname, team, goals, points, toi, hits, shots, blocked, total (total=25)
-    return (lastname, "EDM", goals, points, "21:30", hits, shots, blocked, 25)
+def _country_skater_row(lastname, goals, points, games, hits, shots, blocked):
+    # lastname, team, goals, points, games, toi, hits, shots, blocked, total (total=25)
+    return (lastname, "EDM", goals, points, games, "21:30", hits, shots, blocked, 25)
 
 
 @pytest.mark.parametrize(
@@ -1455,16 +1455,17 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     bot_messages = bot_module("bot_messages")
     cursor = fake_db_router([
         _COUNTRY_RANKING,
-        ("OVER ()", [_country_skater_row("McDavid", 4, 8, 5, 20, 2)]),
+        ("OVER ()", [_country_skater_row("McDavid", 4, 8, 7, 5, 20, 2)]),
     ])
 
     text, has_prev, has_next = bot_messages.country_page("CAN", group, 10)
 
     assert "🇨🇦 Канада" in text
     assert "Показаны 11 из 25 строк." in text
-    assert f"<pre>    Игрок   Ком Г О    ВП Хит {extra_header}\n" in text
+    # Игры — сразу после голов и очков (Задача 50).
+    assert f"<pre>    Игрок   Ком Г О И    ВП Хит {extra_header}\n" in text
     extra = "20" if group == "F" else " 2"
-    assert f"11. McDavid EDM 4 8 21:30   5 {extra}</pre>" in text
+    assert f"11. McDavid EDM 4 8 7 21:30   5 {extra}</pre>" in text
     assert (has_prev, has_next) == (True, True)
     assert position_sql in cursor.executed[-1][0]
 
@@ -1472,20 +1473,20 @@ def test_country_page_skaters_show_group_stats_and_has_next(
 def test_country_page_drops_least_important_columns_to_fit_phone_width(
     bot_module, fake_db_router
 ):
-    """Строка шире экрана телефона: первыми уходят броски — по отзыву они
-    дополнение к голам, очкам, времени и силовым; фамилия обрезается."""
+    """Строка шире экрана телефона: первыми уходят броски, затем силовые — по
+    отзыву они дополнение к голам, очкам, играм и времени; фамилия обрезается."""
     bot_messages = bot_module("bot_messages")
     fake_db_router([
         _COUNTRY_RANKING,
-        ("OVER ()", [_country_skater_row("Nugent-Hopkins", 64, 153, 150, 300, 20)]),
+        ("OVER ()", [_country_skater_row("Nugent-Hopkins", 64, 153, 82, 150, 300, 20)]),
     ])
 
     text, _, _ = bot_messages.country_page("CAN", "F", 0)
 
     table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
     assert table.splitlines() == [
-        "   Игрок      Ком  Г   О    ВП Хит",
-        "1. Nugent-Ho… EDM 64 153 21:30 150",
+        "   Игрок      Ком  Г   О  И    ВП",
+        "1. Nugent-Ho… EDM 64 153 82 21:30",
     ]
     assert all(len(line) <= 36 for line in table.splitlines())
 
