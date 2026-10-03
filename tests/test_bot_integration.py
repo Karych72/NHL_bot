@@ -809,7 +809,8 @@ _CONFERENCE_ROWS = [
 # conference_name, division_name, team_count, avg_goals_per_game,
 # avg_power_play_percentage, avg_penalty_kill_percentage, avg_points
 _DIVISION_ROWS = [
-    ("Eastern", "Metropolitan", 8, 3.0, 20.0, 80.0, 52.5),
+    # Значения конца сезона: с двумя знаками строка была бы 37 символов.
+    ("Eastern", "Metropolitan", 8, 3.0812, 21.4567, 79.8811, 91.375),
 ]
 
 
@@ -831,9 +832,9 @@ async def test_team_submenu_conference_button_renders_summary_and_back_to_team_s
     assert "<b>Сводка по конференциям</b>" in text
     # Выровненная таблица в ширину телефона, легенда сокращений под ней.
     assert (
-        "<pre>        Ком     О  Г/и   Бол    Мен\n"
-        "Eastern  16 55.25 3.12 21.5%  79.5%\n"
-        "Western  16  50.1 2.98 19.9% 80.25%</pre>"
+        "<pre>        Ком    О Г/и   Бол   Мен\n"
+        "Eastern  16 55.2 3.1 21.5% 79.5%\n"
+        "Western  16 50.1 3.0 19.9% 80.2%</pre>"
     ) in text
     assert "Бол — реализация большинства" in text
     # «« Назад»» ведёт на родительское подменю команд, как у TEAM_PROCENT_WINS и соседей.
@@ -859,7 +860,10 @@ async def test_team_submenu_division_button_renders_summary_table(
     text = edited["text"]
     assert state == dialog_states.SECOND
     assert "<b>Сводка по дивизионам</b>" in text
-    assert "<pre>             Ком    О Г/и Бол Мен\nMetropolitan   8 52.5   3 20% 80%</pre>" in text
+    # Шире экрана телефона с числом команд — оно уходит, средние остаются.
+    table = "                О Г/и   Бол   Мен\nMetropolitan 91.4 3.1 21.5% 79.9%"
+    assert f"<pre>{table}</pre>" in text
+    assert all(len(line) <= 36 for line in table.splitlines())
     assert _callback_data(edited["reply_markup"])[0] == str(dialog_states.TEAM_STATS)
 
 

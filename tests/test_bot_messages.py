@@ -755,7 +755,7 @@ def test_conference_summary_escapes_html_in_group_name(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text = bot_messages.conference_summary()
-    assert "<pre>           Ком  О Г/и Бол Мен\n&lt;i&gt;Western  16 50   3 20% 80%</pre>" in text
+    assert "<pre>           Ком    О Г/и   Бол   Мен\n&lt;i&gt;Western  16 50.0 3.0 20.0% 80.0%</pre>" in text
     assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 

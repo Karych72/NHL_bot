@@ -1499,14 +1499,19 @@ def _team_group_summary(group_by: str, heading: str) -> str:
             f"<b>{heading}</b> ({season_esc})\n"
             "В базе нет командной статистики для этого сезона."
         )
+    # Средние — один знак после запятой: с двумя «Metropolitan 91.38 3.08 21.46%
+    # 79.88%» — 37 символов, шире экрана телефона.
+    def avg(val: Union[int, float, Decimal, None], unit: str = "") -> str:
+        return "—" if val is None else f"{float(val):.1f}{unit}"
+
     rows = [["", "Ком", "О", "Г/и", "Бол", "Мен"]] + [
         [
             (stats[group_columns[-1]][i] or "—").strip(),
             _format_leader_value(stats["team_count"][i]),
-            _fmt_num_max2(stats["avg_points"][i]),
-            _fmt_num_max2(stats["avg_goals_per_game"][i]),
-            _fmt_pct_stat(stats["avg_power_play_percentage"][i]),
-            _fmt_pct_stat(stats["avg_penalty_kill_percentage"][i]),
+            avg(stats["avg_points"][i]),
+            avg(stats["avg_goals_per_game"][i]),
+            avg(stats["avg_power_play_percentage"][i], "%"),
+            avg(stats["avg_penalty_kill_percentage"][i], "%"),
         ]
         for i in range(stats["count_rows"])
     ]
