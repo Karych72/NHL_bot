@@ -1913,7 +1913,7 @@ COUNTRY_GROUPS: Dict[str, Tuple[str, str]] = {
     "G": ("Вратари", "r.position = 'G'"),
 }
 _COUNTRY_SKATERS_SQL = (
-    "SELECT r.lastname, t.abbreviation, p.goals, p.points, p.time_on_ice_per_game, "
+    "SELECT r.lastname, t.abbreviation, p.goals, p.points, p.games, p.time_on_ice_per_game, "
     "p.hits, p.shots, p.blocked, COUNT(*) OVER () "
     + _COUNTRY_FROM
     + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
@@ -1932,8 +1932,10 @@ _COUNTRY_GOALIES_SQL = (
     "LIMIT %s OFFSET %s"
 )
 _COUNTRY_LEGEND = {
-    "F": "Г — голы, О — очки, ВП — время на льду за игру, Хит — силовые, Бр — броски",
-    "D": "Г — голы, О — очки, ВП — время на льду за игру, Хит — силовые, Бл — блоки",
+    "F": "Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
+         "Бр — броски",
+    "D": "Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
+         "Бл — блоки",
     "G": "В — победы, %ОБ — отражённые броски, КН — коэффициент надёжности, И — игры, "
          "Сух — сухие матчи",
 }
@@ -1943,7 +1945,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     """Страница игроков страны одной группы — выровненная таблица (Задача 49).
 
     Зачем: экран `/countries` после выбора страны; у каждой группы свои главные
-    показатели: нападающие — голы, очки, время, силовые, броски; защитники — то же
+    показатели: нападающие — голы, очки, игры, время, силовые, броски; защитники — то же
     с блоками вместо бросков; вратари — победы, %ОБ, КН, игры, сухие. Не влезающие
     в ширину телефона колонки убираются с наименее важной (`_pre_table_fit`).
 
@@ -1971,15 +1973,16 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
             for i in range(stats["count_rows"])
         ]
     else:
-        cols = ["lastname", "team", "goals", "points", "toi", "hits", "shots", "blocked", "total"]
+        cols = ["lastname", "team", "goals", "points", "games", "toi", "hits", "shots",
+                "blocked", "total"]
         sql_text = _COUNTRY_SKATERS_SQL.format(group=COUNTRY_GROUPS[group][1])
         stats = cached_fetch_all(sql_text, params, columns=cols)
         extra_key, extra_label = ("shots", "Бр") if group == "F" else ("blocked", "Бл")
-        header = ["", "Игрок", "Ком", "Г", "О", "ВП", "Хит", extra_label]
-        # Важность — из отзыва: голы, очки, время, силовые; броски/блоки — дополнение.
-        drop_order = (7, 6, 5)
+        header = ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", extra_label]
+        # Важность — из отзыва: голы, очки, игры, время, силовые; броски/блоки — дополнение.
+        drop_order = (8, 7, 6)
         cells = [
-            [fmt(stats[k][i]) for k in ("goals", "points", "toi", "hits", extra_key)]
+            [fmt(stats[k][i]) for k in ("goals", "points", "games", "toi", "hits", extra_key)]
             for i in range(stats["count_rows"])
         ]
     n = stats["count_rows"]
@@ -1990,7 +1993,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
         for i in range(n)
     ]
     body = (
-        _pre_table_fit(rows, "rllrrrrr", drop_order) if n else ""
+        _pre_table_fit(rows, "rll" + "r" * (len(header) - 3), drop_order) if n else ""
     ) + f"\n<i>{_COUNTRY_LEGEND[group]}.</i>"
     heading = f"{COUNTRY_GROUPS[group][0]}: {_country_label(code)}"
     return _leaderboard_page_text(heading, body, n, total, offset)

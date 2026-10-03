@@ -1146,9 +1146,9 @@ _COUNTRY_ROUTES = [
     ("HAVING COUNT", _COUNTRY_RANKING_ROWS),
     # lastname, team, wins, save_pct, gaa, games, shutouts, total
     ("FROM goalies_season_stats g", [("Hellebuyck", "WPG", 35, 92.1, 2.4, 60, 5, 1)]),
-    # lastname, team, goals, points, toi, hits, shots, blocked, total; total=25
+    # lastname, team, goals, points, games, toi, hits, shots, blocked, total; total=25
     # при LIMIT 10 — страница со смещением 10 имеет и prev, и next.
-    ("COUNT(*) OVER ()", [("McDavid", "EDM", 30, 90, "21:30", 40, 200, 30, 25)]),
+    ("COUNT(*) OVER ()", [("McDavid", "EDM", 30, 90, 70, "21:30", 40, 200, 30, 25)]),
 ]
 
 
@@ -1200,7 +1200,8 @@ async def test_country_page_pages_and_switches_groups(
 
     (edited,) = update.callback_query.edited_texts
     assert "<b>Защитники: 🇨🇦 Канада</b>" in edited["text"]
-    assert "11. McDavid EDM 30 90 21:30  40 30" in edited["text"]
+    # С блоками строка 37 символов — они уходят первыми, игры остаются.
+    assert "11. McDavid EDM 30 90 70 21:30  40</pre>" in edited["text"]
     buttons = _flat_buttons(edited["reply_markup"])
     assert [(b.text, b.callback_data) for b in buttons] == [
         ("← 1–10", "cn:CAN:D:0"),
