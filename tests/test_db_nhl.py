@@ -235,10 +235,13 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     Юнит-тесты рассылки подменяют репозиторий; здесь проверяется, что сами запросы
     выбирают и отмечают нужные строки — ошибка в ``WHERE`` у ``mark_night_sent``
     слала бы дайджест каждые полчаса при зелёных юнит-тестах. Строки заводятся на
-    заведомо несуществующий ``chat_id`` и удаляются до и после теста.
+    отрицательные ``chat_id``, которых нет среди подписчиков (диапазон групп Telegram,
+    но таких групп у бота нет), и удаляются до и после теста.
     """
 
     CHAT = -999000060
+    # Соседний подписчик: отметка CHAT не должна задеть чужую строку.
+    OTHER_CHAT = -999000061
     TEAM = 6
     NIGHT = date(2026, 10, 6)
 
@@ -252,13 +255,16 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     def _delete_rows(self):
         # psycopg2: `with conn` — транзакция, а не закрытие; закрывает `closing`.
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+            cur.execute(
+                "DELETE FROM bot_subscriptions WHERE chat_id IN (%s, %s)",
+                (self.CHAT, self.OTHER_CHAT),
+            )
 
-    def _digest_rows(self):
-        return [r for r in self.repo.list_active_morning_digest_rows() if r[0] == self.CHAT]
+    def _digest_rows(self, chat_id=CHAT):
+        return [r for r in self.repo.list_active_morning_digest_rows() if r[0] == chat_id]
 
-    def _team_rows(self):
-        return [r for r in self.repo.list_active_team_scores_rows() if r[0] == self.CHAT]
+    def _team_rows(self, chat_id=CHAT):
+        return [r for r in self.repo.list_active_team_scores_rows() if r[0] == chat_id]
 
     def test_digest_time_lifecycle(self):
         repo = self.repo
@@ -273,21 +279,27 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
         repo.deactivate_morning_digest(self.CHAT)
         self.assertIsNone(repo.get_digest_time(self.CHAT))
+        self.assertEqual(self._digest_rows(), [], "погашенная подписка в рассылке")
         self.assertFalse(repo.set_digest_time(self.CHAT, time(8, 0)), "подписка погашена")
-        # Повторная подписка сохраняет выбранное время.
+        # Повторная подписка снова активна и сохраняет выбранное время.
         self.assertEqual(repo.upsert_morning_digest(self.CHAT), time(7, 30))
+        self.assertEqual(self._digest_rows(), [(self.CHAT, time(7, 30), None)])
 
     def test_mark_night_sent_touches_only_its_subscription(self):
         repo = self.repo
-        repo.upsert_morning_digest(self.CHAT)
-        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        for chat_id in (self.CHAT, self.OTHER_CHAT):
+            repo.upsert_morning_digest(chat_id)
+            repo.upsert_team_scores(chat_id, self.TEAM)
+        latest = repo.LATEST_DIGEST_TIME
 
         repo.mark_night_sent(self.CHAT, "morning_digest", None, self.NIGHT)
-        self.assertEqual(self._digest_rows(), [(self.CHAT, repo.LATEST_DIGEST_TIME, self.NIGHT)])
+        self.assertEqual(self._digest_rows(), [(self.CHAT, latest, self.NIGHT)])
         self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, None)])
+        self.assertEqual(self._digest_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, latest, None)])
 
         repo.mark_night_sent(self.CHAT, "team_scores", self.TEAM, self.NIGHT)
         self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, self.NIGHT)])
+        self.assertEqual(self._team_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, self.TEAM, None)])
 
     def test_digest_time_only_on_morning_digest(self):
         """CHECK миграции 0005: время есть ровно у ``morning_digest``."""
