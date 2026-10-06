@@ -28,7 +28,6 @@ from scheduled_sync import (  # noqa: E402
     _next_target,
     build_commands,
     check,
-    is_digest_slot,
     run_once,
     seconds_until_next_run,
     sync_window,
@@ -64,10 +63,10 @@ class SecondsUntilNextRunTest(unittest.TestCase):
     def test_evening_slot_before_midnight_steps_into_next_day(self) -> None:
         self.assertEqual(seconds_until_next_run(_utc(23, 45)), 15 * 60.0)
 
-    def test_last_night_slot_is_digest_hour(self) -> None:
+    def test_last_night_slot_is_night_end_hour(self) -> None:
         self.assertEqual(seconds_until_next_run(_utc(7, 30)), 30 * 60.0)
 
-    def test_exactly_at_digest_slot_skips_the_day_to_evening(self) -> None:
+    def test_exactly_at_last_slot_skips_the_day_to_evening(self) -> None:
         self.assertEqual(seconds_until_next_run(_utc(8, 0)), 10 * 3600.0)
 
     def test_daytime_waits_for_evening_start(self) -> None:
@@ -87,20 +86,6 @@ class SecondsUntilNextRunTest(unittest.TestCase):
         self.assertEqual(slots[-1], _utc(8, 0, day=16))
 
 
-class IsDigestSlotTest(unittest.TestCase):
-    def test_only_the_last_night_slot_sends_the_digest(self) -> None:
-        self.assertTrue(is_digest_slot(_utc(8, 0)))
-        for hour, minute in ((18, 0), (0, 0), (7, 30), (8, 30)):
-            self.assertFalse(is_digest_slot(_utc(hour, minute)), (hour, minute))
-
-    def test_slot_reached_through_next_target_is_exact(self) -> None:
-        """``loop`` решает про дайджест по ``target`` из ``_next_target``: точка
-        должна совпасть с сеткой до микросекунды, иначе 08:00 не узнается."""
-        now = _utc(7, 30) + timedelta(microseconds=123457)
-        target, _ = _next_target(now, target=now)
-        self.assertTrue(is_digest_slot(target))
-
-
 class NextTargetTest(unittest.TestCase):
     """Fix round 1: ``loop`` must not fire the same slot twice.
 
@@ -108,11 +93,11 @@ class NextTargetTest(unittest.TestCase):
     ``time.sleep`` (or wall clock reading a hair behind its target) wake the
     loop just before a slot: ``now`` still looked "before the slot", so the
     very next iteration scheduled again almost immediately and fired a second
-    run (and digest) for the same slot. ``_next_target`` fixes this by
+    run for the same slot. ``_next_target`` fixes this by
     computing from ``max(now, target)`` — see its docstring.
     """
 
-    def test_normal_case_before_digest_slot(self) -> None:
+    def test_normal_case_before_last_slot(self) -> None:
         now = _utc(7, 0)
         next_target, sleep_seconds = _next_target(now, target=now)
 
@@ -120,7 +105,7 @@ class NextTargetTest(unittest.TestCase):
         self.assertEqual(next_target, _utc(7, 30))
 
     def test_early_wake_just_before_target_does_not_double_fire(self) -> None:
-        """``now`` reads a hair before ``target`` (the digest slot that just ran) —
+        """``now`` reads a hair before ``target`` (the last slot that just ran) —
         must advance to the evening slot, not fire almost immediately again."""
         target = _utc(8, 0)
         now = target - timedelta(microseconds=1)
@@ -205,11 +190,10 @@ class BuildCommandsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.window = ("2026-09-13", "2026-09-15")
 
-    def test_without_digest(self) -> None:
-        commands = build_commands(self.window, with_digest=False)
+    def test_loader_then_digest_job(self) -> None:
+        """Рассылка — после каждого прогона: кому пора, решает сам ``push_digest_job``."""
+        loader_cmd, digest_cmd = build_commands(self.window)
 
-        self.assertEqual(len(commands), 1)
-        loader_cmd = commands[0]
         self.assertEqual(
             loader_cmd.argv,
             [
@@ -223,12 +207,6 @@ class BuildCommandsTest(unittest.TestCase):
             ],
         )
         self.assertEqual(loader_cmd.cwd.name, "pipeline")
-
-    def test_with_digest(self) -> None:
-        commands = build_commands(self.window, with_digest=True)
-
-        self.assertEqual(len(commands), 2)
-        digest_cmd = commands[1]
         self.assertEqual(digest_cmd.argv, [sys.executable, "-u", "push_digest_job.py"])
         self.assertEqual(digest_cmd.cwd.name, "telegram_bot")
 

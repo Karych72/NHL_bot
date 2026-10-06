@@ -7,7 +7,8 @@
     chat_id        BIGINT NOT NULL,       -- Telegram chat_id получателя
     kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores'
     team_id        BIGINT,                -- для kind='team_scores'; NULL для дайджеста
-    timezone       TEXT,                  -- опционально IANA, для окна «утра»
+    digest_time    TIME,                  -- время дайджеста по МСК; только у morning_digest
+    last_sent_night DATE,                 -- ночь, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,
     created_at     TIMESTAMPTZ DEFAULT now()
 
@@ -29,8 +30,9 @@
 Утренний дайджест
 -----------------
 Сервис `sync` (``pipeline/scheduled_sync.py``, Задача 34) вызывает скрипт после
-последнего ночного прогона загрузчика (08:00 UTC); тот для всех ``active`` строк с
-``kind='morning_digest'`` вызывает ту же логику, что и ``day_digest()`` /
+каждого ночного прогона загрузчика; тот для ``active`` строк с ``kind='morning_digest'``,
+которым пора (Задача 60: наступило ``digest_time`` и ночь загружена, либо 11:00 МСК),
+вызывает ту же логику, что и ``day_digest()`` /
 ``dispatch_day_digest_messages``, и шлёт результат с ``attach_conv_nav_on_last=False``
 и без callback-кнопок диалога.
 

@@ -9,6 +9,8 @@
 
 import asyncio
 import logging
+import re
+from datetime import time
 from typing import List, Optional
 
 import psycopg2
@@ -193,6 +195,16 @@ _TONIGHT_BUTTON_COLUMNS = 3
 # не попадает. Вариант `/BOS@bot` не принимается: regex не знает имени бота и
 # отвечал бы на команды, адресованные чужим ботам.
 TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})(_[Ff][Uu][Ll][Ll])?$"
+
+# Время дайджеста на выбор (МСК), шаг 30 минут — сетка прогонов sync. Раньше 05:00 ночь
+# почти никогда не загружена, позже 11:00 (последний прогон) выбрать нельзя: после него
+# рассылку некому запустить.
+DIGEST_TIME_CHOICES = [
+    time(h, m) for h in range(5, 24) for m in (0, 30)
+    if time(h, m) <= subscription_repo.LATEST_DIGEST_TIME
+]
+DIGEST_TIME_CALLBACK_PATTERN = r"^dt:(\d{2}):(\d{2})$"
+_DIGEST_TIME_COLUMNS = 4
 
 
 def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
@@ -410,18 +422,81 @@ async def _subscriptions_db_error_reply(update: Update) -> None:
     )
 
 
+def _digest_time_reply(digest_time: time) -> str:
+    """Текст о времени доставки дайджеста — общий для подписки и смены времени."""
+    return (
+        f"Дайджест придёт в {digest_time:%H:%M} МСК, а если матчи ночи к этому времени ещё "
+        "не загружены — сразу после загрузки последнего (не позже 11:00). "
+        "Сменить время: /digest_time"
+    )
+
+
 async def cmd_subscribe_digest(update: Update, context: CallbackContext) -> None:
     """`/subscribe_digest`: подписка чата на утренний дайджест."""
     try:
-        subscription_repo.upsert_morning_digest(_chat_id(update))
+        digest_time = subscription_repo.upsert_morning_digest(_chat_id(update))
     except psycopg2.Error:
         logger.exception("subscribe_digest DB error")
         await _subscriptions_db_error_reply(update)
         return
     await _message(update).reply_text(
-        "Вы подписаны на утренний дайджест (матчи последнего игрового дня в базе). "
-        "Отписка: /unsubscribe_digest. Фактическая отправка по расписанию включается администратором (`ENABLE_PUSH_DIGEST=1`)."
+        "Вы подписаны на утренний дайджест (матчи прошедшей ночи). "
+        + _digest_time_reply(digest_time)
+        + "\nОтписка: /unsubscribe_digest. Фактическая отправка включается администратором "
+        "(`ENABLE_PUSH_DIGEST=1`)."
     )
+
+
+async def cmd_digest_time(update: Update, context: CallbackContext) -> None:
+    """`/digest_time`: кнопки выбора времени доставки дайджеста (МСК, шаг 30 минут).
+
+    Зачем: подписчик сам решает, когда получать дайджест; без подписки выбирать
+    нечего — отвечаем подсказкой `/subscribe_digest`.
+    """
+    try:
+        current = subscription_repo.get_digest_time(_chat_id(update))
+    except psycopg2.Error:
+        logger.exception("digest_time DB error")
+        await _subscriptions_db_error_reply(update)
+        return
+    if current is None:
+        await _message(update).reply_text("Сначала подпишитесь на дайджест: /subscribe_digest")
+        return
+    buttons = [
+        InlineKeyboardButton(
+            ("• " if t == current else "") + f"{t:%H:%M}", callback_data=f"dt:{t:%H}:{t:%M}"
+        )
+        for t in DIGEST_TIME_CHOICES
+    ]
+    await _message(update).reply_text(
+        f"Сейчас дайджест приходит в {current:%H:%M} МСК (или позже, если ночь ещё не "
+        "загружена). Выберите время:",
+        reply_markup=InlineKeyboardMarkup(build_menu(buttons, n_cols=_DIGEST_TIME_COLUMNS)),
+    )
+
+
+async def callback_digest_time(update: Update, context: CallbackContext) -> None:
+    """Кнопка `dt:HH:MM` из `/digest_time`: сохраняет время и заменяет клавиатуру ответом."""
+    query = update.callback_query
+    assert query is not None and query.data is not None
+    m = re.match(DIGEST_TIME_CALLBACK_PATTERN, query.data)
+    assert m is not None
+    digest_time = time(int(m.group(1)), int(m.group(2)))
+    if digest_time not in DIGEST_TIME_CHOICES:
+        raise ValueError(f"digest time outside of choices: {query.data}")
+    await query.answer()
+    try:
+        updated = subscription_repo.set_digest_time(_chat_id(update), digest_time)
+    except psycopg2.Error:
+        logger.exception("digest_time DB error")
+        await query.edit_message_text(
+            "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
+        )
+        return
+    if updated:
+        await query.edit_message_text(_digest_time_reply(digest_time))
+    else:
+        await query.edit_message_text("Подписки на дайджест нет: /subscribe_digest")
 
 
 async def cmd_unsubscribe_digest(update: Update, context: CallbackContext) -> None:
@@ -460,7 +535,8 @@ async def cmd_subscribe_team(update: Update, context: CallbackContext) -> None:
         return
     await message.reply_text(
         f"Подписка на итоги игр команды сохранена (аббревиатура {args[0].strip().upper()}). "
-        "Отписка: /unsubscribe_team с тем же кодом. Рассылка по календарному «вчера» при ENABLE_PUSH_DIGEST=1."
+        "Отписка: /unsubscribe_team с тем же кодом. Счёт придёт, как только загрузятся все "
+        "матчи ночи (не позже 11:00 МСК), при ENABLE_PUSH_DIGEST=1."
     )
 
 
@@ -628,12 +704,14 @@ def build_standalone_handlers() -> List[BaseHandler]:
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
         CommandHandler("subscribe_digest", cmd_subscribe_digest),
+        CommandHandler("digest_time", cmd_digest_time),
         CommandHandler("unsubscribe_digest", cmd_unsubscribe_digest),
         CommandHandler("subscribe_team", cmd_subscribe_team),
         CommandHandler("unsubscribe_team", cmd_unsubscribe_team),
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=DIGEST_EXPAND_CALLBACK_PATTERN),
+        CallbackQueryHandler(callback_digest_time, pattern=DIGEST_TIME_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_tonight_game, pattern=TONIGHT_GAME_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_country, pattern=COUNTRY_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),
