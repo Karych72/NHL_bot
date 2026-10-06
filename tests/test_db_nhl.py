@@ -18,6 +18,8 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from contextlib import closing
+from datetime import date, time
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -220,6 +222,85 @@ class TestNhlSchema(unittest.TestCase):
                 "bot_subscriptions without digest_time/last_sent_night — run: make db-migrate",
             )
             self.assertNotIn("timezone", columns)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestSubscriptionRepoSql(unittest.TestCase):
+    """SQL ``subscription_repo`` на настоящей ``bot_subscriptions`` (Задача 60).
+
+    Юнит-тесты рассылки подменяют репозиторий; здесь проверяется, что сами запросы
+    выбирают и отмечают нужные строки — ошибка в ``WHERE`` у ``mark_night_sent``
+    слала бы дайджест каждые полчаса при зелёных юнит-тестах. Строки заводятся на
+    заведомо несуществующий ``chat_id`` и удаляются до и после теста.
+    """
+
+    CHAT = -999000060
+    TEAM = 6
+    NIGHT = date(2026, 10, 6)
+
+    def setUp(self):
+        import subscription_repo
+
+        self.repo = subscription_repo
+        self._delete_rows()
+        self.addCleanup(self._delete_rows)
+
+    def _delete_rows(self):
+        # psycopg2: `with conn` — транзакция, а не закрытие; закрывает `closing`.
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+
+    def _digest_rows(self):
+        return [r for r in self.repo.list_active_morning_digest_rows() if r[0] == self.CHAT]
+
+    def _team_rows(self):
+        return [r for r in self.repo.list_active_team_scores_rows() if r[0] == self.CHAT]
+
+    def test_digest_time_lifecycle(self):
+        repo = self.repo
+        self.assertIsNone(repo.get_digest_time(self.CHAT))
+        self.assertFalse(repo.set_digest_time(self.CHAT, time(7, 0)), "нет подписки")
+
+        self.assertEqual(repo.upsert_morning_digest(self.CHAT), repo.LATEST_DIGEST_TIME)
+        self.assertEqual(self._digest_rows(), [(self.CHAT, repo.LATEST_DIGEST_TIME, None)])
+
+        self.assertTrue(repo.set_digest_time(self.CHAT, time(7, 30)))
+        self.assertEqual(repo.get_digest_time(self.CHAT), time(7, 30))
+
+        repo.deactivate_morning_digest(self.CHAT)
+        self.assertIsNone(repo.get_digest_time(self.CHAT))
+        self.assertFalse(repo.set_digest_time(self.CHAT, time(8, 0)), "подписка погашена")
+        # Повторная подписка сохраняет выбранное время.
+        self.assertEqual(repo.upsert_morning_digest(self.CHAT), time(7, 30))
+
+    def test_mark_night_sent_touches_only_its_subscription(self):
+        repo = self.repo
+        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+
+        repo.mark_night_sent(self.CHAT, "morning_digest", None, self.NIGHT)
+        self.assertEqual(self._digest_rows(), [(self.CHAT, repo.LATEST_DIGEST_TIME, self.NIGHT)])
+        self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, None)])
+
+        repo.mark_night_sent(self.CHAT, "team_scores", self.TEAM, self.NIGHT)
+        self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, self.NIGHT)])
+
+    def test_digest_time_only_on_morning_digest(self):
+        """CHECK миграции 0005: время есть ровно у ``morning_digest``."""
+        self.repo.upsert_morning_digest(self.CHAT)
+        for statement in (
+            "INSERT INTO bot_subscriptions (chat_id, kind, team_id, digest_time) "
+            "VALUES (%s, 'team_scores', 7, '07:00')",
+            "UPDATE bot_subscriptions SET digest_time = NULL "
+            "WHERE chat_id = %s AND kind = 'morning_digest'",
+        ):
+            with self.subTest(statement=statement), closing(_connect()) as conn, conn:
+                with self.assertRaises(psycopg2.errors.CheckViolation), conn.cursor() as cur:
+                    cur.execute(statement, (self.CHAT,))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
