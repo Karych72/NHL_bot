@@ -407,8 +407,8 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 
 Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `up`/`build` его не трогают,
 запуск — `docker compose --profile modeling up -d retrain`; `pipeline/scheduled_retrain.py`, образ со стадией
-`modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ежедневно 08:00 UTC,
-окна разнесены) — прогоняет цепочку: `build-dataset --mode train` (те же аргументы, что у
+`modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ночью каждые 30 минут,
+18:00–08:00 UTC, окна разнесены) — прогоняет цепочку: `build-dataset --mode train` (те же аргументы, что у
 ручного пути, чтобы `features_hash` совпал) → `train --config configs/modeling_default.yaml
 --task home_win --no-promote`. Цикл просыпается **ежедневно в 12:00 UTC** (после
 утреннего sync) и запускает цепочку, если нужен догоняющий прогон или сегодня понедельник и реального прогона не было 6 дней (утренний догон в понедельник не даёт второго прогона в 12:00, воскресный пропускает ближайший понедельник); при старте

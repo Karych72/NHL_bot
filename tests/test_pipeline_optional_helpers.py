@@ -122,6 +122,7 @@ class GoalAggregationTest(LoaderApiTestCase):
         instance = make_loader()
 
         pbp = {
+            "gameState": "OFF",
             "periodDescriptor": {"number": 1, "periodType": "REG"},
             "plays": [
                 {
@@ -160,6 +161,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             ],
         }
         box = {
+            "gameState": "OFF",
             "homeTeam": {"sog": 25},
             "awayTeam": {"sog": 18},
             "playerByGameStats": {
@@ -196,7 +198,10 @@ class GoalAggregationTest(LoaderApiTestCase):
             },
         }
 
-        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box, "landing": {}})
+        stub_api(
+            instance,
+            json_routes={"play-by-play": pbp, "boxscore": box, "landing": {"gameState": "OFF"}},
+        )
         games_meta = [
             {
                 "id": 2025020001,
@@ -257,6 +262,7 @@ class GoalAggregationTest(LoaderApiTestCase):
     def test_no_minus_9999_in_goal_rows(self):
         instance = make_loader()
         pbp = {
+            "gameState": "OFF",
             "periodDescriptor": {"number": 1, "periodType": "REG"},
             "plays": [
                 {
@@ -273,6 +279,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             ],
         }
         box = {
+            "gameState": "OFF",
             "homeTeam": {"sog": 0},
             "awayTeam": {"sog": 0},
             "playerByGameStats": {
@@ -280,7 +287,10 @@ class GoalAggregationTest(LoaderApiTestCase):
                 "awayTeam": {"forwards": [], "defense": [], "goalies": []},
             },
         }
-        stub_api(instance, json_routes={"play-by-play": pbp, "boxscore": box, "landing": {}})
+        stub_api(
+            instance,
+            json_routes={"play-by-play": pbp, "boxscore": box, "landing": {"gameState": "OFF"}},
+        )
         _, all_goals_rows, *_ = instance.build_game_rows(
             [
                 {

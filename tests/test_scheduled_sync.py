@@ -28,6 +28,7 @@ from scheduled_sync import (  # noqa: E402
     _next_target,
     build_commands,
     check,
+    is_digest_slot,
     run_once,
     seconds_until_next_run,
     sync_window,
@@ -51,70 +52,102 @@ class SyncWindowTest(unittest.TestCase):
         )
 
 
+def _utc(hour: int, minute: int = 0, day: int = 15) -> datetime:
+    return datetime(2026, 9, day, hour, minute, 0, tzinfo=timezone.utc)
+
+
 class SecondsUntilNextRunTest(unittest.TestCase):
-    def test_before_sync_hour_same_day(self) -> None:
-        now = datetime(2026, 9, 15, 7, 0, 0, tzinfo=timezone.utc)
-        seconds = seconds_until_next_run(now)
-        self.assertEqual(seconds, 3600.0)
+    def test_night_steps_every_half_hour(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(2, 10)), 20 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(2, 30)), 30 * 60.0)
 
-    def test_exactly_at_sync_hour_rolls_to_tomorrow(self) -> None:
-        now = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
-        seconds = seconds_until_next_run(now)
-        self.assertEqual(seconds, 24 * 3600.0)
+    def test_evening_slot_before_midnight_steps_into_next_day(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(23, 45)), 15 * 60.0)
 
-    def test_after_sync_hour_rolls_to_tomorrow(self) -> None:
-        now = datetime(2026, 9, 15, 9, 30, 0, tzinfo=timezone.utc)
-        seconds = seconds_until_next_run(now)
-        self.assertEqual(seconds, (24 - 1.5) * 3600.0)
+    def test_last_night_slot_is_digest_hour(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(7, 30)), 30 * 60.0)
+
+    def test_exactly_at_digest_slot_skips_the_day_to_evening(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(8, 0)), 10 * 3600.0)
+
+    def test_daytime_waits_for_evening_start(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(12, 5)), (5 * 60 + 55) * 60.0)
+
+    def test_just_before_evening_start(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(17, 59)), 60.0)
+
+    def test_night_has_29_slots_from_18_to_08_inclusive(self) -> None:
+        """Сутки по сетке: 18:00…23:30 (12) + 00:00…08:00 (17) = 29 прогонов."""
+        moment, slots = _utc(8, 0), []
+        while moment < _utc(8, 0, day=16):
+            moment += timedelta(seconds=seconds_until_next_run(moment))
+            slots.append(moment)
+        self.assertEqual(len(slots), 29)
+        self.assertEqual(slots[0], _utc(18, 0))
+        self.assertEqual(slots[-1], _utc(8, 0, day=16))
+
+
+class IsDigestSlotTest(unittest.TestCase):
+    def test_only_the_last_night_slot_sends_the_digest(self) -> None:
+        self.assertTrue(is_digest_slot(_utc(8, 0)))
+        for hour, minute in ((18, 0), (0, 0), (7, 30), (8, 30)):
+            self.assertFalse(is_digest_slot(_utc(hour, minute)), (hour, minute))
+
+    def test_slot_reached_through_next_target_is_exact(self) -> None:
+        """``loop`` решает про дайджест по ``target`` из ``_next_target``: точка
+        должна совпасть с сеткой до микросекунды, иначе 08:00 не узнается."""
+        now = _utc(7, 30) + timedelta(microseconds=123457)
+        target, _ = _next_target(now, target=now)
+        self.assertTrue(is_digest_slot(target))
 
 
 class NextTargetTest(unittest.TestCase):
-    """Fix round 1: ``loop`` must not fire the digest twice for one slot.
+    """Fix round 1: ``loop`` must not fire the same slot twice.
 
     Recomputing purely from ``now`` after each run let an imprecise
     ``time.sleep`` (or wall clock reading a hair behind its target) wake the
-    loop just before ``SYNC_HOUR_UTC``: ``now`` still looked "before today's
-    slot", so the very next iteration scheduled again almost immediately and
-    fired a second digest for the same slot. ``_next_target`` fixes this by
+    loop just before a slot: ``now`` still looked "before the slot", so the
+    very next iteration scheduled again almost immediately and fired a second
+    run (and digest) for the same slot. ``_next_target`` fixes this by
     computing from ``max(now, target)`` — see its docstring.
     """
 
-    def test_normal_case_before_sync_hour(self) -> None:
-        now = datetime(2026, 9, 15, 7, 0, 0, tzinfo=timezone.utc)
+    def test_normal_case_before_digest_slot(self) -> None:
+        now = _utc(7, 0)
         next_target, sleep_seconds = _next_target(now, target=now)
 
-        self.assertEqual(sleep_seconds, 3600.0)
-        self.assertEqual(next_target, datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(sleep_seconds, 30 * 60.0)
+        self.assertEqual(next_target, _utc(7, 30))
 
     def test_early_wake_just_before_target_does_not_double_fire(self) -> None:
-        """``now`` reads a hair before ``target`` (the slot that just ran) —
-        must still advance a full day, not fire almost immediately again."""
-        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+        """``now`` reads a hair before ``target`` (the digest slot that just ran) —
+        must advance to the evening slot, not fire almost immediately again."""
+        target = _utc(8, 0)
         now = target - timedelta(microseconds=1)
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 24 * 3600.0)
-        self.assertEqual(next_target, datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(sleep_seconds, 10 * 3600.0)
+        self.assertEqual(next_target, _utc(18, 0))
 
     def test_now_exactly_at_target_does_not_double_fire(self) -> None:
-        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
+        target = _utc(2, 30)
 
         next_target, sleep_seconds = _next_target(now=target, target=target)
 
-        self.assertEqual(sleep_seconds, 24 * 3600.0)
-        self.assertEqual(next_target, datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(sleep_seconds, 30 * 60.0)
+        self.assertEqual(next_target, _utc(3, 0))
 
     def test_long_pause_catches_up_from_now_not_stale_target(self) -> None:
         """Container paused for days: ``now`` is far past ``target`` — the next
         slot must follow the actual current time, not replay from the past."""
-        target = datetime(2026, 9, 15, 8, 0, 0, tzinfo=timezone.utc)
-        now = datetime(2026, 9, 18, 10, 0, 0, tzinfo=timezone.utc)
+        target = _utc(8, 0)
+        now = _utc(10, 0, day=18)
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 22 * 3600.0)
-        self.assertEqual(next_target, datetime(2026, 9, 19, 8, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(sleep_seconds, 8 * 3600.0)
+        self.assertEqual(next_target, _utc(18, 0, day=18))
 
 
 class RunOnceTest(unittest.TestCase):

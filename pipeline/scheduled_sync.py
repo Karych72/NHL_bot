@@ -1,8 +1,9 @@
 """Планировщик автообновления данных (Задача 34).
 
 Единственный сервис, который вызывает ``load_season_modern.py`` без участия
-человека: ежедневно в ``SYNC_HOUR_UTC`` прогоняет загрузчик за скользящее окно
-дат и (если включена рассылка) ``push_digest_job.py`` следом. Пишет статус
+человека: ночью, каждые ``SYNC_STEP`` с ``NIGHT_START_HOUR_UTC`` до ``DIGEST_HOUR_UTC``,
+прогоняет загрузчик за скользящее окно дат — завершённые матчи появляются в БД по ходу
+ночи; последний слот (``DIGEST_HOUR_UTC``) ещё и шлёт ``push_digest_job.py``. Пишет статус
 последнего прогона на диск для docker-healthcheck (``check``). Только stdlib —
 новых зависимостей нет.
 """
@@ -22,9 +23,13 @@ from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Ежедневный запуск в 08:00 UTC (11:00 МСК) — к этому времени матчи в Северной
-# Америке уже закончены.
-SYNC_HOUR_UTC = 8
+# Ночное окно прогонов: каждые SYNC_STEP с 18:00 UTC (21:00 МСК) до 08:00 UTC (11:00 МСК)
+# включительно — сутки игр NHL от дневных матчей выходных до поздних западных. МСК без
+# перехода на летнее время, смещение UTC+3 постоянно. Слот DIGEST_HOUR_UTC — последний
+# в ночи: к нему матчи в Северной Америке закончены, и только он шлёт дайджест.
+NIGHT_START_HOUR_UTC = 18
+DIGEST_HOUR_UTC = 8
+SYNC_STEP = timedelta(minutes=30)
 
 # Окно загрузки [сегодня − WINDOW_DAYS_BACK, сегодня] (UTC-дата): захватывает
 # поздние финалы вчерашнего дня, которые NHL API мог доотдать после полуночи.
@@ -62,21 +67,39 @@ def sync_window(today: date) -> Tuple[str, str]:
     return start.isoformat(), today.isoformat()
 
 
-def seconds_until_next_run(now: datetime) -> float:
-    """Секунд до ближайших ``SYNC_HOUR_UTC:00`` строго после *now*.
+def _in_night(slot: datetime) -> bool:
+    """Лежит ли точка сетки ``SYNC_STEP`` в ночном окне ``NIGHT_START_HOUR_UTC``–``DIGEST_HOUR_UTC``:00."""
+    return slot.hour >= NIGHT_START_HOUR_UTC or (slot.hour, slot.minute) <= (DIGEST_HOUR_UTC, 0)
 
-    Если *now* ровно ``SYNC_HOUR_UTC:00`` или позже — возвращает время до
-    завтрашнего запуска, а не 0/отрицательное число.
+
+def seconds_until_next_run(now: datetime) -> float:
+    """Секунд до ближайшего слота прогона строго после *now*.
+
+    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) внутри ночного окна; днём, после
+    ``DIGEST_HOUR_UTC``:00, следующий слот — ``NIGHT_START_HOUR_UTC``:00. Если *now*
+    ровно на слоте — возвращает время до следующего, а не 0.
 
     Аргументы:
         now: текущий момент (ожидается UTC; tzinfo сохраняется в сравнении).
     """
-    next_run = datetime.combine(
-        now.date(), datetime.min.time().replace(hour=SYNC_HOUR_UTC), tzinfo=now.tzinfo
-    )
-    if next_run <= now:
-        next_run += timedelta(days=1)
-    return (next_run - now).total_seconds()
+    step_minutes = int(SYNC_STEP.total_seconds() // 60)
+    slot = now.replace(minute=now.minute - now.minute % step_minutes, second=0, microsecond=0)
+    slot += SYNC_STEP
+    while not _in_night(slot):
+        slot += SYNC_STEP
+    return (slot - now).total_seconds()
+
+
+def is_digest_slot(slot: datetime) -> bool:
+    """Слот ли это рассылки дайджеста — последний в ночи, ``DIGEST_HOUR_UTC``:00.
+
+    Остальные ночные прогоны только догружают данные: дайджест после каждого из них
+    слал бы подписчикам по сообщению каждые полчаса.
+
+    Аргументы:
+        slot: момент прогона, как его вернул ``_next_target`` (точно на сетке).
+    """
+    return (slot.hour, slot.minute, slot.second, slot.microsecond) == (DIGEST_HOUR_UTC, 0, 0, 0)
 
 
 def _next_target(
@@ -104,8 +127,8 @@ def _next_target(
         now: текущий момент (UTC).
         target: момент последнего прогона/старта цикла (UTC).
         seconds_until: расчёт секунд до ближайшего слота после переданного
-            момента; по умолчанию суточный слот sync (``scheduled_retrain``
-            подставляет недельный).
+            момента; по умолчанию ночная сетка sync (``scheduled_retrain``
+            подставляет свой суточный слот).
 
     Возвращает: ``(next_target, sleep_seconds)`` — момент следующего прогона
     (передать как *target* следующему вызову) и секунды сна до него.
@@ -260,7 +283,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     - ``loop``: сразу при старте — прогон БЕЗ дайджеста (догнать данные после
       перезапуска, не спамя подписчиков повторной рассылкой), затем бесконечно
-      спит до ``SYNC_HOUR_UTC`` и прогоняет С дайджестом. Неуспешный прогон не
+      спит до следующего ночного слота и прогоняет; дайджест — только в слоте
+      ``is_digest_slot``. Неуспешный прогон не
       роняет цикл (отказ виден через статус-файл и ``check``), но исключения
       самого цикла (не команд) не глушатся.
     - ``once``: один прогон с дайджестом, код выхода 0/1.
@@ -271,10 +295,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             ``sys.argv[1:]``.
     """
     parser = argparse.ArgumentParser(
-        description="Scheduled daily NHL data sync (pipeline/scheduled_sync.py).",
+        description="Scheduled nightly NHL data sync (pipeline/scheduled_sync.py).",
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
-    subparsers.add_parser("loop", help="Run forever: catch-up run, then daily at SYNC_HOUR_UTC.")
+    subparsers.add_parser("loop", help="Run forever: catch-up run, then every SYNC_STEP at night.")
     subparsers.add_parser("once", help="Run once (loader + digest), exit 0/1.")
     subparsers.add_parser("check", help="Healthcheck exit code from the last run's status.")
     args = parser.parse_args(argv)
@@ -296,7 +320,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
         time.sleep(sleep_seconds)
         window = sync_window(datetime.now(timezone.utc).date())
-        run_once(build_commands(window, with_digest=True), STATUS_FILE, window)
+        run_once(build_commands(window, with_digest=is_digest_slot(target)), STATUS_FILE, window)
 
 
 if __name__ == "__main__":

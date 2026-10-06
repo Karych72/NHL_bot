@@ -12,6 +12,7 @@ it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 from __future__ import annotations
 
 import re
+import shutil
 import unittest
 from datetime import date, datetime, timezone
 
@@ -104,6 +105,25 @@ class GameRowsTest(LoaderApiTestCase):
         # even though ``shootoutInUse`` (a season-format flag, not an outcome)
         # is true for it.
         self.assertIs(field(row, "games", "is_shootouts"), False)
+
+    def test_game_not_yet_off_in_gamecenter_produces_no_rows(self):
+        """Stats REST already lists the game as finished, but one gamecenter
+        payload still says ``FINAL``/``LIVE``: no row in any of the six tables,
+        so ``run()`` neither writes nor deletes it until a later run."""
+        for payload_name in ("pbp", "box", "landing"):
+            for state in ("FINAL", "LIVE"):
+                with self.subTest(payload=payload_name, state=state):
+                    # The other two (OFF) payloads were cached by the previous
+                    # subtest and would mask this one's non-final payload.
+                    shutil.rmtree(loader.RAW_CACHE_DIR / str(SEASON_ID), ignore_errors=True)
+                    fixture = {
+                        "pbp": "nhl_game_play_by_play.json",
+                        "box": "nhl_game_boxscore.json",
+                        "landing": "nhl_game_landing.json",
+                    }[payload_name]
+                    payload = dict(load_fixture(fixture))
+                    payload["gameState"] = state
+                    self.assertEqual(self._build(**{payload_name: payload}), ([],) * 6)
 
     def test_is_shootouts_true_for_a_game_actually_decided_in_the_shootout(self):
         pbp = dict(load_fixture("nhl_game_play_by_play.json"))
@@ -471,24 +491,27 @@ class GameJsonCacheTest(LoaderApiTestCase):
         self.assertEqual(calls, [])  # fully served from disk, no network at all
 
     def test_non_final_game_state_is_not_cached(self):
-        """A game whose payload reports a non-final ``gameState`` (still in
-        progress) is never written to disk — every call goes to the network."""
-        instance = make_loader()
-        pbp = dict(load_fixture("nhl_game_play_by_play.json"))
-        pbp["gameState"] = "LIVE"
-        calls = []
+        """A game whose payload is not ``OFF`` yet — still in progress, or
+        ``FINAL`` right after the horn — is never written to disk: every call
+        goes to the network."""
+        for state in ("LIVE", "FINAL"):
+            with self.subTest(state=state):
+                instance = make_loader()
+                pbp = dict(load_fixture("nhl_game_play_by_play.json"))
+                pbp["gameState"] = state
+                calls = []
 
-        def counting_get_json(url):
-            calls.append(url)
-            return pbp
+                def counting_get_json(url, pbp=pbp, calls=calls):
+                    calls.append(url)
+                    return pbp
 
-        instance.get_json = counting_get_json
+                instance.get_json = counting_get_json
 
-        instance.fetch_game_json(GAME_ID, "play-by-play")
-        instance.fetch_game_json(GAME_ID, "play-by-play")
+                instance.fetch_game_json(GAME_ID, "play-by-play")
+                instance.fetch_game_json(GAME_ID, "play-by-play")
 
-        self.assertEqual(len(calls), 2)  # not cached: network hit both times
-        self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
+                self.assertEqual(len(calls), 2)  # not cached: network hit both times
+                self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
 
     def test_season_reports_are_not_routed_through_the_cache(self):
         """Season-wide reports (team reference + standings) are untouched by

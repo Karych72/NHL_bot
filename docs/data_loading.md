@@ -267,10 +267,13 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
     `games`, `game_team_stats`, `game_player_stats`, `game_goalie_stats`,
     `game_three_stars` (только из `landing`, звёзд нет ни в `play-by-play`,
     ни в `boxscore`), `all_goals`. Каждые 50 игр в логе пишется прогресс
-    `Processed games: N/total`. Ответ завершённой игры (`gameState` в `OFF`/
-    `FINAL`) кладётся на диск и на повторных запусках читается оттуда без
-    обращения к сети — подробности и последствия для повторного запуска
-    в §6.5.
+    `Processed games: N/total`. Игра считается завершённой, только когда
+    все три ответа gamecenter в `gameState = OFF` (лига утвердила результат):
+    Stats REST может отдать `gameStateId=7` раньше, чем gamecenter сменит
+    `LIVE`/`FINAL` на `OFF`, — такая игра пропускается с предупреждением в логе,
+    строк по ней нет, и её подберёт следующий прогон. Ответ в `OFF` кладётся
+    на диск и на повторных запусках читается оттуда без обращения к сети —
+    подробности и последствия для повторного запуска в §6.5.
 11. **Запись в Postgres**: одна транзакция (`autocommit = False`):
     1. `DELETE FROM game_three_stars|all_goals|game_player_stats|game_team_stats|game_goalie_stats|games WHERE game_id = ANY(window_ids)` — удаление текущей версии данных по этим играм;
     2. `UPSERT` в сезонные таблицы (`ON CONFLICT … DO UPDATE`);
@@ -349,7 +352,7 @@ NHL-отчёты могут вернуть одного игрока дважд�
 
 Для **пер-игровых** `play-by-play`/`boxscore`/`landing` это больше не так. С
 Задачи 31 `fetch_game_json` (см. §6.1 п.10) кладёт ответ завершённой игры
-(`gameState` в `OFF`/`FINAL`) на диск —
+(`gameState = OFF`) на диск —
 `all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz` — и каждый
 следующий запуск читает его оттуда без обращения к сети, TTL и
 автоинвалидации нет.
@@ -357,10 +360,9 @@ NHL-отчёты могут вернуть одного игрока дважд�
 на пересекающемся окне для уже кэшированных игр повторно перечитают именно
 замороженный файл: если NHL поправил `play-by-play`/`boxscore`/`landing`
 постфактум — эта правка **не** попадёт в БД, пока кэш-файл не удалён руками.
-`gameState`
-становится `OFF`/`FINAL` сразу после финальной сирены, то есть кэш
-фиксирует ответ ровно в момент, когда вероятность последующей правки
-NHL максимальна.
+`FINAL` (первые минуты после финальной сирены, пока лига не утвердила
+результат) в кэш не попадает — только `OFF`; но правка после `OFF`
+по-прежнему остаётся замороженной.
 
 Инвалидация — вручную, удалением файла(ов) кэша перед перезапуском лоадера:
 
@@ -536,6 +538,7 @@ RUN_DB_SCHEMA_TESTS=0 make test-db # только TestNhlLoadedData (если RU
 | `ON CONFLICT … no unique constraint matching the ON CONFLICT specification` | DDL не совпадает с тем, что ожидает лоадер. Запустить `make db-reset-local`. |
 | `relation "rosters" does not exist` (или другая таблица) | БД не инициализирована — `make db-reset-local`. |
 | `Empty list of finished games` / лоадер пишет 0 игр | Проверить `DATE_FROM`/`DATE_TO`, `SEASON_ID`. NHL отдаёт игры **только после** перехода `gameStateId=7`. Свежие LIVE-матчи ещё не попадут. |
+| `Game …: gamecenter gameState […], not OFF yet; skipped until next run` | Норма в первые минуты после сирены: Stats REST уже считает игру завершённой, gamecenter — ещё нет. Игру подберёт следующий прогон `sync` (через 30 минут ночью). Если предупреждение по одной игре повторяется дольше суток — она выпадет из окна `sync` (2 дня назад), догрузить вручную `DATE_FROM=… DATE_TO=… make season-sync` за её дату. |
 | `429 Too Many Requests` | Лоадер сам делает backoff, но если падает повторно — сократите окно дат. Не запускайте параллельно несколько `season-*` процессов. |
 | Ошибка подключения к БД (`could not connect to server`) | Хост/порт/`pg_hba.conf`/пароль (`PGPASSWORD` если требуется). Проверить вручную: `psql -h $PG_HOST -U $PG_USER -d $PG_DATABASE -c '\dt'`. |
 | `psycopg2.errors.CardinalityViolation: ON CONFLICT DO UPDATE command cannot affect row a second time` | Дедуп по конфликтным ключам в лоадере уже есть; если всё же случилось — это означает, что NHL вернул один и тот же `(player_id, season_id)` дважды на разных страницах с разными значениями. Перезапустить — обычно лечится. |
