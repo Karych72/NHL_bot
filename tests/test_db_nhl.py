@@ -208,6 +208,19 @@ class TestNhlSchema(unittest.TestCase):
                 "schema_migrations missing version 0001 — run: make db-migrate",
             )
 
+            # Миграция 0005 (Задача 60): время доставки и отметка отправки вместо timezone.
+            cur.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'bot_subscriptions'"
+            )
+            columns = dict(cur.fetchall())
+            self.assertEqual(
+                (columns.get("digest_time"), columns.get("last_sent_night")),
+                ("time without time zone", "date"),
+                "bot_subscriptions without digest_time/last_sent_night — run: make db-migrate",
+            )
+            self.assertNotIn("timezone", columns)
+
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(

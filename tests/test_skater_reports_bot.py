@@ -83,6 +83,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/advanced",
             "/countries",
             "/subscribe_digest",
+            "/digest_time",
             "/unsubscribe_digest",
             "/subscribe_team",
             "/unsubscribe_team",

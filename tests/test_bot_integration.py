@@ -1310,3 +1310,66 @@ async def test_country_goalies_and_back_to_rankings(
     (edited,) = back.callback_query.edited_texts
     assert "<b>Рейтинг стран</b>" in edited["text"]
     assert _callback_data(edited["reply_markup"]) == ["cn:CAN:F:0", "cn:USA:F:0"]
+
+
+# ---------------------------------------------------------------------------
+# Сценарий «время дайджеста»: /digest_time → кнопка → сохранение (Задача 60)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_digest_time_buttons_save_the_chosen_time(
+    bot_module, make_message_update, make_callback_update, monkeypatch
+):
+    from datetime import time
+    from types import SimpleNamespace
+
+    bot = bot_module("bot")
+    repo = bot_module("subscription_repo")
+    saved = []
+    monkeypatch.setattr(repo, "get_digest_time", lambda chat_id: time(11, 0))
+    monkeypatch.setattr(repo, "set_digest_time", lambda *args: saved.append(args) or True)
+
+    update = make_message_update("/digest_time", chat_id=42)
+    update.effective_chat = SimpleNamespace(id=42)
+    await bot.cmd_digest_time(update, SimpleNamespace(args=[]))
+
+    [reply] = update.message.replies
+    assert "11:00 МСК" in reply["text"]
+    labels = [b.text for b in _flat_buttons(reply["reply_markup"])]
+    assert labels[0] == "05:00" and labels[-1] == "• 11:00" and len(labels) == 13
+    data = _callback_data(reply["reply_markup"])
+    assert all(re.match(bot.DIGEST_TIME_CALLBACK_PATTERN, d) for d in data)
+
+    press = make_callback_update(data[5], chat_id=42)
+    press.effective_chat = SimpleNamespace(id=42)
+    await bot.callback_digest_time(press, SimpleNamespace())
+
+    assert saved == [(42, time(7, 30))]
+    [edited] = press.callback_query.edited_texts
+    assert edited["text"].startswith("Дайджест придёт в 07:30 МСК")
+
+
+@pytest.mark.asyncio
+async def test_digest_time_rejects_time_outside_choices(bot_module, make_callback_update):
+    """Позже 11:00 прогонов sync нет — такое время из подделанной кнопки не сохраняется."""
+    bot = bot_module("bot")
+    press = make_callback_update("dt:15:00")
+    with pytest.raises(ValueError, match="outside of choices"):
+        await bot.callback_digest_time(press, None)
+
+
+@pytest.mark.asyncio
+async def test_digest_time_without_subscription_points_to_subscribe(
+    bot_module, make_message_update, monkeypatch
+):
+    from types import SimpleNamespace
+
+    bot = bot_module("bot")
+    monkeypatch.setattr(bot_module("subscription_repo"), "get_digest_time", lambda chat_id: None)
+    update = make_message_update("/digest_time")
+    update.effective_chat = SimpleNamespace(id=100)
+    await bot.cmd_digest_time(update, SimpleNamespace(args=[]))
+
+    [reply] = update.message.replies
+    assert "/subscribe_digest" in reply["text"]
+    assert "reply_markup" not in reply

@@ -2118,7 +2118,7 @@ def team_stat_leaderboard_page(
 
 # Москва живёт в UTC+3 без перехода на летнее время (с 2014 года) — фиксированный
 # сдвиг вместо zoneinfo, которому в slim-образе может не хватить tzdata.
-_MSK = timezone(timedelta(hours=3))
+MSK = timezone(timedelta(hours=3))
 
 
 def last_night_day(nights_back: int = 0) -> str:
@@ -2132,7 +2132,7 @@ def last_night_day(nights_back: int = 0) -> str:
     Аргументы:
         nights_back: 0 — прошедшая ночь, 1 — ночь перед ней.
     """
-    return (datetime.now(_MSK).date() - timedelta(days=1 + nights_back)).isoformat()
+    return (datetime.now(MSK).date() - timedelta(days=1 + nights_back)).isoformat()
 
 
 def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]]]]:

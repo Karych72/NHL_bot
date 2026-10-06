@@ -1,9 +1,10 @@
 """Планировщик автообновления данных (Задача 34).
 
 Единственный сервис, который вызывает ``load_season_modern.py`` без участия
-человека: ночью, каждые ``SYNC_STEP`` с ``NIGHT_START_HOUR_UTC`` до ``DIGEST_HOUR_UTC``,
+человека: ночью, каждые ``SYNC_STEP`` с ``NIGHT_START_HOUR_UTC`` до ``NIGHT_END_HOUR_UTC``,
 прогоняет загрузчик за скользящее окно дат — завершённые матчи появляются в БД по ходу
-ночи; последний слот (``DIGEST_HOUR_UTC``) ещё и шлёт ``push_digest_job.py``. Пишет статус
+ночи; после каждого прогона зовёт ``push_digest_job.py``, который сам решает, кому из
+подписчиков пора (Задача 60). Пишет статус
 последнего прогона на диск для docker-healthcheck (``check``). Только stdlib —
 новых зависимостей нет.
 """
@@ -25,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 # Ночное окно прогонов: каждые SYNC_STEP с 18:00 UTC (21:00 МСК) до 08:00 UTC (11:00 МСК)
 # включительно — сутки игр NHL от дневных матчей выходных до поздних западных. МСК без
-# перехода на летнее время, смещение UTC+3 постоянно. Слот DIGEST_HOUR_UTC — последний
-# в ночи: к нему матчи в Северной Америке закончены, и только он шлёт дайджест.
+# перехода на летнее время, смещение UTC+3 постоянно. Слот NIGHT_END_HOUR_UTC — последний
+# в ночи и крайний срок дайджеста (push_digest_job.NIGHT_DEADLINE_MSK — тот же момент по МСК).
 NIGHT_START_HOUR_UTC = 18
-DIGEST_HOUR_UTC = 8
+NIGHT_END_HOUR_UTC = 8
 SYNC_STEP = timedelta(minutes=30)
 
 # Окно загрузки [сегодня − WINDOW_DAYS_BACK, сегодня] (UTC-дата): захватывает
@@ -68,15 +69,15 @@ def sync_window(today: date) -> Tuple[str, str]:
 
 
 def _in_night(slot: datetime) -> bool:
-    """Лежит ли точка сетки ``SYNC_STEP`` в ночном окне ``NIGHT_START_HOUR_UTC``–``DIGEST_HOUR_UTC``:00."""
-    return slot.hour >= NIGHT_START_HOUR_UTC or (slot.hour, slot.minute) <= (DIGEST_HOUR_UTC, 0)
+    """Лежит ли точка сетки ``SYNC_STEP`` в ночном окне ``NIGHT_START_HOUR_UTC``–``NIGHT_END_HOUR_UTC``:00."""
+    return slot.hour >= NIGHT_START_HOUR_UTC or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
 
 
 def seconds_until_next_run(now: datetime) -> float:
     """Секунд до ближайшего слота прогона строго после *now*.
 
     Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) внутри ночного окна; днём, после
-    ``DIGEST_HOUR_UTC``:00, следующий слот — ``NIGHT_START_HOUR_UTC``:00. Если *now*
+    ``NIGHT_END_HOUR_UTC``:00, следующий слот — ``NIGHT_START_HOUR_UTC``:00. Если *now*
     ровно на слоте — возвращает время до следующего, а не 0.
 
     Аргументы:
@@ -88,18 +89,6 @@ def seconds_until_next_run(now: datetime) -> float:
     while not _in_night(slot):
         slot += SYNC_STEP
     return (slot - now).total_seconds()
-
-
-def is_digest_slot(slot: datetime) -> bool:
-    """Слот ли это рассылки дайджеста — последний в ночи, ``DIGEST_HOUR_UTC``:00.
-
-    Остальные ночные прогоны только догружают данные: дайджест после каждого из них
-    слал бы подписчикам по сообщению каждые полчаса.
-
-    Аргументы:
-        slot: момент прогона, как его вернул ``_next_target`` (точно на сетке).
-    """
-    return (slot.hour, slot.minute, slot.second, slot.microsecond) == (DIGEST_HOUR_UTC, 0, 0, 0)
 
 
 def _next_target(
@@ -115,7 +104,7 @@ def _next_target(
     неточность ``time.sleep`` (или скачок часов) могла бы разбудить цикл на
     волосок раньше ``target`` — тогда *now* всё ещё "видит" себя ДО уже
     состоявшегося прогона, `seconds_until_next_run(now)` вернула бы то же
-    самое (уже отработанное) время почти без задержки, и дайджест ушёл бы
+    самое (уже отработанное) время почти без задержки, и загрузчик прогнался бы
     второй раз подряд за тот же слот. Взяв больший из *now*/*target*, для уже
     прошедшего слота следующий шаг всегда считается на сутки вперёд от него
     самого. Долгий простой (например, контейнер был приостановлен на
@@ -209,18 +198,18 @@ def run_once(
     return ok
 
 
-def build_commands(window: Tuple[str, str], with_digest: bool) -> List[SyncCommand]:
-    """Строит команды одного прогона: загрузчик, затем опционально дайджест.
+def build_commands(window: Tuple[str, str]) -> List[SyncCommand]:
+    """Строит команды одного прогона: загрузчик, затем рассылка.
 
-    ``push_digest_job.py`` сам завершается кодом 0 и логирует, если
-    ``ENABLE_PUSH_DIGEST`` выключен — здесь эта проверка не дублируется.
+    Рассылка идёт после каждого прогона: ``push_digest_job.py`` сам решает, кому
+    пора, и не шлёт ночь дважды; сам завершается кодом 0 и логирует, если
+    ``ENABLE_PUSH_DIGEST`` выключен — здесь эти проверки не дублируются.
 
     Аргументы:
         window: ``(date_from, date_to)`` для ``--date-from``/``--date-to`` загрузчика.
-        with_digest: добавлять ли команду рассылки дайджеста после загрузки.
     """
     date_from, date_to = window
-    commands = [
+    return [
         SyncCommand(
             argv=[
                 sys.executable,
@@ -232,13 +221,9 @@ def build_commands(window: Tuple[str, str], with_digest: bool) -> List[SyncComma
                 date_to,
             ],
             cwd=_PIPELINE_DIR,
-        )
+        ),
+        SyncCommand(argv=[sys.executable, "-u", "push_digest_job.py"], cwd=_TELEGRAM_BOT_DIR),
     ]
-    if with_digest:
-        commands.append(
-            SyncCommand(argv=[sys.executable, "-u", "push_digest_job.py"], cwd=_TELEGRAM_BOT_DIR)
-        )
-    return commands
 
 
 def check(
@@ -281,13 +266,12 @@ def check(
 def main(argv: Optional[List[str]] = None) -> int:
     """Точка входа CLI: подкоманды ``loop`` / ``once`` / ``check``.
 
-    - ``loop``: сразу при старте — прогон БЕЗ дайджеста (догнать данные после
-      перезапуска, не спамя подписчиков повторной рассылкой), затем бесконечно
-      спит до следующего ночного слота и прогоняет; дайджест — только в слоте
-      ``is_digest_slot``. Неуспешный прогон не
+    - ``loop``: сразу при старте — прогон (догнать данные после перезапуска;
+      повторной рассылки нет — ночь отмечается отправленной в БД), затем
+      бесконечно спит до следующего ночного слота и прогоняет. Неуспешный прогон не
       роняет цикл (отказ виден через статус-файл и ``check``), но исключения
       самого цикла (не команд) не глушатся.
-    - ``once``: один прогон с дайджестом, код выхода 0/1.
+    - ``once``: один прогон, код выхода 0/1.
     - ``check``: см. ``check()``.
 
     Аргументы:
@@ -299,13 +283,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
     subparsers.add_parser("loop", help="Run forever: catch-up run, then every SYNC_STEP at night.")
-    subparsers.add_parser("once", help="Run once (loader + digest), exit 0/1.")
+    subparsers.add_parser("once", help="Run once (loader + digest job), exit 0/1.")
     subparsers.add_parser("check", help="Healthcheck exit code from the last run's status.")
     args = parser.parse_args(argv)
 
     if args.subcommand == "once":
         window = sync_window(datetime.now(timezone.utc).date())
-        ok = run_once(build_commands(window, with_digest=True), STATUS_FILE, window)
+        ok = run_once(build_commands(window), STATUS_FILE, window)
         return 0 if ok else 1
 
     if args.subcommand == "check":
@@ -313,14 +297,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # loop
     catch_up_window = sync_window(datetime.now(timezone.utc).date())
-    run_once(build_commands(catch_up_window, with_digest=False), STATUS_FILE, catch_up_window)
+    run_once(build_commands(catch_up_window), STATUS_FILE, catch_up_window)
     target = datetime.now(timezone.utc)
     while True:
         target, sleep_seconds = _next_target(datetime.now(timezone.utc), target)
         logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
         time.sleep(sleep_seconds)
         window = sync_window(datetime.now(timezone.utc).date())
-        run_once(build_commands(window, with_digest=is_digest_slot(target)), STATUS_FILE, window)
+        run_once(build_commands(window), STATUS_FILE, window)
 
 
 if __name__ == "__main__":
