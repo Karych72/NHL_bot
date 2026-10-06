@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 # endpoints (standings, summaries) are never routed through this cache.
 RAW_CACHE_DIR = Path(__file__).resolve().parents[1] / "all_data" / "raw"
 
-# NHL API ``gameState`` values that mark a game as finished and therefore safe
-# to cache forever. Anything else (LIVE, CRIT, FUT, PRE, ...) is not cached.
-FINAL_GAME_STATES = {"OFF", "FINAL"}
+# Gamecenter ``gameState`` of a finished, official game: only such a payload is
+# turned into rows and cached forever. ``FINAL`` (the minutes right after the
+# horn, before the league signs the game off) and LIVE/CRIT/FUT/PRE are not —
+# the game is retried on the next sync run.
+FINAL_GAME_STATE = "OFF"
 
 # Stats REST ``gameStateId`` of a not-yet-started game: 1 = FUT (scheduled), 2 = PRE
 # (pre-game). Live (3, 4) and finished (5-7) states are not future games; 7 is what
@@ -885,7 +887,7 @@ class ModernNhlLoader:
         ``all_data/raw/{season_id}/{game_id}.{pbp|box|landing}.json.gz`` and
         every later call reads it straight from disk instead of hitting the
         network — no TTL, no invalidation. "Finished" is judged from the
-        payload's own ``gameState`` field (``FINAL_GAME_STATES``), not from
+        payload's own ``gameState`` field (``FINAL_GAME_STATE``), not from
         the caller. Season-wide report endpoints (standings, summaries, ...)
         never go through this method and are always fetched live via
         ``get_json``.
@@ -902,7 +904,7 @@ class ModernNhlLoader:
                 return json.load(fh)
 
         payload = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/{endpoint}")
-        if payload.get("gameState") in FINAL_GAME_STATES:
+        if payload.get("gameState") == FINAL_GAME_STATE:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             # Write to a sibling temp file and rename into place: a write
             # truncated by Ctrl-C / a full disk must never leave a
@@ -928,6 +930,12 @@ class ModernNhlLoader:
         ``all_goals``, ``game_team_stats``, ``game_player_stats``,
         ``game_goalie_stats`` and ``game_three_stars`` — in that order.
 
+        A game whose gamecenter payloads are not all ``FINAL_GAME_STATE`` yet
+        (the Stats REST list can flip to "finished" before gamecenter does) is
+        skipped with a warning: it produces no rows at all, so ``run()``
+        neither writes a half-final game nor deletes an earlier version of it,
+        and the next sync run picks it up.
+
         Args:
             games_meta: finished-game summaries as returned by
                 ``fetch_final_games`` (Stats API ``game`` records).
@@ -951,6 +959,15 @@ class ModernNhlLoader:
             pbp = self.fetch_game_json(game_id, "play-by-play")
             box = self.fetch_game_json(game_id, "boxscore")
             landing = self.fetch_game_json(game_id, "landing")
+            states = {p.get("gameState") for p in (pbp, box, landing)}
+            if states != {FINAL_GAME_STATE}:
+                logger.warning(
+                    "Game %s: gamecenter gameState %s, not %s yet; skipped until next run",
+                    game_id,
+                    sorted(map(str, states)),
+                    FINAL_GAME_STATE,
+                )
+                continue
 
             period_desc = pbp.get("periodDescriptor") or {}
             is_ot = str(period_desc.get("periodType")) == "OT" or to_int(period_desc.get("number")) > 3

@@ -86,7 +86,7 @@ services:
     volumes:
       - syncdata:/app/all_data
     # Overrides the bot's PG-connect HEALTHCHECK (Dockerfile): this container's
-    # actual job is the daily sync, so "healthy" means "last sync run ok and
+    # actual job is the nightly sync, so "healthy" means "last sync run ok and
     # not stale" (scheduled_sync.py check), not "can reach PostgreSQL".
     # start_period covers the catch-up run scheduled_sync.py does at startup.
     healthcheck:
@@ -99,7 +99,7 @@ services:
   retrain:
     # Еженедельный retrain (Задача 26): тот же механизм, что у sync (pipeline/scheduled_retrain.py
     # переиспользует scheduled_sync), но образ со стадией modeling (lightgbm/sklearn — в образ
-    # бота не попадают). Понедельник 12:00 UTC, не в окне sync (08:00 UTC); стартует только
+    # бота не попадают). Понедельник 12:00 UTC, вне ночного окна sync (18:00–08:00 UTC); стартует только
     # после успешного sync. Обучает home_win с --no-promote: latest двигает человек
     # (make modeling-promote). Артефакты — bind mount ./artifacts, статус — в томе syncdata.
     # profiles: трек B в релиз не входит (решение человека, plan/open_tasks.md), поэтому обычные

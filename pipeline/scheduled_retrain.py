@@ -24,7 +24,7 @@ from scheduled_sync import SyncCommand
 
 logger = logging.getLogger(__name__)
 
-# Понедельник (datetime.weekday()), 12:00 UTC: разнесено с sync (08:00 UTC ежедневно),
+# Понедельник (datetime.weekday()), 12:00 UTC: вне ночного окна sync (18:00–08:00 UTC),
 # к этому моменту данные выходных уже загружены.
 RETRAIN_WEEKDAY = 0
 RETRAIN_HOUR_UTC = 12
