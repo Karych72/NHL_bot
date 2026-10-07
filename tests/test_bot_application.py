@@ -614,10 +614,8 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         callback = handler.callback
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: в сумме 85 регистраций — bot.py
-    # (standalone-команды, regex-хендлер /ABBR, кнопки стран и подписок,
-    # cmd_cancel_outside_conversation в группе 0,
-    # cmd_cancel_in_conversation в fallbacks), 23 регистрации script_bot.py
+    # Страховка от «проверили пустой список»: в сумме 85 регистраций — bot.py: 15,
+    # script_bot.py: 22, stats_handlers.py: 48. Подробности по script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
     # висят «« Назад»» на родительские подменю: bot_player_field/
     # bot_player_goalie/bot_player_advanced_menu/bot_team_stats по 2 раза

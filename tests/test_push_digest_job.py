@@ -245,11 +245,13 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
     monkeypatch.setattr(Application, "shutdown", fake_shutdown)
 
     contexts = []
+    nights = []
+    before = push_job.night_of(datetime.now(timezone.utc))
 
     async def record(context, night):
         steps.append("broadcast")
         contexts.append(context)
-        assert isinstance(night, date)
+        nights.append(night)
 
     monkeypatch.setattr(push_job, "night_is_loaded", lambda night: True)
     monkeypatch.setattr(push_job, "run_morning_digest_broadcast", record)
@@ -262,6 +264,8 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
     # либо не поднят, либо уже погашен.
     assert steps == ["initialize", "broadcast", "broadcast", "broadcast", "shutdown"]
 
+    after = push_job.night_of(datetime.now(timezone.utc))
+    assert len(nights) == 3 and len(set(nights)) == 1 and nights[0] in (before, after)
     morning_context, team_context, country_context = contexts
     application = morning_context.application
     assert team_context.application is application
@@ -374,12 +378,14 @@ async def test_deadline_does_not_ask_nhl_api(push_job, fake_context):
     """После крайнего срока готовность не нужна: сбой NHL API не срывает отправку."""
     with patch.object(push_job, "night_is_loaded", side_effect=AssertionError("API")), patch.object(
         push_job, "run_morning_digest_broadcast"
-    ) as digest, patch.object(push_job, "run_team_scores_broadcast"), patch.object(
+    ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
         push_job, "run_country_broadcast"
-    ):
+    ) as country:
         await push_job.broadcast_if_due(fake_context, _msk(11, 0))
 
     digest.assert_awaited_once_with(fake_context, NIGHT)
+    team.assert_awaited_once_with(fake_context, NIGHT)
+    country.assert_awaited_once_with(fake_context, NIGHT)
 
 
 @pytest.mark.asyncio

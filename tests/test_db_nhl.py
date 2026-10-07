@@ -452,7 +452,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Пока ничего нет.", text)
         self.assertEqual(
             [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
-            [("Дайджест", "sub:d"), ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
+            [("➕ Дайджест", "sub:d"), ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
              ("Готово", "sub:x")],
         )
         self.assertEqual(self._rows(), [])
@@ -467,7 +467,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         hint, text, buttons = await self._press("sub:d")
         self.assertEqual(hint, "Дайджест выключен")
         self.assertIn("Пока ничего нет.", text)
-        self.assertEqual(buttons[0], ("Дайджест", "sub:d"))
+        self.assertEqual(buttons[0], ("➕ Дайджест", "sub:d"))
         self.assertEqual(self._rows(), [("morning_digest", None, None, False)])
 
         await self._press("sub:d")
@@ -519,6 +519,18 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         _, text, buttons = await self._press("sub:x")
         self.assertIn("🌍 Страны: RUS", text)
         self.assertEqual(buttons, [], "«Готово» снимает клавиатуру")
+
+    async def test_subscribed_country_outside_ranking_can_be_switched_off(self):
+        self.repo.upsert_country(self.CHAT, "ZZZ")
+        _, _, buttons = await self._press("sub:C")
+        self.assertEqual(
+            buttons,
+            [("FIN", "sub:c:FIN"), ("RUS", "sub:c:RUS"), ("✅ ZZZ", "sub:c:ZZZ"), ("« Назад", "sub:m")],
+        )
+        hint, _, buttons = await self._press("sub:c:ZZZ")
+        self.assertEqual(hint, "Подписка на ZZZ отключена")
+        self.assertNotIn("ZZZ", " ".join(text for text, _ in buttons))
+        self.assertEqual(self._rows(), [("country_players", None, "ZZZ", False)])
 
     async def test_failed_write_shows_error_and_no_checkmark(self):
         from unittest import mock

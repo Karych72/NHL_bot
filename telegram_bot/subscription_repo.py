@@ -48,8 +48,15 @@ def deactivate_morning_digest(chat_id: int) -> None:
 
 
 def get_chat_subscriptions(chat_id: int) -> Tuple[bool, Set[int], List[str]]:
-    """Активные подписки чата для меню `/subscriptions`: (подписан ли на дайджест,
-    множество `team_id` команд, коды стран по алфавиту)."""
+    """Активные подписки чата одним запросом.
+
+    Зачем: меню `/subscriptions` рисует сводку и ✅ по этим данным, поэтому они всегда
+    отражают БД, а не последнее нажатие.
+
+    Аргументы: `chat_id` — чат, чьи подписки читаем.
+
+    Возвращает: (подписан ли на дайджест, множество `team_id` команд, коды стран по алфавиту).
+    """
     row = fetch_all(
         "SELECT kind, team_id, country FROM bot_subscriptions "
         "WHERE chat_id = %s AND active = TRUE ORDER BY country",

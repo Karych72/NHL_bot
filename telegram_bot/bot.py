@@ -415,7 +415,7 @@ _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполни
 # `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
 # (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
 # `sub:x` «Готово». Самая длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
-SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|T|C|x|D:\d|t:\d:\d+|c:[A-Z]{3})$"
+SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|T|C|x|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3})$"
 _DIVISION_BUTTON_COLUMNS = 2
 _TEAM_BUTTON_COLUMNS = 4
 _COUNTRY_BUTTON_COLUMNS = 3
@@ -423,9 +423,13 @@ _COUNTRY_BUTTON_COLUMNS = 3
 _Screen = Tuple[str, InlineKeyboardMarkup]
 
 
-def _sub_button(label: str, selected: bool, data: str) -> InlineKeyboardButton:
-    """Кнопка переключателя: у включённого пункта подпись начинается с ✅."""
-    return InlineKeyboardButton(f"✅ {label}" if selected else label, callback_data=data)
+def _sub_button(
+    label: str, selected: bool, data: str, off_prefix: str = ""
+) -> InlineKeyboardButton:
+    """Кнопка переключателя: у включённого пункта подпись начинается с ✅, у выключенного —
+    с `off_prefix` (для дайджеста «➕»)."""
+    prefix = "✅ " if selected else off_prefix
+    return InlineKeyboardButton(f"{prefix}{label}", callback_data=data)
 
 
 def _subscriptions_main_screen(
@@ -443,7 +447,7 @@ def _subscriptions_main_screen(
         lines.append("Пока ничего нет.")
     lines.append(_DELIVERY_NOTE)
     markup = InlineKeyboardMarkup([
-        [_sub_button("Дайджест", digest, "sub:d")],
+        [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [
             InlineKeyboardButton(f"🏒 Команды ({len(team_abbrevs)})", callback_data="sub:T"),
             InlineKeyboardButton(f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
@@ -482,8 +486,12 @@ def _subscriptions_teams_screen(
 
 
 def _subscriptions_countries_screen(codes: List[str], chosen: List[str]) -> _Screen:
-    """Страны рейтинга `/countries`, у выбранных ✅."""
-    buttons = [_sub_button(code, code in chosen, f"sub:c:{code}") for code in codes]
+    """Страны рейтинга `/countries`, у выбранных ✅. Подписанная страна, выпавшая из рейтинга,
+    тоже получает кнопку — иначе от неё нельзя отписаться."""
+    buttons = [
+        _sub_button(code, code in chosen, f"sub:c:{code}")
+        for code in codes + [c for c in chosen if c not in codes]
+    ]
     rows = build_menu(buttons, n_cols=_COUNTRY_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton("« Назад", callback_data="sub:m")])
     return "Страны: нажмите на страну, чтобы подписаться или отписаться.", InlineKeyboardMarkup(rows)
@@ -572,7 +580,7 @@ async def callback_subscriptions(update: Update, context: CallbackContext) -> No
         else:
             rankings_text, codes = country_rankings()
             _, _, chosen = subscription_repo.get_chat_subscriptions(chat_id)
-            if codes:
+            if codes or chosen:
                 text, markup = _subscriptions_countries_screen(codes, chosen)
             else:
                 text, markup = rankings_text, InlineKeyboardMarkup(
