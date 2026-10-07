@@ -57,6 +57,7 @@ async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_con
     assert [m["chat_id"] for m in sent] == [111, 111, 222, 222]
     assert sent[0]["text"] == "<b>BOS 3 : 2 TOR</b>"
     assert sent[1]["text"].startswith("Ещё:")
+    assert sent[1]["text"].endswith("Настроить подписки: /subscriptions")
 
 
 @pytest.mark.asyncio
@@ -423,7 +424,7 @@ async def test_team_scores_are_not_repeated(push_job, fake_context):
         await push_job.run_team_scores_broadcast(fake_context, NIGHT)
     mark.assert_called_once_with(111, "team_scores", 6, NIGHT)
     assert [m["text"] for m in fake_context.bot.sent_messages] == [
-        "<b>Ваши матчи (2026-10-06)</b>\n\nBOS 3 : 2 TOR"
+        "<b>Ваши матчи (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions"
     ]
 
     with patches[0], patches[1], patch.object(
@@ -549,7 +550,8 @@ async def test_country_broadcast_splits_goals_into_albums_and_reuses_file_ids(co
     bot = country_env.bot
 
     assert [m["chat_id"] for m in bot.messages] == [111, 222]
-    assert bot.messages[0]["text"] == "TEXT" and bot.messages[0]["parse_mode"] == "HTML"
+    assert bot.messages[0]["text"] == "TEXT\n\nНастроить подписки: /subscriptions"
+    assert bot.messages[0]["parse_mode"] == "HTML"
     # 11 клипов (один недоступен): альбом из 10 и хвост из одного видео — send_video,
     # потому что в альбоме Telegram 2–10 медиа.
     assert [(chat, len(media)) for chat, media in bot.albums] == [(111, 10), (222, 10)]

@@ -128,16 +128,11 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
         ("command", ["countries"], bot.cmd_countries),
         ("command", ["game"], bot.cmd_game),
         ("command", ["advanced"], bot.cmd_advanced),
-        ("command", ["subscribe_digest"], bot.cmd_subscribe_digest),
-        ("command", ["unsubscribe_digest"], bot.cmd_unsubscribe_digest),
-        ("command", ["subscribe_country"], bot.cmd_subscribe_country),
-        ("command", ["unsubscribe_country"], bot.cmd_unsubscribe_country),
-        ("command", ["subscribe_team"], bot.cmd_subscribe_team),
-        ("command", ["unsubscribe_team"], bot.cmd_unsubscribe_team),
+        ("command", ["subscriptions"], bot.cmd_subscriptions),
         _cq(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, stats_handlers.callback_leaders_pick),
         _cq(stats_handlers.LEADERBOARD_PAGE_CALLBACK_PATTERN, stats_handlers.callback_leaderboard_page),
         _cq(r"^dg:\d+$", stats_handlers.callback_expand_digest_game),
-        _cq(bot.COUNTRY_PICK_CALLBACK_PATTERN, bot.callback_country_pick),
+        _cq(bot.SUBSCRIPTIONS_CALLBACK_PATTERN, bot.callback_subscriptions),
         _cq(stats_handlers.TONIGHT_GAME_CALLBACK_PATTERN, stats_handlers.callback_tonight_game),
         _cq(stats_handlers.COUNTRY_CALLBACK_PATTERN, stats_handlers.callback_country),
         _cq(stats_handlers.STANDALONE_SA_CALLBACK_PATTERN, stats_handlers.callback_standalone_sa),
@@ -619,8 +614,8 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         callback = handler.callback
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: 25 регистраций колбэков bot.py
-    # (22 standalone-хендлера — 18 команд, regex-хендлер /ABBR и кнопки стран,
+    # Страховка от «проверили пустой список»: в сумме 85 регистраций — bot.py
+    # (standalone-команды, regex-хендлер /ABBR, кнопки стран и подписок,
     # cmd_cancel_outside_conversation в группе 0,
     # cmd_cancel_in_conversation в fallbacks), 23 регистрации script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
@@ -631,7 +626,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST;
     # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D;
     # standalone callback_country — /countries, Задача 49).
-    assert len(registered) == 90
+    assert len(registered) == 85
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",

@@ -1,16 +1,15 @@
 """Хранение подписок на рассылку (таблица bot_subscriptions).
 
-Слой данных команд подписки в `bot.py` и рассылки `push_digest_job.py`: включение
-и отключение подписок (дайджест, команда, страна) и отметка
+Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
+включение и отключение подписок (дайджест, команда, страна) и отметка
 о последней отправленной ночи, защищающая от дублей при получасовых прогонах sync.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
-import config
 from database import fetch_all, get_connection
 
 
@@ -48,31 +47,21 @@ def deactivate_morning_digest(chat_id: int) -> None:
         conn.commit()
 
 
-def resolve_team_id_by_abbrev(abbrev: str) -> Optional[int]:
-    """Переводит трёхбуквенный код команды (`TOR`) в `team_id` из БД текущего
-    сезона (`config.SEASON_ID`).
-
-    Пользователь подписывается на команду по аббревиатуре, а таблицы подписок
-    хранят числовой id — эта функция мост между ними.
-
-    Args:
-        abbrev: триграмма из callback_data, регистр значения не имеет.
-
-    Returns:
-        `None`, если строка пустая или аббревиатура не найдена в сезоне.
-    """
-    ab = abbrev.strip().upper()
-    if not ab:
-        return None
+def get_chat_subscriptions(chat_id: int) -> Tuple[bool, Set[int], List[str]]:
+    """Активные подписки чата для меню `/subscriptions`: (подписан ли на дайджест,
+    множество `team_id` команд, коды стран по алфавиту)."""
     row = fetch_all(
-        "SELECT team_id FROM teams WHERE season_id = %s AND "
-        "UPPER(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1",
-        (config.SEASON_ID, ab),
-        columns=["team_id"],
+        "SELECT kind, team_id, country FROM bot_subscriptions "
+        "WHERE chat_id = %s AND active = TRUE ORDER BY country",
+        (chat_id,),
+        columns=["kind", "team_id", "country"],
     )
-    if not row["count_rows"] or row["team_id"][0] is None:
-        return None
-    return int(row["team_id"][0])
+    kinds = row["kind"]
+    return (
+        "morning_digest" in kinds,
+        {int(t) for k, t in zip(kinds, row["team_id"]) if k == "team_scores"},
+        [c for k, c in zip(kinds, row["country"]) if k == "country_players"],
+    )
 
 
 def upsert_team_scores(chat_id: int, team_id: int) -> None:
@@ -148,17 +137,6 @@ def upsert_country(chat_id: int, country: str) -> None:
                 (chat_id, country),
             )
         conn.commit()
-
-
-def list_chat_countries(chat_id: int) -> List[str]:
-    """Коды стран, на которые чат подписан сейчас (активные строки), по алфавиту."""
-    row = fetch_all(
-        "SELECT country FROM bot_subscriptions "
-        "WHERE chat_id = %s AND kind = 'country_players' AND active = TRUE ORDER BY country",
-        (chat_id,),
-        columns=["country"],
-    )
-    return list(row["country"])
 
 
 def list_active_country_rows() -> List[Tuple[int, str, Optional[date]]]:

@@ -1600,6 +1600,27 @@ def team_list_text() -> str:
     )
 
 
+def season_teams_by_division() -> Dict[str, List[Tuple[int, str]]]:
+    """Команды сезона по дивизионам для меню `/subscriptions`: {дивизион: [(team_id,
+    аббревиатура)]} с теми же названиями и порядком дивизионов, что у `/standings`
+    (Восток, затем Запад); внутри — по аббревиатуре. Все четыре дивизиона есть всегда,
+    у пустого сезона списки пустые."""
+    rows = cached_fetch_all(
+        "SELECT team_id, trim(abbreviation), division_name FROM teams "
+        "WHERE season_id = %s AND NULLIF(trim(abbreviation), '') IS NOT NULL "
+        "ORDER BY trim(abbreviation)",
+        (config.SEASON_ID,),
+        columns=["team_id", "abbr", "division"],
+    )
+    result: Dict[str, List[Tuple[int, str]]] = {
+        div: [] for div in _STANDINGS_DIV_EAST + _STANDINGS_DIV_WEST
+    }
+    for i in range(rows["count_rows"]):
+        if rows["division"][i] in result:
+            result[rows["division"][i]].append((int(rows["team_id"][i]), rows["abbr"][i]))
+    return result
+
+
 _TEAM_PROFILE_TOP = 5
 
 # Порядок полевых игроков клуба — два фиксированных литерала модуля, не ввод

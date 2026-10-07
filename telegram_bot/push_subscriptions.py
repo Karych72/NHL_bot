@@ -43,5 +43,6 @@
 
 Реализация: миграция ``data_tables/migrations/0001_bot_subscriptions.up.sql`` (``make
 db-migrate``), слой данных ``subscription_repo.py``, рассылка ``push_digest_job.py``
-(батчи, паузы, ``429``, ``Forbidden``), команды в ``bot.py`` (см. ``docs/telegram_bot.md`` §7).
+(батчи, паузы, ``429``, ``Forbidden``), меню подписок ``/subscriptions`` в ``bot.py``
+(см. ``docs/telegram_bot.md`` §7).
 """

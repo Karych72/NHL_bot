@@ -7,7 +7,9 @@
 раз в 30 минут ночью — и сам решает, пора ли: всё уходит одной рассылкой, как только
 загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63; времени у
 подписчика нет). Отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на
-страну (Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов. Сам выходит с кодом 0 и
+страну (Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов.
+Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
+заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
 
     cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
@@ -42,6 +44,7 @@ from bot_messages import (  # noqa: E402
     day_digest,
     game_message,
 )
+from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import fetch_score  # noqa: E402
 from stats_handlers import dispatch_day_digest_messages  # noqa: E402
 from subscription_repo import (  # noqa: E402
@@ -161,8 +164,9 @@ async def run_morning_digest_broadcast(context: CallbackContext, night: date) ->
 
     Зачем: ровно те же карточки, что и меню ``/stats``, но без навигации диалога
     (``attach_conv_nav_on_last=False``) — в рассылке кнопки диалога некуда вести.
-    Чату, которому ночь уже ушла (``last_sent_night``), не шлётся ничего. После попытки ночь отмечается отправленной —
-    один заход на чат, как и прежде. Ночь без матчей в БД не рассылается.
+    Чату, которому ночь уже ушла (``last_sent_night``), не шлётся ничего. После
+    попытки ночь отмечается отправленной — один заход на чат, как и прежде. Ночь без
+    матчей в БД не рассылается.
     Заблокировавший бота чат (``Forbidden``) деактивируется, чтобы не долбиться
     в него каждый день.
 
@@ -250,7 +254,7 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
             await _throttled(
                 lambda: context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"<b>Ваши матчи ({night})</b>\n\n{html_body}",
+                    text=f"<b>Ваши матчи ({night})</b>\n\n{html_body}\n\n{SUBSCRIPTIONS_FOOTER}",
                     parse_mode="HTML",
                 ),
                 chat_id,
@@ -378,7 +382,9 @@ async def run_country_broadcast(context: CallbackContext, night: date) -> None:
         else:
             try:
                 await _throttled(
-                    lambda: context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"),
+                    lambda: context.bot.send_message(
+                        chat_id=chat_id, text=f"{text}\n\n{SUBSCRIPTIONS_FOOTER}", parse_mode="HTML"
+                    ),
                     chat_id,
                 )
                 await _send_goal_videos(context.bot, chat_id, goals[country], file_ids)
