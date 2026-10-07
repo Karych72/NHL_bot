@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟡
 **Область:** `telegram_bot/bot_messages.py` (`_build_standings_table_body`, `_wild_card_lines`), `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_20`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

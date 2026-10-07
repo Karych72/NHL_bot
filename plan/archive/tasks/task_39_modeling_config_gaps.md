@@ -3,7 +3,7 @@
 **Статус:** не начата · **Блок:** трек B · **Надобность:** 🟠 подтверждённый долг
 **Область:** `configs/modeling_default.yaml`, `configs/modeling_smoke.yaml`; тест на согласованность имён.
 **Порядок:** первая в треке B: **39** → 40 → (21) → 22 → 26.
-**Реестр:** [`../open_tasks.md`](../open_tasks.md), раздел «Трек B»; детали — `docs/modeling_training.md` §7.
+**Реестр:** [`../closed_tasks.md`](../closed_tasks.md), раздел «Трек B»; детали — `docs/modeling_training.md` §7.
 
 ## Кратко
 

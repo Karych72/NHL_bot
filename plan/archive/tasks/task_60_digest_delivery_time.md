@@ -4,7 +4,7 @@
 **Область:** `pipeline/scheduled_sync.py`, `telegram_bot/push_digest_job.py`,
 `telegram_bot/subscription_repo.py`, `bot_subscriptions` (миграция), `telegram_bot/bot.py`.
 **Зависит от:** Задачи 56 (ночной sync каждые 30 минут) — начинать после её мержа.
-**Источник:** просьба человека 2026-10-06; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-10-06; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

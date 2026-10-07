@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟡
 **Область:** `telegram_bot/stats_handlers.py` (`callback_tonight_game`, `send_game_card_message`), `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_32`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

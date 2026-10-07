@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟡
 **Область:** `telegram_bot/bot_messages.py` (`team_full_stats`, `_player_group_table`, `country_page`), `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_33`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

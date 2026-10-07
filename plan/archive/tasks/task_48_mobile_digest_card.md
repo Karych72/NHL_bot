@@ -4,7 +4,7 @@
 **Область:** `telegram_bot/bot_messages.py` (`day_digest_summary_body`, `game_message`),
 `telegram_bot/messages/game_message.txt`, `telegram_bot/stats_handlers.py`, `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_21`, `img_22`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

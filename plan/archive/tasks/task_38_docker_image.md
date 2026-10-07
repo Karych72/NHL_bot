@@ -3,7 +3,7 @@
 **Статус:** не начата · **Блок:** релиз+ · **Надобность:** 🟠 подтверждённый долг
 **Область:** `Dockerfile`, `.dockerignore`, `requirements.in` (+ `requirements-dev.in`, `make lock`), `docs/architecture.md`.
 **Порядок:** после релиза, в любом порядке с 37, 41, 42.
-**Реестр:** [`../open_tasks.md`](../open_tasks.md), раздел «Релизный блок».
+**Реестр:** [`../closed_tasks.md`](../closed_tasks.md), раздел «Релизный блок».
 
 ## Кратко
 

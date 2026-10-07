@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟡
 **Область:** `telegram_bot/bot_messages.py` (`_aligned_columns`, `_pre_table`, `_pre_table_fit`, турнирная таблица, лидерборды), `telegram_bot/leaderboard_specs.py`, `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_31`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

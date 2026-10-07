@@ -2,7 +2,7 @@
 
 **Блок:** продукт · **Надобность:** 🟠
 **Область:** `pipeline/scheduled_sync.py`, `pipeline/load_season_modern.py`, `tests/`, docs.
-**Источник:** просьба человека 2026-10-05; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-10-05; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

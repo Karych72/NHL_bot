@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟠
 **Область:** `telegram_bot/nhl_scoreboard.py`, `telegram_bot/bot.py` (`cmd_tonight`), `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, скриншот `img_28`);
-реестр — [`../open_tasks.md`](../open_tasks.md), «Продуктовый бэклог».
+реестр — [`../closed_tasks.md`](../closed_tasks.md), «Продуктовый бэклог».
 
 ## Кратко
 

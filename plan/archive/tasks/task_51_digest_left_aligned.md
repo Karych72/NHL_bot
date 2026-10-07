@@ -3,7 +3,7 @@
 **Блок:** продукт · **Надобность:** 🟡
 **Область:** `telegram_bot/bot_messages.py` (`day_digest_summary_body`, `digest_shown_match_count`), `telegram_bot/stats_handlers.py` (`dispatch_day_digest_messages`), `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_29`, `img_30`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
