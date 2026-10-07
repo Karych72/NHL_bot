@@ -116,6 +116,8 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 | `/cancel` | Прервать диалог. |
 | `/subscribe_digest`, `/unsubscribe_digest` | Opt-in / отписка от утренней рассылки дайджеста (`push_digest_job.py`). |
 | `/digest_time` | Время дайджеста: кнопки 05:00–11:00 МСК, шаг 30 минут (§7). |
+| `/subscribe_country`, `/unsubscribe_country` | Подписка на страну: кнопки стран рейтинга `/countries` (можно несколько); утром — игроки страны за ночь и видео их голов (§7). |
+| `/country_time` | Время рассылки по странам: те же кнопки 05:00–11:00 МСК, одно время на все страны чата. |
 | `/subscribe_team`, `/unsubscribe_team` | Подписка на краткие итоги игр команды по аббревиатуре сезона. |
 
 Подробный пользовательский сценарий: [`user_journey_stats.md`](user_journey_stats.md).
@@ -155,12 +157,14 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 make db-migrate
 ```
 
-Поля: `chat_id`, `kind` (`morning_digest` | `team_scores`), `team_id` (для команды),
-`digest_time` (время дайджеста по МСК, только у `morning_digest`; новая подписка — 11:00),
+Поля: `chat_id`, `kind` (`morning_digest` | `team_scores` | `country_players`), `team_id` (для команды),
+`country` (код страны, только у `country_players`),
+`digest_time` (время рассылки по МСК, у `morning_digest` и `country_players`; новая подписка — 11:00),
 `last_sent_night` (игровая дата ночи, уже отправленной чату), `active`, временные метки
-(миграция `0005_digest_time`, Задача 60). Согласие — команды
-`/subscribe_digest`, `/subscribe_team`; время — `/digest_time` (кнопки 05:00–11:00 МСК,
-шаг 30 минут); отписка — `/unsubscribe_digest`, `/unsubscribe_team` (см. `/help`).
+(миграции `0005_digest_time`, Задача 60, и `0006_country_subscription`, Задача 61). Согласие —
+команды `/subscribe_digest`, `/subscribe_team`, `/subscribe_country`; время — `/digest_time`
+и `/country_time` (кнопки 05:00–11:00 МСК, шаг 30 минут); отписка — `/unsubscribe_digest`,
+`/unsubscribe_team`, `/unsubscribe_country` (см. `/help`).
 
 Рассылка: [`push_digest_job.py`](../telegram_bot/push_digest_job.py),
 та же логика что `day_digest` / `dispatch_day_digest_messages`, с
@@ -180,6 +184,10 @@ make db-migrate
   загрузчик на этом прогоне упал, рассылка не запускается и ночь не уходит;
   ночь без матчей в БД не рассылается;
 - **`team_scores`** своего времени не имеет: уходит, как только ночь загружена (или в 11:00);
+- **`country_players`** (Задача 61) — строка на пару (чат, страна), время общее на чат,
+  правило как у дайджеста: сообщение об игроках страны за ночь и видео голов альбомами по 10
+  (хвост из одного — `send_video`); `file_id` клипов кэшируется на прогон. Ночь без игроков
+  не шлёт ничего;
 - после попытки отправки чату ставится `last_sent_night` — повторный прогон (в том числе
   догоняющий при рестарте `sync`) ту же ночь не шлёт.
 

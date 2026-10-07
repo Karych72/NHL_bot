@@ -1,8 +1,8 @@
 """Хранение подписок на рассылку (таблица bot_subscriptions).
 
 Слой данных команд подписки в `bot.py` и рассылки `push_digest_job.py`: включение
-и отключение подписок, время доставки дайджеста (МСК) и отметка о последней
-отправленной ночи, защищающая от дублей при получасовых прогонах sync.
+и отключение подписок (дайджест, команда, страна), время доставки (МСК) и отметка
+о последней отправленной ночи, защищающая от дублей при получасовых прогонах sync.
 """
 
 from __future__ import annotations
@@ -192,49 +192,130 @@ def list_active_team_scores_rows() -> List[Tuple[int, int, Optional[date]]]:
     ]
 
 
-def mark_night_sent(chat_id: int, kind: str, team_id: Optional[int], night: date) -> None:
+def upsert_country(chat_id: int, country: str) -> time:
+    """Включает (реактивирует) подписку чата на страну `country`; идемпотентно.
+    Время одно на все страны чата: новая страна берёт время существующих,
+    у первой — `LATEST_DIGEST_TIME`.
+
+    Returns:
+        Время доставки по МСК — чтобы ответ команды его назвал.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_subscriptions (chat_id, kind, country, digest_time, active) "
+                "VALUES (%s, 'country_players', %s, COALESCE((SELECT digest_time "
+                "FROM bot_subscriptions WHERE chat_id = %s AND kind = 'country_players' "
+                "LIMIT 1), %s), TRUE) "
+                "ON CONFLICT (chat_id, country) WHERE kind = 'country_players' "
+                "DO UPDATE SET active = TRUE, updated_at = now() RETURNING digest_time",
+                (chat_id, country, chat_id, LATEST_DIGEST_TIME),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    assert row is not None
+    return row[0]
+
+
+def list_chat_countries(chat_id: int) -> List[str]:
+    """Коды стран, на которые чат подписан сейчас (активные строки), по алфавиту."""
+    row = fetch_all(
+        "SELECT country FROM bot_subscriptions "
+        "WHERE chat_id = %s AND kind = 'country_players' AND active = TRUE ORDER BY country",
+        (chat_id,),
+        columns=["country"],
+    )
+    return list(row["country"])
+
+
+def set_country_time(chat_id: int, digest_time: time) -> bool:
+    """Меняет время доставки всех подписок чата на страны (оно общее на чат),
+    включая погашенные — чтобы переподписка не вернула старое.
+
+    Returns:
+        `False`, если у чата нет активных подписок на страны — менять нечего.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bot_subscriptions SET digest_time = %s, updated_at = now() "
+                "WHERE chat_id = %s AND kind = 'country_players' RETURNING active",
+                (digest_time, chat_id),
+            )
+            has_active = any(active for (active,) in cur.fetchall())
+        conn.commit()
+    return has_active
+
+
+def get_country_time(chat_id: int) -> Optional[time]:
+    """Время доставки (МСК) активных подписок чата на страны; `None`, если их нет."""
+    row = fetch_all(
+        "SELECT digest_time FROM bot_subscriptions "
+        "WHERE chat_id = %s AND kind = 'country_players' AND active = TRUE LIMIT 1",
+        (chat_id,),
+        columns=["digest_time"],
+    )
+    return row["digest_time"][0] if row["count_rows"] else None
+
+
+def list_active_country_rows() -> List[Tuple[int, str, time, Optional[date]]]:
+    """Активные подписки на страны — источник рассылки для `push_digest_job.py`:
+    кортежи (chat_id, country, digest_time, last_sent_night)."""
+    row = fetch_all(
+        "SELECT chat_id, country, digest_time, last_sent_night FROM bot_subscriptions "
+        "WHERE kind = 'country_players' AND active = TRUE ORDER BY chat_id, country",
+        None,
+        columns=["chat_id", "country", "digest_time", "last_sent_night"],
+    )
+    return [
+        (int(row["chat_id"][i]), row["country"][i], row["digest_time"][i],
+         row["last_sent_night"][i])
+        for i in range(row["count_rows"])
+    ]
+
+
+def mark_night_sent(
+    chat_id: int, kind: str, team_id: Optional[int], night: date, country: Optional[str] = None
+) -> None:
     """Отмечает, что рассылка `kind` за ночь `night` чату уже ушла.
 
     Зачем: `push_digest_job.py` запускается после каждого получасового
     прогона sync — без отметки дайджест уходил бы каждые полчаса.
 
     Args:
-        team_id: `None` для morning_digest; команда — для team_scores.
+        team_id: `None` для morning_digest и country_players; команда — для team_scores.
         night: игровая дата ночи (`push_digest_job.night_of`).
+        country: код страны для country_players, иначе `None`.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET last_sent_night = %s, updated_at = now() "
-                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s",
-                (night, chat_id, kind, team_id),
+                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s "
+                "AND country IS NOT DISTINCT FROM %s",
+                (night, chat_id, kind, team_id, country),
             )
         conn.commit()
 
 
 def mark_subscription_inactive_by_chat_kind_team(
-    chat_id: int, kind: str, team_id: Optional[int] = None
+    chat_id: int, kind: str, team_id: Optional[int] = None, country: Optional[str] = None
 ) -> None:
-    """Гасит подписку по (chat_id, kind[, team_id]) — общий деактиватор для
-    произвольного `kind`, в отличие от `deactivate_morning_digest`/
+    """Гасит подписку по (chat_id, kind[, team_id][, country]) — общий деактиватор
+    для произвольного `kind`, в отличие от `deactivate_morning_digest`/
     `deactivate_team_scores`, жёстко привязанных к своему kind.
 
     Args:
         team_id: `None` ищет запись без команды (напр. morning_digest);
             иначе фильтрует по конкретной команде (team_scores).
+        country: то же для кода страны (country_players).
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            if team_id is None:
-                cur.execute(
-                    "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() "
-                    "WHERE chat_id = %s AND kind = %s AND team_id IS NULL",
-                    (chat_id, kind),
-                )
-            else:
-                cur.execute(
-                    "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() "
-                    "WHERE chat_id = %s AND kind = %s AND team_id = %s",
-                    (chat_id, kind, team_id),
-                )
+            cur.execute(
+                "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() "
+                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s "
+                "AND country IS NOT DISTINCT FROM %s",
+                (chat_id, kind, team_id, country),
+            )
         conn.commit()

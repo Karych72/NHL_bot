@@ -5,15 +5,16 @@
 Таблица ``bot_subscriptions`` (PostgreSQL рядом с остальной БД бота), колонки::
 
     chat_id        BIGINT NOT NULL,       -- Telegram chat_id получателя
-    kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores'
-    team_id        BIGINT,                -- для kind='team_scores'; NULL для дайджеста
-    digest_time    TIME,                  -- время дайджеста по МСК; только у morning_digest
+    kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores' | 'country_players'
+    team_id        BIGINT,                -- для kind='team_scores'; иначе NULL
+    country        TEXT,                  -- код страны; только у country_players (Задача 61)
+    digest_time    TIME,                  -- время рассылки по МСК; morning_digest и country_players
     last_sent_night DATE,                 -- ночь, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,
     created_at     TIMESTAMPTZ DEFAULT now()
 
 Уникальность строки: пара (chat_id, kind) для дайджеста; для команды —
-(chat_id, kind, team_id). Реализуйте через UNIQUE-индекс или составной PRIMARY KEY.
+(chat_id, kind, team_id); для страны — (chat_id, country). Реализуйте через UNIQUE-индекс или составной PRIMARY KEY.
 
 Хранить нужно минимум ``chat_id``: без активного диалога пользователь не получит
 сообщение, если бот не писал ему после последнего рестарта — поэтому подписка

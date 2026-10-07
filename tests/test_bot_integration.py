@@ -1373,3 +1373,104 @@ async def test_digest_time_without_subscription_points_to_subscribe(
     [reply] = update.message.replies
     assert "/subscribe_digest" in reply["text"]
     assert "reply_markup" not in reply
+
+
+# ---------------------------------------------------------------------------
+# Сценарий «подписка на страну»: кнопки стран, время, отписка (Задача 61)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_subscribe_country_buttons_subscribe_and_report_delivery_time(
+    bot_module, make_message_update, make_callback_update, monkeypatch
+):
+    from datetime import time
+    from types import SimpleNamespace
+
+    bot = bot_module("bot")
+    repo = bot_module("subscription_repo")
+    saved = []
+    monkeypatch.setattr(bot, "country_rankings", lambda: ("", ["CAN", "RUS"]))
+    monkeypatch.setattr(repo, "upsert_country", lambda *args: saved.append(args) or time(9, 0))
+
+    update = make_message_update("/subscribe_country", chat_id=42)
+    await bot.cmd_subscribe_country(update, SimpleNamespace())
+    [reply] = update.message.replies
+    assert _callback_data(reply["reply_markup"]) == ["sc:CAN", "sc:RUS"]
+    assert [b.text for b in _flat_buttons(reply["reply_markup"])] == ["🇨🇦 Канада", "🇷🇺 Россия"]
+
+    press = make_callback_update("sc:RUS", chat_id=42)
+    press.effective_chat = SimpleNamespace(id=42)
+    await bot.callback_country_pick(press, SimpleNamespace())
+
+    assert saved == [(42, "RUS")]
+    [edited] = press.callback_query.edited_texts
+    assert edited["text"].startswith("Вы подписаны на 🇷🇺 Россия")
+    assert "09:00 МСК" in edited["text"] and "/country_time" in edited["text"]
+
+    # Код вне рейтинга (устаревшая кнопка) не подписывает.
+    stale = make_callback_update("sc:ZZZ", chat_id=42)
+    stale.effective_chat = SimpleNamespace(id=42)
+    await bot.callback_country_pick(stale, SimpleNamespace())
+    assert saved == [(42, "RUS")]
+    assert stale.callback_query.edited_texts[0]["text"] == "Страна не найдена в рейтинге этого сезона."
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_country_offers_only_subscribed_countries(
+    bot_module, make_message_update, make_callback_update, monkeypatch
+):
+    from types import SimpleNamespace
+
+    bot = bot_module("bot")
+    repo = bot_module("subscription_repo")
+    dropped = []
+    chat_countries = {42: ["FIN", "RUS"], 43: []}
+    monkeypatch.setattr(repo, "list_chat_countries", lambda chat_id: chat_countries[chat_id])
+    monkeypatch.setattr(repo, "mark_subscription_inactive_by_chat_kind_team",
+                        lambda *args: dropped.append(args))
+
+    update = make_message_update("/unsubscribe_country", chat_id=42)
+    update.effective_chat = SimpleNamespace(id=42)
+    await bot.cmd_unsubscribe_country(update, SimpleNamespace())
+    [reply] = update.message.replies
+    assert _callback_data(reply["reply_markup"]) == ["uc:FIN", "uc:RUS"]
+
+    press = make_callback_update("uc:FIN", chat_id=42)
+    press.effective_chat = SimpleNamespace(id=42)
+    await bot.callback_country_pick(press, SimpleNamespace())
+    assert dropped == [(42, "country_players", None, "FIN")]
+    assert press.callback_query.edited_texts[0]["text"] == "Подписка на 🇫🇮 Финляндия отключена."
+
+    empty = make_message_update("/unsubscribe_country", chat_id=43)
+    empty.effective_chat = SimpleNamespace(id=43)
+    await bot.cmd_unsubscribe_country(empty, SimpleNamespace())
+    [hint] = empty.message.replies
+    assert "/subscribe_country" in hint["text"] and "reply_markup" not in hint
+
+
+@pytest.mark.asyncio
+async def test_country_time_buttons_save_the_chosen_time_for_all_countries(
+    bot_module, make_message_update, make_callback_update, monkeypatch
+):
+    from datetime import time
+    from types import SimpleNamespace
+
+    bot = bot_module("bot")
+    repo = bot_module("subscription_repo")
+    saved = []
+    monkeypatch.setattr(repo, "get_country_time", lambda chat_id: time(11, 0))
+    monkeypatch.setattr(repo, "set_country_time", lambda *args: saved.append(args) or True)
+
+    update = make_message_update("/country_time", chat_id=42)
+    update.effective_chat = SimpleNamespace(id=42)
+    await bot.cmd_country_time(update, SimpleNamespace())
+    [reply] = update.message.replies
+    data = _callback_data(reply["reply_markup"])
+    assert all(re.match(bot.COUNTRY_TIME_CALLBACK_PATTERN, d) for d in data)
+    assert [b.text for b in _flat_buttons(reply["reply_markup"])][-1] == "• 11:00"
+
+    press = make_callback_update(data[5], chat_id=42)
+    press.effective_chat = SimpleNamespace(id=42)
+    await bot.callback_country_time(press, SimpleNamespace())
+    assert saved == [(42, time(7, 30))]
+    assert "07:30 МСК" in press.callback_query.edited_texts[0]["text"]
