@@ -11,7 +11,7 @@ PTB 21.x) ровно потому, что ни один тест его не и�
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,8 +26,6 @@ ONE_GAME_DAY = ("2026-01-15", [(2026020001, "<b>BOS 3 : 2 TOR</b>", [])])
 
 # Ночь игровой даты 2026-10-06: прогоны sync — с 18:00 UTC 06.10 до 08:00 UTC 07.10.
 NIGHT = date(2026, 10, 6)
-# Момент после крайнего срока ночи (11:00 МСК 07.10): рассылка точно пора.
-AFTER_DEADLINE = datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc)
 
 # Синтаксически валидный, но заведомо несуществующий токен: никуда не ходим.
 FAKE_TOKEN = "123456789:TEST-TOKEN-NOT-A-REAL-SECRET"
@@ -39,9 +37,9 @@ def push_job(bot_module):
     return bot_module("push_digest_job")
 
 
-def _rows(*chat_ids, send_time=time(11, 0), last_sent=None):
+def _rows(*chat_ids, last_sent=None):
     """Строки ``list_active_morning_digest_rows`` для чатов с одинаковой подпиской."""
-    return [(chat_id, send_time, last_sent) for chat_id in chat_ids]
+    return [(chat_id, last_sent) for chat_id in chat_ids]
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +51,7 @@ async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_con
     with patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111, 222)
     ), patch.object(push_job, "mark_night_sent"):
-        await push_job.run_morning_digest_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
 
     sent = fake_context.bot.sent_messages
     assert [m["chat_id"] for m in sent] == [111, 111, 222, 222]
@@ -75,7 +73,7 @@ async def test_morning_digest_deactivates_chat_that_blocked_the_bot(push_job, fa
     ), patch.object(
         push_job, "mark_subscription_inactive_by_chat_kind_team"
     ) as mark_inactive, patch.object(push_job, "mark_night_sent"):
-        await push_job.run_morning_digest_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
 
     mark_inactive.assert_called_once_with(111, "morning_digest", None)
 
@@ -96,7 +94,7 @@ async def test_morning_digest_retries_once_after_retry_after(push_job, fake_cont
     ), patch.object(push_job, "dispatch_day_digest_messages", side_effect=flaky), patch.object(
         push_job, "mark_night_sent"
     ):
-        await push_job.run_morning_digest_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
 
     assert attempts == [111, 111]
     assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [111]
@@ -117,7 +115,7 @@ async def test_team_scores_sends_first_line_of_every_game_of_the_night(push_job,
         "game_message",
         side_effect=[("BOS 3 : 2 TOR\nподробности", {}), ("BOS 1 : 4 MTL\nещё", {})],
     ):
-        await push_job.run_team_scores_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
     [sent] = fake_context.bot.sent_messages
     assert sent["chat_id"] == 111
@@ -131,7 +129,7 @@ async def test_team_scores_skips_chat_without_games_that_night(push_job, fake_co
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[]):
-        await push_job.run_team_scores_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
     assert fake_context.bot.sent_messages == []
 
@@ -155,7 +153,7 @@ async def test_team_scores_resends_once_after_retry_after(push_job, fake_context
     ), patch.object(
         push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
     ), patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})):
-        await push_job.run_team_scores_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
     assert len(calls) == 2
     assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [111]
@@ -177,7 +175,7 @@ async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_
     ), patch.object(
         push_job, "mark_subscription_inactive_by_chat_kind_team"
     ) as mark_inactive:
-        await push_job.run_team_scores_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
     mark_inactive.assert_called_once_with(111, "team_scores", 6)
 
@@ -247,11 +245,10 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
 
     contexts = []
 
-    async def record(context, now, night, night_loaded):
+    async def record(context, night):
         steps.append("broadcast")
         contexts.append(context)
-        assert night == push_job.night_of(now)
-        assert night_loaded is True
+        assert isinstance(night, date)
 
     monkeypatch.setattr(push_job, "night_is_loaded", lambda night: True)
     monkeypatch.setattr(push_job, "run_morning_digest_broadcast", record)
@@ -277,7 +274,7 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
 
 
 # ---------------------------------------------------------------------------
-# Время доставки (Задача 60): более позднее из «время подписчика» и «ночь загружена»
+# Время рассылки (Задачи 60, 63): ночь загружена или наступил крайний срок 11:00 МСК
 # ---------------------------------------------------------------------------
 
 def _msk(hour: int, minute: int = 0) -> datetime:
@@ -293,30 +290,42 @@ def _night_slots():
         slot += timedelta(minutes=30)
 
 
-async def _run_night(push_job, fake_context, subscriptions, loaded_at):
-    """Прогоняет рассылку дайджеста после каждого слота ночи.
+async def _run_night(push_job, fake_context, loaded_at):
+    """Прогоняет ``broadcast_if_due`` после каждого слота ночи для трёх видов подписки.
 
-    *subscriptions* — ``{chat_id: digest_time}``; отметка ``last_sent_night``
+    Чат 111 — дайджест, 222 — команда, 333 — страна; отметка ``last_sent_night``
     живёт в словаре так же, как в ``bot_subscriptions``. *loaded_at* — с какого
     слота ночь загружена целиком (``None`` — не загружается до утра).
 
-    Возвращает ``{chat_id: [моменты МСК, когда чату ушёл дайджест]}``.
+    Возвращает ``{chat_id: [моменты МСК, когда чату ушла рассылка]}``.
     """
-    last_sent = {chat_id: None for chat_id in subscriptions}
-    sent_at = {chat_id: [] for chat_id in subscriptions}
+    last_sent = {111: None, 222: None, 333: None}
+    sent_at = {chat_id: [] for chat_id in last_sent}
 
-    def mark(chat_id, kind, team_id, night):
-        assert (kind, team_id) == ("morning_digest", None)
+    def mark(chat_id, kind, team_id, night, country=None):
         last_sent[chat_id] = night
 
     for slot in _night_slots():
-        rows = [(c, t, last_sent[c]) for c, t in subscriptions.items()]
         before = len(fake_context.bot.sent_messages)
-        with patch.object(push_job, "list_active_morning_digest_rows", return_value=rows), patch.object(
-            push_job, "mark_night_sent", side_effect=mark
-        ), patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY):
-            loaded = loaded_at is not None and slot >= loaded_at
-            await push_job.run_morning_digest_broadcast(fake_context, slot, NIGHT, loaded)
+        loaded = loaded_at is not None and slot >= loaded_at
+        with patch.object(
+            push_job, "list_active_morning_digest_rows", return_value=[(111, last_sent[111])]
+        ), patch.object(
+            push_job, "list_active_team_scores_rows", return_value=[(222, 6, last_sent[222])]
+        ), patch.object(
+            push_job, "list_active_country_rows", return_value=[(333, "RUS", last_sent[333])]
+        ), patch.object(push_job, "mark_night_sent", side_effect=mark), patch.object(
+            push_job, "day_digest", return_value=ONE_GAME_DAY
+        ), patch.object(
+            push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
+        ), patch.object(
+            push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})
+        ), patch.object(
+            push_job, "country_night_message", return_value="RUS TEXT"
+        ), patch.object(
+            push_job, "country_night_goals", return_value=[]
+        ), patch.object(push_job, "night_is_loaded", return_value=loaded):
+            await push_job.broadcast_if_due(fake_context, slot)
         for message in fake_context.bot.sent_messages[before:]:
             if not message["text"].startswith("Ещё:"):
                 sent_at[message["chat_id"]].append(slot)
@@ -329,24 +338,47 @@ def test_night_of_covers_the_whole_sync_window(push_job):
 
 
 @pytest.mark.asyncio
-async def test_time_before_night_end_waits_for_the_last_game(push_job, fake_context):
-    """07:00 выбрано, ночь загрузилась к 08:30 — дайджест в 08:30, один раз."""
-    sent_at = await _run_night(push_job, fake_context, {111: time(7, 0)}, loaded_at=_msk(8, 30))
-    assert sent_at == {111: [_msk(8, 30)]}
+async def test_nothing_goes_out_while_the_night_is_not_loaded(push_job, fake_context):
+    """Ночь не загружена, срок не наступил — ни один вид подписки не шлётся."""
+    with patch.object(push_job, "night_is_loaded", return_value=False), patch.object(
+        push_job, "run_morning_digest_broadcast"
+    ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
+        push_job, "run_country_broadcast"
+    ) as country:
+        await push_job.broadcast_if_due(fake_context, _msk(10, 30))
+
+    digest.assert_not_called()
+    team.assert_not_called()
+    country.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_time_after_night_end_is_kept_exactly(push_job, fake_context):
-    """Ночь загрузилась к 06:00, выбрано 09:30 — дайджест ровно в 09:30, один раз."""
-    sent_at = await _run_night(push_job, fake_context, {111: time(9, 30)}, loaded_at=_msk(6, 0))
-    assert sent_at == {111: [_msk(9, 30)]}
+async def test_all_kinds_go_out_once_at_the_first_run_after_the_night_is_loaded(
+    push_job, fake_context
+):
+    """Ночь загрузилась к 08:30 — все три вида уходят в 08:30 и не повторяются до утра."""
+    sent_at = await _run_night(push_job, fake_context, loaded_at=_msk(8, 30))
+    assert sent_at == {111: [_msk(8, 30)], 222: [_msk(8, 30)], 333: [_msk(8, 30)]}
 
 
 @pytest.mark.asyncio
 async def test_unloaded_night_goes_out_at_the_deadline(push_job, fake_context):
-    """Ночь так и не загрузилась целиком (перенос, сбой) — дайджест в 11:00 с тем, что есть."""
-    sent_at = await _run_night(push_job, fake_context, {111: time(6, 0)}, loaded_at=None)
-    assert sent_at == {111: [_msk(11, 0)]}
+    """Ночь так и не загрузилась целиком (перенос, сбой) — всё уходит в 11:00 с тем, что есть."""
+    sent_at = await _run_night(push_job, fake_context, loaded_at=None)
+    assert sent_at == {111: [_msk(11, 0)], 222: [_msk(11, 0)], 333: [_msk(11, 0)]}
+
+
+@pytest.mark.asyncio
+async def test_deadline_does_not_ask_nhl_api(push_job, fake_context):
+    """После крайнего срока готовность не нужна: сбой NHL API не срывает отправку."""
+    with patch.object(push_job, "night_is_loaded", side_effect=AssertionError("API")), patch.object(
+        push_job, "run_morning_digest_broadcast"
+    ) as digest, patch.object(push_job, "run_team_scores_broadcast"), patch.object(
+        push_job, "run_country_broadcast"
+    ):
+        await push_job.broadcast_if_due(fake_context, _msk(11, 0))
+
+    digest.assert_awaited_once_with(fake_context, NIGHT)
 
 
 @pytest.mark.asyncio
@@ -357,7 +389,7 @@ async def test_repeated_tick_after_sending_sends_nothing(push_job, fake_context)
     ), patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "mark_night_sent"
     ) as mark:
-        await push_job.run_morning_digest_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
 
     assert fake_context.bot.sent_messages == []
     mark.assert_not_called()
@@ -372,15 +404,15 @@ async def test_night_without_games_is_not_sent(push_job, fake_context):
     ), patch.object(push_job, "day_digest", return_value=no_games) as digest, patch.object(
         push_job, "mark_night_sent"
     ):
-        await push_job.run_morning_digest_broadcast(fake_context, AFTER_DEADLINE, NIGHT, True)
+        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
 
     digest.assert_called_once_with(NIGHT)
     assert fake_context.bot.sent_messages == []
 
 
 @pytest.mark.asyncio
-async def test_team_scores_wait_for_the_night_and_are_not_repeated(push_job, fake_context):
-    """У ``team_scores`` своего времени нет: ушёл, как только ночь загружена, и не повторяется."""
+async def test_team_scores_are_not_repeated(push_job, fake_context):
+    """``team_scores`` не повторяется: ночь с отметкой ``last_sent_night`` молчит."""
     patches = (
         patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]),
         patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})),
@@ -388,9 +420,7 @@ async def test_team_scores_wait_for_the_night_and_are_not_repeated(push_job, fak
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(push_job, "mark_night_sent") as mark:
-        await push_job.run_team_scores_broadcast(fake_context, _msk(6, 0), NIGHT, False)
-        assert fake_context.bot.sent_messages == []
-        await push_job.run_team_scores_broadcast(fake_context, _msk(6, 30), NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
     mark.assert_called_once_with(111, "team_scores", 6, NIGHT)
     assert [m["text"] for m in fake_context.bot.sent_messages] == [
         "<b>Ваши матчи (2026-10-06)</b>\n\nBOS 3 : 2 TOR"
@@ -399,7 +429,7 @@ async def test_team_scores_wait_for_the_night_and_are_not_repeated(push_job, fak
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, NIGHT)]
     ), patch.object(push_job, "mark_night_sent"):
-        await push_job.run_team_scores_broadcast(fake_context, _msk(7, 0), NIGHT, True)
+        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
     assert len(fake_context.bot.sent_messages) == 1
 
 
@@ -493,7 +523,7 @@ def country_env(push_job, monkeypatch, tmp_path):
 
     def run(rows, goals, text="TEXT"):
         monkeypatch.setattr(push_job, "list_active_country_rows", lambda: [
-            (chat, country, time(11, 0), None) for chat, country in rows
+            (chat, country, None) for chat, country in rows
         ])
         monkeypatch.setattr(push_job, "country_night_message", lambda *a: text)
         monkeypatch.setattr(push_job, "country_night_goals", lambda *a: goals)
@@ -505,7 +535,7 @@ def country_env(push_job, monkeypatch, tmp_path):
             push_job, "mark_subscription_inactive_by_chat_kind_team",
             lambda *a: env.deactivated.append(a),
         )
-        return push_job.run_country_broadcast(env.context, AFTER_DEADLINE, NIGHT, True)
+        return push_job.run_country_broadcast(env.context, NIGHT)
 
     env.run = run
     env.tmp_path = tmp_path

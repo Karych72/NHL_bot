@@ -4,11 +4,10 @@
 Отдельный скрипт вне процесса бота: поднимает собственный ``Application``
 (без polling и без ``JobQueue``), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
-раз в 30 минут ночью — и сам решает, кому пора: дайджест уходит в более позднее из
-двух — выбранное подписчиком время или загрузка последнего матча ночи (Задача 60);
-отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на страну
-(Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов, в выбранное
-подписчиком время по тому же правилу, что и дайджест. Сам выходит с кодом 0 и
+раз в 30 минут ночью — и сам решает, пора ли: всё уходит одной рассылкой, как только
+загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63; времени у
+подписчика нет). Отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на
+страну (Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов. Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
 
     cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
@@ -46,7 +45,6 @@ from bot_messages import (  # noqa: E402
 from nhl_scoreboard import fetch_score  # noqa: E402
 from stats_handlers import dispatch_day_digest_messages  # noqa: E402
 from subscription_repo import (  # noqa: E402
-    LATEST_DIGEST_TIME,
     list_active_country_rows,
     list_active_morning_digest_rows,
     list_active_team_scores_rows,
@@ -65,7 +63,7 @@ logger = logging.getLogger("push_digest_job")
 # Крайний срок ночи — последний ночной прогон sync (08:00 UTC). Прогонов позже нет, поэтому
 # недозагруженная ночь (перенос матча) уходит в этот момент с тем, что есть в БД. Если сам
 # этот прогон упал на загрузчике, рассылка не запускается и ночь не уходит вовсе.
-NIGHT_DEADLINE_MSK = LATEST_DIGEST_TIME
+NIGHT_DEADLINE_MSK = time(11, 0)
 
 # Сдвиг, переводящий момент ночи в игровую дату лиги: матчи даты D (ET) идут
 # с 16:00 UTC D до ~08:00 UTC D+1, и любой момент ночного окна sync минус 12 часов
@@ -97,24 +95,6 @@ def night_of(now: datetime) -> date:
 def _msk_moment(night: date, at: time) -> datetime:
     """Момент *at* по МСК утром после ночи *night*."""
     return datetime.combine(night + timedelta(days=1), at, tzinfo=MSK)
-
-
-def is_due(now: datetime, night: date, send_time: Optional[time], night_loaded: bool) -> bool:
-    """Пора ли слать рассылку за ночь *night*.
-
-    Пора в более позднее из двух: время подписчика или загрузка всей ночи; после
-    крайнего срока ``NIGHT_DEADLINE_MSK`` — в любом случае.
-
-    Аргументы:
-        now: текущий момент (aware).
-        night: игровая дата ночи (``night_of``).
-        send_time: время подписчика по МСК; ``None`` — своего времени нет
-            (``team_scores``), ждать только загрузки ночи.
-        night_loaded: все ли матчи ночи уже в ``games`` (``night_is_loaded``).
-    """
-    if send_time is not None and now < _msk_moment(night, send_time):
-        return False
-    return night_loaded or now >= _msk_moment(night, NIGHT_DEADLINE_MSK)
 
 
 def night_is_loaded(night: date) -> bool:
@@ -176,26 +156,23 @@ async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     return result
 
 
-async def run_morning_digest_broadcast(
-    context: CallbackContext, now: datetime, night: date, night_loaded: bool
-) -> None:
+async def run_morning_digest_broadcast(context: CallbackContext, night: date) -> None:
     """Шлёт дайджест ночи *night* подписчикам ``morning_digest``, которым пора.
 
     Зачем: ровно те же карточки, что и меню ``/stats``, но без навигации диалога
     (``attach_conv_nav_on_last=False``) — в рассылке кнопки диалога некуда вести.
-    Чату, которому ночь уже ушла (``last_sent_night``), или чьё время не наступило
-    (``is_due``), не шлётся ничего. После попытки ночь отмечается отправленной —
+    Чату, которому ночь уже ушла (``last_sent_night``), не шлётся ничего. После попытки ночь отмечается отправленной —
     один заход на чат, как и прежде. Ночь без матчей в БД не рассылается.
     Заблокировавший бота чат (``Forbidden``) деактивируется, чтобы не долбиться
     в него каждый день.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``now``, ``night``, ``night_loaded`` — см. ``is_due``.
+    ``night`` — игровая дата ночи (``night_of``).
     """
     due = [
         chat_id
-        for chat_id, send_time, last_sent in list_active_morning_digest_rows()
-        if last_sent != night and is_due(now, night, send_time, night_loaded)
+        for chat_id, last_sent in list_active_morning_digest_rows()
+        if last_sent != night
     ]
     if not due:
         return
@@ -242,21 +219,15 @@ async def run_morning_digest_broadcast(
         await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
-async def run_team_scores_broadcast(
-    context: CallbackContext, now: datetime, night: date, night_loaded: bool
-) -> None:
+async def run_team_scores_broadcast(context: CallbackContext, night: date) -> None:
     """Краткая строка по каждому матчу команды за ночь *night*.
 
     Зачем: подписка ``team_scores`` — одно короткое сообщение на чат со счётом
-    матчей его команды за ночь; чат без матчей пропускается. Своего времени у
-    подписки нет: уходит, как только ночь загружена (или к крайнему сроку), —
-    короткому счёту ждать утра незачем.
+    матчей его команды за ночь; чат без матчей пропускается.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``now``, ``night``, ``night_loaded`` — см. ``is_due``.
+    ``night`` — игровая дата ночи (``night_of``).
     """
-    if not is_due(now, night, None, night_loaded):
-        return
     for chat_id, team_id, last_sent in list_active_team_scores_rows():
         if last_sent == night:
             continue
@@ -379,22 +350,20 @@ async def _send_goal_videos(
             cache[key] = message.video.file_id
 
 
-async def run_country_broadcast(
-    context: CallbackContext, now: datetime, night: date, night_loaded: bool
-) -> None:
+async def run_country_broadcast(context: CallbackContext, night: date) -> None:
     """Игроки страны за ночь *night* и видео их голов — подписчикам ``country_players``.
 
     Зачем: подписка на страну (Задача 61) — сообщение об игроках страны и альбомы
-    видео голов; время и ``last_sent_night`` — по каждой паре (чат, страна). Ночь без
+    видео голов; ``last_sent_night`` — по каждой паре (чат, страна). Ночь без
     игроков страны ничего не шлёт, но отмечается отправленной.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``now``, ``night``, ``night_loaded`` — см. ``is_due``.
+    ``night`` — игровая дата ночи (``night_of``).
     """
     due = [
         (chat_id, country)
-        for chat_id, country, send_time, last_sent in list_active_country_rows()
-        if last_sent != night and is_due(now, night, send_time, night_loaded)
+        for chat_id, country, last_sent in list_active_country_rows()
+        if last_sent != night
     ]
     texts: Dict[str, Optional[str]] = {}
     goals: Dict[str, List[Tuple[int, int, str]]] = {}
@@ -423,12 +392,26 @@ async def run_country_broadcast(
         mark_night_sent(chat_id, "country_players", None, night, country=country)
 
 
-async def main() -> None:
-    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и прогоняет три рассылки.
+async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
+    """Прогоняет три рассылки за ночь момента *now*, если пора.
 
-    Ночь и её готовность (запрос слейта к NHL API, ``night_is_loaded``) считаются
-    один раз на запуск и общие для всех рассылок; после крайнего срока API не
-    запрашивается.
+    Пора, когда ночь загружена целиком (``night_is_loaded``) или наступил крайний срок
+    ``NIGHT_DEADLINE_MSK``; иначе не шлётся ничего. После крайнего срока NHL API не
+    спрашивается, чтобы его сбой не сорвал отправку по сроку.
+
+    Аргументы: ``context`` — контекст PTB; ``now`` — текущий момент (aware).
+    """
+    night = night_of(now)
+    if now < _msk_moment(night, NIGHT_DEADLINE_MSK) and not night_is_loaded(night):
+        logger.info("Ночь %s загружена не целиком: рассылка отложена.", night)
+        return
+    await run_morning_digest_broadcast(context, night)
+    await run_team_scores_broadcast(context, night)
+    await run_country_broadcast(context, night)
+
+
+async def main() -> None:
+    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и вызывает ``broadcast_if_due``.
 
     Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
     принимает ``CallbackContext``, а построить его можно только от ``Application``.
@@ -448,16 +431,8 @@ async def main() -> None:
         .media_write_timeout(300)
         .build()
     )
-    now = datetime.now(timezone.utc)
-    night = night_of(now)
-    # После крайнего срока готовность не нужна (``is_due``) — NHL API не спрашиваем,
-    # чтобы его сбой не сорвал отправку по сроку.
-    night_loaded = now >= _msk_moment(night, NIGHT_DEADLINE_MSK) or night_is_loaded(night)
     async with application:
-        context = CallbackContext(application)
-        await run_morning_digest_broadcast(context, now, night, night_loaded)
-        await run_team_scores_broadcast(context, now, night, night_loaded)
-        await run_country_broadcast(context, now, night, night_loaded)
+        await broadcast_if_due(CallbackContext(application), datetime.now(timezone.utc))
     logger.info("Рассылка завершена.")
 
 

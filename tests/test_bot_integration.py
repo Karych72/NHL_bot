@@ -1313,84 +1313,20 @@ async def test_country_goalies_and_back_to_rankings(
 
 
 # ---------------------------------------------------------------------------
-# Сценарий «время дайджеста»: /digest_time → кнопка → сохранение (Задача 60)
+# Сценарий «подписка на страну»: кнопки стран, отписка (Задача 61)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_digest_time_buttons_save_the_chosen_time(
+async def test_subscribe_country_buttons_subscribe_and_report_delivery_rule(
     bot_module, make_message_update, make_callback_update, monkeypatch
 ):
-    from datetime import time
-    from types import SimpleNamespace
-
-    bot = bot_module("bot")
-    repo = bot_module("subscription_repo")
-    saved = []
-    monkeypatch.setattr(repo, "get_digest_time", lambda chat_id: time(11, 0))
-    monkeypatch.setattr(repo, "set_digest_time", lambda *args: saved.append(args) or True)
-
-    update = make_message_update("/digest_time", chat_id=42)
-    update.effective_chat = SimpleNamespace(id=42)
-    await bot.cmd_digest_time(update, SimpleNamespace(args=[]))
-
-    [reply] = update.message.replies
-    assert "11:00 МСК" in reply["text"]
-    labels = [b.text for b in _flat_buttons(reply["reply_markup"])]
-    assert labels[0] == "05:00" and labels[-1] == "• 11:00" and len(labels) == 13
-    data = _callback_data(reply["reply_markup"])
-    assert all(re.match(bot.DIGEST_TIME_CALLBACK_PATTERN, d) for d in data)
-
-    press = make_callback_update(data[5], chat_id=42)
-    press.effective_chat = SimpleNamespace(id=42)
-    await bot.callback_digest_time(press, SimpleNamespace())
-
-    assert saved == [(42, time(7, 30))]
-    [edited] = press.callback_query.edited_texts
-    assert edited["text"].startswith("Дайджест придёт в 07:30 МСК")
-
-
-@pytest.mark.asyncio
-async def test_digest_time_rejects_time_outside_choices(bot_module, make_callback_update):
-    """Позже 11:00 прогонов sync нет — такое время из подделанной кнопки не сохраняется."""
-    bot = bot_module("bot")
-    press = make_callback_update("dt:15:00")
-    with pytest.raises(ValueError, match="outside of choices"):
-        await bot.callback_digest_time(press, None)
-
-
-@pytest.mark.asyncio
-async def test_digest_time_without_subscription_points_to_subscribe(
-    bot_module, make_message_update, monkeypatch
-):
-    from types import SimpleNamespace
-
-    bot = bot_module("bot")
-    monkeypatch.setattr(bot_module("subscription_repo"), "get_digest_time", lambda chat_id: None)
-    update = make_message_update("/digest_time")
-    update.effective_chat = SimpleNamespace(id=100)
-    await bot.cmd_digest_time(update, SimpleNamespace(args=[]))
-
-    [reply] = update.message.replies
-    assert "/subscribe_digest" in reply["text"]
-    assert "reply_markup" not in reply
-
-
-# ---------------------------------------------------------------------------
-# Сценарий «подписка на страну»: кнопки стран, время, отписка (Задача 61)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_subscribe_country_buttons_subscribe_and_report_delivery_time(
-    bot_module, make_message_update, make_callback_update, monkeypatch
-):
-    from datetime import time
     from types import SimpleNamespace
 
     bot = bot_module("bot")
     repo = bot_module("subscription_repo")
     saved = []
     monkeypatch.setattr(bot, "country_rankings", lambda: ("", ["CAN", "RUS"]))
-    monkeypatch.setattr(repo, "upsert_country", lambda *args: saved.append(args) or time(9, 0))
+    monkeypatch.setattr(repo, "upsert_country", lambda *args: saved.append(args))
 
     update = make_message_update("/subscribe_country", chat_id=42)
     await bot.cmd_subscribe_country(update, SimpleNamespace())
@@ -1405,7 +1341,8 @@ async def test_subscribe_country_buttons_subscribe_and_report_delivery_time(
     assert saved == [(42, "RUS")]
     [edited] = press.callback_query.edited_texts
     assert edited["text"].startswith("Вы подписаны на 🇷🇺 Россия")
-    assert "09:00 МСК" in edited["text"] and "/country_time" in edited["text"]
+    assert "все матчи ночи" in edited["text"] and "не позже 11:00 МСК" in edited["text"]
+    assert "/unsubscribe_country" in edited["text"]
 
     # Код вне рейтинга (устаревшая кнопка) не подписывает.
     stale = make_callback_update("sc:ZZZ", chat_id=42)
@@ -1446,31 +1383,3 @@ async def test_unsubscribe_country_offers_only_subscribed_countries(
     await bot.cmd_unsubscribe_country(empty, SimpleNamespace())
     [hint] = empty.message.replies
     assert "/subscribe_country" in hint["text"] and "reply_markup" not in hint
-
-
-@pytest.mark.asyncio
-async def test_country_time_buttons_save_the_chosen_time_for_all_countries(
-    bot_module, make_message_update, make_callback_update, monkeypatch
-):
-    from datetime import time
-    from types import SimpleNamespace
-
-    bot = bot_module("bot")
-    repo = bot_module("subscription_repo")
-    saved = []
-    monkeypatch.setattr(repo, "get_country_time", lambda chat_id: time(11, 0))
-    monkeypatch.setattr(repo, "set_country_time", lambda *args: saved.append(args) or True)
-
-    update = make_message_update("/country_time", chat_id=42)
-    update.effective_chat = SimpleNamespace(id=42)
-    await bot.cmd_country_time(update, SimpleNamespace())
-    [reply] = update.message.replies
-    data = _callback_data(reply["reply_markup"])
-    assert all(re.match(bot.COUNTRY_TIME_CALLBACK_PATTERN, d) for d in data)
-    assert [b.text for b in _flat_buttons(reply["reply_markup"])][-1] == "• 11:00"
-
-    press = make_callback_update(data[5], chat_id=42)
-    press.effective_chat = SimpleNamespace(id=42)
-    await bot.callback_country_time(press, SimpleNamespace())
-    assert saved == [(42, time(7, 30))]
-    assert "07:30 МСК" in press.callback_query.edited_texts[0]["text"]

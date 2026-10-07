@@ -1,91 +1,38 @@
 """Хранение подписок на рассылку (таблица bot_subscriptions).
 
 Слой данных команд подписки в `bot.py` и рассылки `push_digest_job.py`: включение
-и отключение подписок (дайджест, команда, страна), время доставки (МСК) и отметка
+и отключение подписок (дайджест, команда, страна) и отметка
 о последней отправленной ночи, защищающая от дублей при получасовых прогонах sync.
 """
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date
 from typing import List, Optional, Tuple
 
 import config
 from database import fetch_all, get_connection
 
-# Самое позднее время дайджеста (МСК) = последний ночной прогон sync
-# (``scheduled_sync.NIGHT_END_HOUR_UTC``): крайний срок ночи в рассылке, конец выбора в
-# ``/digest_time`` и время новой подписки (прежнее общее расписание).
-LATEST_DIGEST_TIME = time(11, 0)
 
-
-def upsert_morning_digest(chat_id: int) -> time:
+def upsert_morning_digest(chat_id: int) -> None:
     """Включает подписку чата на утренний дайджест (`bot_subscriptions`,
     kind='morning_digest'): обновляет существующую запись независимо от её
     текущего состояния, реактивируя погашенную (active = TRUE), иначе
-    вставляет новую со временем `LATEST_DIGEST_TIME` — идемпотентно при
-    повторном вызове. Выбранное раньше время сохраняется.
-
-    Returns:
-        Время доставки подписки по МСК — чтобы ответ команды его назвал.
-    """
+    вставляет новую — идемпотентно при повторном вызове."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET active = TRUE, updated_at = now() "
-                "WHERE chat_id = %s AND kind = 'morning_digest' RETURNING digest_time",
+                "WHERE chat_id = %s AND kind = 'morning_digest'",
                 (chat_id,),
             )
-            row = cur.fetchone()
-            if row is None:
+            if cur.rowcount == 0:
                 cur.execute(
-                    "INSERT INTO bot_subscriptions (chat_id, kind, team_id, digest_time, active) "
-                    "VALUES (%s, 'morning_digest', NULL, %s, TRUE)",
-                    (chat_id, LATEST_DIGEST_TIME),
+                    "INSERT INTO bot_subscriptions (chat_id, kind, team_id, active) "
+                    "VALUES (%s, 'morning_digest', NULL, TRUE)",
+                    (chat_id,),
                 )
         conn.commit()
-    return LATEST_DIGEST_TIME if row is None else row[0]
-
-
-def set_digest_time(chat_id: int, digest_time: time) -> bool:
-    """Меняет время доставки активной подписки чата на дайджест.
-
-    Зачем: подписчик сам выбирает, когда получать дайджест (`/digest_time`);
-    рассылка придёт в это время или позже, когда загрузится вся ночь.
-
-    Args:
-        digest_time: время по МСК.
-
-    Returns:
-        `False`, если у чата нет активной подписки — менять нечего.
-    """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE bot_subscriptions SET digest_time = %s, updated_at = now() "
-                "WHERE chat_id = %s AND kind = 'morning_digest' AND active = TRUE",
-                (digest_time, chat_id),
-            )
-            updated = cur.rowcount > 0
-        conn.commit()
-    return updated
-
-
-def get_digest_time(chat_id: int) -> Optional[time]:
-    """Время доставки (МСК) активной подписки чата на дайджест.
-
-    Зачем: `/digest_time` показывает текущее время и отмечает его на кнопках.
-
-    Returns:
-        `None`, если активной подписки нет.
-    """
-    row = fetch_all(
-        "SELECT digest_time FROM bot_subscriptions "
-        "WHERE chat_id = %s AND kind = 'morning_digest' AND active = TRUE",
-        (chat_id,),
-        columns=["digest_time"],
-    )
-    return row["digest_time"][0] if row["count_rows"] else None
 
 
 def deactivate_morning_digest(chat_id: int) -> None:
@@ -162,20 +109,17 @@ def deactivate_team_scores(chat_id: int, team_id: int) -> None:
         conn.commit()
 
 
-def list_active_morning_digest_rows() -> List[Tuple[int, time, Optional[date]]]:
+def list_active_morning_digest_rows() -> List[Tuple[int, Optional[date]]]:
     """Активные подписчики утреннего дайджеста — источник рассылки для
-    `push_digest_job.py`: кортежи (chat_id, digest_time, last_sent_night).
+    `push_digest_job.py`: кортежи (chat_id, last_sent_night).
     Пустой список, если подписчиков нет."""
     row = fetch_all(
-        "SELECT chat_id, digest_time, last_sent_night FROM bot_subscriptions "
+        "SELECT chat_id, last_sent_night FROM bot_subscriptions "
         "WHERE kind = 'morning_digest' AND active = TRUE",
         None,
-        columns=["chat_id", "digest_time", "last_sent_night"],
+        columns=["chat_id", "last_sent_night"],
     )
-    return [
-        (int(row["chat_id"][i]), row["digest_time"][i], row["last_sent_night"][i])
-        for i in range(row["count_rows"])
-    ]
+    return [(int(row["chat_id"][i]), row["last_sent_night"][i]) for i in range(row["count_rows"])]
 
 
 def list_active_team_scores_rows() -> List[Tuple[int, int, Optional[date]]]:
@@ -192,29 +136,18 @@ def list_active_team_scores_rows() -> List[Tuple[int, int, Optional[date]]]:
     ]
 
 
-def upsert_country(chat_id: int, country: str) -> time:
-    """Включает (реактивирует) подписку чата на страну `country`; идемпотентно.
-    Время одно на все страны чата: новая страна берёт время существующих,
-    у первой — `LATEST_DIGEST_TIME`.
-
-    Returns:
-        Время доставки по МСК — чтобы ответ команды его назвал.
-    """
+def upsert_country(chat_id: int, country: str) -> None:
+    """Включает (реактивирует) подписку чата на страну `country`; идемпотентно."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO bot_subscriptions (chat_id, kind, country, digest_time, active) "
-                "VALUES (%s, 'country_players', %s, COALESCE((SELECT digest_time "
-                "FROM bot_subscriptions WHERE chat_id = %s AND kind = 'country_players' "
-                "LIMIT 1), %s), TRUE) "
+                "INSERT INTO bot_subscriptions (chat_id, kind, country, active) "
+                "VALUES (%s, 'country_players', %s, TRUE) "
                 "ON CONFLICT (chat_id, country) WHERE kind = 'country_players' "
-                "DO UPDATE SET active = TRUE, updated_at = now() RETURNING digest_time",
-                (chat_id, country, chat_id, LATEST_DIGEST_TIME),
+                "DO UPDATE SET active = TRUE, updated_at = now()",
+                (chat_id, country),
             )
-            row = cur.fetchone()
         conn.commit()
-    assert row is not None
-    return row[0]
 
 
 def list_chat_countries(chat_id: int) -> List[str]:
@@ -228,48 +161,17 @@ def list_chat_countries(chat_id: int) -> List[str]:
     return list(row["country"])
 
 
-def set_country_time(chat_id: int, digest_time: time) -> bool:
-    """Меняет время доставки всех подписок чата на страны (оно общее на чат),
-    включая погашенные — чтобы переподписка не вернула старое.
-
-    Returns:
-        `False`, если у чата нет активных подписок на страны — менять нечего.
-    """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE bot_subscriptions SET digest_time = %s, updated_at = now() "
-                "WHERE chat_id = %s AND kind = 'country_players' RETURNING active",
-                (digest_time, chat_id),
-            )
-            has_active = any(active for (active,) in cur.fetchall())
-        conn.commit()
-    return has_active
-
-
-def get_country_time(chat_id: int) -> Optional[time]:
-    """Время доставки (МСК) активных подписок чата на страны; `None`, если их нет."""
-    row = fetch_all(
-        "SELECT digest_time FROM bot_subscriptions "
-        "WHERE chat_id = %s AND kind = 'country_players' AND active = TRUE LIMIT 1",
-        (chat_id,),
-        columns=["digest_time"],
-    )
-    return row["digest_time"][0] if row["count_rows"] else None
-
-
-def list_active_country_rows() -> List[Tuple[int, str, time, Optional[date]]]:
+def list_active_country_rows() -> List[Tuple[int, str, Optional[date]]]:
     """Активные подписки на страны — источник рассылки для `push_digest_job.py`:
-    кортежи (chat_id, country, digest_time, last_sent_night)."""
+    кортежи (chat_id, country, last_sent_night)."""
     row = fetch_all(
-        "SELECT chat_id, country, digest_time, last_sent_night FROM bot_subscriptions "
+        "SELECT chat_id, country, last_sent_night FROM bot_subscriptions "
         "WHERE kind = 'country_players' AND active = TRUE ORDER BY chat_id, country",
         None,
-        columns=["chat_id", "country", "digest_time", "last_sent_night"],
+        columns=["chat_id", "country", "last_sent_night"],
     )
     return [
-        (int(row["chat_id"][i]), row["country"][i], row["digest_time"][i],
-         row["last_sent_night"][i])
+        (int(row["chat_id"][i]), row["country"][i], row["last_sent_night"][i])
         for i in range(row["count_rows"])
     ]
 
