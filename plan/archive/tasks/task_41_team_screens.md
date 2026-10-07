@@ -5,7 +5,7 @@
 ждёт человека) · **Блок:** продукт · **Надобность:** ⚪
 **Область:** `telegram_bot/bot_messages.py`, `script_bot.py`, `dialog_states.py`, `stats_handlers.py`, `bot.py`, `messages/*.txt`, `tests/`, `docs/architecture.md`.
 **Порядок:** после релиза, окнами между крупным; порядок с 37, 38, 42 любой.
-**Источник:** [`../stats/team_and_country_stats_plan.md`](../stats/team_and_country_stats_plan.md), Фазы B и D; реестр — [`../open_tasks.md`](../open_tasks.md), «Продуктовый бэклог».
+**Источник:** [`../../stats/team_and_country_stats_plan.md`](../../stats/team_and_country_stats_plan.md), Фазы B и D; реестр — [`../closed_tasks.md`](../closed_tasks.md), «Продуктовый бэклог».
 
 ## Кратко
 

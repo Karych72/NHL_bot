@@ -4,7 +4,7 @@
 **Область:** `telegram_bot/bot_messages.py` (`player_stats_with_count`), `tests/`.
 **Порядок:** любой; маленькая, можно окном между крупным.
 **Источник:** ревью ветки `bot-ui-fixes-2` (PR «UI бота по отзыву, пачка 2», 2026-10-01);
-реестр — [`../open_tasks.md`](../open_tasks.md), «Продуктовый бэклог».
+реестр — [`../closed_tasks.md`](../closed_tasks.md), «Продуктовый бэклог».
 
 ## Кратко
 

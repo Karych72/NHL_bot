@@ -14,11 +14,14 @@
 кратко → зачем и на что влияет → степень важности → подробно. Статус, порядок и закрытие
 ведутся только в `open_tasks.md`; карточки — описание, не второй реестр.
 
+**[`archive/`](./archive/) — закрытые задачи с Задачи 33**: [`closed_tasks.md`](./archive/closed_tasks.md)
+(строка сводки, основание закрытия, запись) и [`archive/tasks/`](./archive/tasks/) — их карточки.
+
 ## Статистика и продукт (`stats/`)
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
-| [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Частично** | Фаза C реализована (сезонное сравнение команд из `/tonight`), Фаза A частично; остаток — Задачи 41 и 42 в [`open_tasks.md`](./open_tasks.md). |
+| [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Частично** | Фаза C реализована (сезонное сравнение команд из `/tonight`), Фаза A частично; Задачи 41 и 42 закрыты — [`archive/closed_tasks.md`](./archive/closed_tasks.md). |
 
 ## Датасет и агенты Cursor (`dataset_agents/`)
 
@@ -39,7 +42,7 @@
 
 | Файл | Статус | Комментарий |
 |------|--------|-------------|
-| [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md) | **Источник истины по Задачам 1–32** | Критерии приёмки, команды проверки и основания закрытия. Открытых задач осталось три (21, 22, 26), они в [`open_tasks.md`](./open_tasks.md). |
+| [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md) | **Источник истины по Задачам 1–32** | Критерии приёмки, команды проверки и основания закрытия. Открытых задач осталось две (21, 22), они в [`open_tasks.md`](./open_tasks.md). |
 | [`engineering/work_plan_2026-09-12.md`](./engineering/work_plan_2026-09-12.md) | **История** | Срез остатка на 2026-09-12; заменён [`open_tasks.md`](./open_tasks.md). |
 | [`engineering/work_plan_2026-06-29.md`](./engineering/work_plan_2026-06-29.md) | **История / источник приоритетов** | Заменён [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md). |
 | [`engineering/refactoring_plan_3.md`](./engineering/refactoring_plan_3.md) | **Исчерпан** | Мастер-план приоритетов (срез 2026-05-15); все пункты перенумерованы в `work_plan_2026-08-08.md` и закрыты, кроме B3/B5/B6 → Задачи 21, 22, 26. |

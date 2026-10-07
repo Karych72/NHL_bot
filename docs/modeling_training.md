@@ -282,7 +282,7 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 `publish-predictions`.
 
 **Two config gaps found running this end to end on real data (Задача 15), fixed in
-Задача 39 (`plan/tasks/task_39_modeling_config_gaps.md`):**
+Задача 39 (`plan/archive/tasks/task_39_modeling_config_gaps.md`):**
 
 1. `models.lgbm.monotone` in both `configs/modeling_default.yaml` and
    `configs/modeling_smoke.yaml` referenced feature names

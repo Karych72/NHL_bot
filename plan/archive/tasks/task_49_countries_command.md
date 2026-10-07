@@ -5,7 +5,7 @@
 `telegram_bot/stats_handlers.py`, `telegram_bot/bot.py`, `telegram_bot/script_bot.py`,
 `telegram_bot/dialog_states.py`, `telegram_bot/help_text.py`, `tests/`.
 **Источник:** отзыв по UI бота, 2026-10-03 (`plan/bot_UI_problem.md`, `img_23`);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
