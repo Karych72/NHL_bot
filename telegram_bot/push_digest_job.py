@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Рассылка утреннего дайджеста и кратких итогов по команде подписчикам.
+"""Рассылка утреннего дайджеста, итогов по команде и игроков страны подписчикам.
 
 Отдельный скрипт вне процесса бота: поднимает собственный ``Application``
 (без polling и без ``JobQueue``), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
 раз в 30 минут ночью — и сам решает, кому пора: дайджест уходит в более позднее из
 двух — выбранное подписчиком время или загрузка последнего матча ночи (Задача 60);
-отметка ``last_sent_night`` не даёт отправить ночь дважды. Сам выходит с кодом 0 и
+отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на страну
+(Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов, в выбранное
+подписчиком время по тому же правилу, что и дайджест. Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
 
     cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
@@ -21,9 +23,10 @@ import logging
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
-from telegram import Bot
+from telegram import Bot, InputMediaVideo
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackContext
 
@@ -33,17 +36,25 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
-from bot_messages import MSK, day_digest, game_message  # noqa: E402
+from bot_messages import (  # noqa: E402
+    MSK,
+    country_night_goals,
+    country_night_message,
+    day_digest,
+    game_message,
+)
 from nhl_scoreboard import fetch_score  # noqa: E402
 from stats_handlers import dispatch_day_digest_messages  # noqa: E402
 from subscription_repo import (  # noqa: E402
     LATEST_DIGEST_TIME,
+    list_active_country_rows,
     list_active_morning_digest_rows,
     list_active_team_scores_rows,
     mark_night_sent,
     mark_subscription_inactive_by_chat_kind_team,
 )
 from database import fetch_all  # noqa: E402
+from video_replay import download_goal_video  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -65,6 +76,11 @@ _NIGHT_SHIFT = timedelta(hours=12)
 # (``gameScheduleState`` OK) — перенесённый или отменённый матч ночь не держит.
 _REGULAR_SEASON_GAME_TYPE = 2
 _SCHEDULED_AS_PLANNED = "OK"
+
+# Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
+_ALBUM_SIZE = 10
+
+_T = TypeVar("_T")
 
 
 def night_of(now: datetime) -> date:
@@ -138,25 +154,26 @@ def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
     return [int(row["game_id"][i]) for i in range(row["count_rows"])]
 
 
-async def _send_throttled(bot: Bot, chat_id: int, **kwargs: Any) -> None:
-    """Отправляет одно сообщение и выдерживает паузу до следующего.
+async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
+    """Выполняет одну отправку и выдерживает паузу до следующей.
 
-    Зачем: ``RetryAfter`` означает, что сообщение не доставлено, — повторяем
-    его один раз после указанной API задержки. Второй ``RetryAfter``, как и
+    Зачем: ``RetryAfter`` означает, что отправка не доставлена, — повторяем
+    её один раз после указанной API задержки. Второй ``RetryAfter``, как и
     любая другая ошибка Telegram, улетает вызывающему.
 
-    Аргументы: ``bot`` — клиент Bot API; ``chat_id`` — получатель;
-    ``kwargs`` — параметры ``Bot.send_message`` (``text``, ``parse_mode``, …).
+    Аргументы: ``call`` — отправка без аргументов (её можно вызвать повторно);
+    ``chat_id`` — получатель, для лога.
     """
     try:
-        await bot.send_message(chat_id=chat_id, **kwargs)
+        result = await call()
     except RetryAfter as exc:
         wait = float(exc.retry_after)
         logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
         await asyncio.sleep(wait)
-        await bot.send_message(chat_id=chat_id, **kwargs)
+        result = await call()
     # Telegram лимитирует бота ~30 сообщениями в секунду.
     await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
+    return result
 
 
 async def run_morning_digest_broadcast(
@@ -259,11 +276,13 @@ async def run_team_scores_broadcast(
             continue
         html_body = "\n".join(parts[:5])
         try:
-            await _send_throttled(
-                context.bot,
+            await _throttled(
+                lambda: context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"<b>Ваши матчи ({night})</b>\n\n{html_body}",
+                    parse_mode="HTML",
+                ),
                 chat_id,
-                text=f"<b>Ваши матчи ({night})</b>\n\n{html_body}",
-                parse_mode="HTML",
             )
         except Forbidden:
             logger.info(
@@ -279,11 +298,136 @@ async def run_team_scores_broadcast(
         mark_night_sent(chat_id, "team_scores", team_id, night)
 
 
+async def _prepare_goal_clips(
+    goals: List[Tuple[int, int, str]], cache: Dict[Tuple[int, int], Optional[str]]
+) -> List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]]:
+    """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры,
+    общие для ``send_video`` и ``InputMediaVideo``).
+
+    Байты, а не готовый ``InputFile``: так PTB сам ставит ``attach://`` в альбоме —
+    без него Telegram альбом не примет.
+
+    Аргументы: ``goals`` — (game_id, event_id, подпись); ``cache`` — (game_id,
+    event_id) → ``file_id`` Telegram, ``None`` — клипа нет (второй раз не качаем).
+    Гол без клипа пропускается с записью в лог.
+    """
+    clips: List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]] = []
+    for game_id, event_id, caption in goals:
+        key = (game_id, event_id)
+        if key in cache:
+            file_id = cache[key]
+            if file_id is not None:
+                clips.append((key, file_id, {"caption": caption}))
+            continue
+        # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
+        d = await asyncio.to_thread(download_goal_video, game_id, event_id)
+        if d is None:
+            logger.warning("No video for goal game_id=%s event_id=%s", game_id, event_id)
+            cache[key] = None
+            continue
+        params: Dict[str, Any] = {
+            "caption": caption, "filename": f"{event_id}.mp4",
+            "width": d.width, "height": d.height, "duration": d.duration,
+        }
+        try:
+            if d.thumb_path:
+                params["thumbnail"] = Path(d.thumb_path).read_bytes()
+            video = Path(d.path).read_bytes()
+        finally:
+            os.unlink(d.path)
+            if d.thumb_path:
+                os.unlink(d.thumb_path)
+        clips.append((key, video, params))
+    return clips
+
+
+async def _send_goal_videos(
+    bot: Bot,
+    chat_id: int,
+    goals: List[Tuple[int, int, str]],
+    cache: Dict[Tuple[int, int], Optional[str]],
+) -> None:
+    """Шлёт видео голов чату альбомами по ``_ALBUM_SIZE`` (хвост из одного видео —
+    ``send_video``: альбом требует минимум два медиа).
+
+    Зачем: ``file_id`` отправленных видео кладётся в ``cache`` — следующим
+    подписчикам клип уходит без повторной загрузки.
+    """
+    clips = await _prepare_goal_clips(goals, cache)
+    for start in range(0, len(clips), _ALBUM_SIZE):
+        chunk = clips[start:start + _ALBUM_SIZE]
+        if len(chunk) == 1:
+            _, video, params = chunk[0]
+            sent = [
+                await _throttled(
+                    lambda: bot.send_video(
+                        chat_id=chat_id, video=video, supports_streaming=True, **params
+                    ),
+                    chat_id,
+                )
+            ]
+        else:
+            media = [
+                InputMediaVideo(video, supports_streaming=True, **params)
+                for _, video, params in chunk
+            ]
+            sent = list(
+                await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
+            )
+        for (key, _, _), message in zip(chunk, sent):
+            assert message.video is not None  # ответ на отправку видео всегда содержит video
+            cache[key] = message.video.file_id
+
+
+async def run_country_broadcast(
+    context: CallbackContext, now: datetime, night: date, night_loaded: bool
+) -> None:
+    """Игроки страны за ночь *night* и видео их голов — подписчикам ``country_players``.
+
+    Зачем: подписка на страну (Задача 61) — сообщение об игроках страны и альбомы
+    видео голов; время и ``last_sent_night`` — по каждой паре (чат, страна). Ночь без
+    игроков страны ничего не шлёт, но отмечается отправленной.
+
+    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
+    ``now``, ``night``, ``night_loaded`` — см. ``is_due``.
+    """
+    due = [
+        (chat_id, country)
+        for chat_id, country, send_time, last_sent in list_active_country_rows()
+        if last_sent != night and is_due(now, night, send_time, night_loaded)
+    ]
+    texts: Dict[str, Optional[str]] = {}
+    goals: Dict[str, List[Tuple[int, int, str]]] = {}
+    file_ids: Dict[Tuple[int, int], Optional[str]] = {}
+    for chat_id, country in due:
+        if country not in texts:
+            texts[country] = country_night_message(country, night)
+            goals[country] = country_night_goals(country, night) if texts[country] else []
+        text = texts[country]
+        if text is None:
+            logger.info("No %s players in night %s: nothing sent", country, night)
+        else:
+            try:
+                await _throttled(
+                    lambda: context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"),
+                    chat_id,
+                )
+                await _send_goal_videos(context.bot, chat_id, goals[country], file_ids)
+            except Forbidden:
+                logger.info("chat_id=%s blocked bot; deactivate country %s", chat_id, country)
+                mark_subscription_inactive_by_chat_kind_team(
+                    chat_id, "country_players", None, country
+                )
+            except TelegramError as exc:
+                logger.warning("country send failed chat_id=%s %s: %s", chat_id, country, exc)
+        mark_night_sent(chat_id, "country_players", None, night, country=country)
+
+
 async def main() -> None:
-    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и прогоняет обе рассылки.
+    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и прогоняет три рассылки.
 
     Ночь и её готовность (запрос слейта к NHL API, ``night_is_loaded``) считаются
-    один раз на запуск и общие для обеих рассылок; после крайнего срока API не
+    один раз на запуск и общие для всех рассылок; после крайнего срока API не
     запрашивается.
 
     Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
@@ -296,7 +440,13 @@ async def main() -> None:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return
     application = (
-        Application.builder().token(config.TOKEN).updater(None).job_queue(None).build()
+        Application.builder()
+        .token(config.TOKEN)
+        .updater(None)
+        .job_queue(None)
+        # Альбом из 10 клипов (~9 МБ каждый) не загрузится за 20 с по умолчанию.
+        .media_write_timeout(300)
+        .build()
     )
     now = datetime.now(timezone.utc)
     night = night_of(now)
@@ -307,6 +457,7 @@ async def main() -> None:
         context = CallbackContext(application)
         await run_morning_digest_broadcast(context, now, night, night_loaded)
         await run_team_scores_broadcast(context, now, night, night_loaded)
+        await run_country_broadcast(context, now, night, night_loaded)
     logger.info("Рассылка завершена.")
 
 

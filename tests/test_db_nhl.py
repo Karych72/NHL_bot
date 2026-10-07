@@ -223,6 +223,13 @@ class TestNhlSchema(unittest.TestCase):
             )
             self.assertNotIn("timezone", columns)
 
+            # Миграция 0006 (Задача 61): подписка на страну.
+            self.assertEqual(columns.get("country"), "text")
+            cur.execute("SELECT 1 FROM schema_migrations WHERE version = '0006'")
+            self.assertIsNotNone(
+                cur.fetchone(), "schema_migrations missing version 0006 — run: make db-migrate"
+            )
+
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
@@ -313,6 +320,140 @@ class TestSubscriptionRepoSql(unittest.TestCase):
             with self.subTest(statement=statement), closing(_connect()) as conn, conn:
                 with self.assertRaises(psycopg2.errors.CheckViolation), conn.cursor() as cur:
                     cur.execute(statement, (self.CHAT,))
+
+    def _country_rows(self, chat_id=CHAT):
+        return [r for r in self.repo.list_active_country_rows() if r[0] == chat_id]
+
+    def test_country_subscriptions_share_one_time_per_chat(self):
+        repo = self.repo
+        latest = repo.LATEST_DIGEST_TIME
+        self.assertIsNone(repo.get_country_time(self.CHAT))
+        self.assertFalse(repo.set_country_time(self.CHAT, time(7, 0)), "нет подписки")
+
+        self.assertEqual(repo.upsert_country(self.CHAT, "RUS"), latest)
+        self.assertTrue(repo.set_country_time(self.CHAT, time(7, 30)))
+        # Новая страна чата берёт его время, а не 11:00; соседний чат живёт своим.
+        self.assertEqual(repo.upsert_country(self.CHAT, "FIN"), time(7, 30))
+        self.assertEqual(repo.upsert_country(self.OTHER_CHAT, "RUS"), latest)
+        repo.upsert_morning_digest(self.CHAT)
+
+        # Отметка ночи — только у своей страны; дайджест и чужой чат не задеты.
+        repo.mark_night_sent(self.CHAT, "country_players", None, self.NIGHT, country="RUS")
+        self.assertEqual(
+            self._country_rows(),
+            [(self.CHAT, "FIN", time(7, 30), None), (self.CHAT, "RUS", time(7, 30), self.NIGHT)],
+        )
+        self.assertEqual(self._country_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, "RUS", latest, None)])
+        self.assertEqual(self._digest_rows(), [(self.CHAT, latest, None)])
+
+        # Отписка от одной страны; время меняется и у погашенной — переподписка его сохранит.
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
+        self.assertEqual(repo.list_chat_countries(self.CHAT), ["FIN"])
+        self.assertEqual(len(self._digest_rows()), 1, "дайджест не погашен")
+        self.assertTrue(repo.set_country_time(self.CHAT, time(8, 0)))
+        self.assertEqual(repo.upsert_country(self.CHAT, "RUS"), time(8, 0))
+
+    def test_country_constraints(self):
+        """CHECK и уникальность миграции 0006: страна — ровно у ``country_players``."""
+        self.repo.upsert_country(self.CHAT, "RUS")
+        for error, statement in (
+            (psycopg2.errors.CheckViolation,
+             "INSERT INTO bot_subscriptions (chat_id, kind, team_id, country) "
+             "VALUES (%s, 'team_scores', 7, 'RUS')"),
+            (psycopg2.errors.UniqueViolation,
+             "INSERT INTO bot_subscriptions (chat_id, kind, country, digest_time) "
+             "VALUES (%s, 'country_players', 'RUS', '07:00')"),
+        ):
+            with self.subTest(statement=statement), closing(_connect()) as conn, conn:
+                with self.assertRaises(error), conn.cursor() as cur:
+                    cur.execute(statement, (self.CHAT,))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestCountryNightSql(unittest.TestCase):
+    """Запросы подписки на страну (Задача 61) на синтетической ночи: сезон, команды,
+    игроки и страна ``ZZZ`` вымышлены, дата в 2099 году. Строки удаляются до и после."""
+
+    SEASON = 99999999
+    NIGHT = date(2099, 1, 2)
+    GAME = 9999999901
+    TEAM = 900001
+
+    def setUp(self):
+        import bot_messages
+
+        self.messages = bot_messages
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation) VALUES (%s, %s, 'HOM')",
+                (self.TEAM, self.SEASON),
+            )
+            cur.execute(
+                "INSERT INTO games (game_id, day, home_team_id, away_team_id, is_shootouts, "
+                "season_id) VALUES (%s, %s, %s, %s, TRUE, %s)",
+                (self.GAME, self.NIGHT, self.TEAM, self.TEAM, self.SEASON),
+            )
+            # (player_id, фамилия, позиция, страна)
+            for player in (
+                (-1, "Скорер<", "C", "ZZZ"), (-2, "Тень", "L", "ZZZ"), (-3, "Чужой", "C", "YYY"),
+                (-4, "Стенка", "G", "ZZZ"), (-5, "Запасной", "G", "ZZZ"),
+            ):
+                cur.execute(
+                    "INSERT INTO rosters (player_id, season_id, lastname, position, nationality) "
+                    "VALUES (%s, %s, %s, %s, %s)", (player[0], self.SEASON, *player[1:]),
+                )
+            # (игрок, голы, передачи, броски, +/-, время на льду): играл, нулевой TOI, чужой.
+            for stat in ((-1, 2, 0, 5, 1, "20:10"), (-2, 0, 0, 2, 0, "00:00"), (-3, 3, 0, 3, 2, "15:00")):
+                cur.execute(
+                    "INSERT INTO game_player_stats (player_id, team_id, game_id, goals, assists, "
+                    "shots, plus_minus, time_on_ice) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (stat[0], self.TEAM, self.GAME, *stat[1:]),
+                )
+            for goalie in ((-4, "59:47", 30, 33, 90.91), (-5, "00:00", 0, 0, None)):
+                cur.execute(
+                    "INSERT INTO game_goalie_stats (player_id, team_id, game_id, timeonice, "
+                    "saves, shots, save_percentage) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (goalie[0], self.TEAM, self.GAME, *goalie[1:]),
+                )
+            # (автор, период, время, event_id): два гола ZZZ, чужой, буллит ZZZ.
+            for goal in ((-1, 1, "10:00", 10), (-1, 1, "02:00", 5), (-3, 2, "01:00", 20), (-1, 5, "00:00", 99)):
+                cur.execute(
+                    "INSERT INTO all_goals (goal_player_id, team_id, game_id, period, time, "
+                    "event_id) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (goal[0], self.TEAM, self.GAME, *goal[1:]),
+                )
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("all_goals", "game_goalie_stats", "game_player_stats"):
+                cur.execute(f"DELETE FROM {table} WHERE game_id = %s", (self.GAME,))
+            cur.execute("DELETE FROM games WHERE game_id = %s", (self.GAME,))
+            cur.execute("DELETE FROM rosters WHERE season_id = %s", (self.SEASON,))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def test_message_lists_skaters_then_goalies_and_is_none_without_players(self):
+        self.assertEqual(
+            self.messages.country_night_message("ZZZ", self.NIGHT).split("\n"),
+            [
+                "<b>ZZZ — ночь 2099-01-02</b>",
+                "Скорер&lt; (HOM) 2+0 · 5 бр. · +1 · 20:10",
+                "",
+                "Стенка (HOM) — 30/33, 90.91%, 59:47",
+            ],
+        )
+        self.assertIsNone(self.messages.country_night_message("XXX", self.NIGHT))
+
+    def test_goals_of_country_skip_shootout_in_game_order(self):
+        self.assertEqual(
+            self.messages.country_night_goals("ZZZ", self.NIGHT),
+            [(self.GAME, 5, "Скорер< (HOM)"), (self.GAME, 10, "Скорер< (HOM)")],
+        )
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

@@ -46,7 +46,9 @@ NHL_bot/
 │       ├── 0004_game_predictions.up.sql
 │       ├── 0004_game_predictions.down.sql
 │       ├── 0005_digest_time.up.sql     # Время дайджеста и отметка отправки ночи (Задача 60)
-│       └── 0005_digest_time.down.sql
+│       ├── 0005_digest_time.down.sql
+│       ├── 0006_country_subscription.up.sql   # Подписка на страну: kind country_players (Задача 61)
+│       └── 0006_country_subscription.down.sql
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
