@@ -287,9 +287,9 @@ def _recent_games_rows(outcomes):
     [(1, "очко"), (2, "очка"), (4, "очка"), (5, "очков"), (11, "очков"),
      (12, "очков"), (21, "очко"), (22, "очка"), (0, "очков")],
 )
-def test_points_word_agrees_with_number(bot_module, points, word):
+def test_plural_word_agrees_with_number(bot_module, points, word):
     """Отзыв UI: «1 очков» в превью — слово согласуется с числом."""
-    assert bot_module("bot_messages")._points_word(points) == word
+    assert bot_module("bot_messages")._plural_word(points, ("очко", "очка", "очков")) == word
 
 
 def test_current_streak_three_wins_in_a_row(bot_module):

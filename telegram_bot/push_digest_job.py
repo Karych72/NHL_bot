@@ -275,9 +275,9 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
 
 async def _prepare_goal_clips(
     goals: List[Tuple[int, int, str]], cache: Dict[Tuple[int, int], Optional[str]]
-) -> List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]]:
+) -> List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]]:
     """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры,
-    общие для ``send_video`` и ``InputMediaVideo``).
+    общие для ``send_video`` и ``InputMediaVideo``, подпись гола).
 
     Байты, а не готовый ``InputFile``: так PTB сам ставит ``attach://`` в альбоме —
     без него Telegram альбом не примет.
@@ -286,13 +286,13 @@ async def _prepare_goal_clips(
     event_id) → ``file_id`` Telegram, ``None`` — клипа нет (второй раз не качаем).
     Гол без клипа пропускается с записью в лог.
     """
-    clips: List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]] = []
+    clips: List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]] = []
     for game_id, event_id, caption in goals:
         key = (game_id, event_id)
         if key in cache:
             file_id = cache[key]
             if file_id is not None:
-                clips.append((key, file_id, {"caption": caption}))
+                clips.append((key, file_id, {}, caption))
             continue
         # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
         d = await asyncio.to_thread(download_goal_video, game_id, event_id)
@@ -301,7 +301,7 @@ async def _prepare_goal_clips(
             cache[key] = None
             continue
         params: Dict[str, Any] = {
-            "caption": caption, "filename": f"{event_id}.mp4",
+            "filename": f"{event_id}.mp4",
             "width": d.width, "height": d.height, "duration": d.duration,
         }
         try:
@@ -312,7 +312,7 @@ async def _prepare_goal_clips(
             os.unlink(d.path)
             if d.thumb_path:
                 os.unlink(d.thumb_path)
-        clips.append((key, video, params))
+        clips.append((key, video, params, caption))
     return clips
 
 
@@ -323,7 +323,11 @@ async def _send_goal_videos(
     cache: Dict[Tuple[int, int], Optional[str]],
 ) -> None:
     """Шлёт видео голов чату альбомами по ``_ALBUM_SIZE`` (хвост из одного видео —
-    ``send_video``: альбом требует минимум два медиа).
+    ``send_video``: альбом требует минимум два медиа), затем одно сообщение —
+    нумерованный список голов в порядке клипов.
+
+    Подписи у клипов нет: под альбомом Telegram показывает подпись только первого
+    клипа, и все голы альбома выглядели голами одного игрока (Задача 64).
 
     Зачем: ``file_id`` отправленных видео кладётся в ``cache`` — следующим
     подписчикам клип уходит без повторной загрузки.
@@ -332,7 +336,7 @@ async def _send_goal_videos(
     for start in range(0, len(clips), _ALBUM_SIZE):
         chunk = clips[start:start + _ALBUM_SIZE]
         if len(chunk) == 1:
-            _, video, params = chunk[0]
+            _, video, params, _ = chunk[0]
             sent = [
                 await _throttled(
                     lambda: bot.send_video(
@@ -344,14 +348,18 @@ async def _send_goal_videos(
         else:
             media = [
                 InputMediaVideo(video, supports_streaming=True, **params)
-                for _, video, params in chunk
+                for _, video, params, _ in chunk
             ]
             sent = list(
                 await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
             )
-        for (key, _, _), message in zip(chunk, sent):
+        for (key, _, _, _), message in zip(chunk, sent):
             assert message.video is not None  # ответ на отправку видео всегда содержит video
             cache[key] = message.video.file_id
+    if clips:
+        # Без parse_mode: подписи — простой текст из БД, не HTML.
+        legend = "\n".join(f"{n}. {caption}" for n, (_, _, _, caption) in enumerate(clips, 1))
+        await _throttled(lambda: bot.send_message(chat_id=chat_id, text=legend), chat_id)
 
 
 async def run_country_broadcast(context: CallbackContext, night: date) -> None:
