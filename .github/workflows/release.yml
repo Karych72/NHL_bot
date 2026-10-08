@@ -18,6 +18,7 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "docker-compose.yml"
+      - "deploy/**"
       - "Makefile"
       - "requirements.txt"
 

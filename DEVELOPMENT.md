@@ -81,28 +81,62 @@
 
 ## Прод-деплой
 
-Прод — одна VM в GCP (Compute Engine, `e2-small`, Debian 12) с тем же `docker-compose.yml`, что и локально. Разница одна: `NHL_BOT_IMAGE` в `.env` на VM указывает на образ из GHCR (`ghcr.io/karych72/nhl_bot:<тег>`), и `bot`/`sync`/`migrate` берут его вместо локальной сборки. Порт `db` опубликован только на loopback VM, наружу открыт лишь SSH. `retrain` (профиль `modeling`, трек B) релиз не выкатывает — в прод он не входит.
+Прод — одна VM в GCP (Compute Engine, `e2-small`, Debian 12) с тем же `docker-compose.yml`, что и локально. Разницы две: `NHL_BOT_IMAGE` в `.env` на VM указывает на образ из GHCR (`ghcr.io/karych72/nhl_bot:<тег>`), и `bot`/`sync`/`migrate` берут его вместо локальной сборки; токен бота не в `.env`, а в Secret Manager (ниже, «Токен бота»). Порт `db` опубликован только на loopback VM, наружу открыт лишь SSH. `retrain` (профиль `modeling`, трек B) релиз не выкатывает — в прод он не входит.
 
-**Релиз:** мерж PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `Makefile`, `requirements.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образ `ghcr.io/karych72/nhl_bot:<тег>` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
+**Релиз:** мерж PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `deploy/`, `Makefile`, `requirements.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образ `ghcr.io/karych72/nhl_bot:<тег>` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
 
 **Разовая настройка.**
 
 1. VM (проект и зона — свои):
    ```
    gcloud compute instances create nhl-bot --zone=europe-west1-b --machine-type=e2-small \
-     --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=20GB
+     --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=20GB \
+     --scopes=cloud-platform
    ```
+   Скоуп `cloud-platform` нужен Secret Manager: со скоупами по умолчанию вызов с VM даёт `403` даже при выданной роли.
 2. На VM (`gcloud compute ssh nhl-bot`): Docker (`curl -fsSL https://get.docker.com | sh`), пользователь для деплоя в группе `docker`, чекаут и каталог бэкапов:
    ```
    sudo useradd -m -s /bin/bash -G docker deploy
    sudo install -d -o deploy /opt/nhl_bot /srv/nhl_bot_backups
    sudo -u deploy git clone https://github.com/Karych72/NHL_bot.git /opt/nhl_bot
    ```
-   В `/opt/nhl_bot/.env` (`chmod 600`, владелец `deploy`) — как в `.env.example`, с `BACKUP_DIR=/srv/nhl_bot_backups`.
+   В `/opt/nhl_bot/.env` (`chmod 600`, владелец `deploy`) — как в `.env.example`, с `BACKUP_DIR=/srv/nhl_bot_backups`, `COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml` и **без** `TELEGRAM_BOT_TOKEN` — токен заводится по «Токену бота» ниже.
 3. Ключ деплоя: `ssh-keygen -t ed25519 -N '' -f nhl_deploy`; `nhl_deploy.pub` — в `~deploy/.ssh/authorized_keys` на VM.
 4. GitHub → Settings → Environments → `production`, секреты: `DEPLOY_HOST` (внешний IP VM), `DEPLOY_USER` (`deploy`), `DEPLOY_SSH_KEY` (содержимое `nhl_deploy`), `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan <IP>`). Там же можно включить «Required reviewers» — деплой будет ждать подтверждения. Приватный ключ после этого удалить с диска.
 5. Первая БД — до первого тега, образом, собранным на VM (в GHCR его ещё нет): `docker compose up -d db`, `docker compose build migrate`, `docker compose run --rm migrate make db-sync`, затем полная загрузка сезона `docker compose run --rm --no-deps -w /app/pipeline sync python -u load_season_modern.py`.
 6. Первый тег. После первой публикации пакет `nhl_bot` в GHCR сделать публичным (Package settings → Change visibility) — VM тянет образ без логина; секретов в образе нет (`.dockerignore`).
+
+**Токен бота (Задача 65).** Хранится в Secret Manager проекта `nhl-bot-prod`, секрет `nhl-bot-telegram-token`; на диске VM его нет. При загрузке VM юнит `nhl-bot-secrets.service` (`deploy/systemd/`, до `docker.service`) запускает `deploy/fetch-secrets.sh`: тот читает последнюю версию секрета и пишет `/run/nhl_bot/telegram_bot_token` (tmpfs; каталог `0700 root`, файл `0444` — его читает `appuser` контейнера). `deploy/compose.prod.yml` монтирует файл в `bot` и `sync` как compose secret, а entrypoint-обёртка на `sh` кладёт его в окружение и `exec`-ом запускает `command` — и сервиса, и `docker compose run`. Через `env_file` нельзя: Docker хранит `Config.Env` открытым текстом в `config.v2.json` на диске и показывает в `docker inspect`. Оверрайд включает `COMPOSE_FILE` в `.env` на VM, поэтому его видят и `release.yml`, и ручной `docker compose`. Нет файла — контейнер не стартует (`bind source path does not exist`), и при перезагрузке VM тоже. Локально оверрайд не подключён, токен — в локальном `.env`. `release.yml` секрет не читает: после перезагрузки VM его восстанавливает юнит. Чекаут тега старше Задачи 65 (откат «Re-run») не содержит `deploy/compose.prod.yml`, и compose на нём упадёт; такой откат — сначала вернуть токен в `.env` и убрать `COMPOSE_FILE`.
+
+На VM пользователь из `gcloud compute ssh` не в группе `docker`, а `.env` принадлежит `deploy`: команды `docker compose` и правка `.env` — через `sudo -u deploy` (ниже).
+
+Настройка (разово). С ноутбука, `P=nhl-bot-prod`:
+```
+gcloud services enable secretmanager.googleapis.com --project $P
+gcloud secrets create nhl-bot-telegram-token --replication-policy=automatic --project $P
+gcloud secrets versions add nhl-bot-telegram-token --data-file=- --project $P   # ввести токен, Ctrl-D
+SA=$(gcloud compute instances describe nhl-bot --zone europe-west1-b --project $P --format='value(serviceAccounts[0].email)')
+gcloud secrets add-iam-policy-binding nhl-bot-telegram-token --project $P \
+  --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
+```
+Роль выдаётся на секрет, не на проект. Если VM создана без `--scopes=cloud-platform`, скоупы меняются только на остановленной VM (простой бота на минуту-две): `gcloud compute instances stop nhl-bot`, `gcloud compute instances set-service-account nhl-bot --service-account $SA --scopes cloud-platform`, `gcloud compute instances start nhl-bot` (все с `--zone europe-west1-b --project $P`). Дальше на VM — когда чекаут `/opt/nhl_bot` уже на теге с `deploy/` (его выкатывает релиз, `deploy/**` в фильтре путей):
+```
+cd /opt/nhl_bot \
+  && sudo install -m 644 deploy/systemd/nhl-bot-secrets.service /etc/systemd/system/ \
+  && sudo systemctl daemon-reload && sudo systemctl enable --now nhl-bot-secrets \
+  && sudo test -s /run/nhl_bot/telegram_bot_token \
+  && sudo -u deploy docker compose -f docker-compose.yml -f deploy/compose.prod.yml up -d --no-deps --force-recreate sync \
+  && sleep 15 && sudo -u deploy docker compose ps sync
+```
+Пробный шаг — `sync` (для пользователей бота некритичен) уже с оверрайдом, `.env` ещё не тронут. Дальше — только если `sync` в статусе `Up`, а не `Restarting`:
+```
+cd /opt/nhl_bot \
+  && sudo -u deploy sed -i '/^TELEGRAM_BOT_TOKEN=/d' .env \
+  && echo 'COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml' | sudo -u deploy tee -a .env >/dev/null \
+  && sudo -u deploy docker compose up -d --force-recreate bot sync
+```
+
+**Ротация токена:** BotFather → новый токен; на ноутбуке `gcloud secrets versions add nhl-bot-telegram-token --data-file=- --project nhl-bot-prod` (ввод не попадает в историю шелла, Ctrl-D); на VM `sudo systemctl restart nhl-bot-secrets && cd /opt/nhl_bot && sudo -u deploy docker compose up -d --force-recreate bot sync`.
 
 ## Тесты и качество
 

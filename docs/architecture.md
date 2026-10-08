@@ -52,6 +52,11 @@ NHL_bot/
 │       ├── 0007_drop_digest_time.up.sql   # Подписки без времени доставки (Задача 63)
 │       └── 0007_drop_digest_time.down.sql
 │
+├── deploy/                             # Только прод-VM: токен бота из Secret Manager (Задача 65, DEVELOPMENT.md §«Прод-деплой»)
+│   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
+│   ├── fetch-secrets.sh                # Secret Manager → /run/nhl_bot/telegram_bot_token (tmpfs)
+│   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
+│
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
 │   ├── architecture.md                 # ← этот файл
 │   ├── api_data_research.md
