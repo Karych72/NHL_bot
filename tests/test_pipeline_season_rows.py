@@ -12,8 +12,10 @@ non-NULL defaults of §3 stay non-``None``.
 
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import date
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -21,9 +23,11 @@ from tests._pipeline_fixtures import (
     MCMICHAEL,
     OTT,
     OVECHKIN,
+    SANDIN,
     SEASON_ID,
     SOURDIF,
     THOMPSON,
+    ULLMARK,
     WSH,
     LoaderApiTestCase,
     NetworkBlockedError,
@@ -79,6 +83,35 @@ class NetworkGuardTest(LoaderApiTestCase):
     def test_real_http_call_fails(self):
         with self.assertRaises(NetworkBlockedError):
             requests.Session().get("https://api-web.nhle.com/v1/standings/now")
+
+
+class FetchPaginatedTest(LoaderApiTestCase):
+    """Задача 62: the Stats API caps pages below ``limit`` and, unsorted, shuffles
+    records between page requests — one run repeated some players and lost others."""
+
+    def test_sorted_pages_return_every_record_once(self):
+        records = [{"playerId": pid} for pid in (5, 3, 1, 4, 2)]
+        requested = []
+
+        def fake_get_json(url):
+            requested.append(url)
+            query = parse_qs(urlparse(url).query)
+            start = int(query["start"][0])
+            page_cap = min(int(query["limit"][0]), 2)  # server-side cap below limit
+            if "sort" in query:
+                (order,) = json.loads(query["sort"][0])
+                ordered = sorted(records, key=lambda r: r[order["property"]])
+            else:  # unsorted: a different order on every request
+                ordered = records[len(requested) % 2 :] + records[: len(requested) % 2]
+            return {"data": ordered[start : start + page_cap], "total": len(records)}
+
+        instance = make_loader()
+        instance.get_json = fake_get_json
+
+        rows = instance.fetch_paginated("https://api.nhle.com/stats/rest/en/skater/bios?x=1", "playerId")
+
+        self.assertEqual([r["playerId"] for r in rows], [1, 2, 3, 4, 5])
+        self.assertEqual(len(requested), 3)
 
 
 class TeamRowsTest(LoaderApiTestCase):
@@ -196,7 +229,8 @@ class RosterRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ovi, "rosters", "position"), "L")
         self.assertEqual(field(ovi, "rosters", "abbreviation"), "L")
         self.assertEqual(field(ovi, "rosters", "jersey_number"), 8)
-        self.assertEqual(field(ovi, "rosters", "nationality"), "RUS")
+        # birthCountry is not read: the country comes from bios (fill_nationality).
+        self.assertIsNone(field(ovi, "rosters", "nationality"))
         self.assertEqual(field(ovi, "rosters", "current_team_id"), WSH)
         # Born 1985-09-17: exact age today, so an off-by-one around the birthday
         # in optional_age_from_birthdate fails here.
@@ -217,7 +251,7 @@ class RosterRowsTest(LoaderApiTestCase):
         payload["forwards"] = [
             without(
                 payload["forwards"][0],
-                "sweaterNumber", "birthDate", "birthCountry", "firstName", "lastName",
+                "sweaterNumber", "birthDate", "firstName", "lastName",
                 "positionCode",
             )
         ]
@@ -256,7 +290,7 @@ class RosterRowsTest(LoaderApiTestCase):
         mcmichael = rows[MCMICHAEL]
         self.assertEqual(field(mcmichael, "rosters", "name"), "Connor McMichael")
         self.assertEqual(field(mcmichael, "rosters", "jersey_number"), 77)
-        self.assertEqual(field(mcmichael, "rosters", "nationality"), "CAN")
+        self.assertIsNone(field(mcmichael, "rosters", "nationality"))
         # Landing's currentTeamId is the player's team "now" (STL in this
         # fixture, captured in the off-season), not his team for this
         # season_id (WSH) — the row can't tell those apart, so it's NULL.
@@ -607,9 +641,11 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         "skater/goalsForAgainst": "nhl_skater_goals_for_against.json",
         "skater/puckPossessions": "nhl_skater_puck_possessions.json",
         "skater/shottype": "nhl_skater_shottype.json",
+        "skater/bios": "nhl_skater_bios.json",
+        "goalie/bios": "nhl_goalie_bios.json",
     }
 
-    def test_shot_type_only_player_reaches_rosters(self):
+    def _reference_rows(self, overrides=None):
         # McMichael is on neither the trimmed roster response nor any summary
         # report — only the shottype report (mixed in here) and player landing
         # know about him (see MCMICHAEL's docstring in _pipeline_fixtures.py).
@@ -617,6 +653,7 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         mcmichael_shot_row = dict(shottype[0], playerId=MCMICHAEL)
         routes = {frag: load_fixture(name) for frag, name in self.REPORTS.items()}
         routes["skater/shottype"] = shottype + [mcmichael_shot_row]
+        routes.update(overrides or {})
 
         instance = make_loader()
         stub_api(
@@ -633,8 +670,10 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
             },
         )
         instance.load_team_reference()
+        return instance.build_season_reference_rows()
 
-        season_reference_rows = instance.build_season_reference_rows()
+    def test_shot_type_only_player_reaches_rosters(self):
+        season_reference_rows = self._reference_rows()
 
         shot_type_player_ids = {
             field(r, "players_shot_types", "player_id")
@@ -647,6 +686,45 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         # The FK players_shot_types(player_id, season_id) -> rosters requires
         # every shottype player_id to have a matching rosters row.
         self.assertTrue(shot_type_player_ids.issubset(roster_player_ids))
+
+    def test_nationality_from_bios_for_every_roster_source(self):
+        """Задача 62: one source of the country — ``nationalityCode`` of the bios reports."""
+        skater_bios = load_fixture("nhl_skater_bios.json")
+        goalie_summary = load_fixture("nhl_goalie_summary.json")
+        goalie_bios = load_fixture("nhl_goalie_bios.json")
+        # Ullmark (OTT) is not on the trimmed WSH roster: a goalie added from goalie/summary.
+        ullmark_summary = dict(
+            goalie_summary[0], playerId=ULLMARK, goalieFullName="Linus Ullmark",
+            lastName="Ullmark", teamAbbrevs="OTT",
+        )
+        ullmark_bios = dict(goalie_bios[0], playerId=ULLMARK, nationalityCode="SWE")
+        # Ovechkin's roster birthCountry is RUS; a different nationalityCode models a
+        # player whose two fields disagree (Zhilkin: born RUS, nationality CAN).
+        skater_bios = [
+            dict(r, nationalityCode="CAN") if r["playerId"] == OVECHKIN else r
+            for r in skater_bios
+        ]
+        rows = by_player(
+            self._reference_rows(
+                {
+                    "skater/bios": skater_bios,
+                    "goalie/summary": goalie_summary + [ullmark_summary],
+                    "goalie/bios": goalie_bios + [ullmark_bios],
+                }
+            ).roster_rows,
+            "rosters",
+        )
+
+        def nationality(player_id):
+            return field(rows[player_id], "rosters", "nationality")
+
+        self.assertEqual(nationality(OVECHKIN), "CAN")  # /v1/roster, birthCountry RUS
+        self.assertEqual(nationality(THOMPSON), "CAN")  # /v1/roster goalie
+        self.assertEqual(nationality(SOURDIF), "CAN")  # added from skater/summary
+        self.assertEqual(nationality(ULLMARK), "SWE")  # added from goalie/summary
+        self.assertEqual(nationality(MCMICHAEL), "CAN")  # added from player landing
+        # On the roster but not in bios (left out of the fixture) → unknown, not a guess.
+        self.assertIsNone(nationality(SANDIN))
 
 
 if __name__ == "__main__":

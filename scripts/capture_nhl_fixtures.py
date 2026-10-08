@@ -95,9 +95,17 @@ def trim_lists(value: Any, keep: int) -> Any:
     return value
 
 
-def capture_report(loader: ModernNhlLoader, name: str, url: str) -> None:
-    """Capture one paginated stats report (fixture = its ``data`` records)."""
-    write_fixture(name, loader.fetch_paginated(url, page_size=200), url)
+def capture_report(loader: ModernNhlLoader, name: str, url: str, sort_key: str) -> None:
+    """Capture one paginated stats report (fixture = its ``data`` records).
+
+    *sort_key* is the report's unique record key, as ``fetch_paginated`` requires.
+    """
+    write_fixture(name, loader.fetch_paginated(url, sort_key, page_size=200), url)
+
+
+def capture_player_report(loader: ModernNhlLoader, name: str, report: str, players: str) -> None:
+    """Capture a season player report (``skater/*``, ``goalie/*``) filtered to *players*."""
+    capture_report(loader, name, season_report_url(report, players), "playerId")
 
 
 def capture_stats_reports(loader: ModernNhlLoader) -> None:
@@ -109,39 +117,39 @@ def capture_stats_reports(loader: ModernNhlLoader) -> None:
         loader,
         "nhl_team_reference.json",
         f"{STATS_API}team?cayenneExp={any_of('id', (HOME_TEAM_ID, AWAY_TEAM_ID))}",
-    )
-    capture_report(loader, "nhl_team_summary.json", season_report_url("team/summary", teams))
-    capture_report(
-        loader,
-        "nhl_games_meta.json",
-        f"{STATS_API}game?cayenneExp=id={GAME_ID}",
-    )
-    capture_report(loader, "nhl_skater_summary.json", season_report_url("skater/summary", skaters))
-    capture_report(loader, "nhl_skater_timeonice.json", season_report_url("skater/timeonice", skaters))
-    capture_report(
-        loader,
-        "nhl_skater_faceoff_percentages.json",
-        season_report_url("skater/faceoffpercentages", skaters),
-    )
-    capture_report(loader, "nhl_skater_shootout.json", season_report_url("skater/shootout", skaters))
-    capture_report(loader, "nhl_skater_realtime.json", season_report_url("skater/realtime", skaters))
-    capture_report(
-        loader,
-        "nhl_skater_goals_for_against.json",
-        season_report_url("skater/goalsForAgainst", skaters),
+        "id",
     )
     capture_report(
-        loader,
-        "nhl_skater_puck_possessions.json",
-        season_report_url("skater/puckPossessions", skaters),
+        loader, "nhl_team_summary.json", season_report_url("team/summary", teams), "teamId"
     )
-    capture_report(loader, "nhl_skater_shottype.json", season_report_url("skater/shottype", skaters))
-    capture_report(loader, "nhl_goalie_summary.json", season_report_url("goalie/summary", goalie))
     capture_report(
-        loader,
-        "nhl_goalie_saves_by_strength.json",
-        season_report_url("goalie/savesByStrength", goalie),
+        loader, "nhl_games_meta.json", f"{STATS_API}game?cayenneExp=id={GAME_ID}", "id"
     )
+    for name, report in (
+        ("nhl_skater_summary.json", "skater/summary"),
+        ("nhl_skater_timeonice.json", "skater/timeonice"),
+        ("nhl_skater_faceoff_percentages.json", "skater/faceoffpercentages"),
+        ("nhl_skater_shootout.json", "skater/shootout"),
+        ("nhl_skater_realtime.json", "skater/realtime"),
+        ("nhl_skater_goals_for_against.json", "skater/goalsForAgainst"),
+        ("nhl_skater_puck_possessions.json", "skater/puckPossessions"),
+        ("nhl_skater_shottype.json", "skater/shottype"),
+    ):
+        capture_player_report(loader, name, report, skaters)
+    # The bios fixture takes SKATER_IDS plus the landing player; Sandin (roster
+    # defenceman) is not among them and models a player bios doesn't know yet → NULL.
+    capture_player_report(
+        loader,
+        "nhl_skater_bios.json",
+        "skater/bios",
+        any_of("playerId", (*SKATER_IDS, LANDING_PLAYER_ID)),
+    )
+    for name, report in (
+        ("nhl_goalie_summary.json", "goalie/summary"),
+        ("nhl_goalie_bios.json", "goalie/bios"),
+        ("nhl_goalie_saves_by_strength.json", "goalie/savesByStrength"),
+    ):
+        capture_player_report(loader, name, report, goalie)
 
 
 def capture_web_payloads(loader: ModernNhlLoader) -> None:
