@@ -59,7 +59,7 @@ from dialog_states import (
     THIRD,
     build_menu,
 )
-from help_text import ADVANCED_COMMAND_INTRO
+from help_text import ADVANCED_COMMAND_INTRO, SUBSCRIPTIONS_FOOTER
 from leaderboard_specs import (
     ADV_STANDALONE_TO_STAT,
     PLAYER_STAT_TITLES,
@@ -608,7 +608,8 @@ bot_player_shot_wrap = _make_paginated_player_stat_open_handler(
 # Подсказка после дайджеста вне диалога /stats (из /today и утренней рассылки).
 _DIGEST_MORE_HINT = (
     "Ещё: /tonight — расписание NHL, /standings — таблица, /leaders — лидеры, "
-    "/team — команды, /stats — меню, /help — справка."
+    "/team — команды, /stats — меню, /help — справка.\n"
+    + SUBSCRIPTIONS_FOOTER
 )
 
 # Кнопки видео голов («▶ 1:0 Nelson 6:33») в два столбца: столбик из десятка

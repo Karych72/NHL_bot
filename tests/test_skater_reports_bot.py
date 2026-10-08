@@ -82,11 +82,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/game",
             "/advanced",
             "/countries",
-            "/subscribe_digest",
-            "/digest_time",
-            "/unsubscribe_digest",
-            "/subscribe_team",
-            "/unsubscribe_team",
+            "/subscriptions",
         ):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)

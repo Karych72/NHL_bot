@@ -19,7 +19,8 @@ import os
 import sys
 import unittest
 from contextlib import closing
-from datetime import date, time
+from datetime import date
+from types import SimpleNamespace
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -210,18 +211,25 @@ class TestNhlSchema(unittest.TestCase):
                 "schema_migrations missing version 0001 — run: make db-migrate",
             )
 
-            # Миграция 0005 (Задача 60): время доставки и отметка отправки вместо timezone.
+            # Миграция 0005 (Задача 60): отметка отправки вместо timezone.
             cur.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
                 "WHERE table_schema = 'public' AND table_name = 'bot_subscriptions'"
             )
             columns = dict(cur.fetchall())
             self.assertEqual(
-                (columns.get("digest_time"), columns.get("last_sent_night")),
-                ("time without time zone", "date"),
-                "bot_subscriptions without digest_time/last_sent_night — run: make db-migrate",
+                columns.get("last_sent_night"),
+                "date",
+                "bot_subscriptions without last_sent_night — run: make db-migrate",
             )
             self.assertNotIn("timezone", columns)
+
+            # Миграция 0007 (Задача 63): времени доставки у подписки больше нет.
+            self.assertNotIn("digest_time", columns, "run: make db-migrate")
+            cur.execute("SELECT 1 FROM schema_migrations WHERE version = '0007'")
+            self.assertIsNotNone(
+                cur.fetchone(), "schema_migrations missing version 0007 — run: make db-migrate"
+            )
 
             # Миграция 0006 (Задача 61): подписка на страну.
             self.assertEqual(columns.get("country"), "text")
@@ -273,85 +281,69 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     def _team_rows(self, chat_id=CHAT):
         return [r for r in self.repo.list_active_team_scores_rows() if r[0] == chat_id]
 
-    def test_digest_time_lifecycle(self):
+    def test_digest_lifecycle(self):
         repo = self.repo
-        self.assertIsNone(repo.get_digest_time(self.CHAT))
-        self.assertFalse(repo.set_digest_time(self.CHAT, time(7, 0)), "нет подписки")
-
-        self.assertEqual(repo.upsert_morning_digest(self.CHAT), repo.LATEST_DIGEST_TIME)
-        self.assertEqual(self._digest_rows(), [(self.CHAT, repo.LATEST_DIGEST_TIME, None)])
-
-        self.assertTrue(repo.set_digest_time(self.CHAT, time(7, 30)))
-        self.assertEqual(repo.get_digest_time(self.CHAT), time(7, 30))
+        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_morning_digest(self.CHAT)
+        self.assertEqual(self._digest_rows(), [(self.CHAT, None)], "повторный вызов не плодит строки")
 
         repo.deactivate_morning_digest(self.CHAT)
-        self.assertIsNone(repo.get_digest_time(self.CHAT))
         self.assertEqual(self._digest_rows(), [], "погашенная подписка в рассылке")
-        self.assertFalse(repo.set_digest_time(self.CHAT, time(8, 0)), "подписка погашена")
-        # Повторная подписка снова активна и сохраняет выбранное время.
-        self.assertEqual(repo.upsert_morning_digest(self.CHAT), time(7, 30))
-        self.assertEqual(self._digest_rows(), [(self.CHAT, time(7, 30), None)])
+        # Повторная подписка реактивирует ту же строку.
+        repo.upsert_morning_digest(self.CHAT)
+        self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
     def test_mark_night_sent_touches_only_its_subscription(self):
         repo = self.repo
         for chat_id in (self.CHAT, self.OTHER_CHAT):
             repo.upsert_morning_digest(chat_id)
             repo.upsert_team_scores(chat_id, self.TEAM)
-        latest = repo.LATEST_DIGEST_TIME
 
         repo.mark_night_sent(self.CHAT, "morning_digest", None, self.NIGHT)
-        self.assertEqual(self._digest_rows(), [(self.CHAT, latest, self.NIGHT)])
+        self.assertEqual(self._digest_rows(), [(self.CHAT, self.NIGHT)])
         self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, None)])
-        self.assertEqual(self._digest_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, latest, None)])
+        self.assertEqual(self._digest_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, None)])
 
         repo.mark_night_sent(self.CHAT, "team_scores", self.TEAM, self.NIGHT)
         self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, self.NIGHT)])
         self.assertEqual(self._team_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, self.TEAM, None)])
 
-    def test_digest_time_only_on_morning_digest(self):
-        """CHECK миграции 0005: время есть ровно у ``morning_digest``."""
-        self.repo.upsert_morning_digest(self.CHAT)
-        for statement in (
-            "INSERT INTO bot_subscriptions (chat_id, kind, team_id, digest_time) "
-            "VALUES (%s, 'team_scores', 7, '07:00')",
-            "UPDATE bot_subscriptions SET digest_time = NULL "
-            "WHERE chat_id = %s AND kind = 'morning_digest'",
-        ):
-            with self.subTest(statement=statement), closing(_connect()) as conn, conn:
-                with self.assertRaises(psycopg2.errors.CheckViolation), conn.cursor() as cur:
-                    cur.execute(statement, (self.CHAT,))
-
     def _country_rows(self, chat_id=CHAT):
         return [r for r in self.repo.list_active_country_rows() if r[0] == chat_id]
 
-    def test_country_subscriptions_share_one_time_per_chat(self):
+    def test_country_subscriptions(self):
         repo = self.repo
-        latest = repo.LATEST_DIGEST_TIME
-        self.assertIsNone(repo.get_country_time(self.CHAT))
-        self.assertFalse(repo.set_country_time(self.CHAT, time(7, 0)), "нет подписки")
-
-        self.assertEqual(repo.upsert_country(self.CHAT, "RUS"), latest)
-        self.assertTrue(repo.set_country_time(self.CHAT, time(7, 30)))
-        # Новая страна чата берёт его время, а не 11:00; соседний чат живёт своим.
-        self.assertEqual(repo.upsert_country(self.CHAT, "FIN"), time(7, 30))
-        self.assertEqual(repo.upsert_country(self.OTHER_CHAT, "RUS"), latest)
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.upsert_country(self.CHAT, "FIN")
+        repo.upsert_country(self.OTHER_CHAT, "RUS")
         repo.upsert_morning_digest(self.CHAT)
 
         # Отметка ночи — только у своей страны; дайджест и чужой чат не задеты.
         repo.mark_night_sent(self.CHAT, "country_players", None, self.NIGHT, country="RUS")
         self.assertEqual(
-            self._country_rows(),
-            [(self.CHAT, "FIN", time(7, 30), None), (self.CHAT, "RUS", time(7, 30), self.NIGHT)],
+            self._country_rows(), [(self.CHAT, "FIN", None), (self.CHAT, "RUS", self.NIGHT)]
         )
-        self.assertEqual(self._country_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, "RUS", latest, None)])
-        self.assertEqual(self._digest_rows(), [(self.CHAT, latest, None)])
+        self.assertEqual(self._country_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, "RUS", None)])
+        self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
-        # Отписка от одной страны; время меняется и у погашенной — переподписка его сохранит.
+        # Отписка от одной страны; переподписка реактивирует ту же строку.
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
-        self.assertEqual(repo.list_chat_countries(self.CHAT), ["FIN"])
-        self.assertEqual(len(self._digest_rows()), 1, "дайджест не погашен")
-        self.assertTrue(repo.set_country_time(self.CHAT, time(8, 0)))
-        self.assertEqual(repo.upsert_country(self.CHAT, "RUS"), time(8, 0))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, set(), ["FIN"]))
+        repo.upsert_country(self.CHAT, "RUS")
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, set(), ["FIN", "RUS"]))
+
+    def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
+        repo = self.repo
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, set(), []))
+        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        repo.upsert_team_scores(self.CHAT, self.TEAM + 1)
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.upsert_morning_digest(self.OTHER_CHAT)
+        repo.deactivate_team_scores(self.CHAT, self.TEAM + 1)
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, {self.TEAM}, ["RUS"]))
+        repo.deactivate_morning_digest(self.CHAT)
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, {self.TEAM}, ["RUS"]))
 
     def test_country_constraints(self):
         """CHECK и уникальность миграции 0006: страна — ровно у ``country_players``."""
@@ -361,12 +353,194 @@ class TestSubscriptionRepoSql(unittest.TestCase):
              "INSERT INTO bot_subscriptions (chat_id, kind, team_id, country) "
              "VALUES (%s, 'team_scores', 7, 'RUS')"),
             (psycopg2.errors.UniqueViolation,
-             "INSERT INTO bot_subscriptions (chat_id, kind, country, digest_time) "
-             "VALUES (%s, 'country_players', 'RUS', '07:00')"),
+             "INSERT INTO bot_subscriptions (chat_id, kind, country) "
+             "VALUES (%s, 'country_players', 'RUS')"),
         ):
             with self.subTest(statement=statement), closing(_connect()) as conn, conn:
                 with self.assertRaises(error), conn.cursor() as cur:
                     cur.execute(statement, (self.CHAT,))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
+    """Меню `/subscriptions` (Задача 63) на настоящей ``bot_subscriptions``: нажатия
+    кнопок меняют строки таблицы, сводка и ✅ рисуются по ним, повторное нажатие не
+    плодит дубли. Сезон и команды вымышлены (сезон 99999999), рейтинг стран подменён."""
+
+    CHAT = -999000070
+    SEASON = 99999999
+    TEAMS = ((900011, "AAA", "Metropolitan"), (900012, "BBB", "Metropolitan"), (900013, "CCC", "Atlantic"))
+
+    def setUp(self):
+        from unittest import mock
+
+        import bot
+        import subscription_repo
+
+        self.bot = bot
+        self.repo = subscription_repo
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for team_id, abbrev, division in self.TEAMS:
+                cur.execute(
+                    "INSERT INTO teams (team_id, season_id, abbreviation, division_name) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (team_id, self.SEASON, abbrev, division),
+                )
+        for patcher in (
+            mock.patch.object(config, "SEASON_ID", self.SEASON),
+            mock.patch.object(bot, "country_rankings", lambda: ("", ["FIN", "RUS"])),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def _rows(self):
+        """Все строки чата, включая погашенные: (kind, team_id, country, active)."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, team_id, country, active FROM bot_subscriptions "
+                "WHERE chat_id = %s ORDER BY kind, team_id, country",
+                (self.CHAT,),
+            )
+            return cur.fetchall()
+
+    async def _press(self, data):
+        """Нажатие кнопки `data`: (подсказка, текст экрана, [(подпись, callback_data)])."""
+        answers, edits = [], []
+
+        async def answer(text=None):
+            answers.append(text)
+
+        async def edit_message_text(text, reply_markup=None):
+            edits.append((text, reply_markup))
+
+        update = SimpleNamespace(
+            callback_query=SimpleNamespace(
+                data=data, answer=answer, edit_message_text=edit_message_text
+            ),
+            effective_chat=SimpleNamespace(id=self.CHAT),
+        )
+        await self.bot.callback_subscriptions(update, None)
+        [(text, markup)] = edits
+        buttons = [] if markup is None else [
+            (b.text, b.callback_data) for row in markup.inline_keyboard for b in row
+        ]
+        return answers[0], text, buttons
+
+    async def test_open_menu_on_empty_chat(self):
+        replies = []
+
+        async def reply_text(text, **kwargs):
+            replies.append((text, kwargs["reply_markup"]))
+
+        update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=reply_text),
+            effective_chat=SimpleNamespace(id=self.CHAT),
+        )
+        await self.bot.cmd_subscriptions(update, None)
+        [(text, markup)] = replies
+        self.assertIn("Пока ничего нет.", text)
+        self.assertEqual(
+            [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
+            [("➕ Дайджест", "sub:d"), ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
+             ("Готово", "sub:x")],
+        )
+        self.assertEqual(self._rows(), [])
+
+    async def test_digest_toggle_writes_row_and_never_duplicates(self):
+        hint, text, buttons = await self._press("sub:d")
+        self.assertEqual(hint, "Дайджест включён")
+        self.assertIn("✅ Утренний дайджест", text)
+        self.assertEqual(buttons[0], ("✅ Дайджест", "sub:d"))
+        self.assertEqual(self._rows(), [("morning_digest", None, None, True)])
+
+        hint, text, buttons = await self._press("sub:d")
+        self.assertEqual(hint, "Дайджест выключен")
+        self.assertIn("Пока ничего нет.", text)
+        self.assertEqual(buttons[0], ("➕ Дайджест", "sub:d"))
+        self.assertEqual(self._rows(), [("morning_digest", None, None, False)])
+
+        await self._press("sub:d")
+        self.assertEqual(self._rows(), [("morning_digest", None, None, True)], "одна строка")
+
+    async def test_team_toggle_by_division_updates_summary_and_counts(self):
+        _, _, buttons = await self._press("sub:T")
+        self.assertEqual(
+            buttons,
+            [("Atlantic", "sub:D:0"), ("Metropolitan", "sub:D:1"), ("Central", "sub:D:2"),
+             ("Pacific", "sub:D:3"), ("« Назад", "sub:m")],
+        )
+        _, _, buttons = await self._press("sub:D:1")
+        self.assertEqual(
+            buttons,
+            [("AAA", "sub:t:1:900011"), ("BBB", "sub:t:1:900012"), ("« К дивизионам", "sub:T")],
+        )
+
+        hint, _, buttons = await self._press("sub:t:1:900012")
+        self.assertEqual(hint, "Подписка на BBB включена")
+        self.assertEqual(buttons[:2], [("AAA", "sub:t:1:900011"), ("✅ BBB", "sub:t:1:900012")])
+        self.assertEqual(self._rows(), [("team_scores", 900012, None, True)])
+
+        _, _, buttons = await self._press("sub:T")
+        self.assertIn(("Metropolitan (1)", "sub:D:1"), buttons)
+        _, text, buttons = await self._press("sub:m")
+        self.assertIn("🏒 Команды: BBB", text)
+        self.assertIn(("🏒 Команды (1)", "sub:T"), buttons)
+
+        hint, _, buttons = await self._press("sub:t:1:900012")
+        self.assertEqual(hint, "Подписка на BBB отключена")
+        self.assertEqual(buttons[1], ("BBB", "sub:t:1:900012"))
+        self.assertEqual(self._rows(), [("team_scores", 900012, None, False)])
+
+    async def test_country_toggle_and_done_removes_keyboard(self):
+        _, _, buttons = await self._press("sub:C")
+        self.assertEqual(buttons, [("FIN", "sub:c:FIN"), ("RUS", "sub:c:RUS"), ("« Назад", "sub:m")])
+
+        hint, _, buttons = await self._press("sub:c:RUS")
+        self.assertEqual(hint, "Подписка на RUS включена")
+        self.assertEqual(buttons[:2], [("FIN", "sub:c:FIN"), ("✅ RUS", "sub:c:RUS")])
+        await self._press("sub:c:FIN")
+        await self._press("sub:c:FIN")
+        self.assertEqual(
+            self._rows(),
+            [("country_players", None, "FIN", False), ("country_players", None, "RUS", True)],
+        )
+
+        _, text, buttons = await self._press("sub:x")
+        self.assertIn("🌍 Страны: RUS", text)
+        self.assertEqual(buttons, [], "«Готово» снимает клавиатуру")
+
+    async def test_subscribed_country_outside_ranking_can_be_switched_off(self):
+        self.repo.upsert_country(self.CHAT, "ZZZ")
+        _, _, buttons = await self._press("sub:C")
+        self.assertEqual(
+            buttons,
+            [("FIN", "sub:c:FIN"), ("RUS", "sub:c:RUS"), ("✅ ZZZ", "sub:c:ZZZ"), ("« Назад", "sub:m")],
+        )
+        hint, _, buttons = await self._press("sub:c:ZZZ")
+        self.assertEqual(hint, "Подписка на ZZZ отключена")
+        self.assertNotIn("ZZZ", " ".join(text for text, _ in buttons))
+        self.assertEqual(self._rows(), [("country_players", None, "ZZZ", False)])
+
+    async def test_failed_write_shows_error_and_no_checkmark(self):
+        from unittest import mock
+
+        with mock.patch.object(self.repo, "upsert_morning_digest", side_effect=psycopg2.Error("boom")):
+            with self.assertLogs(self.bot.logger, level="ERROR"):
+                _, text, buttons = await self._press("sub:d")
+        self.assertEqual(text, self.bot._SUBSCRIPTIONS_DB_ERROR)
+        self.assertEqual(buttons, [])
+        self.assertEqual(self._rows(), [])
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

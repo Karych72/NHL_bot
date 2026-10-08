@@ -9,9 +9,7 @@
 
 import asyncio
 import logging
-import re
-from datetime import time
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -31,12 +29,11 @@ import config
 import subscription_repo
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
-    COUNTRY_LABELS,
-    COUNTRY_NOT_FOUND,
     country_rankings,
     day_digest,
     last_night_day,
     leaders_menu_intro,
+    season_teams_by_division,
     team_list_text,
     team_full_stats,
     team_profile,
@@ -198,19 +195,6 @@ _TONIGHT_BUTTON_COLUMNS = 3
 # не попадает. Вариант `/BOS@bot` не принимается: regex не знает имени бота и
 # отвечал бы на команды, адресованные чужим ботам.
 TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})(_[Ff][Uu][Ll][Ll])?$"
-
-# Время дайджеста на выбор (МСК), шаг 30 минут — сетка прогонов sync. Раньше 05:00 ночь
-# почти никогда не загружена, позже 11:00 (последний прогон) выбрать нельзя: после него
-# рассылку некому запустить.
-DIGEST_TIME_CHOICES = [
-    time(h, m) for h in range(5, 24) for m in (0, 30)
-    if time(h, m) <= subscription_repo.LATEST_DIGEST_TIME
-]
-DIGEST_TIME_CALLBACK_PATTERN = r"^dt:(\d{2}):(\d{2})$"
-COUNTRY_TIME_CALLBACK_PATTERN = r"^ct:(\d{2}):(\d{2})$"
-COUNTRY_PICK_CALLBACK_PATTERN = r"^(sc|uc):([A-Z]{3})$"
-_COUNTRY_BUTTON_COLUMNS = 2
-_DIGEST_TIME_COLUMNS = 4
 
 
 def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
@@ -421,280 +405,194 @@ async def cmd_cancel_outside_conversation(update: Update, context: CallbackConte
     await _message(update).reply_text("Меню /stats сейчас не открыто. Справка: /help")
 
 
+_DELIVERY_NOTE = (
+    "Рассылка приходит, когда загружены все матчи ночи (проверка раз в 30 минут), "
+    "не позже 11:00 МСК."
+)
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
 
+# Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
+# `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
+# (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
+# `sub:x` «Готово». Самая длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
+SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|T|C|x|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3})$"
+_DIVISION_BUTTON_COLUMNS = 2
+_TEAM_BUTTON_COLUMNS = 4
+_COUNTRY_BUTTON_COLUMNS = 3
 
-async def _subscriptions_db_error_reply(update: Update) -> None:
-    """Ответ на недоступную таблицу подписок — одинаковый для всех команд подписок."""
-    await _message(update).reply_text(_SUBSCRIPTIONS_DB_ERROR)
+_Screen = Tuple[str, InlineKeyboardMarkup]
 
 
-def _time_choice_markup(current: time, prefix: str) -> InlineKeyboardMarkup:
-    """Кнопки выбора времени доставки `<prefix>:HH:MM` (МСК, шаг 30 минут); текущее
-    время отмечено точкой. Общие для `/digest_time` (`dt`) и `/country_time` (`ct`)."""
+def _sub_button(
+    label: str, selected: bool, data: str, off_prefix: str = ""
+) -> InlineKeyboardButton:
+    """Кнопка переключателя: у включённого пункта подпись начинается с ✅, у выключенного —
+    с `off_prefix` (для дайджеста «➕»)."""
+    prefix = "✅ " if selected else off_prefix
+    return InlineKeyboardButton(f"{prefix}{label}", callback_data=data)
+
+
+def _subscriptions_main_screen(
+    digest: bool, team_abbrevs: List[str], countries: List[str]
+) -> _Screen:
+    """Главный экран: сводка подписок, переключатель дайджеста, переходы в подменю."""
+    lines = ["Ваши подписки"]
+    if digest:
+        lines.append("✅ Утренний дайджест")
+    if team_abbrevs:
+        lines.append("🏒 Команды: " + ", ".join(team_abbrevs))
+    if countries:
+        lines.append("🌍 Страны: " + ", ".join(countries))
+    if len(lines) == 1:
+        lines.append("Пока ничего нет.")
+    lines.append(_DELIVERY_NOTE)
+    markup = InlineKeyboardMarkup([
+        [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
+        [
+            InlineKeyboardButton(f"🏒 Команды ({len(team_abbrevs)})", callback_data="sub:T"),
+            InlineKeyboardButton(f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
+        ],
+        [InlineKeyboardButton("Готово", callback_data="sub:x")],
+    ])
+    return "\n".join(lines), markup
+
+
+def _subscriptions_divisions_screen(
+    teams_by_division: Dict[str, List[Tuple[int, str]]], team_ids: Set[int]
+) -> _Screen:
+    """Шаг 1 выбора команд: дивизионы с числом выбранных команд в скобках."""
+    buttons = []
+    for i, (division, teams) in enumerate(teams_by_division.items()):
+        chosen = sum(1 for team_id, _ in teams if team_id in team_ids)
+        label = f"{division} ({chosen})" if chosen else division
+        buttons.append(InlineKeyboardButton(label, callback_data=f"sub:D:{i}"))
+    rows = build_menu(buttons, n_cols=_DIVISION_BUTTON_COLUMNS)
+    rows.append([InlineKeyboardButton("« Назад", callback_data="sub:m")])
+    return "Команды: выберите дивизион.", InlineKeyboardMarkup(rows)
+
+
+def _subscriptions_teams_screen(
+    teams_by_division: Dict[str, List[Tuple[int, str]]], team_ids: Set[int], division_index: int
+) -> _Screen:
+    """Шаг 2 выбора команд: команды дивизиона номер `division_index`, у выбранных ✅."""
+    division, teams = list(teams_by_division.items())[division_index]
     buttons = [
-        InlineKeyboardButton(
-            ("• " if t == current else "") + f"{t:%H:%M}", callback_data=f"{prefix}:{t:%H}:{t:%M}"
-        )
-        for t in DIGEST_TIME_CHOICES
+        _sub_button(abbrev, team_id in team_ids, f"sub:t:{division_index}:{team_id}")
+        for team_id, abbrev in teams
     ]
-    return InlineKeyboardMarkup(build_menu(buttons, n_cols=_DIGEST_TIME_COLUMNS))
+    rows = build_menu(buttons, n_cols=_TEAM_BUTTON_COLUMNS)
+    rows.append([InlineKeyboardButton("« К дивизионам", callback_data="sub:T")])
+    return f"{division}: нажмите на команду, чтобы подписаться или отписаться.", InlineKeyboardMarkup(rows)
 
 
-def _chosen_time(data: str, pattern: str) -> time:
-    """Время из `callback_data` кнопки `_time_choice_markup`; время вне
-    `DIGEST_TIME_CHOICES` — ошибка (подделанные данные кнопки)."""
-    m = re.match(pattern, data)
-    assert m is not None
-    chosen = time(int(m.group(1)), int(m.group(2)))
-    if chosen not in DIGEST_TIME_CHOICES:
-        raise ValueError(f"delivery time outside of choices: {data}")
-    return chosen
-
-
-def _digest_time_reply(digest_time: time) -> str:
-    """Текст о времени доставки дайджеста — общий для подписки и смены времени."""
-    return (
-        f"Дайджест придёт в {digest_time:%H:%M} МСК, а если матчи ночи к этому времени ещё "
-        "не загружены — сразу после загрузки последнего (не позже 11:00). "
-        "Сменить время: /digest_time"
-    )
-
-
-async def cmd_subscribe_digest(update: Update, context: CallbackContext) -> None:
-    """`/subscribe_digest`: подписка чата на утренний дайджест."""
-    try:
-        digest_time = subscription_repo.upsert_morning_digest(_chat_id(update))
-    except psycopg2.Error:
-        logger.exception("subscribe_digest DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    await _message(update).reply_text(
-        "Вы подписаны на утренний дайджест (матчи прошедшей ночи). "
-        + _digest_time_reply(digest_time)
-        + "\nОтписка: /unsubscribe_digest. Фактическая отправка включается администратором "
-        "(`ENABLE_PUSH_DIGEST=1`)."
-    )
-
-
-async def cmd_digest_time(update: Update, context: CallbackContext) -> None:
-    """`/digest_time`: кнопки выбора времени доставки дайджеста (МСК, шаг 30 минут).
-
-    Зачем: подписчик сам решает, когда получать дайджест; без подписки выбирать
-    нечего — отвечаем подсказкой `/subscribe_digest`.
-    """
-    try:
-        current = subscription_repo.get_digest_time(_chat_id(update))
-    except psycopg2.Error:
-        logger.exception("digest_time DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    if current is None:
-        await _message(update).reply_text("Сначала подпишитесь на дайджест: /subscribe_digest")
-        return
-    await _message(update).reply_text(
-        f"Сейчас дайджест приходит в {current:%H:%M} МСК (или позже, если ночь ещё не "
-        "загружена). Выберите время:",
-        reply_markup=_time_choice_markup(current, "dt"),
-    )
-
-
-async def callback_digest_time(update: Update, context: CallbackContext) -> None:
-    """Кнопка `dt:HH:MM` из `/digest_time`: сохраняет время и заменяет клавиатуру ответом."""
-    query = update.callback_query
-    assert query is not None and query.data is not None
-    digest_time = _chosen_time(query.data, DIGEST_TIME_CALLBACK_PATTERN)
-    await query.answer()
-    try:
-        updated = subscription_repo.set_digest_time(_chat_id(update), digest_time)
-    except psycopg2.Error:
-        logger.exception("digest_time DB error")
-        await query.edit_message_text(_SUBSCRIPTIONS_DB_ERROR)
-        return
-    if updated:
-        await query.edit_message_text(_digest_time_reply(digest_time))
-    else:
-        await query.edit_message_text("Подписки на дайджест нет: /subscribe_digest")
-
-
-async def cmd_unsubscribe_digest(update: Update, context: CallbackContext) -> None:
-    """`/unsubscribe_digest`: отключает утренний дайджест для чата."""
-    try:
-        subscription_repo.deactivate_morning_digest(_chat_id(update))
-    except psycopg2.Error:
-        logger.exception("unsubscribe_digest DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    await _message(update).reply_text(
-        "Утренний дайджест отключён для этого чата (подписка помечена неактивной)."
-    )
-
-
-def _country_delivery_reply(country_time: time) -> str:
-    """Текст о времени доставки подписок на страны — общий для подписки и смены времени."""
-    return (
-        f"придёт в {country_time:%H:%M} МСК (или позже, когда загрузится последний матч ночи, "
-        "не позже 11:00). Время: /country_time. Отписка: /unsubscribe_country"
-    )
-
-
-def _country_buttons_markup(codes: List[str], prefix: str) -> InlineKeyboardMarkup:
-    """Сетка кнопок стран `<prefix>:<CODE>` с подписями из `COUNTRY_LABELS`."""
+def _subscriptions_countries_screen(codes: List[str], chosen: List[str]) -> _Screen:
+    """Страны рейтинга `/countries`, у выбранных ✅. Подписанная страна, выпавшая из рейтинга,
+    тоже получает кнопку — иначе от неё нельзя отписаться."""
     buttons = [
-        InlineKeyboardButton(COUNTRY_LABELS.get(code, code), callback_data=f"{prefix}:{code}")
-        for code in codes
+        _sub_button(code, code in chosen, f"sub:c:{code}")
+        for code in codes + [c for c in chosen if c not in codes]
     ]
-    return InlineKeyboardMarkup(build_menu(buttons, n_cols=_COUNTRY_BUTTON_COLUMNS))
+    rows = build_menu(buttons, n_cols=_COUNTRY_BUTTON_COLUMNS)
+    rows.append([InlineKeyboardButton("« Назад", callback_data="sub:m")])
+    return "Страны: нажмите на страну, чтобы подписаться или отписаться.", InlineKeyboardMarkup(rows)
 
 
-async def cmd_subscribe_country(update: Update, context: CallbackContext) -> None:
-    """`/subscribe_country`: кнопки стран из рейтинга `/countries`; нажатие подписывает чат."""
-    _, codes = country_rankings()
-    if not codes:
-        await _message(update).reply_text("В базе нет данных по странам для этого сезона.")
-        return
-    await _message(update).reply_text(
-        "Выберите страну: утром придут её игроки за ночь и видео их голов.",
-        reply_markup=_country_buttons_markup(codes, "sc"),
+def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
+    """Главный экран по текущим подпискам чата; читает БД."""
+    digest, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
+    abbrevs = sorted(
+        abbrev
+        for teams in season_teams_by_division().values()
+        for team_id, abbrev in teams
+        if team_id in team_ids
     )
+    return _subscriptions_main_screen(digest, abbrevs, countries)
 
 
-async def callback_country_pick(update: Update, context: CallbackContext) -> None:
-    """Кнопки `sc:<CODE>` / `uc:<CODE>`: подписывают чат на страну или отписывают от неё
-    и заменяют клавиатуру ответом. Код вне рейтинга сезона при подписке — отказ текстом,
-    как у `country_page`."""
-    query = update.callback_query
-    assert query is not None and query.data is not None
-    m = re.match(COUNTRY_PICK_CALLBACK_PATTERN, query.data)
-    assert m is not None
-    action, code = m.group(1), m.group(2)
-    label = COUNTRY_LABELS.get(code, code)
-    await query.answer()
-    if action == "sc" and code not in country_rankings()[1]:
-        await query.edit_message_text(COUNTRY_NOT_FOUND)
-        return
+async def cmd_subscriptions(update: Update, context: CallbackContext) -> None:
+    """`/subscriptions`: меню подписок — сводка, дайджест, команды и страны (Задача 63)."""
     try:
-        if action == "sc":
-            country_time = subscription_repo.upsert_country(_chat_id(update), code)
+        text, markup = _subscriptions_main_screen_for(_chat_id(update))
+    except psycopg2.Error:
+        logger.exception("subscriptions DB error")
+        await _message(update).reply_text(_SUBSCRIPTIONS_DB_ERROR)
+        return
+    await _message(update).reply_text(text, reply_markup=markup)
+
+
+def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
+    """Переключает подписку по нажатой кнопке (`sub:d`, `sub:t:…`, `sub:c:…`), пишет в БД
+    и возвращает подсказку для `answer_callback_query`."""
+    digest, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
+    if action == "d":
+        if digest:
+            subscription_repo.deactivate_morning_digest(chat_id)
         else:
-            subscription_repo.mark_subscription_inactive_by_chat_kind_team(
-                _chat_id(update), "country_players", None, code
-            )
-    except psycopg2.Error:
-        logger.exception("country subscription DB error")
-        await query.edit_message_text(_SUBSCRIPTIONS_DB_ERROR)
-        return
-    if action == "sc":
-        await query.edit_message_text(
-            f"Вы подписаны на {label}: игроки страны за ночь и видео их голов "
-            f"{_country_delivery_reply(country_time)}"
+            subscription_repo.upsert_morning_digest(chat_id)
+        return "Дайджест " + ("выключен" if digest else "включён")
+    if action == "t":
+        team_id = int(args[1])
+        abbrev = next(
+            a for teams in season_teams_by_division().values() for t, a in teams if t == team_id
+        )
+        if team_id in team_ids:
+            subscription_repo.deactivate_team_scores(chat_id, team_id)
+        else:
+            subscription_repo.upsert_team_scores(chat_id, team_id)
+        return f"Подписка на {abbrev} " + ("отключена" if team_id in team_ids else "включена")
+    code = args[0]
+    if code in countries:
+        subscription_repo.mark_subscription_inactive_by_chat_kind_team(
+            chat_id, "country_players", None, code
         )
     else:
-        await query.edit_message_text(f"Подписка на {label} отключена.")
+        subscription_repo.upsert_country(chat_id, code)
+    return f"Подписка на {code} " + ("отключена" if code in countries else "включена")
 
 
-async def cmd_unsubscribe_country(update: Update, context: CallbackContext) -> None:
-    """`/unsubscribe_country`: кнопки подписанных стран чата; нажатие отписывает."""
-    try:
-        codes = subscription_repo.list_chat_countries(_chat_id(update))
-    except psycopg2.Error:
-        logger.exception("unsubscribe_country DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    if not codes:
-        await _message(update).reply_text("Подписок на страны нет: /subscribe_country")
-        return
-    await _message(update).reply_text(
-        "От какой страны отписаться?", reply_markup=_country_buttons_markup(codes, "uc")
-    )
-
-
-async def cmd_country_time(update: Update, context: CallbackContext) -> None:
-    """`/country_time`: кнопки времени доставки подписок на страны (общее на все страны чата)."""
-    try:
-        current = subscription_repo.get_country_time(_chat_id(update))
-    except psycopg2.Error:
-        logger.exception("country_time DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    if current is None:
-        await _message(update).reply_text("Сначала подпишитесь на страну: /subscribe_country")
-        return
-    await _message(update).reply_text(
-        f"Сейчас рассылка по странам приходит в {current:%H:%M} МСК (или позже, если ночь ещё "
-        "не загружена). Выберите время:",
-        reply_markup=_time_choice_markup(current, "ct"),
-    )
-
-
-async def callback_country_time(update: Update, context: CallbackContext) -> None:
-    """Кнопка `ct:HH:MM` из `/country_time`: сохраняет время для всех стран чата."""
+async def callback_subscriptions(update: Update, context: CallbackContext) -> None:
+    """Кнопки `sub:…` меню `/subscriptions`: переключают подписку (каждое нажатие сразу
+    пишется в БД) и перерисовывают то же сообщение; ✅ рисуются по данным БД после записи,
+    поэтому при сбое записи отметки нет. «Готово» убирает клавиатуру."""
     query = update.callback_query
     assert query is not None and query.data is not None
-    country_time = _chosen_time(query.data, COUNTRY_TIME_CALLBACK_PATTERN)
-    await query.answer()
+    chat_id = _chat_id(update)
+    _, action, *args = query.data.split(":")
+    hint = None
     try:
-        updated = subscription_repo.set_country_time(_chat_id(update), country_time)
+        if action in ("d", "t", "c"):
+            hint = _toggle_subscription(chat_id, action, args)
+        if action in ("m", "d", "x"):
+            text, markup = _subscriptions_main_screen_for(chat_id)
+        elif action in ("T", "D", "t"):
+            teams_by_division = season_teams_by_division()
+            _, team_ids, _ = subscription_repo.get_chat_subscriptions(chat_id)
+            if not any(teams_by_division.values()):
+                text, markup = "В базе нет списка команд для этого сезона.", InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("« Назад", callback_data="sub:m")]]
+                )
+            elif action == "T":
+                text, markup = _subscriptions_divisions_screen(teams_by_division, team_ids)
+            else:
+                text, markup = _subscriptions_teams_screen(
+                    teams_by_division, team_ids, int(args[0])
+                )
+        else:
+            rankings_text, codes = country_rankings()
+            _, _, chosen = subscription_repo.get_chat_subscriptions(chat_id)
+            if codes or chosen:
+                text, markup = _subscriptions_countries_screen(codes, chosen)
+            else:
+                text, markup = rankings_text, InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("« Назад", callback_data="sub:m")]]
+                )
     except psycopg2.Error:
-        logger.exception("country_time DB error")
+        logger.exception("subscriptions DB error")
+        await query.answer()
         await query.edit_message_text(_SUBSCRIPTIONS_DB_ERROR)
         return
-    if updated:
-        await query.edit_message_text(f"Рассылка по странам {_country_delivery_reply(country_time)}")
-    else:
-        await query.edit_message_text("Подписок на страны нет: /subscribe_country")
-
-
-async def cmd_subscribe_team(update: Update, context: CallbackContext) -> None:
-    """`/subscribe_team <ABBREV>`: подписка чата на итоги игр команды."""
-    message = _message(update)
-    args = context.args or []
-    if not args:
-        await message.reply_text(
-            "Укажите аббревиатуру команды, например: /subscribe_team WSH"
-        )
-        return
-    tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
-    if tid is None:
-        await message.reply_text(
-            f"Команда «{args[0]}» не найдена для сезона в базе. Список: /team"
-        )
-        return
-    try:
-        subscription_repo.upsert_team_scores(_chat_id(update), tid)
-    except psycopg2.Error:
-        logger.exception("subscribe_team DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    await message.reply_text(
-        f"Подписка на итоги игр команды сохранена (аббревиатура {args[0].strip().upper()}). "
-        "Отписка: /unsubscribe_team с тем же кодом. Счёт придёт, как только загрузятся все "
-        "матчи ночи (не позже 11:00 МСК), при ENABLE_PUSH_DIGEST=1."
-    )
-
-
-async def cmd_unsubscribe_team(update: Update, context: CallbackContext) -> None:
-    """`/unsubscribe_team <ABBREV>`: отключает подписку чата на итоги игр команды."""
-    message = _message(update)
-    args = context.args or []
-    if not args:
-        await message.reply_text(
-            "Укажите ту же аббревиатуру, например: /unsubscribe_team WSH"
-        )
-        return
-    tid = subscription_repo.resolve_team_id_by_abbrev(args[0])
-    if tid is None:
-        await message.reply_text(
-            f"Команда «{args[0]}» не найдена для сезона в базе."
-        )
-        return
-    try:
-        subscription_repo.deactivate_team_scores(_chat_id(update), tid)
-    except psycopg2.Error:
-        logger.exception("unsubscribe_team DB error")
-        await _subscriptions_db_error_reply(update)
-        return
-    await message.reply_text("Подписка на эту команду отключена.")
+    await query.answer(hint)
+    await query.edit_message_text(text, reply_markup=None if action == "x" else markup)
 
 
 def build_conversation_handler() -> ConversationHandler:
@@ -836,20 +734,11 @@ def build_standalone_handlers() -> List[BaseHandler]:
         CommandHandler("countries", cmd_countries),
         CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
-        CommandHandler("subscribe_digest", cmd_subscribe_digest),
-        CommandHandler("digest_time", cmd_digest_time),
-        CommandHandler("unsubscribe_digest", cmd_unsubscribe_digest),
-        CommandHandler("subscribe_country", cmd_subscribe_country),
-        CommandHandler("country_time", cmd_country_time),
-        CommandHandler("unsubscribe_country", cmd_unsubscribe_country),
-        CommandHandler("subscribe_team", cmd_subscribe_team),
-        CommandHandler("unsubscribe_team", cmd_unsubscribe_team),
+        CommandHandler("subscriptions", cmd_subscriptions),
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_leaderboard_page, pattern=LEADERBOARD_PAGE_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_expand_digest_game, pattern=DIGEST_EXPAND_CALLBACK_PATTERN),
-        CallbackQueryHandler(callback_digest_time, pattern=DIGEST_TIME_CALLBACK_PATTERN),
-        CallbackQueryHandler(callback_country_pick, pattern=COUNTRY_PICK_CALLBACK_PATTERN),
-        CallbackQueryHandler(callback_country_time, pattern=COUNTRY_TIME_CALLBACK_PATTERN),
+        CallbackQueryHandler(callback_subscriptions, pattern=SUBSCRIPTIONS_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_tonight_game, pattern=TONIGHT_GAME_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_country, pattern=COUNTRY_CALLBACK_PATTERN),
         CallbackQueryHandler(callback_standalone_sa, pattern=STANDALONE_SA_CALLBACK_PATTERN),

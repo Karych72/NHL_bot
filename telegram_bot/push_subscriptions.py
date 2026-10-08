@@ -8,7 +8,6 @@
     kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores' | 'country_players'
     team_id        BIGINT,                -- для kind='team_scores'; иначе NULL
     country        TEXT,                  -- код страны; только у country_players (Задача 61)
-    digest_time    TIME,                  -- время рассылки по МСК; morning_digest и country_players
     last_sent_night DATE,                 -- ночь, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,
     created_at     TIMESTAMPTZ DEFAULT now()
@@ -32,7 +31,7 @@
 -----------------
 Сервис `sync` (``pipeline/scheduled_sync.py``, Задача 34) вызывает скрипт после
 каждого ночного прогона загрузчика; тот для ``active`` строк с ``kind='morning_digest'``,
-которым пора (Задача 60: наступило ``digest_time`` и ночь загружена, либо 11:00 МСК),
+когда пора (Задача 63: ночь загружена целиком, либо 11:00 МСК; времени у подписчика нет),
 вызывает ту же логику, что и ``day_digest()`` /
 ``dispatch_day_digest_messages``, и шлёт результат с ``attach_conv_nav_on_last=False``
 и без callback-кнопок диалога.
@@ -44,5 +43,6 @@
 
 Реализация: миграция ``data_tables/migrations/0001_bot_subscriptions.up.sql`` (``make
 db-migrate``), слой данных ``subscription_repo.py``, рассылка ``push_digest_job.py``
-(батчи, паузы, ``429``, ``Forbidden``), команды в ``bot.py`` (см. ``docs/telegram_bot.md`` §7).
+(батчи, паузы, ``429``, ``Forbidden``), меню подписок ``/subscriptions`` в ``bot.py``
+(см. ``docs/telegram_bot.md`` §7).
 """
