@@ -255,7 +255,7 @@ NHL Stats API                          NHL Web API
 
 - **Сезонные таблицы:** UPSERT по PK `(team_id, season_id)` или `(player_id, season_id)`.
 - **Per-game таблицы (`games`, `all_goals`, `game_*_stats`):** `DELETE … WHERE game_id = ANY(window) → INSERT`. Идемпотентно при повторных запусках на пересекающихся окнах.
-- **Пагинация:** API с ответами `{data, total}` выгружаются постранично (`fetch_paginated`, размер страницы 200–1000).
+- **Пагинация:** API с ответами `{data, total}` выгружаются постранично (`fetch_paginated`, запрошенный размер страницы 200–1000). API сам режет страницу ниже `limit` (100 строк у отчётов полевых, 1000 у `game`), а без явного `sort` порядок записей между страницами плавает. Поэтому выгрузка всегда идёт с сортировкой по уникальному ключу (`playerId` / `teamId` / `id`, Задача 62).
 - **Retry-логика:** до 10 попыток, экспоненциальный backoff, обработка HTTP 429 (Rate Limit) через заголовок `Retry-After`.
 - **Таймаут запросов:** 30 секунд.
 - **Транзакционность:** все INSERT выполняются в одной транзакции; при ошибке — `ROLLBACK`.
@@ -443,7 +443,8 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 пункт «По странам» в подменю игроков, Задача 42). Рейтинг стран — выровненная таблица и кнопки
 стран; страница страны — standalone-callback `cn:<CODE>:<F|D|G>:<offset>` (нападающие /
 защитники / вратари, листание, переключатель групп), `cn:list` — назад к рейтингу. Данные —
-`country_rankings()` / `country_page()` в `bot_messages.py`: страна — `rosters.nationality`,
+`country_rankings()` / `country_page()` в `bot_messages.py`: страна — `rosters.nationality`
+(`nationalityCode` из bios, Задача 62),
 порог `COUNTRY_MIN_PLAYERS`, игроки без страны — только сноской. Таблица группы —
 `_player_group_table()` (общая с `/BOS_FULL`, группы `PLAYER_GROUPS`; вратари — только с хотя бы
 одной игрой); колонки, не влезающие в ширину телефона, убираются с наименее важной (`_pre_table_fit`).
@@ -641,7 +642,7 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | `jersey_number` | int | Игровой номер |
 | `currentAge` | int | Возраст |
 | `lastName` | varchar(50) | Фамилия (для отображения) |
-| `nationality` | varchar(10) | Код страны |
+| `nationality` | varchar(10) | Национальность — `nationalityCode` отчётов `skater/bios` / `goalie/bios` у всех строк (не страна рождения, Задача 62); NULL — игрока ещё нет в bios (не сыграл или дебютант), допишется следующим sync |
 | `captain` | boolean | Капитан |
 | `alternate_captain` | boolean | Ассистент капитана |
 | `rookie` | boolean | Новичок |

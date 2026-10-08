@@ -524,7 +524,7 @@ class GameJsonCacheTest(LoaderApiTestCase):
             calls["get_json"] += 1
             return {"standings": []}
 
-        def counting_fetch_paginated(url, page_size=500):
+        def counting_fetch_paginated(url, sort_key, page_size=500):
             calls["fetch_paginated"] += 1
             return []
 
@@ -576,7 +576,7 @@ class ScheduledGamesTest(LoaderApiTestCase):
     def test_fetch_asks_for_future_states_of_regular_season_in_a_two_day_window(self):
         instance = make_loader()
         urls = []
-        instance.fetch_paginated = lambda url, page_size=500: urls.append(url) or []
+        instance.fetch_paginated = lambda url, sort_key, page_size=500: urls.append(url) or []
 
         instance.fetch_scheduled_games()
 

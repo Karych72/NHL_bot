@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -242,12 +243,26 @@ class ModernNhlLoader:
                 time.sleep(1)
         raise RuntimeError(f"Request failed: {url}; error: {last_error}")
 
-    def fetch_paginated(self, url: str, page_size: int = 500) -> List[dict]:
+    def fetch_paginated(self, url: str, sort_key: str, page_size: int = 500) -> List[dict]:
+        """Fetch every record of a paginated Stats REST report, page by page.
+
+        The API caps a page below the requested ``limit`` (100 rows for skater
+        reports, 1000 for ``game``), and without an explicit sort the order of
+        records differs between page requests: one run repeated some players and
+        silently lost ~3% of others (Задача 62). Sorting by a unique key makes the
+        pages a stable partition of the report.
+
+        Args:
+            url: report URL with its ``cayenneExp`` filter.
+            sort_key: unique record key to sort by — ``playerId``, ``teamId``, ``id``.
+            page_size: requested ``limit`` per page (the API may return fewer).
+        """
         out: List[dict] = []
         start = 0
+        sort = urllib.parse.quote(json.dumps([{"property": sort_key, "direction": "ASC"}]))
         while True:
             sep = "&" if "?" in url else "?"
-            page_url = f"{url}{sep}start={start}&limit={page_size}"
+            page_url = f"{url}{sep}sort={sort}&start={start}&limit={page_size}"
             payload = self.get_json(page_url)
             data = payload.get("data", [])
             total = payload.get("total", len(data))
@@ -258,7 +273,9 @@ class ModernNhlLoader:
         return out
 
     def load_team_reference(self):
-        teams = self.fetch_paginated("https://api.nhle.com/stats/rest/en/team", page_size=200)
+        teams = self.fetch_paginated(
+            "https://api.nhle.com/stats/rest/en/team", "id", page_size=200
+        )
         self.team_meta_by_id = {to_int(t.get("id")): t for t in teams}
         for team_id, row in self.team_meta_by_id.items():
             tri = row.get("triCode") or row.get("rawTricode")
@@ -277,7 +294,7 @@ class ModernNhlLoader:
             "https://api.nhle.com/stats/rest/en/team/summary"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
-        summary_rows = self.fetch_paginated(summary_url, page_size=200)
+        summary_rows = self.fetch_paginated(summary_url, "teamId", page_size=200)
 
         teams_rows: List[tuple] = []
         teams_stats_rows: List[tuple] = []
@@ -366,7 +383,7 @@ class ModernNhlLoader:
                         optional_int(p.get("sweaterNumber")),
                         optional_age_from_birthdate(p.get("birthDate")),
                         optional_str(last_name) or full_name,
-                        optional_str(p.get("birthCountry")),
+                        None,  # nationality — fill_nationality (bios reports)
                         None,  # captain
                         None,  # alternate_captain
                         None,  # rookie
@@ -425,7 +442,7 @@ class ModernNhlLoader:
             optional_int(payload.get("sweaterNumber")),
             optional_age_from_birthdate(payload.get("birthDate")),
             last_only,
-            optional_str(payload.get("birthCountry")),
+            None,  # nationality — fill_nationality (bios reports)
             None,  # captain — not exposed by landing
             None,  # alternate_captain — not exposed by landing
             None,  # rookie — not exposed by landing
@@ -482,7 +499,7 @@ class ModernNhlLoader:
                 None,  # jersey_number
                 None,  # currentage
                 last_name or display_name,
-                None,
+                None,  # nationality — fill_nationality (bios reports)
                 None,  # captain
                 None,  # alternate_captain
                 None,  # rookie
@@ -506,7 +523,7 @@ class ModernNhlLoader:
                 None,  # jersey_number
                 None,  # currentage
                 last_name or display_name,
-                None,
+                None,  # nationality — fill_nationality (bios reports)
                 None,  # captain
                 None,  # alternate_captain
                 None,  # rookie
@@ -538,14 +555,40 @@ class ModernNhlLoader:
 
         return list(rows_by_player.values())
 
+    def fill_nationality(self, roster_rows: List[tuple]) -> List[tuple]:
+        """Set ``rosters.nationality`` of every row to the player's ``nationalityCode``.
+
+        The bot's country of a player is the NHL ``nationalityCode`` from the season's
+        ``skater/bios`` and ``goalie/bios`` reports (Задача 62), one source for rows from
+        the team roster, the summary reports and player landing alike. Those reports
+        list only players with a game in the season and can lag a day behind a
+        debutant, so a player missing from them gets NULL ("unknown") — the next
+        sync run's upsert writes the country once the report knows him.
+
+        Args:
+            roster_rows: ``rosters`` tuples from ``supplement_rosters_from_reports``.
+        """
+        nationality: Dict[int, Optional[str]] = {}
+        for report in ("skater/bios", "goalie/bios"):
+            url = (
+                f"https://api.nhle.com/stats/rest/en/{report}"
+                f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+            )
+            for r in self.fetch_paginated(url, "playerId", page_size=1000):
+                nationality[to_int(r.get("playerId"))] = optional_str(r.get("nationalityCode"))
+        rows = [row[:7] + (nationality.get(to_int(row[0])),) + row[8:] for row in roster_rows]
+        unknown = sum(1 for row in rows if row[7] is None)
+        if unknown:
+            logger.info("No nationalityCode in bios reports for %d roster row(s)", unknown)
+        return rows
+
     def build_player_advanced_stats(self) -> List[tuple]:
         gfa_url = (
             "https://api.nhle.com/stats/rest/en/skater/goalsForAgainst"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater goalsForAgainst report...")
-        gfa_rows = self.fetch_paginated(gfa_url, page_size=1000)
-        # Duplicate playerId in one page: last row wins (same for other dict-by-player merges).
+        gfa_rows = self.fetch_paginated(gfa_url, "playerId", page_size=1000)
         gfa_by_player = {to_int(r.get("playerId")): r for r in gfa_rows}
 
         pp_url = (
@@ -553,7 +596,7 @@ class ModernNhlLoader:
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater puckPossessions report...")
-        pp_rows = self.fetch_paginated(pp_url, page_size=1000)
+        pp_rows = self.fetch_paginated(pp_url, "playerId", page_size=1000)
         pp_by_player = {to_int(r.get("playerId")): r for r in pp_rows}
 
         all_pids = {p for p in (set(gfa_by_player) | set(pp_by_player)) if p > 0}
@@ -590,7 +633,7 @@ class ModernNhlLoader:
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater shottype report...")
-        rows = self.fetch_paginated(url, page_size=1000)
+        rows = self.fetch_paginated(url, "playerId", page_size=1000)
         out: List[tuple] = []
         for r in rows:
             pid = to_int(r.get("playerId"))
@@ -623,14 +666,14 @@ class ModernNhlLoader:
             "https://api.nhle.com/stats/rest/en/skater/summary"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
-        rows = self.fetch_paginated(url, page_size=1000)
+        rows = self.fetch_paginated(url, "playerId", page_size=1000)
 
         toi_url = (
             "https://api.nhle.com/stats/rest/en/skater/timeonice"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater time-on-ice report...")
-        toi_rows = self.fetch_paginated(toi_url, page_size=1000)
+        toi_rows = self.fetch_paginated(toi_url, "playerId", page_size=1000)
         toi_by_player = {to_int(t.get("playerId")): t for t in toi_rows}
         if toi_rows:
             logger.debug("timeonice sample keys: %s", list(toi_rows[0].keys()))
@@ -640,7 +683,7 @@ class ModernNhlLoader:
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater faceoffpercentages report...")
-        fop_rows = self.fetch_paginated(fop_url, page_size=1000)
+        fop_rows = self.fetch_paginated(fop_url, "playerId", page_size=1000)
         fop_by_player = {to_int(t.get("playerId")): t for t in fop_rows}
 
         so_url = (
@@ -648,7 +691,7 @@ class ModernNhlLoader:
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater shootout report...")
-        so_rows = self.fetch_paginated(so_url, page_size=1000)
+        so_rows = self.fetch_paginated(so_url, "playerId", page_size=1000)
         so_by_player = {to_int(t.get("playerId")): t for t in so_rows}
 
         # summary no longer includes hits / blockedShots (as of 2025–26 API); realtime does
@@ -657,7 +700,7 @@ class ModernNhlLoader:
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching skater realtime report (hits, blocked shots)...")
-        rt_rows = self.fetch_paginated(rt_url, page_size=1000)
+        rt_rows = self.fetch_paginated(rt_url, "playerId", page_size=1000)
         rt_by_player = {to_int(t.get("playerId")): t for t in rt_rows}
         if rt_rows:
             logger.debug("realtime sample keys: %s", list(rt_rows[0].keys()))
@@ -722,14 +765,14 @@ class ModernNhlLoader:
             "https://api.nhle.com/stats/rest/en/goalie/summary"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
-        rows = self.fetch_paginated(url, page_size=1000)
+        rows = self.fetch_paginated(url, "playerId", page_size=1000)
 
         sbs_url = (
             "https://api.nhle.com/stats/rest/en/goalie/savesByStrength"
             f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
         )
         logger.info("Fetching goalie saves-by-strength report...")
-        sbs_rows = self.fetch_paginated(sbs_url, page_size=1000)
+        sbs_rows = self.fetch_paginated(sbs_url, "playerId", page_size=1000)
         sbs_by_player = {to_int(s.get("playerId")): s for s in sbs_rows}
         if sbs_rows:
             logger.debug("savesByStrength sample keys: %s", list(sbs_rows[0].keys()))
@@ -794,7 +837,7 @@ class ModernNhlLoader:
             f'gameDate>="{self.start_date}" and gameDate<="{self.end_date}"'
         )
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
-        return self.fetch_paginated(url, page_size=1000)
+        return self.fetch_paginated(url, "id", page_size=1000)
 
     def fetch_scheduled_games(self) -> List[dict]:
         """Fetch not-yet-played regular-season games for the next ``SCHEDULE_WINDOW_DAYS`` UTC days.
@@ -814,7 +857,7 @@ class ModernNhlLoader:
             f'gameDate>="{first_day.isoformat()}" and gameDate<="{last_day.isoformat()}"'
         )
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
-        return self.fetch_paginated(url, page_size=1000)
+        return self.fetch_paginated(url, "id", page_size=1000)
 
     def build_scheduled_rows(self, games_meta: List[dict], played_game_ids: Set[int]) -> List[tuple]:
         """Turn ``fetch_scheduled_games`` records into ``scheduled_games`` rows.
@@ -1375,8 +1418,10 @@ class ModernNhlLoader:
     ):
         if not rows:
             return
-        # Paginated NHL stats APIs may repeat the same entity across pages; one INSERT
-        # must not propose duplicate ON CONFLICT keys (Postgres CardinalityViolation).
+        # One INSERT must not propose duplicate ON CONFLICT keys (Postgres
+        # CardinalityViolation). Repeats across report pages are gone since
+        # fetch_paginated sorts (Задача 62); whether any caller still sends a
+        # duplicate key has not been re-checked, so the dedup stays.
         key_idxs = [columns.index(c) for c in conflict_columns]
         dedup: Dict[tuple, tuple] = {}
         for row in rows:
@@ -1435,6 +1480,7 @@ class ModernNhlLoader:
             teams_rows,
             extra_player_ids,
         )
+        roster_rows = self.fill_nationality(roster_rows)
         return SeasonReferenceRows(
             teams_rows=teams_rows,
             teams_stats_rows=teams_stats_rows,

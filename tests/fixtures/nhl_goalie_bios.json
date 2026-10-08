@@ -1,0 +1,27 @@
+[
+  {
+    "birthCity": "Calgary",
+    "birthCountryCode": "CAN",
+    "birthDate": "1997-02-25",
+    "birthStateProvinceCode": "AB",
+    "currentTeamAbbrev": "WSH",
+    "draftOverall": null,
+    "draftRound": null,
+    "draftYear": null,
+    "firstSeasonForGameType": 20202021,
+    "gamesPlayed": 58,
+    "goalieFullName": "Logan Thompson",
+    "height": 76,
+    "isInHallOfFameYn": "N",
+    "lastName": "Thompson",
+    "losses": 21,
+    "nationalityCode": "CAN",
+    "otLosses": 6,
+    "playerId": 8480313,
+    "shootsCatches": "R",
+    "shutouts": 4,
+    "ties": null,
+    "weight": 205,
+    "wins": 31
+  }
+]

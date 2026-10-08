@@ -196,7 +196,7 @@ def stub_api(
         return routes[matched[0]]
 
     instance.get_json = lambda url: _match(url, json_routes, "get_json")
-    instance.fetch_paginated = lambda url, page_size=500: _match(
+    instance.fetch_paginated = lambda url, sort_key, page_size=500: _match(
         url, paginated_routes, "fetch_paginated"
     )
 
