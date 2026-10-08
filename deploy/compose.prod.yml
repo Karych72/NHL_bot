@@ -1,0 +1,24 @@
+# Прод-оверрайд к docker-compose.yml (Задача 65): токен бота на VM — не в .env, а файлом
+# /run/nhl_bot/telegram_bot_token (tmpfs), его пишет deploy/fetch-secrets.sh при загрузке VM.
+# Подключается только на VM строкой COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml
+# в .env — её видят и release.yml, и ручной `docker compose`.
+#
+# Файл монтируется как secret, а в окружение процесса его кладёт entrypoint-обёртка уже
+# внутри контейнера и exec-ом отдаёт управление command (из docker-compose.yml или из
+# `docker compose run`). Через env_file токен попал бы в Config.Env — Docker хранит его
+# открытым текстом в config.v2.json на диске VM и показывает в `docker inspect`. Нет файла —
+# контейнер не стартует (bind source path does not exist), в том числе при перезагрузке VM.
+x-token-entrypoint: &token-entrypoint
+  ["sh", "-c", "TELEGRAM_BOT_TOKEN=$$(cat /run/secrets/telegram_bot_token) && export TELEGRAM_BOT_TOKEN && exec \"$$@\"", "sh"]
+
+services:
+  bot:
+    secrets: [telegram_bot_token]
+    entrypoint: *token-entrypoint
+  sync:
+    secrets: [telegram_bot_token]
+    entrypoint: *token-entrypoint
+
+secrets:
+  telegram_bot_token:
+    file: /run/nhl_bot/telegram_bot_token
