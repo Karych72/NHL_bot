@@ -555,17 +555,24 @@ async def test_country_broadcast_splits_goals_into_albums_and_reuses_file_ids(co
     await country_env.run([(111, "RUS"), (222, "RUS")], _country_goals(12))
     bot = country_env.bot
 
-    assert [m["chat_id"] for m in bot.messages] == [111, 222]
+    assert [m["chat_id"] for m in bot.messages] == [111, 111, 222, 222]
     assert bot.messages[0]["text"] == "TEXT\n\nНастроить подписки: /subscriptions"
     assert bot.messages[0]["parse_mode"] == "HTML"
     # 11 клипов (один недоступен): альбом из 10 и хвост из одного видео — send_video,
     # потому что в альбоме Telegram 2–10 медиа.
     assert [(chat, len(media)) for chat, media in bot.albums] == [(111, 10), (222, 10)]
-    assert [(chat, kw["caption"]) for chat, _, kw in bot.videos] == [
-        (111, "Игрок11 (TOR)"), (222, "Игрок11 (TOR)"),
-    ]
+    assert [chat for chat, _, _ in bot.videos] == [111, 222]
+    # Задача 64: у клипов нет подписи — Telegram показал бы под альбомом только первую;
+    # после видео один список голов в порядке клипов, без гола, у которого нет клипа.
     first = bot.albums[0][1]
-    assert "Игрок3 (TOR)" not in [m.caption for m in first], "гол без клипа пропущен"
+    assert [m.caption for m in first] == [None] * 10
+    assert all("caption" not in kw for _, _, kw in bot.videos)
+    clip_goals = [i for i in range(12) if i != 3]
+    assert bot.messages[1] == {
+        "chat_id": 111,
+        "text": "\n".join(f"{n}. Игрок{i} (TOR)" for n, i in enumerate(clip_goals, 1)),
+    }
+    assert bot.messages[3]["text"] == bot.messages[1]["text"]
     assert not any(isinstance(m.media, str) for m in first), "первому чату — загрузка"
     # PTB пишет в альбом media/thumbnail только у файлов с attach_uri (attach://…):
     # без него поля выпадают из запроса и Telegram альбом не принимает.
@@ -602,6 +609,6 @@ async def test_country_broadcast_deactivates_only_the_blocked_subscription(count
     await country_env.run([(111, "RUS"), (222, "RUS")], _country_goals(2))
 
     assert country_env.deactivated == [(111, "country_players", None, "RUS")]
-    assert [m["chat_id"] for m in country_env.bot.messages] == [222]
+    assert [m["chat_id"] for m in country_env.bot.messages] == [222, 222]
     assert [chat for chat, _ in country_env.bot.albums] == [222]
     assert [a[0][0] for a in country_env.marked] == [111, 222]

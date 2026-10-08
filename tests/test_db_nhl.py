@@ -556,6 +556,7 @@ class TestCountryNightSql(unittest.TestCase):
     NIGHT = date(2099, 1, 2)
     GAME = 9999999901
     TEAM = 900001
+    OPPONENT = 900002
 
     def setUp(self):
         import bot_messages
@@ -565,28 +566,36 @@ class TestCountryNightSql(unittest.TestCase):
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO teams (team_id, season_id, abbreviation) VALUES (%s, %s, 'HOM')",
-                (self.TEAM, self.SEASON),
+                "INSERT INTO teams (team_id, season_id, abbreviation) "
+                "VALUES (%s, %s, 'HOM'), (%s, %s, 'AWY')",
+                (self.TEAM, self.SEASON, self.OPPONENT, self.SEASON),
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, is_shootouts, "
                 "season_id) VALUES (%s, %s, %s, %s, TRUE, %s)",
-                (self.GAME, self.NIGHT, self.TEAM, self.TEAM, self.SEASON),
+                (self.GAME, self.NIGHT, self.TEAM, self.OPPONENT, self.SEASON),
             )
             # (player_id, фамилия, позиция, страна)
             for player in (
                 (-1, "Скорер<", "C", "ZZZ"), (-2, "Тень", "L", "ZZZ"), (-3, "Чужой", "C", "YYY"),
                 (-4, "Стенка", "G", "ZZZ"), (-5, "Запасной", "G", "ZZZ"),
+                (-6, "Крыло", "R", "ZZZ"), (-7, "Защитник", "D", "ZZZ"),
             ):
                 cur.execute(
                     "INSERT INTO rosters (player_id, season_id, lastname, position, nationality) "
                     "VALUES (%s, %s, %s, %s, %s)", (player[0], self.SEASON, *player[1:]),
                 )
-            # (игрок, голы, передачи, броски, +/-, время на льду): играл, нулевой TOI, чужой.
-            for stat in ((-1, 2, 0, 5, 1, "20:10"), (-2, 0, 0, 2, 0, "00:00"), (-3, 3, 0, 3, 2, "15:00")):
+            # (игрок, голы, передачи, броски, +/-, хиты, блоки, вбрасывания выигр./всего,
+            # время на льду): C, нулевой TOI, чужой, R, D.
+            for stat in (
+                (-1, 2, 0, 5, 1, 1, 0, 7, 12, "20:10"), (-2, 0, 0, 2, 0, 0, 0, 0, 0, "00:00"),
+                (-3, 3, 0, 3, 2, 0, 0, 0, 0, "15:00"), (-6, 0, 1, 2, -1, 3, 4, None, None, "15:30"),
+                (-7, 0, 0, 1, 0, 6, 5, None, None, "22:00"),
+            ):
                 cur.execute(
                     "INSERT INTO game_player_stats (player_id, team_id, game_id, goals, assists, "
-                    "shots, plus_minus, time_on_ice) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "shots, plus_minus, hits, blocked, face_off_wins, face_off_taken, time_on_ice) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (stat[0], self.TEAM, self.GAME, *stat[1:]),
                 )
             for goalie in ((-4, "59:47", 30, 33, 90.91), (-5, "00:00", 0, 0, None)):
@@ -595,8 +604,11 @@ class TestCountryNightSql(unittest.TestCase):
                     "saves, shots, save_percentage) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     (goalie[0], self.TEAM, self.GAME, *goalie[1:]),
                 )
-            # (автор, период, время, event_id): два гола ZZZ, чужой, буллит ZZZ.
-            for goal in ((-1, 1, "10:00", 10), (-1, 1, "02:00", 5), (-3, 2, "01:00", 20), (-1, 5, "00:00", 99)):
+            # (автор, период, время, event_id): два гола ZZZ, чужой, буллит ZZZ, овертайм ZZZ.
+            for goal in (
+                (-1, 1, "10:00", 10), (-1, 1, "02:00", 5), (-3, 2, "01:00", 20),
+                (-1, 5, "00:00", 99), (-6, 4, "03:15", 30),
+            ):
                 cur.execute(
                     "INSERT INTO all_goals (goal_player_id, team_id, game_id, period, time, "
                     "event_id) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -611,14 +623,25 @@ class TestCountryNightSql(unittest.TestCase):
             cur.execute("DELETE FROM rosters WHERE season_id = %s", (self.SEASON,))
             cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
 
-    def test_message_lists_skaters_then_goalies_and_is_none_without_players(self):
+    def test_message_two_lines_per_player_by_position_and_none_without_players(self):
+        """Задача 64: у C — хиты и вбрасывания, у R — хиты, у D — блоки вместо хитов,
+        у G — сейвы; пометка позиции только «ц»/«защ»; между игроками пустая строка."""
         self.assertEqual(
             self.messages.country_night_message("ZZZ", self.NIGHT).split("\n"),
             [
                 "<b>ZZZ — ночь 2099-01-02</b>",
-                "Скорер&lt; (HOM) 2+0 · 5 бр. · +1 · 20:10",
                 "",
-                "Стенка (HOM) — 30/33, 90.91%, 59:47",
+                "<b>Скорер&lt;</b> (HOM, ц)",
+                "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
+                "",
+                "<b>Крыло</b> (HOM)",
+                "0+1 · −1 · 2 бр. · 3 хита · 15:30",
+                "",
+                "<b>Защитник</b> (HOM, защ)",
+                "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
+                "",
+                "<b>Стенка</b> (HOM)",
+                "30/33 · 90.91% · 59:47",
             ],
         )
         self.assertIsNone(self.messages.country_night_message("XXX", self.NIGHT))
@@ -626,7 +649,11 @@ class TestCountryNightSql(unittest.TestCase):
     def test_goals_of_country_skip_shootout_in_game_order(self):
         self.assertEqual(
             self.messages.country_night_goals("ZZZ", self.NIGHT),
-            [(self.GAME, 5, "Скорер< (HOM)"), (self.GAME, 10, "Скорер< (HOM)")],
+            [
+                (self.GAME, 5, "Скорер< (HOM) — AWY, 1-й период 02:00"),
+                (self.GAME, 10, "Скорер< (HOM) — AWY, 1-й период 10:00"),
+                (self.GAME, 30, "Крыло (HOM) — AWY, овертайм 03:15"),
+            ],
         )
 
 
