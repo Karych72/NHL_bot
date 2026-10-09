@@ -72,7 +72,7 @@ def get_chat_subscriptions(chat_id: int) -> Tuple[bool, Set[int], List[str]]:
 
 
 def upsert_team_scores(chat_id: int, team_id: int) -> None:
-    """Включает подписку чата на счёт матчей команды `team_id`
+    """Включает подписку чата на карточки матчей команды `team_id`
     (kind='team_scores'): обновляет существующую запись пары (chat_id,
     team_id) независимо от её состояния, реактивируя погашенную, иначе
     вставляет новую — идемпотентно."""
@@ -93,7 +93,7 @@ def upsert_team_scores(chat_id: int, team_id: int) -> None:
 
 
 def deactivate_team_scores(chat_id: int, team_id: int) -> None:
-    """Гасит подписку чата на счёт конкретной команды (active = FALSE), саму
+    """Гасит подписку чата на матчи конкретной команды (active = FALSE), саму
     запись не удаляет. Для отсутствующей подписки — no-op."""
     with get_connection() as conn:
         with conn.cursor() as cur:
