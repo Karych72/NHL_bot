@@ -454,15 +454,19 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     bot_messages = bot_module("bot_messages")
     text, _ = _render_preview(bot_messages)
 
-    # Одна выровненная таблица: шапка «AAA VS BBB», тире — в одной колонке,
-    # разница шайб со знаком (минус не сливается с тире).
+    # Одна таблица «метрика|гости|хозяева», аббревиатуры — в шапке колонок,
+    # разница шайб со знаком.
     assert (
-        "<pre>• Сравнение команд:           AAA VS BBB\n"
-        "• Очки:                        14 — 6\n"
-        "• % очков:                    70% — 30%\n"
-        "• Баланс W-L-OT:            7-3-0 — 3-7-0\n"
+        "<pre>              |  AAA|  BBB\n"
+        "Очки          |   14|    6\n"
+        "% очков       |  70%|  30%\n"
+        "Баланс W-L-OT |7-3-0|3-7-0\n"
     ) in text
-    assert "• Разница шайб за игру:      +1.5 — -0.9</pre>" in text
+    assert "Разница шайб  | +1.5| -0.9</pre>" in text
+    # Ни одна строка не шире экрана телефона: иначе Telegram переносит её
+    # и колонки разъезжаются (отзыв 2026-10-09).
+    table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
+    assert max(len(line) for line in table.split("\n")) <= bot_messages._MOBILE_PRE_WIDTH
     # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
     assert "Модельная" not in text
     assert "н/д" not in text
@@ -518,9 +522,9 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
             patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "probability": []}):
         text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
 
-    assert "• Форма (5 игр):            2-1-0 — 0-0-0\n" in text
-    assert "• Серия:                       W2 — —\n" in text
-    assert "• Личные встречи:               0 — 1\n" in text
+    assert "Форма (5 игр) |2-1-0|0-0-0\n" in text
+    assert "Серия         |   W2|    —\n" in text
+    assert "Личные встречи|    0|    1\n" in text
 
 
 # ---------------------------------------------------------------------------

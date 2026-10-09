@@ -627,6 +627,18 @@ def _goal_video_buttons(goals_meta: List[Dict]) -> List[InlineKeyboardButton]:
     ]
 
 
+def goal_video_markup(goals_meta: List[Dict]) -> Optional[InlineKeyboardMarkup]:
+    """Клавиатура карточки матча: кнопки видео голов в `_GOAL_VIDEO_COLUMNS` столбца.
+
+    Зачем: одна раскладка для карточки из меню и из рассылки подписки на команду.
+
+    Аргументы: ``goals_meta`` — вторая часть ответа ``game_message()``.
+    Без голов — ``None`` (сообщение без клавиатуры).
+    """
+    gbtn = _goal_video_buttons(goals_meta)
+    return InlineKeyboardMarkup(build_menu(gbtn, n_cols=_GOAL_VIDEO_COLUMNS)) if gbtn else None
+
+
 async def send_game_card_message(
     context: CallbackContext,
     chat_id: int,
@@ -643,13 +655,7 @@ async def send_game_card_message(
             parse_mode="HTML",
         )
     text, goals_meta = game_message(game_id)
-    gbtn = _goal_video_buttons(goals_meta)
-    if reply_markup is not None:
-        markup = reply_markup
-    elif gbtn:
-        markup = InlineKeyboardMarkup(build_menu(gbtn, n_cols=_GOAL_VIDEO_COLUMNS))
-    else:
-        markup = None
+    markup = reply_markup if reply_markup is not None else goal_video_markup(goals_meta)
     return await context.bot.send_message(
         chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
     )
