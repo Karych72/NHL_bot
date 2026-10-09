@@ -79,7 +79,6 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/stats",
             "/cancel",
             "/help",
-            "/game",
             "/advanced",
             "/countries",
             "/subscriptions",
@@ -87,7 +86,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
-        for removed in ("/day_games", "/table"):
+        for removed in ("/day_games", "/table", "/game"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)

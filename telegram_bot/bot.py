@@ -347,24 +347,6 @@ async def cmd_countries(update: Update, context: CallbackContext) -> None:
     await _message(update).reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 
-async def cmd_game(update: Update, context: CallbackContext) -> None:
-    """`/game <id>`: карточка конкретного матча."""
-    message = _message(update)
-    if not context.args:
-        await message.reply_text(
-            "Карточку матча проще открыть так: отправьте /today "
-            "и нажмите кнопку нужной игры под сводкой.",
-            parse_mode="HTML",
-        )
-        return
-    try:
-        game_id = int(context.args[0])
-    except ValueError:
-        await message.reply_text("После `/game` укажите одно целое число.")
-        return
-    await send_game_card_message(context, message.chat_id, game_id)
-
-
 async def cmd_advanced(update: Update, context: CallbackContext) -> None:
     """`/advanced`: расширенная статистика полевых игроков вне диалога `/stats`."""
     await _message(update).reply_text(
@@ -732,7 +714,6 @@ def build_standalone_handlers() -> List[BaseHandler]:
         MessageHandler(filters.Regex(TEAM_COMMAND_PATTERN), cmd_team_profile),
         CommandHandler("leaders", cmd_leaders),
         CommandHandler("countries", cmd_countries),
-        CommandHandler("game", cmd_game),
         CommandHandler("advanced", cmd_advanced),
         CommandHandler("subscriptions", cmd_subscriptions),
         CallbackQueryHandler(callback_leaders_pick, pattern=LEADERS_PICK_CALLBACK_PATTERN),
