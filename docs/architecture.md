@@ -92,7 +92,7 @@ NHL_bot/
 │   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
 │   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
 │   ├── test_pipeline_game_rows.py      # Сборка строк пер-игровых таблиц (games, all_goals, …)
-│   ├── test_bot_integration.py         # Сквозные сценарии бота: /standings, /leaders, /game, /today
+│   ├── test_bot_integration.py         # Сквозные сценарии бота: /standings, /leaders, карточка матча, /today
 │   ├── test_bot_*.py, test_modeling_*.py, test_db_nhl.py, …
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
@@ -347,7 +347,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `bot.py` правят одно сообщение через `edit_message_text`, а читают и пишут `bot_subscriptions`
 через `subscription_repo.py`.
 
-Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, `/game`, `/today`)
+Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
 подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
 соединение psycopg2 и TTL-обёртка над ним), остальной стек — от разбора

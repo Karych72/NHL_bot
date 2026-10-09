@@ -126,7 +126,6 @@ def test_standalone_handlers_and_their_order(bot_module, application) -> None:
         ("message", bot.cmd_team_profile),
         ("command", ["leaders"], bot.cmd_leaders),
         ("command", ["countries"], bot.cmd_countries),
-        ("command", ["game"], bot.cmd_game),
         ("command", ["advanced"], bot.cmd_advanced),
         ("command", ["subscriptions"], bot.cmd_subscriptions),
         _cq(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, stats_handlers.callback_leaders_pick),
@@ -162,7 +161,7 @@ def test_team_command_pattern_extracts_three_letter_abbreviation(
 
 
 @pytest.mark.parametrize(
-    "text", ["/team", "/today", "/help", "/stats", "/game", "/TO", "/BOSS", "BOS", "/BOS 1", "/B0S", "/BOS@OtherBot",
+    "text", ["/team", "/today", "/help", "/stats", "/TO", "/BOSS", "BOS", "/BOS 1", "/B0S", "/BOS@OtherBot",
              "/BOS_FUL", "/BOS_FULL@OtherBot"]
 )
 def test_team_command_pattern_ignores_service_commands_and_malformed_input(bot_module, text) -> None:
@@ -614,7 +613,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         callback = handler.callback
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: в сумме 85 регистраций — bot.py: 15,
+    # Страховка от «проверили пустой список»: в сумме 84 регистрации — bot.py: 14,
     # script_bot.py: 22, stats_handlers.py: 48. Подробности по script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
     # висят «« Назад»» на родительские подменю: bot_player_field/
@@ -624,7 +623,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST;
     # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D;
     # standalone callback_country — /countries, Задача 49).
-    assert len(registered) == 85
+    assert len(registered) == 84
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",
