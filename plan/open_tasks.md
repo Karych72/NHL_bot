@@ -149,28 +149,28 @@ DEVELOPMENT.md и приёмки из карточки (перезагрузка
 вероятности, подобранными только на прошлых сезонах; гейт — побить его; старый holdout удалён.
 
 ### Задача 67. Голевая модель v1 ⬜ 🔴 (после 66)
-Карточка — [`tasks/task_model/task_67_goal_model.md`](./tasks/task_model/task_67_goal_model.md).
+Карточка — на согласовании, отдельный PR (`tasks/task_model/task_67_goal_model.md`).
 Приёмка: `home_win` log-loss не хуже Elo на walk-forward; тотал 5.5 ниже константы с ДИ без 0;
 калибровка p_tie ±2 п.п.; бинарные классификаторы и rolling-фичи удалены, если проиграли.
 Решение человека: явный `scipy` в `requirements-modeling.in` (сейчас транзитивный).
 
 ### Задача 68. Броски из play-by-play и командный xG ⬜ 🟡 (после 67)
-Карточка — [`tasks/task_model/task_68_shots_xg.md`](./tasks/task_model/task_68_shots_xg.md).
+Карточка — на согласовании, отдельный PR (`tasks/task_model/task_68_shots_xg.md`).
 Приёмка: таблица бросков заполнена за 5 сезонов; xG-модель проверена на отложенном сезоне;
 xG-ковариаты включены, только если улучшают walk-forward.
 
 ### Задача 69. Линии букмекеров и рыночный бенчмарк ⬜ 🟠
-Карточка — [`tasks/task_model/task_69_odds_benchmark.md`](./tasks/task_model/task_69_odds_benchmark.md).
+Карточка — на согласовании, отдельный PR (`tasks/task_model/task_69_odds_benchmark.md`).
 **Ждёт решения человека:** покупка исторических линий (The Odds API, ~$30 разово, бесплатный
 тариф для живых линий), эталонная контора. Приёмка: разрыв log-loss модели с закрытием по
 каждому сезону; симуляция EV/CLV.
 
 ### Задача 70. Вратари ⬜ 🟡 (после 67)
-Карточка — [`tasks/task_model/task_70_goalies.md`](./tasks/task_model/task_70_goalies.md).
+Карточка — на согласовании, отдельный PR (`tasks/task_model/task_70_goalies.md`).
 Приёмка: улучшение walk-forward без фактического стартера в прогнозе (иначе утечка).
 
 ### Задача 71. Прогноз в боте: вероятность и справедливый кэф ⬜ 🟡 (71A после 67, 71B после 69)
-Карточка — [`tasks/task_model/task_71_bot_fair_odds.md`](./tasks/task_model/task_71_bot_fair_odds.md).
+Карточка — на согласовании, отдельный PR (`tasks/task_model/task_71_bot_fair_odds.md`).
 Заменяет Задачи 22 и 43. Приёмка 71A: строка p и 1/p в превью, ежедневная публикация, живая
 проверка на матче дня; 71B: EV против живой линии и сезон paper-сигналов с CLV.
 
