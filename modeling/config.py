@@ -36,11 +36,6 @@ class _ForbidExtraModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SplitMethod(str, Enum):
-    month = "month"
-    fixed_games = "fixed_games"
-
-
 class CalibrationMethod(str, Enum):
     isotonic = "isotonic"
     platt = "platt"
@@ -75,82 +70,53 @@ class TasksConfig(_ForbidExtraModel):
         return self
 
 
-class HoldoutDateRange(_ForbidExtraModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    from_: Optional[str] = Field(default=None, alias="from")
-    to: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _validate_iso_dates(self) -> HoldoutDateRange:
-        for key, raw in (("from", self.from_), ("to", self.to)):
-            if raw is None:
-                continue
-            _parse_iso_date(raw)
-        return self
-
-
-class HoldoutConfig(_ForbidExtraModel):
-    fraction: Optional[float] = None
-    date_range: HoldoutDateRange = Field(default_factory=HoldoutDateRange)
-
-    @model_validator(mode="after")
-    def _validate_holdout_mode(self) -> HoldoutConfig:
-        has_date = self.date_range.from_ is not None or self.date_range.to is not None
-        if self.fraction is not None and has_date:
-            raise ValueError(
-                "holdout must use exactly one of fraction or date_range; "
-                "do not set both fraction and date_range.from/to"
-            )
-        if self.fraction is not None:
-            if not (0.0 < self.fraction < 0.5):
-                raise ValueError("holdout.fraction must satisfy 0 < fraction < 0.5")
-            return self
-        if not has_date:
-            raise ValueError("holdout requires fraction or date_range.from/to")
-        return self
-
-
 class SplitConfig(_ForbidExtraModel):
-    """Walk-forward split geometry (YAML ``split.*``).
+    """Season-by-season check geometry (YAML ``split.*``).
 
-    Drives :func:`modeling.splits.build_walk_forward_splits`: ordered outer
-    windows ``k=1..n_test_windows`` with expanding ``train_k``, fixed-size
-    ``inner_val_k`` / ``calibration_k``, and ``test_k``; plus a single holdout
-    cut from the timeline tail. Positional index arrays are returned in
-    chronological order; monotonicity and holdout isolation are validated
-    inside the splitter.
+    Drives :func:`modeling.splits.build_season_splits`: for every ``test_seasons``
+    entry ``s`` the model trains on all rows before season ``s`` (its last
+    ``calibration_games`` rows calibrate, the ``inner_val_games`` before them pick
+    hyper-parameters) and is checked on every row of ``s``.
 
-    Bounds here are sanitary only (positive integers) — they do not encode a
-    "safe" geometry for any particular dataset size. Whether a geometry
-    actually fits the available history is checked at split-build time by the
-    data-volume guard in ``modeling.splits.build_walk_forward_splits``
-    (Задача 14, ``docs/project_review_2026-06-29.md`` §B2): a fixed config
-    floor cannot distinguish a smoke profile on one season from a
-    multiseason production profile.
+    Bounds here are sanitary only; whether the data actually has the seasons and
+    enough history before each is checked at split-build time.
     """
 
-    method: SplitMethod
-    n_test_windows: int = Field(..., ge=1)
+    test_seasons: List[int]
     inner_val_games: int = Field(..., ge=1)
     calibration_games: int = Field(..., ge=1)
-    holdout: HoldoutConfig
-    outer_block_games: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("test_seasons")
+    @classmethod
+    def _validate_test_seasons(cls, value: List[int]) -> List[int]:
+        if not value:
+            raise ValueError("split.test_seasons must be non-empty")
+        if any(later <= earlier for earlier, later in zip(value, value[1:])):
+            raise ValueError("split.test_seasons must be strictly increasing")
+        return value
+
+
+class EloGridConfig(_ForbidExtraModel):
+    """Search grid of the Elo benchmark (``modeling/elo.py``); every list must be non-empty."""
+
+    k: List[float]
+    home_advantage: List[float]
+    season_regression: List[float]
+    mov: List[bool]
+    ot_win_weight: List[float]
 
     @model_validator(mode="after")
-    def _validate_outer_block_games(self) -> SplitConfig:
-        if self.method == SplitMethod.fixed_games:
-            if self.outer_block_games is None:
-                raise ValueError("split.outer_block_games is required when method=fixed_games")
-            min_block = self.inner_val_games + self.calibration_games + 1
-            if self.outer_block_games < min_block:
-                raise ValueError(
-                    "split.outer_block_games must be >= inner_val_games + calibration_games + 1 "
-                    f"(need at least {min_block}, got {self.outer_block_games})"
-                )
-        elif self.outer_block_games is not None:
-            raise ValueError("split.outer_block_games is allowed only when method=fixed_games")
+    def _non_empty_lists(self) -> EloGridConfig:
+        for key in ("k", "home_advantage", "season_regression", "mov", "ot_win_weight"):
+            if not getattr(self, key):
+                raise ValueError(f"elo.grid.{key} must be non-empty")
         return self
+
+
+class EloConfig(_ForbidExtraModel):
+    """YAML ``elo.*``: the benchmark's parameter search grid."""
+
+    grid: EloGridConfig
 
 
 class LogregGrids(_ForbidExtraModel):
@@ -258,6 +224,7 @@ class ModelingConfig(_ForbidExtraModel):
     compute: ComputeConfig
     tasks: TasksConfig
     split: SplitConfig
+    elo: EloConfig
     models: ModelsConfig
     calibration: CalibrationConfig
     evaluation: EvaluationConfig
@@ -281,13 +248,6 @@ class ResolvedConfig(ModelingConfig):
     def derive_seed(self, name: str) -> int:
         """Derive a subsystem seed from this config's ``random_seed`` (TZ one-arg form)."""
         return derive_seed(name, self.random_seed)
-
-
-def _parse_iso_date(value: str) -> None:
-    try:
-        datetime.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(f"invalid ISO date {value!r}") from exc
 
 
 def _load_yaml_mapping(path: Path) -> MutableMapping[str, Any]:
@@ -518,7 +478,6 @@ __all__ = [
     "METADATA_TRUTH_KEYS",
     "ModelingConfig",
     "ResolvedConfig",
-    "SplitMethod",
     "apply_overrides",
     "build_run_id",
     "configure_run_logger",

@@ -14,7 +14,6 @@ from modeling.dataset_builder.assemble import (
 from modeling.dataset_builder.features import (
     attach_pregame_elo,
     build_match_feature_snapshots,
-    compute_pregame_elo,
     compute_team_rolling_features,
 )
 from modeling.dataset_builder.schema import (
@@ -25,6 +24,7 @@ from modeling.dataset_builder.schema import (
 )
 from modeling.dataset_builder.team_game_facts import build_team_game_facts
 from modeling.dataset_builder.validate import validate_or_raise
+from modeling.elo import compute_pregame_elo
 
 
 def _history_df() -> pd.DataFrame:
@@ -652,7 +652,7 @@ class TestPregameElo(unittest.TestCase):
 class TestLoadTargetGamesSource(unittest.TestCase):
     """Задача 22A: predict берёт цели из ``scheduled_games``, train — из ``games``."""
 
-    def _query(self, mode: str) -> str:
+    def _query(self, mode: str, **kwargs: object) -> str:
         from pathlib import Path
         from unittest import mock
 
@@ -662,7 +662,7 @@ class TestLoadTargetGamesSource(unittest.TestCase):
             mode=mode, output_dir=Path("."), season_ids=[20262027], target_day_from="2026-10-01"
         )
         with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
-            load_target_games(object(), config)
+            load_target_games(object(), config, **kwargs)  # type: ignore[arg-type]
         return read_sql.call_args.args[0]
 
     def test_predict_reads_scheduled_games_not_games(self):
@@ -679,6 +679,82 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         self.assertIn("FROM games g", query)
         self.assertIn("g.winner_id IS NOT NULL", query)
         self.assertNotIn("scheduled_games", query)
+
+    def test_decision_column_only_when_requested(self):
+        # The feature table must not grow a ``decision`` column: only Elo / games_train.csv ask for it.
+        self.assertNotIn("decision", self._query("train"))
+        query = self._query("train", with_decision=True)
+        self.assertIn("g.is_shootouts THEN 'SO'", query)
+        self.assertIn("g.is_overtime THEN 'OT'", query)
+        self.assertIn("AS decision", query)
+
+
+class TestGamesTrainCsv(unittest.TestCase):
+    """Задача 66: ``games_train.csv`` keeps every played game, cold-start rows included."""
+
+    def _played(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "game_id": [1, 2, 3, 4],
+                "day": pd.to_datetime(["2024-10-10", "2024-10-11", "2025-10-10", "2025-10-11"]),
+                "season_id": [20242025, 20242025, 20252026, 20252026],
+                "home_team_id": [1, 2, 1, 3],
+                "away_team_id": [2, 3, 3, 1],
+                "winner_id": [1, 3, 1, 1],
+                "home_goals": [3.0, 1.0, 4.0, 2.0],
+                "away_goals": [2.0, 2.0, 1.0, 3.0],
+                "decision": ["REG", "OT", "SO", "REG"],
+            }
+        )
+
+    def test_writes_all_games_with_decision(self):
+        import tempfile
+        from pathlib import Path
+
+        from modeling.dataset_builder.base import DatasetBuildConfig, _write_games_train
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "games_train.csv"
+            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp)), path)
+            written = pd.read_csv(path)
+
+        self.assertEqual(
+            list(written.columns),
+            ["game_id", "day", "season_id", "home_team_id", "away_team_id", "home_goals", "away_goals", "decision"],
+        )
+        self.assertEqual(written["game_id"].tolist(), [1, 2, 3, 4])
+        self.assertEqual(written["decision"].tolist(), ["REG", "OT", "SO", "REG"])
+        self.assertNotIn("winner_id", written.columns)
+
+    def test_limits_to_loaded_seasons(self):
+        import tempfile
+        from pathlib import Path
+
+        from modeling.dataset_builder.base import DatasetBuildConfig, _write_games_train
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "games_train.csv"
+            config = DatasetBuildConfig(mode="train", output_dir=Path(tmp), season_ids=[20252026])
+            _write_games_train(self._played(), config, path)
+            written = pd.read_csv(path)
+
+        self.assertEqual(written["game_id"].tolist(), [3, 4])
+
+    def test_round_trip_feeds_the_elo_history(self):
+        import tempfile
+        from pathlib import Path
+
+        from modeling.dataset_builder.base import DatasetBuildConfig, _write_games_train
+        from modeling.elo import EloHistory, EloParams
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "games_train.csv"
+            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp)), path)
+            from_csv = EloHistory(pd.read_csv(path))
+        from_builder_frame = EloHistory(self._played())
+
+        params = EloParams(ot_win_weight=0.5)
+        self.assertEqual(from_csv.diffs(params).tolist(), from_builder_frame.diffs(params).tolist())
 
 
 if __name__ == "__main__":

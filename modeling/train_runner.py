@@ -1,7 +1,7 @@
-"""Training run orchestration for prematch classifiers (UPDATE plan stage 10).
+"""Training run orchestration for prematch classifiers (UPDATE plan stage 10, Задача 66).
 
-Wires dataset loading, walk-forward splits, model training, calibration,
-metrics, bootstrap, artifacts, and reports into one reproducible pipeline.
+Wires dataset loading, per-season splits, model training, calibration, the Elo
+benchmark, metrics, bootstrap, artifacts, and reports into one reproducible pipeline.
 No PostgreSQL or ``modeling.dataset_builder`` imports.
 """
 
@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import joblib
 import numpy as np
@@ -26,7 +26,7 @@ from modeling.artifacts import (
     build_logreg_metadata,
     save_model_artifact,
 )
-from modeling.bootstrap import bootstrap_metrics, standard_metric_fns
+from modeling.bootstrap import bootstrap_mean_diff, bootstrap_metrics, standard_metric_fns
 from modeling.calibrate import (
     CalibratorFit,
     apply_calibrator,
@@ -34,14 +34,29 @@ from modeling.calibrate import (
     save_calibration_artifact,
 )
 from modeling.config import ConfigError, ResolvedConfig, SplitConfig, build_run_id
-from modeling.metrics import brier, ece, log_loss, reliability_table, team_breakdown, trivial_baseline
+from modeling.elo import (
+    EloBenchmark,
+    EloHistory,
+    elo_season_predictions,
+    expand_elo_grid,
+    fit_elo_benchmark,
+)
+from modeling.metrics import (
+    brier,
+    ece,
+    log_loss,
+    log_loss_per_game,
+    reliability_table,
+    team_breakdown,
+    trivial_baseline,
+)
 from modeling.acceptance import (
     RunStatus,
     apply_acceptance_to_training_outcomes,
     apply_latest_symlink_check,
 )
 from modeling.report import compose_metrics_json, compose_summary_md, configure_run_logger, write_report
-from modeling.splits import OuterWindow, WalkForwardSplits, build_walk_forward_splits
+from modeling.splits import SeasonSplits, SeasonWindow, build_season_splits
 from modeling.train_common import build_monotone_constraints, expand_lgbm_grid, get_task_label, predict_raw_proba
 from modeling.train_input import load_training_table_split
 from modeling.train_lgbm import (
@@ -68,7 +83,6 @@ class BlockSizes:
     inner_val: int
     calibration: int
     test: int
-    holdout: int
 
     def to_log_dict(self) -> dict[str, int]:
         return {
@@ -76,7 +90,6 @@ class BlockSizes:
             "inner_val": self.inner_val,
             "calibration": self.calibration,
             "test": self.test,
-            "holdout": self.holdout,
         }
 
 
@@ -106,7 +119,7 @@ class RunResult:
     exit_code: int
     reports_dir: Path
     model_run_dir: Path
-    holdout_calibrated_log_loss: float | None = None
+    pooled_log_loss: float | None = None
 
 
 @dataclass
@@ -114,8 +127,9 @@ class _TaskModelOutcome:
     task: str
     model: str
     result: RunResult
-    holdout_calibrated_log_loss: float
-    holdout_trivial_log_loss: float
+    pooled_model_log_loss: float
+    benchmark_log_loss: float
+    benchmark: str
 
 
 def resolve_tasks(task_flag: str, config: ResolvedConfig) -> list[str]:
@@ -197,22 +211,22 @@ def _day_range_iso(keys: pd.DataFrame, idx: np.ndarray) -> tuple[str, str]:
 
 def compute_final_retrain_slices(
     keys: pd.DataFrame,
-    splits: WalkForwardSplits,
     config: SplitConfig,
 ) -> FinalRetrainSlices:
-    """Derive ``train_full`` and ``calibration_final`` from walk-forward geometry."""
-    wf_mask = np.ones(len(keys), dtype=bool)
-    wf_mask[list(splits.holdout.holdout_idx)] = False
-    wf_positions = np.flatnonzero(wf_mask)
+    """Derive ``train_full``, ``inner_val`` and ``calibration_final`` for the final model.
 
-    if len(wf_positions) < config.calibration_games:
+    The final model sees every row: ``calibration_final`` is the last ``calibration_games``
+    rows, ``train_full`` everything before it, ``inner_val`` the tail of ``train_full``.
+    """
+    positions = np.arange(len(keys))
+    if len(positions) < config.calibration_games:
         raise ConfigError(
-            "not enough walk-forward rows for calibration_final "
-            f"(need {config.calibration_games}, have {len(wf_positions)})"
+            "not enough rows for calibration_final "
+            f"(need {config.calibration_games}, have {len(positions)})"
         )
 
-    calibration_final = wf_positions[-config.calibration_games :]
-    train_full = wf_positions[: int(calibration_final[0])]
+    calibration_final = positions[-config.calibration_games :]
+    train_full = positions[: int(calibration_final[0])]
 
     if len(train_full) == 0:
         raise ConfigError("train_full is empty after carving calibration_final")
@@ -235,36 +249,29 @@ def compute_final_retrain_slices(
 
 
 def collect_block_sizes(
-    splits: WalkForwardSplits,
+    splits: SeasonSplits,
     final_slices: FinalRetrainSlices,
 ) -> dict[str, Any]:
     """Structured sizes for dry-run logging."""
-    fold_sizes = []
-    for window in splits.windows:
-        fold_sizes.append(
-            {
-                "k": window.k,
-                **BlockSizes(
-                    train=window.train_size,
-                    inner_val=window.inner_val_size,
-                    calibration=window.calibration_size,
-                    test=window.test_size,
-                    holdout=splits.holdout.holdout_size,
-                ).to_log_dict(),
-            }
-        )
+    season_sizes = [
+        {
+            "season_id": window.season_id,
+            **BlockSizes(
+                train=window.train_size,
+                inner_val=window.inner_val_size,
+                calibration=window.calibration_size,
+                test=window.test_size,
+            ).to_log_dict(),
+        }
+        for window in splits.windows
+    ]
     final_block = BlockSizes(
         train=len(final_slices.train_full_idx),
         inner_val=len(final_slices.inner_val_idx),
         calibration=len(final_slices.calibration_final_idx),
         test=0,
-        holdout=splits.holdout.holdout_size,
     )
-    return {
-        "folds": fold_sizes,
-        "final_retrain": final_block.to_log_dict(),
-        "holdout": splits.holdout.holdout_size,
-    }
+    return {"seasons": season_sizes, "final_retrain": final_block.to_log_dict()}
 
 
 def dry_run_training(
@@ -278,13 +285,13 @@ def dry_run_training(
     """Load data, build splits, return resolved config and block sizes (no training)."""
     _X, keys, _labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
     _X, keys, _labels = _sort_frames(_X, keys, _labels)
-    splits = build_walk_forward_splits(
+    splits = build_season_splits(
         keys,
         config.split,
         yaml_reference=config.model_dump(by_alias=True),
         metadata=metadata,
     )
-    final_slices = compute_final_retrain_slices(keys, splits, config.split)
+    final_slices = compute_final_retrain_slices(keys, config.split)
     tasks = resolve_tasks(task_flag, config)
     models = resolve_models(model_flag)
     return {
@@ -297,73 +304,160 @@ def dry_run_training(
             "train_full": final_slices.train_full_days,
             "inner_val": final_slices.inner_val_days,
             "calibration_final": final_slices.calibration_final_days,
-            "holdout": _day_range_iso(keys, splits.holdout.holdout_idx),
         },
     }
 
 
-def _metric_bundle(
-    y_true: np.ndarray,
-    p_raw: np.ndarray,
-    p_cal: np.ndarray | None,
-    *,
-    y_train_for_baseline: np.ndarray,
-    epsilon: float,
-    ece_bins: int,
-) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
-    raw = {
-        "log_loss": log_loss(y_true, p_raw, epsilon=epsilon),
-        "brier": brier(y_true, p_raw),
-        "ece": ece(y_true, p_raw, n_bins=ece_bins),
+# Slices of the checked seasons (Задача 66): the first 10% of each season's games, and the
+# two weeks after the 2025/26 Olympic break (no NHL games 2026-02-05 ... 2026-02-25).
+_SEASON_START_FRACTION = 0.10
+_POST_OLYMPIC_SEASON = 20252026
+_POST_OLYMPIC_DAYS = ("2026-02-26", "2026-03-11")
+# min(home, away) prior games of the season, to choose the ``--min-prior-games`` cut-off.
+_PRIOR_GAMES_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("<=7", 0, 7),
+    ("8-10", 8, 10),
+    ("11-20", 11, 20),
+    ("21+", 21, None),
+)
+_CALIBRATION_TABLE_BINS = 20  # 5 percentage points
+
+
+@dataclass
+class _EloSeason:
+    """Elo benchmark for one checked season: chosen curve, forecasts by game, full-season metrics."""
+
+    benchmark: EloBenchmark
+    predictions: pd.DataFrame
+    full_season: dict[str, Any]
+
+
+@dataclass
+class _SeasonEval:
+    """Predictions of one per-season run on all rows of its checked season."""
+
+    window: SeasonWindow
+    y: np.ndarray
+    p_raw: np.ndarray
+    p_cal: np.ndarray
+    p_const: np.ndarray
+    p_elo_raw: np.ndarray | None
+    p_elo: np.ndarray | None
+    elo: _EloSeason | None
+
+
+def _metrics(y: np.ndarray, p: np.ndarray, *, epsilon: float, ece_bins: int) -> dict[str, float]:
+    return {
+        "log_loss": log_loss(y, p, epsilon=epsilon),
+        "brier": brier(y, p),
+        "ece": ece(y, p, n_bins=ece_bins),
     }
-    if p_cal is None:
-        calibrated = None
-    else:
-        calibrated = {
-            "log_loss": log_loss(y_true, p_cal, epsilon=epsilon),
-            "brier": brier(y_true, p_cal),
-            "ece": ece(y_true, p_cal, n_bins=ece_bins),
+
+
+def _fit_elo_seasons(games_csv: Path, config: ResolvedConfig) -> dict[int, _EloSeason]:
+    """Run the Elo benchmark once per checked season from ``games_train.csv`` (all played games)."""
+    if not games_csv.is_file():
+        raise ConfigError(
+            f"{games_csv} not found: the Elo benchmark needs every played game; "
+            "rebuild with `python -m modeling.cli build-dataset --mode train`"
+        )
+    epsilon = config.evaluation.epsilon_clip
+    history = EloHistory(pd.read_csv(games_csv))
+    grid = expand_elo_grid(config.elo.grid.model_dump())
+    out: dict[int, _EloSeason] = {}
+    for season_id in config.split.test_seasons:
+        benchmark = fit_elo_benchmark(history, season_id, grid, epsilon=epsilon)
+        predictions = elo_season_predictions(history, benchmark)
+        y = predictions["home_win"].to_numpy()
+        full_season = {
+            "n_games": int(len(predictions)),
+            "elo": _metrics(y, predictions["p_fitted"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
+            "elo_raw": _metrics(y, predictions["p_raw"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
         }
-    trivial = trivial_baseline(y_train_for_baseline, y_true, epsilon=epsilon)
-    return raw, calibrated, trivial
+        out[season_id] = _EloSeason(benchmark, predictions.set_index("game_id"), full_season)
+        logger.info("Elo benchmark season %d: %s", season_id, benchmark.to_dict())
+    return out
 
 
-def _eval_block(
-    *,
-    k: int | None,
-    keys: pd.DataFrame,
-    train_idx: np.ndarray,
-    test_idx: np.ndarray,
-    y_true: np.ndarray,
-    p_raw: np.ndarray,
-    p_cal: np.ndarray | None,
-    y_train_for_baseline: np.ndarray,
-    epsilon: float,
-    ece_bins: int,
-    reliability_path: str | None = None,
-) -> dict[str, Any]:
-    raw, calibrated, trivial = _metric_bundle(
-        y_true,
-        p_raw,
-        p_cal,
-        y_train_for_baseline=y_train_for_baseline,
-        epsilon=epsilon,
-        ece_bins=ece_bins,
-    )
+def _elo_forecasts(elo: _EloSeason, game_ids: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Elo ``(p_raw, p_fitted)`` for the dataset rows of a season; fails on any game Elo lacks."""
+    rows = elo.predictions.loc[game_ids]
+    if not np.array_equal(rows["home_win"].to_numpy(), y):
+        raise ValueError("Elo home-win outcomes disagree with the dataset labels: games_train.csv is stale")
+    return rows["p_raw"].to_numpy(), rows["p_fitted"].to_numpy()
+
+
+def _season_block(ev: _SeasonEval, keys: pd.DataFrame, *, epsilon: float, ece_bins: int) -> dict[str, Any]:
+    """``metrics.json`` entry of one checked season."""
+    window = ev.window
     block: dict[str, Any] = {
-        "train_range": {"start": _day_range_iso(keys, train_idx)[0], "end": _day_range_iso(keys, train_idx)[1]},
-        "test_range": {"start": _day_range_iso(keys, test_idx)[0], "end": _day_range_iso(keys, test_idx)[1]},
-        "n_train": int(len(train_idx)),
-        "n_test": int(len(test_idx)),
-        "raw": raw,
-        "calibrated": calibrated,
-        "trivial_base_rate": trivial,
+        "season_id": window.season_id,
+        "n_train": window.train_size + window.inner_val_size + window.calibration_size,
+        "n_test": window.test_size,
+        "test_range": dict(zip(("start", "end"), _day_range_iso(keys, window.test_idx))),
+        "model_raw": _metrics(ev.y, ev.p_raw, epsilon=epsilon, ece_bins=ece_bins),
+        "model": _metrics(ev.y, ev.p_cal, epsilon=epsilon, ece_bins=ece_bins),
+        "constant": {"p": float(ev.p_const[0]), **_metrics(ev.y, ev.p_const, epsilon=epsilon, ece_bins=ece_bins)},
     }
-    if k is not None:
-        block["k"] = k
-    if reliability_path is not None:
-        block["reliability_path"] = reliability_path
+    if ev.elo is not None and ev.p_elo is not None and ev.p_elo_raw is not None:
+        block["elo_raw"] = _metrics(ev.y, ev.p_elo_raw, epsilon=epsilon, ece_bins=ece_bins)
+        block["elo"] = _metrics(ev.y, ev.p_elo, epsilon=epsilon, ece_bins=ece_bins)
+        block["elo_params"] = ev.elo.benchmark.to_dict()
+        block["elo_full_season"] = ev.elo.full_season
     return block
+
+
+def _nonempty_bins(y: np.ndarray, p: np.ndarray) -> list[dict[str, Any]]:
+    table = reliability_table(y, p, n_bins=_CALIBRATION_TABLE_BINS)
+    table = table[table["count"] > 0].drop(columns=["weight"])
+    return cast("list[dict[str, Any]]", table.to_dict(orient="records"))
+
+
+def _slice_masks(evs: Sequence[_SeasonEval], keys: pd.DataFrame, X: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Boolean masks over the pooled checked rows for the report slices."""
+    test_idx = np.concatenate([ev.window.test_idx for ev in evs])
+    season = np.concatenate([np.full(len(ev.y), ev.window.season_id) for ev in evs])
+    days = pd.to_datetime(keys.iloc[test_idx]["day"]).to_numpy()
+    start = np.concatenate(
+        [np.arange(len(ev.y)) < max(1, int(np.ceil(_SEASON_START_FRACTION * len(ev.y)))) for ev in evs]
+    )
+    lo, hi = (np.datetime64(day) for day in _POST_OLYMPIC_DAYS)
+    masks = {
+        "season_start": start,
+        "post_olympic_break": (season == _POST_OLYMPIC_SEASON) & (days >= lo) & (days <= hi),
+    }
+    missing = {"home_prior_games_count", "away_prior_games_count"} - set(X.columns)
+    if missing:
+        raise ConfigError(f"feature matrix lacks {sorted(missing)}: needed for the prior_games report slices")
+    prior = np.minimum(
+        X["home_prior_games_count"].to_numpy()[test_idx], X["away_prior_games_count"].to_numpy()[test_idx]
+    )
+    for label, low, high in _PRIOR_GAMES_BUCKETS:
+        upper = np.ones(len(prior), dtype=bool) if high is None else prior <= high
+        masks[f"prior_games_{label}"] = (prior >= low) & upper
+    return masks
+
+
+def _slice_blocks(
+    masks: Mapping[str, np.ndarray],
+    y: np.ndarray,
+    p_cal: np.ndarray,
+    p_const: np.ndarray,
+    p_elo: np.ndarray | None,
+    *,
+    epsilon: float,
+) -> dict[str, dict[str, Any]]:
+    """Per-slice ``n`` and log-loss of the model, constant and (home_win) Elo; empty slices keep only ``n``."""
+    out: dict[str, dict[str, Any]] = {}
+    for name, mask in masks.items():
+        block: dict[str, Any] = {"n": int(mask.sum())}
+        if block["n"] > 0:
+            block["model_log_loss"] = log_loss(y[mask], p_cal[mask], epsilon=epsilon)
+            block["constant_log_loss"] = log_loss(y[mask], p_const[mask], epsilon=epsilon)
+            if p_elo is not None:
+                block["elo_log_loss"] = log_loss(y[mask], p_elo[mask], epsilon=epsilon)
+        out[name] = block
+    return out
 
 
 def _train_raw_model(
@@ -417,13 +511,13 @@ def _raw_model_from_fit(model_family: str, fit: FitResult | LgbmFitResult) -> An
     return fit.booster
 
 
-def _build_fold_metadata(
+def _build_season_metadata(
     *,
     model_family: str,
     task: str,
     fit: FitResult | LgbmFitResult,
     config: ResolvedConfig,
-    window: OuterWindow,
+    window: SeasonWindow,
     calibrator_fit: CalibratorFit,
     run_id: str,
 ) -> dict[str, Any]:
@@ -442,7 +536,7 @@ def _build_fold_metadata(
     common = {
         "run_id": run_id,
         "task": task,
-        "fold_k": window.k,
+        "season_id": window.season_id,
         "random_seed": config.random_seed,
         "features_hash": config.features_hash,
         "feature_set_version": config.feature_set_version,
@@ -500,8 +594,6 @@ def _build_final_metadata(
     fit: FitResult | LgbmFitResult,
     config: ResolvedConfig,
     final_slices: FinalRetrainSlices,
-    splits: WalkForwardSplits,
-    keys: pd.DataFrame,
     calibrator_fit: CalibratorFit,
     run_id: str,
     status: RunStatus,
@@ -510,7 +602,6 @@ def _build_final_metadata(
     train_days = final_slices.train_full_days
     inner_days = final_slices.inner_val_days
     cal_days = final_slices.calibration_final_days
-    holdout_days = _day_range_iso(keys, splits.holdout.holdout_idx)
     meta: dict[str, Any] = {
         "run_id": run_id,
         "task": task,
@@ -523,13 +614,10 @@ def _build_final_metadata(
         "train_days": {"min": train_days[0], "max": train_days[1]},
         "inner_val_days": {"min": inner_days[0], "max": inner_days[1]},
         "calibration_days": {"min": cal_days[0], "max": cal_days[1]},
-        "test_days": None,
-        "holdout_days": {"min": holdout_days[0], "max": holdout_days[1]},
+        "test_seasons": list(config.split.test_seasons),
         "n_rows_train": len(final_slices.train_full_idx),
         "n_rows_inner_val": len(final_slices.inner_val_idx),
         "n_rows_calibration": calibrator_fit.n_calibration,
-        "n_rows_test": 0,
-        "n_rows_holdout": splits.holdout.holdout_size,
         "bootstrap": bootstrap_meta,
         "library_versions": _collect_library_versions(),
         "git_commit": _get_git_commit(),
@@ -754,7 +842,12 @@ def run_training(
     fail_on_baseline: bool = True,
     promote: bool = True,
 ) -> list[RunResult]:
-    """Execute walk-forward training for selected task × model pairs.
+    """Execute per-season checks and the final fit for selected task × model pairs.
+
+    For each ``split.test_seasons`` entry the model trains on all earlier seasons and is
+    checked on the whole season; the final model is then fitted on every row. ``home_win``
+    is gated against the Elo benchmark (``games_train.csv`` next to
+    the dataset, required when ``home_win`` runs), ``over_5_5`` against the constant.
 
     With ``promote=False`` (CLI ``--no-promote``) the ``latest`` symlink is neither created nor
     moved and its acceptance check is skipped; move it later with :func:`promote_model`.
@@ -772,15 +865,20 @@ def run_training(
     X, keys, labels = _sort_frames(X, keys, labels)
     feature_names = list(X.columns)
 
-    splits = build_walk_forward_splits(
+    splits = build_season_splits(
         keys,
         config.split,
         yaml_reference=config.model_dump(by_alias=True),
         metadata=metadata,
     )
-    final_slices = compute_final_retrain_slices(keys, splits, config.split)
+    final_slices = compute_final_retrain_slices(keys, config.split)
 
-    metric_fns = standard_metric_fns(epsilon=config.evaluation.epsilon_clip)
+    epsilon = config.evaluation.epsilon_clip
+    ece_bins = config.evaluation.ece_bins
+    metric_fns = standard_metric_fns(epsilon=epsilon)
+    elo_by_season: dict[int, _EloSeason] = {}
+    if "home_win" in tasks:
+        elo_by_season = _fit_elo_seasons(dataset_csv.parent / "games_train.csv", config)
     outcomes: list[_TaskModelOutcome] = []
     results: list[RunResult] = []
 
@@ -801,10 +899,10 @@ def run_training(
             run_logger.info("Resolved config:\n%s", json.dumps(config.model_dump(by_alias=True), indent=2))
             run_logger.info("Library versions: %s", _collect_library_versions())
 
-            fold_blocks: list[dict[str, Any]] = []
+            season_evals: list[_SeasonEval] = []
 
             for window in splits.windows:
-                run_logger.info("Fold k=%d sizes: %s", window.k, window.to_log_dict())
+                run_logger.info("Season %d sizes: %s", window.season_id, window.to_log_dict())
                 tr, iv, cal, te = (
                     window.train_idx,
                     window.inner_val_idx,
@@ -841,12 +939,11 @@ def run_training(
                 p_test_raw = predict_raw_proba(model_family, raw_model, X.iloc[te])
                 p_test = apply_calibrator(calibrator, p_test_raw)
 
-                fold_dir = model_run_dir / f"fold_{window.k}"
                 save_calibration_artifact(
-                    fold_dir,
+                    model_run_dir / f"season_{window.season_id}",
                     model_raw=raw_model,
                     calibrator_fit=calibrator,
-                    metadata=_build_fold_metadata(
+                    metadata=_build_season_metadata(
                         model_family=model_family,
                         task=task_name,
                         fit=fit,
@@ -857,38 +954,93 @@ def run_training(
                     ),
                 )
 
-                bootstrap = bootstrap_metrics(
-                    y_te,
-                    p_test,
-                    block_by_day=False,
+                # Constant benchmark: share of positives over every row before the checked season.
+                constant = trivial_baseline(np.concatenate([y_tr, y_iv, y_cal]), y_te, epsilon=epsilon)
+                p_const = np.full(len(te), constant["p"])
+                elo = elo_by_season.get(window.season_id) if task_name == "home_win" else None
+                p_elo_raw, p_elo = (
+                    _elo_forecasts(elo, keys.iloc[te]["game_id"].to_numpy(), y_te) if elo else (None, None)
+                )
+                season_evals.append(
+                    _SeasonEval(window, y_te, p_test_raw, p_test, p_const, p_elo_raw, p_elo, elo)
+                )
+
+            season_blocks = [
+                _season_block(ev, keys, epsilon=epsilon, ece_bins=ece_bins) for ev in season_evals
+            ]
+            for block in season_blocks:
+                run_logger.info("Season %d: %s", block["season_id"], block)
+
+            # Pooled over all checked seasons: same rows for the model, Elo and the constant.
+            y_pool = np.concatenate([ev.y for ev in season_evals])
+            p_raw_pool = np.concatenate([ev.p_raw for ev in season_evals])
+            p_pool = np.concatenate([ev.p_cal for ev in season_evals])
+            p_const_pool = np.concatenate([ev.p_const for ev in season_evals])
+            has_elo = all(ev.p_elo is not None for ev in season_evals)
+            p_elo_pool = np.concatenate([cast("np.ndarray", ev.p_elo) for ev in season_evals]) if has_elo else None
+            p_elo_raw_pool = (
+                np.concatenate([cast("np.ndarray", ev.p_elo_raw) for ev in season_evals]) if has_elo else None
+            )
+            pool_keys = keys.iloc[np.concatenate([ev.window.test_idx for ev in season_evals])]
+            pool_days = pool_keys["day"]
+
+            model_loss = log_loss_per_game(y_pool, p_pool, epsilon=epsilon)
+            diff_ci: dict[str, dict[str, float]] = {}
+            benchmarks = {"constant": p_const_pool, **({"elo": p_elo_pool} if p_elo_pool is not None else {})}
+            for name, p_other in benchmarks.items():
+                ci = bootstrap_mean_diff(
+                    model_loss,
+                    log_loss_per_game(y_pool, p_other, epsilon=epsilon),
+                    pool_days,
                     n_resamples=config.evaluation.bootstrap_samples,
                     seed=config.random_seed,
-                    metric_fns=metric_fns,
-                    num_threads=config.compute.num_threads,
                 )
-                run_logger.info(
-                    "Fold k=%d bootstrap log_loss: %s",
-                    window.k,
-                    bootstrap["log_loss"].to_dict(),
-                )
+                diff_ci[f"model_minus_{name}"] = {"point": ci.point, "ci_low": ci.ci_low, "ci_high": ci.ci_high}
 
-                fold_blocks.append(
-                    _eval_block(
-                        k=window.k,
-                        keys=keys,
-                        train_idx=tr,
-                        test_idx=te,
-                        y_true=y_te,
-                        p_raw=p_test_raw,
-                        p_cal=p_test,
-                        y_train_for_baseline=y_tr,
-                        epsilon=config.evaluation.epsilon_clip,
-                        ece_bins=config.evaluation.ece_bins,
-                    )
-                )
+            pool_bootstrap = bootstrap_metrics(
+                y_pool,
+                p_pool,
+                day=pool_days,
+                block_by_day=True,
+                n_resamples=config.evaluation.bootstrap_samples,
+                seed=config.random_seed,
+                metric_fns=metric_fns,
+                num_threads=config.compute.num_threads,
+            )
+            pooled_block: dict[str, Any] = {
+                "n_test": int(len(y_pool)),
+                "model_raw": _metrics(y_pool, p_raw_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "model": _metrics(y_pool, p_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "constant": _metrics(y_pool, p_const_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "diff_ci": diff_ci,
+                "bootstrap": {name: result.to_dict() for name, result in pool_bootstrap.items()},
+                "reliability_path": f"reliability_{task_name}.png",
+            }
+            calibration_table = {"model": _nonempty_bins(y_pool, p_pool)}
+            if p_elo_pool is not None and p_elo_raw_pool is not None:
+                pooled_block["elo_raw"] = _metrics(y_pool, p_elo_raw_pool, epsilon=epsilon, ece_bins=ece_bins)
+                pooled_block["elo"] = _metrics(y_pool, p_elo_pool, epsilon=epsilon, ece_bins=ece_bins)
+                calibration_table["elo"] = _nonempty_bins(y_pool, p_elo_pool)
 
-            # Final retrain: HP on train_hp + inner_val, then fit raw model on train_full.
-            y_train_full = y_all[final_slices.train_full_idx]
+            slices = _slice_blocks(
+                _slice_masks(season_evals, keys, X), y_pool, p_pool, p_const_pool, p_elo_pool, epsilon=epsilon
+            )
+            team_bd = _team_breakdown_or_empty(y_pool, p_pool, pool_keys, epsilon=epsilon)
+
+            metrics_payload = compose_metrics_json(
+                run_id=pair_run_id,
+                task=task_name,
+                model=model_family,
+                features_hash=config.features_hash,
+                seasons=season_blocks,
+                pooled=pooled_block,
+                calibration_table=calibration_table,
+                slices=slices,
+                team_breakdown=team_bd,
+                evaluation={"epsilon_clip": epsilon, "ece_bins": ece_bins},
+            )
+
+            # Final retrain on every row: HP on train_hp + inner_val, then fit raw model on train_full.
             final_model, final_fit_full = _fit_final_raw_model(
                 model_family,
                 task_name,
@@ -899,36 +1051,12 @@ def run_training(
                 feature_names=feature_names,
                 log_loss_fn=metric_fns["log_loss"],
             )
-
-            y_cal_final = y_all[final_slices.calibration_final_idx]
-            p_cal_final_raw = predict_raw_proba(
-                model_family,
-                final_model,
-                X.iloc[final_slices.calibration_final_idx],
-            )
             final_calibrator = fit_calibrator(
-                p_cal_final_raw,
-                y_cal_final,
+                predict_raw_proba(model_family, final_model, X.iloc[final_slices.calibration_final_idx]),
+                y_all[final_slices.calibration_final_idx],
                 method=config.calibration.method.value,
                 min_samples=config.calibration.min_samples,
                 seed=config.random_seed,
-                num_threads=config.compute.num_threads,
-            )
-
-            holdout_idx = splits.holdout.holdout_idx
-            y_holdout = y_all[holdout_idx]
-            p_holdout_raw = predict_raw_proba(model_family, final_model, X.iloc[holdout_idx])
-            p_holdout = apply_calibrator(final_calibrator, p_holdout_raw)
-            holdout_keys = keys.iloc[holdout_idx]
-
-            holdout_bootstrap = bootstrap_metrics(
-                y_holdout,
-                p_holdout,
-                day=holdout_keys["day"],
-                block_by_day=True,
-                n_resamples=config.evaluation.bootstrap_samples,
-                seed=config.random_seed,
-                metric_fns=metric_fns,
                 num_threads=config.compute.num_threads,
             )
             bootstrap_meta = {
@@ -937,58 +1065,14 @@ def run_training(
                 "seed": config.random_seed,
             }
 
-            holdout_block = _eval_block(
-                k=None,
-                keys=keys,
-                train_idx=final_slices.train_full_idx,
-                test_idx=holdout_idx,
-                y_true=y_holdout,
-                p_raw=p_holdout_raw,
-                p_cal=p_holdout,
-                y_train_for_baseline=y_train_full,
-                epsilon=config.evaluation.epsilon_clip,
-                ece_bins=config.evaluation.ece_bins,
-                reliability_path=f"reliability_{task_name}.png",
-            )
-            holdout_block["bootstrap"] = {
-                name: result.to_dict() for name, result in holdout_bootstrap.items()
-            }
-
-            team_bd = _team_breakdown_or_empty(
-                y_holdout,
-                p_holdout,
-                holdout_keys,
-                epsilon=config.evaluation.epsilon_clip,
-            )
-
-            metrics_payload = compose_metrics_json(
-                run_id=pair_run_id,
-                task=task_name,
-                model=model_family,
-                features_hash=config.features_hash,
-                folds=fold_blocks,
-                holdout=holdout_block,
-                team_breakdown=team_bd,
-                evaluation={
-                    "epsilon_clip": config.evaluation.epsilon_clip,
-                    "ece_bins": config.evaluation.ece_bins,
-                },
-            )
-
             status: RunStatus = "ok"
-            holdout_cal_ll = holdout_block["calibrated"]["log_loss"]
-            holdout_trivial_ll = holdout_block["trivial_base_rate"]["log_loss"]
-
             summary = f"status: {status}\n\n{compose_summary_md(metrics_payload)}"
-            rel_df = reliability_table(
-                y_holdout,
-                p_holdout,
-                n_bins=config.evaluation.ece_bins,
-            )
             write_report(
                 reports_dir,
                 metrics_json=metrics_payload,
-                reliability_pngs={task_name: rel_df},
+                reliability_pngs={
+                    task_name: reliability_table(y_pool, p_pool, n_bins=ece_bins),
+                },
                 summary_md=summary,
             )
 
@@ -1002,8 +1086,6 @@ def run_training(
                     fit=final_fit_full,
                     config=config,
                     final_slices=final_slices,
-                    splits=splits,
-                    keys=keys,
                     calibrator_fit=final_calibrator,
                     run_id=pair_run_id,
                     status=status,
@@ -1012,15 +1094,17 @@ def run_training(
             )
             joblib.dump(final_calibrator.calibrator, final_dir / "calibrator.joblib")
 
+            benchmark_name = "elo" if p_elo_pool is not None else "constant"
             run_logger.info(
-                "Holdout metrics raw=%s calibrated=%s trivial=%s bootstrap=%s",
-                holdout_block["raw"],
-                holdout_block["calibrated"],
-                holdout_block["trivial_base_rate"],
-                {k: v.to_dict() for k, v in holdout_bootstrap.items()},
+                "Pooled metrics model=%s %s=%s diff_ci=%s",
+                pooled_block["model"],
+                benchmark_name,
+                pooled_block[benchmark_name],
+                diff_ci,
             )
             run_logger.info("Artifacts written to %s and %s", model_run_dir, reports_dir)
 
+            pooled_ll = pooled_block["model"]["log_loss"]
             result = RunResult(
                 run_id=pair_run_id,
                 task=task_name,
@@ -1029,15 +1113,16 @@ def run_training(
                 exit_code=0,
                 reports_dir=reports_dir,
                 model_run_dir=model_run_dir,
-                holdout_calibrated_log_loss=holdout_cal_ll,
+                pooled_log_loss=pooled_ll,
             )
             outcomes.append(
                 _TaskModelOutcome(
                     task=task_name,
                     model=model_family,
                     result=result,
-                    holdout_calibrated_log_loss=holdout_cal_ll,
-                    holdout_trivial_log_loss=holdout_trivial_ll,
+                    pooled_model_log_loss=pooled_ll,
+                    benchmark_log_loss=pooled_block[benchmark_name]["log_loss"],
+                    benchmark=benchmark_name,
                 )
             )
             results.append(result)
@@ -1086,17 +1171,16 @@ def format_dry_run_report(payload: Mapping[str, Any]) -> str:
     lines.append(f"tasks: {payload['tasks']}")
     lines.append(f"models: {payload['models']}")
     lines.append("")
-    lines.append("=== block sizes (train / inner_val / calibration / test / holdout) ===")
-    for fold in payload["block_sizes"]["folds"]:
-        sizes = fold
+    lines.append("=== block sizes (train / inner_val / calibration / test) ===")
+    for sizes in payload["block_sizes"]["seasons"]:
         lines.append(
-            f"fold k={fold['k']}: train={sizes['train']} inner_val={sizes['inner_val']} "
-            f"calibration={sizes['calibration']} test={sizes['test']} holdout={sizes['holdout']}"
+            f"season {sizes['season_id']}: train={sizes['train']} inner_val={sizes['inner_val']} "
+            f"calibration={sizes['calibration']} test={sizes['test']}"
         )
     final = payload["block_sizes"]["final_retrain"]
     lines.append(
         f"final_retrain: train={final['train']} inner_val={final['inner_val']} "
-        f"calibration={final['calibration']} test={final['test']} holdout={final['holdout']}"
+        f"calibration={final['calibration']} test={final['test']}"
     )
     lines.append("")
     lines.append("=== final retrain day ranges ===")

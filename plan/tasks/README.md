@@ -21,7 +21,7 @@
 | 34 | [Автообновление данных](task_34_auto_sync.md) | Релиз | 🔴 |
 | 37 | [Плей-офф: загрузка или честная оговорка](task_37_playoffs.md) (37A–37D) | Релиз+ | 🟠 |
 | 65 | [Токен бота на проде — из Secret Manager](task_65_secret_manager_token.md) | Релиз | 🟡 |
-| 66–71 | Трек B — модель: отдельная папка [`task_model/`](task_model/README.md) | Трек B | 🔴–🟡 |
+| 67–71 | Трек B — модель: отдельная папка [`task_model/`](task_model/README.md) | Трек B | 🔴–🟡 |
 | 57 | [`/tonight`: счёт и период идущих матчей](task_57_tonight_live_score.md) | Продукт | 🟡 |
 | 58 | [`/tonight`: live-карточка идущего матча](task_58_tonight_live_card.md) | Продукт | 🟡 |
 | 59 | [Топ-5 моментов дня: свой рейтинг из чужих подборок](task_59_top_moments_research.md) | Продукт | ⚪ |
