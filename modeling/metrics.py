@@ -49,6 +49,18 @@ def validate_metric_inputs(
     return y, p_arr
 
 
+def log_loss_per_game(
+    y_true: Union[np.ndarray, pd.Series, list, tuple],
+    p: Union[np.ndarray, pd.Series, list, tuple],
+    *,
+    epsilon: float = DEFAULT_EPSILON,
+) -> np.ndarray:
+    """Per-game log-loss penalty ``-ln(p of the outcome)`` with ``p`` clipped to ``[ε, 1−ε]``."""
+    y, p_arr = validate_metric_inputs(y_true, p)
+    p_clip = np.clip(p_arr, epsilon, 1.0 - epsilon)
+    return -(y * np.log(p_clip) + (1.0 - y) * np.log(1.0 - p_clip))
+
+
 def log_loss(
     y_true: Union[np.ndarray, pd.Series, list, tuple],
     p: Union[np.ndarray, pd.Series, list, tuple],
@@ -56,10 +68,7 @@ def log_loss(
     epsilon: float = DEFAULT_EPSILON,
 ) -> float:
     """Binary log loss with probability clip ``p ∈ [ε, 1−ε]``."""
-    y, p_arr = validate_metric_inputs(y_true, p)
-    p_clip = np.clip(p_arr, epsilon, 1.0 - epsilon)
-    losses = -(y * np.log(p_clip) + (1.0 - y) * np.log(1.0 - p_clip))
-    return float(np.mean(losses))
+    return float(np.mean(log_loss_per_game(y_true, p, epsilon=epsilon)))
 
 
 def brier(
@@ -228,6 +237,7 @@ __all__ = [
     "brier",
     "ece",
     "log_loss",
+    "log_loss_per_game",
     "reliability_table",
     "team_breakdown",
     "trivial_baseline",

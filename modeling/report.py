@@ -1,4 +1,4 @@
-"""Report assembly and serialization for modeling runs (UPDATE plan stage 5).
+"""Report assembly and serialization for modeling runs (UPDATE plan stage 5, Задача 66).
 
 Writes ``artifacts/reports/<run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}``.
 Metric formulas live in :mod:`modeling.metrics`.
@@ -26,21 +26,9 @@ RUN_ID_PATTERN = re.compile(
 
 _PLOT_FIGSIZE = (6.0, 6.0)
 _PLOT_DPI = 100
-_FOLD_BLOCK_KEYS = frozenset(
-    {
-        "k",
-        "train_range",
-        "test_range",
-        "n_train",
-        "n_test",
-        "raw",
-        "calibrated",
-        "trivial_base_rate",
-    }
-)
-_HOLDOUT_BLOCK_KEYS = _FOLD_BLOCK_KEYS - {"k"} | {"reliability_path"}
-_RAW_METRIC_KEYS = frozenset({"log_loss", "brier", "ece"})
-_TRIVIAL_BASE_RATE_KEYS = frozenset({"log_loss", "brier", "p"})
+_SEASON_BLOCK_KEYS = frozenset({"season_id", "n_test", "test_range", "model_raw", "model", "constant"})
+_POOLED_BLOCK_KEYS = frozenset({"n_test", "model_raw", "model", "constant", "diff_ci", "bootstrap", "reliability_path"})
+_METRIC_KEYS = frozenset({"log_loss", "brier", "ece"})
 _DATE_RANGE_KEYS = frozenset({"start", "end"})
 
 
@@ -60,29 +48,12 @@ def _records_to_list(frame: pd.DataFrame | Sequence[Mapping[str, Any]]) -> list[
     return [dict(row) for row in frame]
 
 
-def _validate_date_range(block: Mapping[str, Any], *, block_name: str, key: str) -> None:
-    value = block.get(key)
-    if not isinstance(value, Mapping):
+def _validate_metrics(metrics: Any, *, block_name: str, key: str) -> None:
+    if not isinstance(metrics, Mapping):
         raise ValueError(f"{block_name} missing or invalid mapping {key!r}")
-    missing = _DATE_RANGE_KEYS - value.keys()
+    missing = _METRIC_KEYS - metrics.keys()
     if missing:
         raise ValueError(f"{block_name}.{key} missing keys: {sorted(missing)}")
-
-
-def _validate_raw_metrics(raw: Any, *, block_name: str) -> None:
-    if not isinstance(raw, Mapping):
-        raise ValueError(f"{block_name} missing or invalid mapping 'raw'")
-    missing = _RAW_METRIC_KEYS - raw.keys()
-    if missing:
-        raise ValueError(f"{block_name}.raw missing keys: {sorted(missing)}")
-
-
-def _validate_trivial_base_rate(trivial: Any, *, block_name: str) -> None:
-    if not isinstance(trivial, Mapping):
-        raise ValueError(f"{block_name} missing or invalid mapping 'trivial_base_rate'")
-    missing = _TRIVIAL_BASE_RATE_KEYS - trivial.keys()
-    if missing:
-        raise ValueError(f"{block_name}.trivial_base_rate missing keys: {sorted(missing)}")
 
 
 def _validate_eval_block(
@@ -94,13 +65,11 @@ def _validate_eval_block(
     missing = required_keys - block.keys()
     if missing:
         raise ValueError(f"{block_name} missing required keys: {sorted(missing)}")
-    _validate_date_range(block, block_name=block_name, key="train_range")
-    _validate_date_range(block, block_name=block_name, key="test_range")
-    _validate_raw_metrics(block["raw"], block_name=block_name)
-    _validate_trivial_base_rate(block["trivial_base_rate"], block_name=block_name)
-    calibrated = block["calibrated"]
-    if calibrated is not None and not isinstance(calibrated, Mapping):
-        raise ValueError(f"{block_name}.calibrated must be a mapping or null")
+    for key in ("model_raw", "model", "constant"):
+        _validate_metrics(block[key], block_name=block_name, key=key)
+    test_range = block.get("test_range")
+    if test_range is not None and _DATE_RANGE_KEYS - test_range.keys():
+        raise ValueError(f"{block_name}.test_range missing keys: {sorted(_DATE_RANGE_KEYS)}")
 
 
 def configure_run_logger(out_dir: Path, *, level: str = "INFO") -> logging.Logger:
@@ -189,12 +158,20 @@ def compose_metrics_json(
     task: str,
     model: str,
     features_hash: str,
-    folds: Sequence[Mapping[str, Any]],
-    holdout: Mapping[str, Any],
+    seasons: Sequence[Mapping[str, Any]],
+    pooled: Mapping[str, Any],
+    calibration_table: Mapping[str, Sequence[Mapping[str, Any]]],
+    slices: Mapping[str, Mapping[str, Any]],
     team_breakdown: Mapping[str, Sequence[Mapping[str, Any]] | pd.DataFrame],
     evaluation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the ``metrics.json`` payload and validate ``run_id`` format."""
+    """Build the ``metrics.json`` payload and validate ``run_id`` format and block shapes.
+
+    ``seasons`` has one block per checked season, ``pooled`` the same metrics over all of
+    them plus ``diff_ci`` / ``bootstrap`` / ``reliability_path``; ``calibration_table`` maps
+    ``model`` (and ``elo`` for ``home_win``) to 5 pp bins; ``slices`` maps slice name to
+    ``n`` and log-losses. Each metrics mapping carries ``log_loss``, ``brier``, ``ece``.
+    """
     if not RUN_ID_PATTERN.match(run_id):
         raise ValueError(
             "run_id must match "
@@ -205,15 +182,12 @@ def compose_metrics_json(
         raise ValueError(f"unsupported task: {task!r}")
     if model not in {"logreg", "lgbm"}:
         raise ValueError(f"unsupported model: {model!r}")
+    if not seasons:
+        raise ValueError("seasons must not be empty")
 
-    for index, fold in enumerate(folds):
-        if not isinstance(fold, Mapping):
-            raise ValueError(f"folds[{index}] must be a mapping")
-        _validate_eval_block(fold, block_name=f"folds[{index}]", required_keys=_FOLD_BLOCK_KEYS)
-
-    if not isinstance(holdout, Mapping):
-        raise ValueError("holdout must be a mapping")
-    _validate_eval_block(holdout, block_name="holdout", required_keys=_HOLDOUT_BLOCK_KEYS)
+    for index, season in enumerate(seasons):
+        _validate_eval_block(season, block_name=f"seasons[{index}]", required_keys=_SEASON_BLOCK_KEYS)
+    _validate_eval_block(pooled, block_name="pooled", required_keys=_POOLED_BLOCK_KEYS)
 
     eval_block = dict(evaluation or {"epsilon_clip": DEFAULT_EPSILON, "ece_bins": DEFAULT_ECE_BINS})
     team_block: dict[str, list[dict[str, Any]]] = {}
@@ -227,8 +201,10 @@ def compose_metrics_json(
         "model": model,
         "features_hash": features_hash,
         "evaluation": eval_block,
-        "folds": list(folds),
-        "holdout": dict(holdout),
+        "seasons": [dict(season) for season in seasons],
+        "pooled": dict(pooled),
+        "calibration_table": {name: list(rows) for name, rows in calibration_table.items()},
+        "slices": {name: dict(block) for name, block in slices.items()},
         "team_breakdown": team_block,
     }
 
@@ -241,16 +217,19 @@ def _format_metric(value: Any) -> str:
     return str(value)
 
 
-def _block_metric_row(block: Mapping[str, Any], *, label: str) -> str:
-    raw = block.get("raw") or {}
-    cal = block.get("calibrated")
-    trivial = block.get("trivial_base_rate") or {}
-    cal_ll = cal.get("log_loss") if isinstance(cal, Mapping) else None
+def _log_loss_of(block: Mapping[str, Any], key: str) -> Any:
+    metrics = block.get(key)
+    return metrics.get("log_loss") if isinstance(metrics, Mapping) else None
+
+
+def _eval_row(block: Mapping[str, Any], *, label: str) -> str:
+    model = block.get("model") or {}
     return (
         f"| {label} | {block.get('n_test', '—')} | "
-        f"{_format_metric(raw.get('log_loss'))} | {_format_metric(raw.get('brier'))} | "
-        f"{_format_metric(raw.get('ece'))} | {_format_metric(cal_ll)} | "
-        f"{_format_metric(trivial.get('log_loss'))} |"
+        f"{_format_metric(_log_loss_of(block, 'model_raw'))} | {_format_metric(model.get('log_loss'))} | "
+        f"{_format_metric(model.get('brier'))} | {_format_metric(model.get('ece'))} | "
+        f"{_format_metric(_log_loss_of(block, 'constant'))} | "
+        f"{_format_metric(_log_loss_of(block, 'elo_raw'))} | {_format_metric(_log_loss_of(block, 'elo'))} |"
     )
 
 
@@ -275,51 +254,69 @@ def _team_rank_lines(
     return lines
 
 
+def _calibration_lines(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    lines = ["| bin | n | mean_pred | frac_positive |", "|-----|---|-----------|---------------|"]
+    for row in rows:
+        lines.append(
+            f"| {row['bin_lower']:.2f}–{row['bin_upper']:.2f} | {row['count']} | "
+            f"{_format_metric(row['mean_pred'])} | {_format_metric(row['frac_positive'])} |"
+        )
+    return lines
+
+
 def compose_summary_md(metrics_json: Mapping[str, Any]) -> str:
     """Render human-readable ``summary.md`` from a ``metrics.json`` dict."""
     run_id = metrics_json["run_id"]
     task = metrics_json["task"]
     model = metrics_json["model"]
+    pooled = metrics_json["pooled"]
     lines: list[str] = [
         f"# Run report: {run_id}",
         "",
         f"Task: `{task}` · Model: `{model}`",
         "",
-        "## Walk-forward folds",
+        "## Checked seasons (log_loss; model_cal = calibrated model)",
         "",
-        "| k | n_test | log_loss_raw | brier_raw | ece_raw | log_loss_cal | trivial_log_loss |",
-        "|---|--------|--------------|-----------|---------|--------------|------------------|",
+        "| season | n_test | model_raw | model_cal | brier_cal | ece_cal | constant | elo_raw | elo |",
+        "|--------|--------|-----------|-----------|-----------|---------|----------|---------|-----|",
     ]
-
-    for fold in metrics_json.get("folds", []):
-        lines.append(_block_metric_row(fold, label=str(fold.get("k", "?"))))
-        trivial = fold.get("trivial_base_rate") or {}
-        lines.append(
-            f"> Trivial baseline (train base rate p={_format_metric(trivial.get('p'))}): "
-            f"log_loss={_format_metric(trivial.get('log_loss'))}, "
-            f"brier={_format_metric(trivial.get('brier'))}."
-        )
-
-    holdout = metrics_json.get("holdout") or {}
-    rel_path = holdout.get("reliability_path", f"reliability_{task}.png")
+    for season in metrics_json["seasons"]:
+        lines.append(_eval_row(season, label=str(season["season_id"])))
+    lines.append(_eval_row(pooled, label="sum"))
     lines.extend(
         [
             "",
-            "## Holdout",
+            f"> Reliability plot (sum of seasons): `{pooled['reliability_path']}`",
             "",
-            "| block | n_test | log_loss_raw | brier_raw | ece_raw | log_loss_cal | trivial_log_loss |",
-            "|-------|--------|--------------|-----------|---------|--------------|------------------|",
-            _block_metric_row(holdout, label="holdout"),
-            f"> Trivial baseline (train base rate p={_format_metric((holdout.get('trivial_base_rate') or {}).get('p'))}): "
-            f"log_loss={_format_metric((holdout.get('trivial_base_rate') or {}).get('log_loss'))}, "
-            f"brier={_format_metric((holdout.get('trivial_base_rate') or {}).get('brier'))}.",
-            f"> Reliability plot: `{rel_path}`",
+            "## Log-loss differences, sum of seasons (negative = model better; paired block bootstrap by game day)",
             "",
-            "## Team breakdown (worst vs best by log_loss_minus_overall)",
-            "",
-            "### Worst (home_team_id)",
+            "| comparison | point | ci_low | ci_high |",
+            "|------------|-------|--------|---------|",
         ]
     )
+    for name, ci in pooled["diff_ci"].items():
+        lines.append(
+            f"| {name} | {_format_metric(ci['point'])} | {_format_metric(ci['ci_low'])} | "
+            f"{_format_metric(ci['ci_high'])} |"
+        )
+    for name, rows in (metrics_json.get("calibration_table") or {}).items():
+        lines.extend(["", f"## Calibration ({name}, 5 pp bins, sum of seasons)", ""])
+        lines.extend(_calibration_lines(rows))
+    lines.extend(
+        [
+            "",
+            "## Slices (sum of seasons)",
+            "",
+            "| slice | n | model_cal | elo | constant |",
+            "|-------|---|-----------|-----|----------|",
+        ]
+    )
+    for name, block in (metrics_json.get("slices") or {}).items():
+        lines.append(
+            f"| {name} | {block['n']} | {_format_metric(block.get('model_log_loss'))} | "
+            f"{_format_metric(block.get('elo_log_loss'))} | {_format_metric(block.get('constant_log_loss'))} |"
+        )
+    lines.extend(["", "## Team breakdown (worst vs best by log_loss_minus_overall)", "", "### Worst (home_team_id)"])
     home_rows = (metrics_json.get("team_breakdown") or {}).get("home_team_id", [])
     lines.extend(_team_rank_lines(home_rows, ascending=False))
     lines.extend(["", "### Best (home_team_id)"])
