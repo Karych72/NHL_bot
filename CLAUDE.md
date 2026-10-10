@@ -42,9 +42,10 @@ Telegram-бот со статистикой NHL: `pipeline/` грузит NHL AP
    перенести в `plan/archive/closed_tasks.md` в тот же блок (релиз / трек B / продукт);
 2. строку задачи из «Сводки» — статус `✅ выполнена` и основание (ветка и PR), перенести
    в «Сводку» `closed_tasks.md`;
-3. карточку — `git mv plan/tasks/<task>.md plan/archive/tasks/`, относительные ссылки в ней
-   поправить на глубину (`../open_tasks.md` → `../closed_tasks.md`), строку убрать из
-   `plan/tasks/README.md`;
+3. карточку — `git mv plan/tasks/<task>.md plan/archive/tasks/` (трек B — из `plan/tasks/task_model/`
+   в `plan/archive/tasks/task_model/`), относительные ссылки в ней поправить на глубину
+   (`../open_tasks.md` → `../closed_tasks.md`), строку убрать из `plan/tasks/README.md`
+   (трек B — из `plan/tasks/task_model/README.md`);
 4. в `open_tasks.md` обновить срез `origin/master`, «следующую» и «Порядок».
 
 Текст карточки при этом не переписывается — статус живёт только в реестре.
