@@ -6,7 +6,7 @@
 каталог), `.env.example`. Вне репозитория — `../nhl_bot_gcp_setup.sh` (шаг `env`).
 **Зависит от:** ничего.
 **Источник:** просьба человека 2026-10-08 после случайного перевыпуска токена в BotFather;
-образец — проект argus (`argus/deploy/fetch-secrets.sh`). Реестр — [`../open_tasks.md`](../open_tasks.md).
+образец — проект argus (`argus/deploy/fetch-secrets.sh`). Реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
