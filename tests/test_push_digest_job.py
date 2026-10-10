@@ -106,7 +106,10 @@ async def test_morning_digest_retries_once_after_retry_after(push_job, fake_cont
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_team_scores_sends_first_line_of_every_game_of_the_night(push_job, fake_context):
+async def test_team_scores_sends_full_card_of_every_game_of_the_night(push_job, fake_context):
+    """Отзыв 2026-10-09: подписчику — вся карточка матча с кнопками видео голов,
+    а не одна строка счёта."""
+    goal = {"label": "▶ 1:0 Pastrnak 6:33", "game_id": 1, "event_id": 55}
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(
@@ -114,15 +117,21 @@ async def test_team_scores_sends_first_line_of_every_game_of_the_night(push_job,
     ), patch.object(
         push_job,
         "game_message",
-        side_effect=[("BOS 3 : 2 TOR\nподробности", {}), ("BOS 1 : 4 MTL\nещё", {})],
+        side_effect=[("BOS 3 : 2 TOR\nподробности", [goal]), ("BOS 1 : 4 MTL\nещё", [])],
     ):
         await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
-    [sent] = fake_context.bot.sent_messages
-    assert sent["chat_id"] == 111
-    assert sent["parse_mode"] == "HTML"
-    assert "BOS 3 : 2 TOR\nBOS 1 : 4 MTL" in sent["text"]
-    assert "подробности" not in sent["text"]
+    first, second = fake_context.bot.sent_messages
+    assert [m["chat_id"] for m in (first, second)] == [111, 111]
+    assert first["parse_mode"] == "HTML"
+    assert first["text"] == (
+        "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\nподробности"
+        "\n\nНастроить подписки: /subscriptions"
+    )
+    [[button]] = first["reply_markup"].inline_keyboard
+    assert (button.text, button.callback_data) == ("▶ 1:0 Pastrnak 6:33", "gv:1:55")
+    assert "BOS 1 : 4 MTL\nещё" in second["text"]
+    assert second["reply_markup"] is None
 
 
 @pytest.mark.asyncio
@@ -153,7 +162,7 @@ async def test_team_scores_resends_once_after_retry_after(push_job, fake_context
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(
         push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
-    ), patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})):
+    ), patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])):
         await push_job.run_team_scores_broadcast(fake_context, NIGHT)
 
     assert len(calls) == 2
@@ -172,7 +181,7 @@ async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_
     ), patch.object(
         push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
     ), patch.object(
-        push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})
+        push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])
     ), patch.object(
         push_job, "mark_subscription_inactive_by_chat_kind_team"
     ) as mark_inactive:
@@ -324,7 +333,7 @@ async def _run_night(push_job, fake_context, loaded_at):
         ), patch.object(
             push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
         ), patch.object(
-            push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})
+            push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])
         ), patch.object(
             push_job, "country_night_message", return_value="RUS TEXT"
         ), patch.object(
@@ -422,7 +431,7 @@ async def test_team_scores_are_not_repeated(push_job, fake_context):
     """``team_scores`` не повторяется: ночь с отметкой ``last_sent_night`` молчит."""
     patches = (
         patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]),
-        patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", {})),
+        patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])),
     )
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
@@ -430,7 +439,7 @@ async def test_team_scores_are_not_repeated(push_job, fake_context):
         await push_job.run_team_scores_broadcast(fake_context, NIGHT)
     mark.assert_called_once_with(111, "team_scores", 6, NIGHT)
     assert [m["text"] for m in fake_context.bot.sent_messages] == [
-        "<b>Ваши матчи (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions"
+        "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions"
     ]
 
     with patches[0], patches[1], patch.object(

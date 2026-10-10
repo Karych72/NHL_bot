@@ -812,8 +812,8 @@ def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
 
 
 def _fmt_signed(val: Union[int, float, None]) -> str:
-    """Число со знаком («+1», «-0.5», «0») — разница шайб, чтобы минус не
-    сливался с тире-разделителем колонок."""
+    """Число со знаком («+1», «-0.5», «0») — разница шайб: плюс виден так же
+    явно, как минус."""
     s = _fmt_num_max2(val)
     return f"+{s}" if val is not None and float(val) > 0 else s
 
@@ -824,9 +824,10 @@ def _matchup_compare_table(
     ra: Dict[str, Union[int, float, None]],
     rh: Dict[str, Union[int, float, None]],
 ) -> str:
-    """Таблица превью матча `<pre>`: шапка «Сравнение команд: EDM VS VAN»,
-    затем строки «• метрика: гости — хозяева» с тире в одной колонке —
-    очки, баланс, форма и серия, личные встречи (если были), метрики сезона.
+    """Таблица превью матча `<pre>` в три колонки «метрика|гости|хозяева» с
+    аббревиатурами в шапке — очки, баланс, форма и серия, личные встречи (если
+    были), метрики сезона. Подписи короткие: строка не шире `_MOBILE_PRE_WIDTH`,
+    иначе на телефоне она переносится и колонки разъезжаются (отзыв 2026-10-09).
     """
     def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
         gf, ga = r["goals_per_game"], r["goals_against_per_game"]
@@ -854,7 +855,7 @@ def _matchup_compare_table(
     pairs += [
         ("Голы за игру", _fmt_num_max2(ra["goals_per_game"]), _fmt_num_max2(rh["goals_per_game"])),
         (
-            "Пропущенные голы за игру",
+            "Пропущено/игра",
             _fmt_num_max2(ra["goals_against_per_game"]),
             _fmt_num_max2(rh["goals_against_per_game"]),
         ),
@@ -874,14 +875,10 @@ def _matchup_compare_table(
             _fmt_pct_stat(ra["face_off_win_percentage"]),
             _fmt_pct_stat(rh["face_off_win_percentage"]),
         ),
-        ("Разница шайб за игру", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
+        ("Разница шайб", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
     ]
-    rows = [["• Сравнение команд:", away_abbr, "—", home_abbr]]
-    rows += [[f"• {label}:", left, "—", right] for label, left, right in pairs]
-    lines = _aligned_columns(rows, "lrll")
-    # «VS» шире тире: в колонке тире он раздвигал бы все строки двойным пробелом.
-    lines[0] = lines[0].replace(" — ", " VS ", 1)
-    return _pre_block(lines)
+    rows = [["", away_abbr, home_abbr], *([label, left, right] for label, left, right in pairs)]
+    return _pre_table(rows, "lrr")
 
 
 def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:

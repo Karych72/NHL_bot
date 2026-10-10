@@ -112,7 +112,6 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 | `/team` | Команды сезона по дивизионам; `/BOS`, `/WSH`… — статистика клуба (`team_profile()`), `/BOS_FULL` — все игроки клуба (`team_full_stats()`). |
 | `/leaders` | Топ игроков по очкам / голам / передачам. |
 | `/advanced` | Топ по advanced-статам (Corsi / Fenwick / GF% / OZ-старт / shootout %). |
-| `/game` | Детальная карточка игры по `game_id`. |
 | `/cancel` | Прервать диалог. |
 | `/subscriptions` | Меню подписок одним сообщением: сводка, переключатель утреннего дайджеста, команды (дивизион → команды), страны рейтинга `/countries`; каждое нажатие сразу пишется в БД (§7). |
 
@@ -165,7 +164,8 @@ make db-migrate
 
 Рассылка: [`push_digest_job.py`](../telegram_bot/push_digest_job.py),
 та же логика что `day_digest` / `dispatch_day_digest_messages`, с
-`attach_conv_nav_on_last=False`. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
+`attach_conv_nav_on_last=False`. Подписка на команду (`team_scores`) — полная карточка
+каждого матча команды за ночь с кнопками видео голов, как в меню. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
 `PUSH_SEND_INTERVAL_SEC`, обработка `429` и блокировки бота — см. исходники скрипта.
 
 Это отдельный процесс, а не задача внутри бота: запускается сервисом `sync`

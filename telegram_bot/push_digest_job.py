@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
@@ -46,7 +47,7 @@ from bot_messages import (  # noqa: E402
 )
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import fetch_score  # noqa: E402
-from stats_handlers import dispatch_day_digest_messages  # noqa: E402
+from stats_handlers import dispatch_day_digest_messages, goal_video_markup  # noqa: E402
 from subscription_repo import (  # noqa: E402
     list_active_country_rows,
     list_active_morning_digest_rows,
@@ -224,10 +225,10 @@ async def run_morning_digest_broadcast(context: CallbackContext, night: date) ->
 
 
 async def run_team_scores_broadcast(context: CallbackContext, night: date) -> None:
-    """Краткая строка по каждому матчу команды за ночь *night*.
+    """Полная карточка каждого матча команды за ночь *night*.
 
-    Зачем: подписка ``team_scores`` — одно короткое сообщение на чат со счётом
-    матчей его команды за ночь; чат без матчей пропускается.
+    Зачем: подписка ``team_scores`` — карточка матча (счёт, голы, вратари) с кнопками
+    видео голов, как в меню, а не одна строка счёта; чат без матчей пропускается.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
     ``night`` — игровая дата ночи (``night_of``).
@@ -238,27 +239,20 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
         gids = _game_ids_for_team_on_calendar_day(team_id, night.isoformat())
         if not gids:
             continue
-        parts = []
-        for gid in gids:
-            try:
-                text, _meta = game_message(gid)
-                line = text.strip().split("\n", 1)[0].strip()
-                if line:
-                    parts.append(line)
-            except Exception:
-                logger.exception("game_message failed game_id=%s", gid)
-        if not parts:
-            continue
-        html_body = "\n".join(parts[:5])
+        cards = [game_message(gid) for gid in gids]
         try:
-            await _throttled(
-                lambda: context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"<b>Ваши матчи ({night})</b>\n\n{html_body}\n\n{SUBSCRIPTIONS_FOOTER}",
-                    parse_mode="HTML",
-                ),
-                chat_id,
-            )
+            for text, goals_meta in cards:
+                await _throttled(
+                    partial(
+                        context.bot.send_message,
+                        chat_id=chat_id,
+                        text=f"<b>Матч вашей команды ({night})</b>\n\n{text}\n\n"
+                        f"{SUBSCRIPTIONS_FOOTER}",
+                        parse_mode="HTML",
+                        reply_markup=goal_video_markup(goals_meta),
+                    ),
+                    chat_id,
+                )
         except Forbidden:
             logger.info(
                 "chat_id=%s blocked bot; deactivate team_scores team_id=%s",

@@ -296,7 +296,7 @@ def _form_route(form_by_team):
 
 
 def _game_card_routes(games_by_id, form_by_team):
-    """Семь общих маршрутов карточки матча (`/game`, дайджест дня) по словарю
+    """Семь общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
     игр `games_by_id` (`game_id` → ответы формы `_GAMES`) и форме
     `form_by_team` — общий строитель для любого сценария (не копировать
     построчно под каждый)."""
@@ -331,23 +331,23 @@ _DIGEST_ROUTES = [
 
 
 # ---------------------------------------------------------------------------
-# Сценарий «карточка игры»: /game <id>
+# Сценарий «карточка игры»: deep link /start game_<id>
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_game_command_renders_full_card(
+async def test_game_card_renders_full_card(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
     cursor = fake_db_router(_GAME_CARD_ROUTES)
-    update = make_message_update(f"/game {GAME_ONE}")
-    fake_context.args = [str(GAME_ONE)]
+    update = make_message_update(f"/start game_{GAME_ONE}")
+    fake_context.args = [f"game_{GAME_ONE}"]
 
-    await bot.cmd_game(update, fake_context)
+    await bot.cmd_start(update, fake_context)
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
-    # Семь разных запросов, восемь обращений: форма спрашивается на каждую команду.
+    # Семь разных запросов, восемь обращений: форма спрашивается на каждую карточку.
     assert len(cursor.executed) == 8
     assert sent["parse_mode"] == "HTML"
     assert "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>" in text
@@ -381,15 +381,15 @@ async def test_game_command_renders_full_card(
 
 
 @pytest.mark.asyncio
-async def test_game_command_attaches_one_video_button_per_goal(
+async def test_game_card_attaches_one_video_button_per_goal(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
     fake_db_router(_GAME_CARD_ROUTES)
-    update = make_message_update(f"/game {GAME_ONE}")
-    fake_context.args = [str(GAME_ONE)]
+    update = make_message_update(f"/start game_{GAME_ONE}")
+    fake_context.args = [f"game_{GAME_ONE}"]
 
-    await bot.cmd_game(update, fake_context)
+    await bot.cmd_start(update, fake_context)
 
     (sent,) = fake_context.bot.sent_messages
     buttons = _flat_buttons(sent["reply_markup"])
@@ -402,15 +402,15 @@ async def test_game_command_attaches_one_video_button_per_goal(
 
 
 @pytest.mark.asyncio
-async def test_game_command_reports_missing_game_without_running_card_queries(
+async def test_game_card_reports_missing_game_without_running_card_queries(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
     cursor = fake_db_router([("SELECT 1 AS o FROM games", [])])
-    update = make_message_update("/game 1")
-    fake_context.args = ["1"]
+    update = make_message_update("/start game_1")
+    fake_context.args = ["game_1"]
 
-    await bot.cmd_game(update, fake_context)
+    await bot.cmd_start(update, fake_context)
 
     (sent,) = fake_context.bot.sent_messages
     assert sent["text"] == "Такого матча нет в базе бота."
@@ -477,7 +477,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
 # ---------------------------------------------------------------------------
 # Задача 36: сезон с 0 и с 1–3 игровыми днями — /standings, /leaders, /today,
-# /game, /advanced.
+# карточка матча, /advanced.
 #
 # Факт из прогона загрузчика на скретч-БД (season-load-full, SEASON_ID=20262027,
 # 2026-09-28, до старта сезона): при 0 сыгранных играх лиги пустует не только
@@ -564,15 +564,15 @@ async def test_today_on_empty_season_reports_no_finished_matches(
 
 
 @pytest.mark.asyncio
-async def test_game_command_on_empty_season_reports_missing_game(
+async def test_game_card_on_empty_season_reports_missing_game(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
     fake_db_router(_EMPTY_SEASON_ROUTES)
-    update = make_message_update("/game 1")
-    fake_context.args = ["1"]
+    update = make_message_update("/start game_1")
+    fake_context.args = ["game_1"]
 
-    await bot.cmd_game(update, fake_context)
+    await bot.cmd_start(update, fake_context)
 
     (sent,) = fake_context.bot.sent_messages
     assert sent["text"] == "Такого матча нет в базе бота."
@@ -761,15 +761,15 @@ _PARTIAL_DIGEST_ROUTES = [
 
 
 @pytest.mark.asyncio
-async def test_game_command_on_partial_season_renders_card_with_low_game_count_form(
+async def test_game_card_on_partial_season_renders_card_with_low_game_count_form(
     bot_module, fake_db_router, make_message_update, fake_context
 ):
     bot = bot_module("bot")
     fake_db_router(_PARTIAL_GAME_CARD_ROUTES)
-    update = make_message_update(f"/game {PARTIAL_GAME_B}")
-    fake_context.args = [str(PARTIAL_GAME_B)]
+    update = make_message_update(f"/start game_{PARTIAL_GAME_B}")
+    fake_context.args = [f"game_{PARTIAL_GAME_B}"]
 
-    await bot.cmd_game(update, fake_context)
+    await bot.cmd_start(update, fake_context)
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
