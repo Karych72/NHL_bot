@@ -18,6 +18,7 @@
 | 35 | Площадка, живучесть, бэкап | Релиз | 🔴 | ✅ выполнена (ветка `sdd-task-35-backup`, PR #39) — `restart: unless-stopped`, сервис `backup` (ежесуточный `pg_dump`, 14 дампов), `db` на `127.0.0.1:5432`; восстановление проверено |
 | 36 | Поведение на пустом сезоне | Релиз | 🔴 | ✅ выполнена (ветка `sdd-task-36-empty-season`, PR #44) — `/table` на пустом `teams_stats` отдаёт текст-причину вместо таблицы-скелета, а на частичном — дивизион без игр несёт «(в дивизионе ещё никто не сыграл)» вместо заголовков пустой таблицы; 10 тестов (5 команд × 0/1–3 игровых дня) на факте прогона загрузчика на скретч-БД |
 | 38 | Образ и переносимость | Релиз+ | 🟠 | ✅ выполнена (ветка `sdd-task-38-docker-image`, PR #47) — `ffmpeg` в образе, его отсутствие — `RuntimeError` до сетевых запросов; `pytest` ушёл в dev-слой; образ 379 → 757 MB (+378 MB) |
+| 65 | Токен бота на проде — из Secret Manager | Релиз | 🟡 | ✅ выполнена (ветка `task-65-secret-manager`, PR #73; отметка — ветка `task-65-close`) — токен в Secret Manager, на VM только в `/run/nhl_bot` (tmpfs), в `bot`/`sync` — файлом-секретом через entrypoint-обёртку; прод переведён 2026-10-09, после `reboot` VM `bot`/`sync` healthy, `/start` отвечает |
 | 39 | Два пробела конфига моделирования | Трек B | 🟠 | ✅ выполнена (ветка `sdd-task-39`, PR #37) — имена в `monotone` исправлены, lgbm обучается; `calibration.min_samples: 300 ≤ split.calibration_games`, `calibration_skipped: false` |
 | 40 | Качество модели | Трек B | 🔴 (для трека B) | ✅ выполнена (ветка `sdd-task-40-model-quality`, PR #43) — `home_win` бьёт тривиальный baseline на holdout обеими моделями (Δ+0.0018/+0.0029, в пределах шума), `latest` проставлен механизмом; `over_5_5` гейт не проходит (нет сигнала, спайк 40a) |
 | 26 | Retrain через cron | Трек B | ⚪ | ✅ выполнена (ветка `sdd-task-26-retrain-cron`, PR #50) — сервис `retrain`: понедельник 12:00 UTC, только `home_win`, `train --no-promote`, стартует после свежего sync, compose-профиль `modeling` (`--profile modeling`); `latest` двигается вручную (`make modeling-promote`), champion/challenger не делался; прогон ~45 с |
@@ -150,6 +151,34 @@ passed + 39 subtests (было 566 до задачи). `make all-tests` — на
 Приёмка: `ffmpeg` либо в образе, либо фича видео в контейнере отключена явно — молчаливой
 деградации не оставлять (Global Constraint 4); `all_data/` в `.dockerignore`; `pytest`
 убран из рантайм-зависимостей, `make lock` перегенерирован, `make ci-local` зелёный.
+
+### Задача 65. Токен бота на проде — из Secret Manager ✅ 🟡
+Просьба человека 2026-10-08 после случайного перевыпуска токена: сейчас `TELEGRAM_BOT_TOKEN` на
+проде лежит в `/opt/nhl_bot/.env` на VM, куда его однажды скопировал `nhl_bot_gcp_setup.sh`.
+Переносим в GCP Secret Manager, как в argus: systemd-юнит при загрузке VM кладёт токен в
+`/run` (tmpfs), `bot` и `sync` читают его оттуда. `release.yml` не меняется — загрузка
+секрета в каждом деплое отклонена человеком (YAGNI). Карточка —
+[`tasks/task_65_secret_manager_token.md`](./tasks/task_65_secret_manager_token.md).
+
+Код — 2026-10-08 (ветка `task-65-secret-manager`, PR #73): `deploy/fetch-secrets.sh`,
+юнит `deploy/systemd/nhl-bot-secrets.service`, оверрайд `deploy/compose.prod.yml` (включается
+`COMPOSE_FILE` в `.env` на VM), процедуры настройки, перевода и ротации — DEVELOPMENT.md
+§«Прод-деплой», «Токен бота». Отступление от карточки (решение человека после ревью): не второй
+`env_file`, а compose secret `/run/nhl_bot/telegram_bot_token`, который entrypoint-обёртка на
+`sh` кладёт в окружение перед `exec` команды — через `env_file` токен лёг бы в `config.v2.json`
+на диске VM, и после перезагрузки демон поднимал бы контейнеры со старым токеном в обход юнита.
+`config.py` не менялся. `deploy/**` добавлен в фильтр путей `release.yml`. Вне репозитория
+правлен `nhl_bot_gcp_setup.sh` (скоупы в `vm` с подтверждением остановки, Secret Manager и юнит
+в `env`).
+
+**Итог (2026-10-09).** Прод переведён человеком по DEVELOPMENT.md: секрет с новым токеном,
+скоупы `cloud-platform`, юнит, `.env` без токена с `COMPOSE_FILE`. Попутно выяснилось, что бот
+лежал с 2026-10-08 11:37: на VM оставался отозванный токен (`InvalidToken`), поэтому упали
+релизы `0ab7c00` и `8939108` (PR #71, #73). После перевода `sudo reboot` VM — `bot` и `sync`
+healthy, `/start` отвечает. Из приёмки не проверены: ротация (пропущена по решению человека,
+проверится при следующей смене токена) и зелёный повторный прогон `release.yml`.
+Остаточная утечка вне Задачи 65: `logging.basicConfig(level=INFO)` в `bot.py` и
+`push_digest_job.py` пишет запросы `httpx` с URL `.../bot<токен>/...` в логи Docker на диске VM.
 
 ---
 
