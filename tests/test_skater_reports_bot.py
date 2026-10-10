@@ -79,7 +79,6 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/stats",
             "/cancel",
             "/help",
-            "/game",
             "/advanced",
             "/countries",
             "/subscriptions",
@@ -87,15 +86,17 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
-        for removed in ("/day_games", "/table"):
+        for removed in ("/day_games", "/table", "/game"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
         # Пометки голов карточки, в том числе ПШ вместо прежней «★».
         self.assertIn("ПШ — победная шайба", hm)
         self.assertIn("/BOS_FULL", hm)
-        self.assertIn("Corsi", hm)
-        self.assertIn("Fenwick", hm)
+        # Расшифровка SAT/USAT/GF живёт в /advanced, в /help её не дублируем.
+        self.assertNotIn(help_text.ADVANCED_STATS_EXPLAINED, hm)
+        self.assertIn("Corsi", help_text.ADVANCED_COMMAND_INTRO)
+        self.assertIn("Fenwick", help_text.ADVANCED_COMMAND_INTRO)
 
     def test_start_and_help_use_plain_clickable_commands(self):
         """`<code>/cmd</code>` в Telegram не кликается — команды пишутся голыми."""
