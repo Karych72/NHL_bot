@@ -309,12 +309,15 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
             "random_seed": 42,
             "compute": {"num_threads": 1, "log_level": "INFO"},
             "tasks": {"home_win": {"enabled": True}, "over_5_5": {"enabled": True}},
-            "split": {
-                "method": "month",
-                "n_test_windows": 1,
-                "inner_val_games": 1,
-                "calibration_games": 1,
-                "holdout": {"fraction": 0.15, "date_range": {"from": None, "to": None}},
+            "split": {"test_seasons": [20252026], "inner_val_games": 1, "calibration_games": 1},
+            "elo": {
+                "grid": {
+                    "k": [8],
+                    "home_advantage": [35],
+                    "season_regression": [0.333],
+                    "mov": [True],
+                    "ot_win_weight": [1.0],
+                }
             },
             "models": {
                 "logreg": {"grids": {"C": [1.0]}},

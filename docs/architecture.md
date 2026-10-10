@@ -120,12 +120,13 @@ NHL_bot/
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
 │   ├── cli.py                           # `python -m modeling.cli build-dataset|train|promote|predict|publish-predictions`
 │   ├── dataset_builder/                 # base.py, team_game_facts.py, features.py, assemble.py, schema.py, validate.py
+│   ├── elo.py                           # Задача 66: ядро Elo (признак diff_elo) + эталон «Elo с подобранной кривой» для гейта; читает games_train.csv
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
 │   ├── publish_predictions.py           # Задача 22B: CSV predict → таблица game_predictions (гейт по status latest)
-│   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py, config.py, artifacts.py, и др.
+│   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py (прогоны по сезонам), config.py, artifacts.py, и др.
 │
 └── artifacts/                           # datasets/, models/, predictions/, reports/*/ — в .gitignore (см. .gitignore)
-    ├── datasets/                        # dataset_{train,predict}.csv + metadata — пересобираются из БД
+    ├── datasets/                        # dataset_{train,predict}.csv + metadata + games_train.csv (все сыгранные игры с исходом REG/OT/SO для Elo-эталона) — пересобираются из БД
     ├── models/                          # <task>/<model>/<run_id>/final/ + symlink latest (см. docs/modeling_training.md); в .gitignore с Задачи 15
     ├── predictions/                     # CLI predict пишет сюда по умолчанию: <task>_<model>_predictions.csv; в .gitignore с Задачи 15
     └── reports/                         # top-level скрипты и CSV-выгрузки отчётов коммитятся (к датасету отношения не имеют); reports/<run_id>/ (train-прогоны) — в .gitignore с Задачи 15
