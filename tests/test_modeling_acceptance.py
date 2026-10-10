@@ -15,10 +15,9 @@ from modeling.acceptance import (
     ArtifactCheckResult,
     BASELINE_STRICT_EPS,
     BaselineGateResult,
-    TaskModelHoldout,
+    TaskModelEval,
     apply_acceptance_to_training_outcomes,
     evaluate_baseline_gate,
-    holdout_metrics_from_json,
     pick_winning_family,
     verify_latest_symlinks,
     verify_run_artifacts,
@@ -26,54 +25,34 @@ from modeling.acceptance import (
 from modeling.train_runner import update_latest_symlink
 from modeling.config import load_config, load_metadata_json
 from modeling.train_runner import RunResult, _TaskModelOutcome, run_training
-from tests._modeling_fixtures import write_synthetic_train_dataset
-from tests.test_modeling_metrics import _metric_block
+from modeling.report import compose_metrics_json
+from tests._modeling_fixtures import (
+    sample_compose_kwargs,
+    synthetic_season_id,
+    write_synthetic_train_dataset,
+)
 from tests.test_modeling_no_db_access import forbidden_imports_in_module
 
 ROOT = Path(__file__).resolve().parent.parent
 VALID_RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 
 
-def _holdout_entry(*, model_ll: float, trivial_ll: float, model: str = "logreg") -> TaskModelHoldout:
-    return TaskModelHoldout(
+def _eval_entry(
+    *, model_ll: float, benchmark_ll: float, model: str = "logreg", benchmark: str = "elo"
+) -> TaskModelEval:
+    return TaskModelEval(
         task="home_win",
         model=model,
         run_id=VALID_RUN_ID,
         reports_dir=Path("."),
         model_log_loss=model_ll,
-        trivial_log_loss=trivial_ll,
+        benchmark_log_loss=benchmark_ll,
+        benchmark=benchmark,
     )
 
 
-def _bootstrap_block() -> dict:
-    template = {
-        "point": 0.5,
-        "ci_low": 0.4,
-        "ci_high": 0.6,
-        "bootstrap.N": 100,
-        "bootstrap.block_by_day": True,
-        "bootstrap.seed": 42,
-    }
-    return {"log_loss": dict(template), "brier": dict(template)}
-
-
 def _metrics_payload(*, task: str = "home_win", model: str = "logreg") -> dict:
-    holdout = _metric_block(n_test=50)
-    holdout["calibrated"] = {"log_loss": 0.55, "brier": 0.20, "ece": 0.03}
-    holdout["reliability_path"] = f"reliability_{task}.png"
-    holdout["bootstrap"] = _bootstrap_block()
-    fold = _metric_block(k=1, n_test=40)
-    fold["calibrated"] = {"log_loss": 0.56, "brier": 0.21, "ece": 0.04}
-    return {
-        "run_id": f"{task}_{model}_deadbeef_20260101T000000Z",
-        "task": task,
-        "model": model,
-        "features_hash": "b334df68cab14a12056b7a41b324face3cc9cd835c30b738caffdef1b72f81a1",
-        "evaluation": {"epsilon_clip": 1e-15, "ece_bins": 10},
-        "folds": [fold],
-        "holdout": holdout,
-        "team_breakdown": {"home_team_id": [], "away_team_id": []},
-    }
+    return compose_metrics_json(**sample_compose_kwargs(task=task, model=model))
 
 
 def _metadata_dict(*, run_id: str, features_hash: str) -> dict:
@@ -91,13 +70,10 @@ def _metadata_dict(*, run_id: str, features_hash: str) -> dict:
         "train_days": {"min": "2018-01-01", "max": "2019-01-01"},
         "inner_val_days": {"min": "2019-01-02", "max": "2019-02-01"},
         "calibration_days": {"min": "2019-02-02", "max": "2019-03-01"},
-        "test_days": None,
-        "holdout_days": {"min": "2019-03-02", "max": "2019-04-01"},
+        "test_seasons": [20232024, 20242025, 20252026],
         "n_rows_train": 100,
         "n_rows_inner_val": 50,
         "n_rows_calibration": 40,
-        "n_rows_test": 0,
-        "n_rows_holdout": 30,
     }
 
 
@@ -111,7 +87,7 @@ def _write_valid_run_layout(
     metadata: dict | None = None,
     metrics: dict | None = None,
     skip_reliability: bool = False,
-) -> TaskModelHoldout:
+) -> TaskModelEval:
     run_id = f"{task}_{model}_deadbeef_20260101T000000Z"
     reports = tmp / "artifacts" / "reports" / run_id
     reports.mkdir(parents=True, exist_ok=True)
@@ -130,9 +106,9 @@ def _write_valid_run_layout(
     (final_dir / "calibrator.joblib").write_bytes(b"cal")
     meta = metadata if metadata is not None else _metadata_dict(run_id=run_id, features_hash=features_hash)
     (final_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
-    fold_dir = model_root / "fold_1"
-    fold_dir.mkdir(parents=True, exist_ok=True)
-    (fold_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    season_dir = model_root / f"season_{synthetic_season_id(2)}"
+    season_dir.mkdir(parents=True, exist_ok=True)
+    (season_dir / "metadata.json").write_text("{}", encoding="utf-8")
     if symlink_ok:
         base = tmp / "artifacts" / "models" / task / model
         base.mkdir(parents=True, exist_ok=True)
@@ -140,16 +116,15 @@ def _write_valid_run_layout(
         if link.exists() or link.is_symlink():
             link.unlink()
         os.symlink(Path(run_id) / "final", link)
-    holdout = metrics_payload["holdout"]
-    calibrated = holdout.get("calibrated") or {}
-    trivial = holdout.get("trivial_base_rate") or {}
-    return TaskModelHoldout(
+    benchmark = "elo" if task == "home_win" else "constant"
+    return TaskModelEval(
         task=task,
         model=model,
         run_id=run_id,
         reports_dir=reports,
-        model_log_loss=float(calibrated.get("log_loss", 0.55)),
-        trivial_log_loss=float(trivial.get("log_loss", 0.69)),
+        model_log_loss=metrics_payload["pooled"]["model"]["log_loss"],
+        benchmark_log_loss=metrics_payload["pooled"][benchmark]["log_loss"],
+        benchmark=benchmark,
     )
 
 
@@ -157,7 +132,7 @@ class TestBaselineGate(unittest.TestCase):
     def test_gate_passes_when_strictly_better(self) -> None:
         gate = evaluate_baseline_gate(
             ["home_win"],
-            {"home_win": [_holdout_entry(model_ll=0.5, trivial_ll=0.7)]},
+            {"home_win": [_eval_entry(model_ll=0.5, benchmark_ll=0.7)]},
         )
         self.assertEqual(gate.status, "ok")
         self.assertTrue(gate.per_task[0].passed)
@@ -165,7 +140,7 @@ class TestBaselineGate(unittest.TestCase):
     def test_gate_fails_when_not_strictly_better(self) -> None:
         gate = evaluate_baseline_gate(
             ["home_win"],
-            {"home_win": [_holdout_entry(model_ll=0.75, trivial_ll=0.70)]},
+            {"home_win": [_eval_entry(model_ll=0.75, benchmark_ll=0.70)]},
         )
         self.assertEqual(gate.status, "failed_baseline_check")
 
@@ -173,7 +148,7 @@ class TestBaselineGate(unittest.TestCase):
         ll = 0.693147
         gate = evaluate_baseline_gate(
             ["home_win"],
-            {"home_win": [_holdout_entry(model_ll=ll, trivial_ll=ll)]},
+            {"home_win": [_eval_entry(model_ll=ll, benchmark_ll=ll)]},
         )
         self.assertEqual(gate.status, "failed_baseline_check")
         self.assertGreaterEqual(BASELINE_STRICT_EPS, 0)
@@ -182,8 +157,8 @@ class TestBaselineGate(unittest.TestCase):
         ll = 0.55
         winner = pick_winning_family(
             [
-                _holdout_entry(model_ll=ll, trivial_ll=0.9, model="logreg"),
-                _holdout_entry(model_ll=ll, trivial_ll=0.9, model="lgbm"),
+                _eval_entry(model_ll=ll, benchmark_ll=0.9, model="logreg"),
+                _eval_entry(model_ll=ll, benchmark_ll=0.9, model="lgbm"),
             ]
         )
         self.assertEqual(winner.model, "lgbm")
@@ -191,8 +166,8 @@ class TestBaselineGate(unittest.TestCase):
             ["home_win"],
             {
                 "home_win": [
-                    _holdout_entry(model_ll=ll, trivial_ll=0.9, model="logreg"),
-                    _holdout_entry(model_ll=ll, trivial_ll=0.9, model="lgbm"),
+                    _eval_entry(model_ll=ll, benchmark_ll=0.9, model="logreg"),
+                    _eval_entry(model_ll=ll, benchmark_ll=0.9, model="lgbm"),
                 ]
             },
         )
@@ -202,17 +177,22 @@ class TestBaselineGate(unittest.TestCase):
         gate = evaluate_baseline_gate(
             ["home_win"],
             {
-                "over_5_5": [_holdout_entry(model_ll=9.0, trivial_ll=0.1)],
-                "home_win": [_holdout_entry(model_ll=0.5, trivial_ll=0.7)],
+                "over_5_5": [_eval_entry(model_ll=9.0, benchmark_ll=0.1)],
+                "home_win": [_eval_entry(model_ll=0.5, benchmark_ll=0.7)],
             },
         )
         self.assertEqual(gate.status, "ok")
 
-    def test_holdout_metrics_from_json(self) -> None:
-        payload = _metrics_payload()
-        entry = holdout_metrics_from_json(payload, reports_dir=Path("/tmp/r"))
-        self.assertAlmostEqual(entry.model_log_loss, 0.55)
-        self.assertAlmostEqual(entry.trivial_log_loss, 0.69)
+    def test_gate_summary_names_pooled_scheme_and_benchmark(self) -> None:
+        from modeling.acceptance import format_baseline_summary_section
+
+        gate = evaluate_baseline_gate(
+            ["home_win"], {"home_win": [_eval_entry(model_ll=0.60, benchmark_ll=0.66)]}
+        )
+        text = format_baseline_summary_section(gate)
+        self.assertIn("pooled test seasons, vs Elo|constant", text)
+        self.assertIn("elo=0.660000", text)
+        self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
 
 class TestVerifyRunArtifacts(unittest.TestCase):
@@ -315,15 +295,12 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         )
         self.assertFalse(result.ok)
 
-    def test_verify_fails_missing_bootstrap(self) -> None:
-        holdout = _metric_block(n_test=10)
-        holdout["calibrated"] = {"log_loss": 0.55, "brier": 0.20, "ece": 0.03}
-        holdout["reliability_path"] = "reliability_home_win.png"
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metrics={**_metrics_payload(), "holdout": holdout},
-        )
+    def _issues_after_breaking_metrics(self, mutate) -> list[str]:
+        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
+        metrics_path = run.reports_dir / "metrics.json"
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        mutate(payload)
+        metrics_path.write_text(json.dumps(payload), encoding="utf-8")
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
@@ -332,17 +309,36 @@ class TestVerifyRunArtifacts(unittest.TestCase):
             runs=[run],
         )
         self.assertFalse(result.ok)
+        return result.issues
 
-    def test_verify_fails_missing_trivial_base_rate(self) -> None:
-        holdout = {k: v for k, v in _metric_block(n_test=10).items() if k != "trivial_base_rate"}
-        holdout["calibrated"] = {"log_loss": 0.55, "brier": 0.20, "ece": 0.03}
-        holdout["reliability_path"] = "reliability_home_win.png"
-        holdout["bootstrap"] = _bootstrap_block()
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metrics={**_metrics_payload(), "holdout": holdout},
-        )
+    def test_verify_fails_missing_bootstrap(self) -> None:
+        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"].pop("bootstrap"))
+        self.assertTrue(any("pooled.bootstrap" in issue for issue in issues), msg=issues)
+
+    def test_verify_fails_bootstrap_not_by_day(self) -> None:
+        def mutate(m: dict) -> None:
+            m["pooled"]["bootstrap"]["log_loss"]["bootstrap.block_by_day"] = False
+
+        issues = self._issues_after_breaking_metrics(mutate)
+        self.assertTrue(any("block_by_day" in issue for issue in issues), msg=issues)
+
+    def test_verify_fails_missing_diff_vs_elo(self) -> None:
+        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"]["diff_ci"].pop("model_minus_elo"))
+        self.assertTrue(any("model_minus_elo" in issue for issue in issues), msg=issues)
+
+    def test_verify_fails_missing_elo_metrics(self) -> None:
+        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"].pop("elo"))
+        self.assertTrue(any("pooled.elo" in issue for issue in issues), msg=issues)
+
+    def test_verify_fails_missing_pooled_block(self) -> None:
+        issues = self._issues_after_breaking_metrics(lambda m: m.pop("pooled"))
+        self.assertTrue(any("pooled block missing" in issue for issue in issues), msg=issues)
+
+    def test_verify_fails_missing_season_run_dirs(self) -> None:
+        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
+        for season_dir in (self.tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id).glob("season_*"):
+            (season_dir / "metadata.json").unlink()
+            season_dir.rmdir()
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
@@ -350,7 +346,21 @@ class TestVerifyRunArtifacts(unittest.TestCase):
             models=["logreg"],
             runs=[run],
         )
-        self.assertFalse(result.ok)
+        self.assertTrue(any("per-season" in issue for issue in result.issues), msg=result.issues)
+
+    def test_verify_fails_old_metadata_without_test_seasons(self) -> None:
+        run_id = "home_win_logreg_deadbeef_20260101T000000Z"
+        meta = _metadata_dict(run_id=run_id, features_hash=self.config.features_hash)
+        del meta["test_seasons"]
+        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash, metadata=meta)
+        result = verify_run_artifacts(
+            config=self.config,
+            artifacts_root=self.tmp / "artifacts",
+            enabled_tasks=["home_win"],
+            models=["logreg"],
+            runs=[run],
+        )
+        self.assertTrue(any("test_seasons" in issue for issue in result.issues), msg=result.issues)
 
     def test_verify_fails_features_hash_mismatch(self) -> None:
         run = _write_valid_run_layout(
@@ -450,7 +460,7 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _make_outcome(self, run: TaskModelHoldout, *, status: str = "ok") -> _TaskModelOutcome:
+    def _make_outcome(self, run: TaskModelEval, *, status: str = "ok") -> _TaskModelOutcome:
         result = RunResult(
             run_id=run.run_id,
             task="home_win",
@@ -464,8 +474,9 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
             task="home_win",
             model="logreg",
             result=result,
-            holdout_calibrated_log_loss=run.model_log_loss,
-            holdout_trivial_log_loss=run.trivial_log_loss,
+            pooled_model_log_loss=run.model_log_loss,
+            benchmark_log_loss=run.benchmark_log_loss,
+            benchmark=run.benchmark,
         )
 
     def test_verify_latest_passes_on_valid_symlink(self) -> None:
@@ -526,8 +537,9 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                holdout_calibrated_log_loss=run.model_log_loss,
-                holdout_trivial_log_loss=run.trivial_log_loss,
+                pooled_model_log_loss=run.model_log_loss,
+                benchmark_log_loss=run.benchmark_log_loss,
+                benchmark=run.benchmark,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
             combined, _, _ = apply_acceptance_to_training_outcomes(
@@ -553,13 +565,18 @@ class TestAcceptanceNoDbAccess(unittest.TestCase):
 def _test_config_yaml() -> dict:
     base = yaml.safe_load((ROOT / "configs" / "modeling_default.yaml").read_text(encoding="utf-8"))
     base["split"] = {
-        "method": "fixed_games",
-        "n_test_windows": 5,
-        "inner_val_games": 300,
-        "calibration_games": 300,
-        "outer_block_games": 601,
-        "holdout": {"fraction": 0.15, "date_range": {"from": None, "to": None}},
+        "test_seasons": [synthetic_season_id(2), synthetic_season_id(3)],
+        "inner_val_games": 100,
+        "calibration_games": 100,
     }
+    base["elo"]["grid"] = {
+        "k": [8],
+        "home_advantage": [35],
+        "season_regression": [0.333],
+        "mov": [True, False],
+        "ot_win_weight": [1.0],
+    }
+    base["calibration"]["min_samples"] = 100
     base["models"]["lgbm"]["monotone"] = {"home_win": {}, "over_5_5": {}}
     return base
 
@@ -568,7 +585,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
     def test_train_writes_status_and_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            csv_path, meta_path = write_synthetic_train_dataset(tmp, n_days=6500, games_per_day=1)
+            csv_path, meta_path = write_synthetic_train_dataset(tmp)
             cfg = _test_config_yaml()
             cfg["tasks"]["over_5_5"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [0.1]
@@ -592,8 +609,11 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
             self.assertRegex(summary, r"^status: (ok|failed_baseline_check|failed_artifact_check)")
             metrics = json.loads((artifacts / "reports" / VALID_RUN_ID / "metrics.json").read_text())
             self.assertIn("acceptance", metrics)
-            self.assertIn("holdout", metrics)
-            self.assertIn("bootstrap", metrics["holdout"])
+            self.assertEqual([s["season_id"] for s in metrics["seasons"]], _test_config_yaml()["split"]["test_seasons"])
+            self.assertIn("bootstrap", metrics["pooled"])
+            self.assertIn("model_minus_elo", metrics["pooled"]["diff_ci"])
+            self.assertNotIn("holdout", metrics)
+            self.assertNotIn("folds", metrics)
 
     def test_failed_baseline_sets_nonzero_exit_and_writes_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -617,8 +637,9 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                holdout_calibrated_log_loss=0.99,
-                holdout_trivial_log_loss=0.50,
+                pooled_model_log_loss=0.99,
+                benchmark_log_loss=0.50,
+                benchmark="elo",
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
             apply_acceptance_to_training_outcomes(
@@ -650,7 +671,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
     def test_no_fail_on_baseline_flag_keeps_exit_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            csv_path, meta_path = write_synthetic_train_dataset(tmp, n_days=6500)
+            csv_path, meta_path = write_synthetic_train_dataset(tmp)
             cfg = _test_config_yaml()
             cfg["tasks"]["over_5_5"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [0.1]

@@ -36,9 +36,9 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Rolling features with mandatory `shift(1)` logic.
   - Context features: `rest_days`, `is_b2b`, `games_last_7d`, `prior_games_count`.
   - As-of snapshots for home/away teams per target game.
-  - `compute_pregame_elo`/`attach_pregame_elo`: pre-game team Elo rating
-    (`home_elo`, `away_elo`) — see [Elo team-strength feature](#elo-team-strength-feature)
-    below.
+  - `attach_pregame_elo`: attaches the pre-game team Elo rating (`home_elo`, `away_elo`); the
+    Elo pass itself is `modeling/elo.py::compute_pregame_elo` — see
+    [Elo team-strength feature](#elo-team-strength-feature) below.
 
 - `modeling/dataset_builder/assemble.py`
   - Wide feature assembly: home/away absolute values, `diff_*`, `sum_*`.
@@ -99,24 +99,40 @@ excluded from `feature_columns_from_df` — never part of `feature_manifest` / `
 X, and dropped by `ordered_columns_for_output` before the CSV is written (fixed Задача 15,
 first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08.md`).
 
+## `games_train.csv`
+
+`build-dataset --mode train` writes, next to `dataset_train.csv`, `games_train.csv`: **every**
+played game of the loaded seasons — including the games the cold-start policy dropped from the
+dataset — with columns `game_id, day, season_id, home_team_id, away_team_id, home_goals,
+away_goals, decision` (`decision` ∈ `REG`/`OT`/`SO`, from `games.is_overtime`/`is_shootouts`).
+It is taken from the same `load_target_games(..., with_decision=True)` history that feeds the
+Elo pass (no extra query). `train` reads it for the Elo benchmark (`modeling/elo.py`) and fails
+loudly when `home_win` is trained without it. It is not part of `metadata_train.json` and not
+of the feature table.
+
 ## Elo team-strength feature
 
 Added Задача 40 (Task 3; tuned via a read-only diagnostic spike, 40a, before any code
 was written — see the tuning and evidence notes below).
 Unlike every other feature above, Elo is **cross-team and cross-season**: it is a single
 `{team_id: rating}` state that a full pass over the played-game history mutates game by game
-in `(day, game_id)` order (`features.py::compute_pregame_elo`, attached to every target game by
+in `(day, game_id)` order (`modeling/elo.py::compute_pregame_elo`, attached to every target game by
 `features.py::attach_pregame_elo`). `base.py` gets that history by calling `load_target_games`
 itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-duplicate query)
 — unfiltered by `--season-ids`/`--target-day-from`.
 
-- **Formula** (tuned constants are module-level constants in `features.py`, not config —
-  `ELO_START`, `ELO_K`, `ELO_HFA`, `ELO_SEASON_REGRESSION`, `ELO_MOV_BASE`, `ELO_MOV_HFA_WEIGHT`):
+- **Formula** (Задача 66: the core moved to `modeling/elo.py` and takes an `EloParams`; the
+  defaults `k=8, home_advantage=35, season_regression=1/3, mov=True, ot_win_weight=1.0` are the
+  constants below, so `diff_elo` and `features_hash` did not change. The same core serves the
+  Elo benchmark of the model gate with other parameters — see
+  [`modeling_training.md`](modeling_training.md) §2a; `ELO_START`, `ELO_MOV_BASE`,
+  `ELO_MOV_HFA_WEIGHT` stay constants):
   - new team starts at `ELO_START = 1500`.
   - expectancy `E_home = 1 / (1 + 10^(-(R_home + HFA - R_away)/400))`, `HFA = 35`.
   - update `R_home += K·M·(S - E_home)`, `R_away -= K·M·(S - E_home)`, `K = 8`.
   - `S = 1` if `winner_id == home_team_id` else `0` — OT/SO wins count as full wins
-    (tuning picked `ot_s = 1`, so there is no separate overtime branch/column).
+    (tuning picked `ot_s = 1`; `ot_win_weight` < 1 exists only for the benchmark, where a
+    winner of an OT/SO game is credited `S = ot_win_weight`).
   - margin-of-victory multiplier `M = ln(|goal_diff|+1) · 2.2 / (0.001·winner_edge + 2.2)`,
     where `winner_edge` is the winning side's rating edge including HFA.
   - at a `season_id` change: every rating shrinks 1/3 toward the field mean
@@ -296,6 +312,10 @@ Implemented tests:
   `test_power_play_percentage_above_100_is_clipped` — `power_play_percentage` NULL
   (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to
   valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
+- `tests/test_modeling_elo.py` (Задача 66): the default `EloParams` reproduce the pre-move
+  feature values, OT-weight / MOV / per-day freeze / season shrink mechanics, benchmark leakage.
+- `TestGamesTrainCsv` / `TestLoadTargetGamesSource.test_decision_column_only_when_requested`
+  (Задача 66): `games_train.csv` content and that `decision` never reaches the feature table.
 - `TestPregameElo` (Задача 40, Task 3): `test_hand_computed_pregame_ratings` (3-game
   mini example, expected ratings computed independently from the formula in "Elo
   team-strength feature" above), `test_asof_future_result_does_not_change_earlier_rating`,

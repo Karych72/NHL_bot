@@ -133,7 +133,7 @@ def _build_platt_calibrator(
     itself. ``penalty=None`` (no L2 shrinkage): with L2 the previous ``p``-input
     fit regularized the slope toward a near-constant prediction on some models
     (spike 40a: Elo's fitted Platt slope was -0.014). See
-    ``docs/modeling_training.md`` §7 (Задача 40) for the holdout numbers this
+    ``docs/modeling_training.md`` §7 (Задача 40) for the check-season numbers this
     is based on.
     """
     x_cal = _logit(raw_p_cal).reshape(-1, 1)

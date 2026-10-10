@@ -4,7 +4,7 @@ Loads the ``latest`` trained artifact for a ``(task, model)`` pair, scores a
 predict dataset built by ``modeling.dataset_builder`` (``build-dataset --mode
 predict``), applies the frozen post-hoc calibrator, and writes per-game
 probabilities to CSV. Mirrors ``train_runner.py``'s isolation: no PostgreSQL,
-no ``modeling.dataset_builder`` import, no walk-forward/training/calibration
+no ``modeling.dataset_builder`` import, no per-season checks/training/calibration
 fitting — everything here is already frozen by a prior ``train`` run.
 """
 
