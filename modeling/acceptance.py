@@ -1,4 +1,4 @@
-"""Run acceptance layer: baseline gate and artifact diagnostics (UPDATE plan stage 12).
+"""Run acceptance layer: benchmark gate and artifact diagnostics (UPDATE plan stage 12, Задача 66).
 
 Reads completed training artifacts and reports only — no metric recomputation,
 no PostgreSQL, no ``modeling.dataset_builder``.
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 RunStatus = Literal["ok", "failed_baseline_check", "failed_artifact_check"]
 
-# Strict baseline: model_ll + BASELINE_STRICT_EPS < trivial (equality at 1e-12 → fail).
+# Strict gate: model_ll + BASELINE_STRICT_EPS < benchmark (equality at 1e-12 → fail).
 BASELINE_STRICT_EPS = 1e-12
-# Family tie-break when holdout log losses are equal: earlier name wins (lgbm before logreg).
+# Family tie-break when pooled log losses are equal: earlier name wins (lgbm before logreg).
 FAMILY_TIEBREAK_ORDER: tuple[str, ...] = ("lgbm", "logreg")
 
 _LIBRARY_VERSION_KEYS = frozenset(
@@ -37,30 +37,32 @@ _METADATA_REQUIRED_TOP = frozenset(
         "train_days",
         "inner_val_days",
         "calibration_days",
-        "test_days",
-        "holdout_days",
+        "test_seasons",
         "n_rows_train",
         "n_rows_inner_val",
         "n_rows_calibration",
-        "n_rows_test",
-        "n_rows_holdout",
     }
 )
-_HOLDOUT_METRIC_KEYS = frozenset({"log_loss", "brier", "ece"})
+_METRIC_KEYS = frozenset({"log_loss", "brier", "ece"})
 _BOOTSTRAP_METRIC_KEYS = frozenset({"log_loss", "brier"})
 _BOOTSTRAP_CI_KEYS = frozenset({"ci_low", "ci_high", "point"})
 
 
 @dataclass(frozen=True)
-class TaskModelHoldout:
-    """Holdout metrics for one (task, model) pair — values from training / ``metrics.json``."""
+class TaskModelEval:
+    """Pooled-seasons log loss of one (task, model) pair and of the benchmark it must beat.
+
+    ``benchmark`` is ``"elo"`` (``home_win``, Elo with the fitted curve) or ``"constant"``
+    (``over_5_5``, share of "over 5.5" on the run's training seasons).
+    """
 
     task: str
     model: str
     run_id: str
     reports_dir: Path
     model_log_loss: float
-    trivial_log_loss: float
+    benchmark_log_loss: float
+    benchmark: str
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,8 @@ class TaskBaselineVerdict:
     task: str
     winning_family: str
     model_log_loss: float
-    trivial_log_loss: float
+    benchmark_log_loss: float
+    benchmark: str
     delta: float
     passed: bool
 
@@ -86,7 +89,8 @@ class BaselineGateResult:
                     "task": v.task,
                     "winning_family": v.winning_family,
                     "model_log_loss": v.model_log_loss,
-                    "trivial_log_loss": v.trivial_log_loss,
+                    "benchmark_log_loss": v.benchmark_log_loss,
+                    "benchmark": v.benchmark,
                     "delta": v.delta,
                     "passed": v.passed,
                 }
@@ -113,8 +117,8 @@ def _family_sort_key(model: str, log_loss: float) -> tuple[float, int]:
     return (log_loss, tie_rank)
 
 
-def pick_winning_family(candidates: Sequence[TaskModelHoldout]) -> TaskModelHoldout:
-    """Return the family with lowest holdout calibrated log loss (deterministic tie-break)."""
+def pick_winning_family(candidates: Sequence[TaskModelEval]) -> TaskModelEval:
+    """Return the family with lowest pooled calibrated log loss (deterministic tie-break)."""
     if not candidates:
         raise ValueError("pick_winning_family requires at least one candidate")
     return min(
@@ -125,14 +129,14 @@ def pick_winning_family(candidates: Sequence[TaskModelHoldout]) -> TaskModelHold
 
 def evaluate_baseline_gate(
     enabled_tasks: Sequence[str],
-    holdout_by_task: Mapping[str, Sequence[TaskModelHoldout]],
+    eval_by_task: Mapping[str, Sequence[TaskModelEval]],
 ) -> BaselineGateResult:
-    """Compare best calibrated holdout log loss vs trivial baseline per enabled task."""
+    """Compare best calibrated pooled-seasons log loss vs its benchmark (Elo / constant) per task."""
     verdicts: list[TaskBaselineVerdict] = []
     all_passed = True
 
     for task in enabled_tasks:
-        candidates = list(holdout_by_task.get(task, ()))
+        candidates = list(eval_by_task.get(task, ()))
         if not candidates:
             all_passed = False
             verdicts.append(
@@ -140,7 +144,8 @@ def evaluate_baseline_gate(
                     task=task,
                     winning_family="",
                     model_log_loss=float("nan"),
-                    trivial_log_loss=float("nan"),
+                    benchmark_log_loss=float("nan"),
+                    benchmark="",
                     delta=float("nan"),
                     passed=False,
                 )
@@ -148,9 +153,9 @@ def evaluate_baseline_gate(
             continue
 
         winner = pick_winning_family(candidates)
-        trivial = winner.trivial_log_loss
+        benchmark_ll = winner.benchmark_log_loss
         model_ll = winner.model_log_loss
-        passed = model_ll + BASELINE_STRICT_EPS < trivial
+        passed = model_ll + BASELINE_STRICT_EPS < benchmark_ll
         if not passed:
             all_passed = False
         verdicts.append(
@@ -158,39 +163,15 @@ def evaluate_baseline_gate(
                 task=task,
                 winning_family=winner.model,
                 model_log_loss=model_ll,
-                trivial_log_loss=trivial,
-                delta=trivial - model_ll,
+                benchmark_log_loss=benchmark_ll,
+                benchmark=winner.benchmark,
+                delta=benchmark_ll - model_ll,
                 passed=passed,
             )
         )
 
     status: RunStatus = "ok" if all_passed else "failed_baseline_check"
     return BaselineGateResult(status=status, per_task=tuple(verdicts))
-
-
-def holdout_metrics_from_json(metrics: Mapping[str, Any], *, reports_dir: Path) -> TaskModelHoldout:
-    """Extract gate inputs from a written ``metrics.json`` (stage 5/10 output)."""
-    holdout = metrics.get("holdout")
-    if not isinstance(holdout, Mapping):
-        raise ValueError("metrics.json missing holdout block")
-    calibrated = holdout.get("calibrated")
-    if not isinstance(calibrated, Mapping):
-        raise ValueError("holdout.calibrated missing or not a mapping")
-    trivial = holdout.get("trivial_base_rate")
-    if not isinstance(trivial, Mapping):
-        raise ValueError("holdout.trivial_base_rate missing or not a mapping")
-    model_ll = calibrated.get("log_loss")
-    trivial_ll = trivial.get("log_loss")
-    if model_ll is None or trivial_ll is None:
-        raise ValueError("holdout log_loss values missing for baseline gate")
-    return TaskModelHoldout(
-        task=str(metrics["task"]),
-        model=str(metrics["model"]),
-        run_id=str(metrics["run_id"]),
-        reports_dir=reports_dir,
-        model_log_loss=float(model_ll),
-        trivial_log_loss=float(trivial_ll),
-    )
 
 
 def run_status(
@@ -258,7 +239,7 @@ def _validate_metadata_file(
                 f"metadata.json library_versions missing keys {sorted(missing_lib)} in {path}",
             )
 
-    for day_key in ("train_days", "inner_val_days", "calibration_days", "holdout_days"):
+    for day_key in ("train_days", "inner_val_days", "calibration_days"):
         block = meta.get(day_key)
         if block is None:
             continue
@@ -266,59 +247,57 @@ def _validate_metadata_file(
             _issue(issues, f"metadata.json {day_key} invalid in {path}")
 
 
-def _validate_holdout_metrics_block(
+def _validate_pooled_metrics_block(
     metrics: Mapping[str, Any],
     *,
     task: str,
     reports_dir: Path,
     issues: list[str],
 ) -> None:
-    holdout = metrics.get("holdout")
-    if not isinstance(holdout, Mapping):
-        _issue(issues, f"metrics.json holdout block missing in {reports_dir}")
+    metrics_path = reports_dir / "metrics.json"
+    pooled = metrics.get("pooled")
+    if not isinstance(pooled, Mapping):
+        _issue(issues, f"metrics.json pooled block missing in {reports_dir}")
         return
 
-    for block_name, block in (("raw", holdout.get("raw")), ("calibrated", holdout.get("calibrated"))):
+    benchmark = "elo" if task == "home_win" else "constant"
+    for block_name in ("model_raw", "model", "constant", *(("elo",) if task == "home_win" else ())):
+        block = pooled.get(block_name)
         if not isinstance(block, Mapping):
-            _issue(issues, f"holdout.{block_name} missing in {reports_dir / 'metrics.json'}")
+            _issue(issues, f"pooled.{block_name} missing in {metrics_path}")
             continue
-        missing = _HOLDOUT_METRIC_KEYS - block.keys()
+        missing = _METRIC_KEYS - block.keys()
         if missing:
-            _issue(
-                issues,
-                f"holdout.{block_name} missing keys {sorted(missing)} in {reports_dir / 'metrics.json'}",
-            )
+            _issue(issues, f"pooled.{block_name} missing keys {sorted(missing)} in {metrics_path}")
 
-    trivial = holdout.get("trivial_base_rate")
-    if not isinstance(trivial, Mapping) or "log_loss" not in trivial:
-        _issue(issues, f"holdout.trivial_base_rate missing in {reports_dir / 'metrics.json'}")
-
-    bootstrap = holdout.get("bootstrap")
-    if not isinstance(bootstrap, Mapping):
-        _issue(issues, f"holdout.bootstrap missing in {reports_dir / 'metrics.json'} (stage 6)")
-        return
-    for metric_name in _BOOTSTRAP_METRIC_KEYS:
-        entry = bootstrap.get(metric_name)
-        if not isinstance(entry, Mapping):
-            _issue(
-                issues,
-                f"holdout.bootstrap.{metric_name} missing in {reports_dir / 'metrics.json'}",
-            )
-            continue
-        missing_ci = _BOOTSTRAP_CI_KEYS - entry.keys()
+    diff_ci = pooled.get("diff_ci")
+    if not isinstance(diff_ci, Mapping) or f"model_minus_{benchmark}" not in diff_ci:
+        _issue(issues, f"pooled.diff_ci.model_minus_{benchmark} missing in {metrics_path}")
+    else:
+        missing_ci = _BOOTSTRAP_CI_KEYS - diff_ci[f"model_minus_{benchmark}"].keys()
         if missing_ci:
-            _issue(
-                issues,
-                f"holdout.bootstrap.{metric_name} missing CI keys {sorted(missing_ci)}",
-            )
-        if entry.get("bootstrap.block_by_day") is not True:
-            _issue(
-                issues,
-                f"holdout.bootstrap.{metric_name} must have bootstrap.block_by_day=true "
-                f"(holdout block bootstrap by day)",
-            )
+            _issue(issues, f"pooled.diff_ci.model_minus_{benchmark} missing CI keys {sorted(missing_ci)}")
 
-    rel_name = holdout.get("reliability_path", f"reliability_{task}.png")
+    bootstrap = pooled.get("bootstrap")
+    if not isinstance(bootstrap, Mapping):
+        _issue(issues, f"pooled.bootstrap missing in {metrics_path} (stage 6)")
+    else:
+        for metric_name in _BOOTSTRAP_METRIC_KEYS:
+            entry = bootstrap.get(metric_name)
+            if not isinstance(entry, Mapping):
+                _issue(issues, f"pooled.bootstrap.{metric_name} missing in {metrics_path}")
+                continue
+            missing_ci = _BOOTSTRAP_CI_KEYS - entry.keys()
+            if missing_ci:
+                _issue(issues, f"pooled.bootstrap.{metric_name} missing CI keys {sorted(missing_ci)}")
+            if entry.get("bootstrap.block_by_day") is not True:
+                _issue(
+                    issues,
+                    f"pooled.bootstrap.{metric_name} must have bootstrap.block_by_day=true "
+                    "(block bootstrap by game day)",
+                )
+
+    rel_name = pooled.get("reliability_path", f"reliability_{task}.png")
     rel_path = reports_dir / str(rel_name)
     if not rel_path.is_file() or rel_path.stat().st_size == 0:
         _issue(issues, f"reliability PNG missing or empty: {rel_path}")
@@ -329,11 +308,11 @@ def _validate_holdout_metrics_block(
     else:
         for col in ("home_team_id", "away_team_id"):
             if col not in team_bd:
-                _issue(issues, f"team_breakdown missing {col!r} in {reports_dir / 'metrics.json'}")
+                _issue(issues, f"team_breakdown missing {col!r} in {metrics_path}")
 
-    folds = metrics.get("folds")
-    if not isinstance(folds, list) or len(folds) == 0:
-        _issue(issues, f"metrics.json folds empty or missing in {reports_dir}")
+    seasons = metrics.get("seasons")
+    if not isinstance(seasons, list) or len(seasons) == 0:
+        _issue(issues, f"metrics.json seasons empty or missing in {reports_dir}")
 
 
 def _validate_latest_symlink(
@@ -385,7 +364,7 @@ def verify_run_artifacts(
     artifacts_root: Path,
     enabled_tasks: Sequence[str],
     models: Sequence[str],
-    runs: Sequence[TaskModelHoldout],
+    runs: Sequence[TaskModelEval],
 ) -> ArtifactCheckResult:
     """Verify DoD artifacts for each trained (task, model) pair (presence only).
 
@@ -421,8 +400,8 @@ def verify_run_artifacts(
                     issues=issues,
                 )
 
-            if not list(model_root.glob("fold_*")):
-                _issue(issues, f"no walk-forward fold directories under {model_root}")
+            if not list(model_root.glob("season_*")):
+                _issue(issues, f"no per-season run directories under {model_root}")
 
             summary_path = reports_dir / "summary.md"
             if not summary_path.is_file() or summary_path.stat().st_size == 0:
@@ -438,7 +417,7 @@ def verify_run_artifacts(
                     _issue(issues, f"invalid metrics.json at {metrics_path}: {exc}")
                     metrics = {}
                 if isinstance(metrics, dict):
-                    _validate_holdout_metrics_block(
+                    _validate_pooled_metrics_block(
                         metrics,
                         task=task,
                         reports_dir=reports_dir,
@@ -467,12 +446,12 @@ def pair_run_status(
 
 
 def format_baseline_summary_section(baseline: BaselineGateResult) -> str:
-    lines = ["## Baseline gate (holdout, calibrated model_final)", ""]
+    lines = ["## Baseline gate (pooled test seasons, vs Elo|constant)", ""]
     for verdict in baseline.per_task:
         status_word = "PASS" if verdict.passed else "FAIL"
         lines.append(
             f"- **{verdict.task}**: {status_word} — best `{verdict.winning_family}` "
-            f"log_loss={verdict.model_log_loss:.6f} vs trivial={verdict.trivial_log_loss:.6f} "
+            f"log_loss={verdict.model_log_loss:.6f} vs {verdict.benchmark}={verdict.benchmark_log_loss:.6f} "
             f"(delta={verdict.delta:+.6f})"
         )
     lines.append("")
@@ -541,6 +520,21 @@ def patch_metrics_acceptance(
     )
 
 
+def _evals_from_outcomes(outcomes: Sequence[Any]) -> list[TaskModelEval]:
+    return [
+        TaskModelEval(
+            task=item.task,
+            model=item.model,
+            run_id=item.result.run_id,
+            reports_dir=item.result.reports_dir,
+            model_log_loss=item.pooled_model_log_loss,
+            benchmark_log_loss=item.benchmark_log_loss,
+            benchmark=item.benchmark,
+        )
+        for item in outcomes
+    ]
+
+
 def apply_acceptance_to_training_outcomes(
     outcomes: Sequence[Any],
     *,
@@ -552,23 +546,12 @@ def apply_acceptance_to_training_outcomes(
     """End-of-run hook: baseline gate, artifact verification, patch reports."""
     from modeling.report import configure_run_logger
 
-    holdout_runs: list[TaskModelHoldout] = [
-        TaskModelHoldout(
-            task=item.task,
-            model=item.model,
-            run_id=item.result.run_id,
-            reports_dir=item.result.reports_dir,
-            model_log_loss=item.holdout_calibrated_log_loss,
-            trivial_log_loss=item.holdout_trivial_log_loss,
-        )
-        for item in outcomes
-    ]
+    eval_runs = _evals_from_outcomes(outcomes)
+    eval_by_task: dict[str, list[TaskModelEval]] = {}
+    for entry in eval_runs:
+        eval_by_task.setdefault(entry.task, []).append(entry)
 
-    holdout_by_task: dict[str, list[TaskModelHoldout]] = {}
-    for entry in holdout_runs:
-        holdout_by_task.setdefault(entry.task, []).append(entry)
-
-    baseline = evaluate_baseline_gate(enabled_tasks, holdout_by_task)
+    baseline = evaluate_baseline_gate(enabled_tasks, eval_by_task)
 
     # Phase 1: models/reports/metadata only (no ``latest`` — see phase 2 below).
     artifacts = verify_run_artifacts(
@@ -576,7 +559,7 @@ def apply_acceptance_to_training_outcomes(
         artifacts_root=artifacts_root,
         enabled_tasks=enabled_tasks,
         models=models,
-        runs=holdout_runs,
+        runs=eval_runs,
     )
 
     for item in outcomes:
@@ -593,11 +576,12 @@ def apply_acceptance_to_training_outcomes(
         else:
             for verdict in baseline.per_task:
                 run_logger.info(
-                    "Baseline task=%s winner=%s model_ll=%.6f trivial_ll=%.6f passed=%s",
+                    "Baseline task=%s winner=%s model_ll=%.6f %s_ll=%.6f passed=%s",
                     verdict.task,
                     verdict.winning_family,
                     verdict.model_log_loss,
-                    verdict.trivial_log_loss,
+                    verdict.benchmark,
+                    verdict.benchmark_log_loss,
                     verdict.passed,
                 )
 
@@ -667,23 +651,12 @@ def apply_latest_symlink_check(
     if latest.ok:
         return
 
-    holdout_runs = [
-        TaskModelHoldout(
-            task=item.task,
-            model=item.model,
-            run_id=item.result.run_id,
-            reports_dir=item.result.reports_dir,
-            model_log_loss=item.holdout_calibrated_log_loss,
-            trivial_log_loss=item.holdout_trivial_log_loss,
-        )
-        for item in outcomes
-    ]
     artifacts = verify_run_artifacts(
         config=config,
         artifacts_root=artifacts_root,
         enabled_tasks=enabled_tasks,
         models=models,
-        runs=holdout_runs,
+        runs=_evals_from_outcomes(outcomes),
     )
     artifacts = ArtifactCheckResult(ok=False, issues=artifacts.issues + latest.issues)
 
@@ -720,7 +693,7 @@ __all__ = [
     "BASELINE_STRICT_EPS",
     "RunStatus",
     "TaskBaselineVerdict",
-    "TaskModelHoldout",
+    "TaskModelEval",
     "apply_acceptance_to_training_outcomes",
     "apply_latest_symlink_check",
     "verify_latest_symlinks",
@@ -728,7 +701,6 @@ __all__ = [
     "evaluate_baseline_gate",
     "format_artifact_summary_section",
     "format_baseline_summary_section",
-    "holdout_metrics_from_json",
     "pair_run_status",
     "patch_metrics_acceptance",
     "pick_winning_family",

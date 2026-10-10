@@ -13,11 +13,12 @@ from typing import Any, Dict, List, Optional, Sequence, cast
 import pandas as pd
 import psycopg2
 
+from modeling.elo import compute_pregame_elo
+
 from .assemble import assemble_dataset
 from .features import (
     attach_pregame_elo,
     build_match_feature_snapshots,
-    compute_pregame_elo,
     compute_team_rolling_features,
 )
 from .schema import (
@@ -77,7 +78,7 @@ def _day_where_clause(config: DatasetBuildConfig) -> str:
     return ""
 
 
-def load_target_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool = False) -> pd.DataFrame:
     """Загружает игры-цели датасета: сыгранные (train) или будущие (predict).
 
     Train берёт завершённые игры из ``games`` вместе с фактическими голами;
@@ -88,9 +89,17 @@ def load_target_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
     Args:
         conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
         config: режим сборки, фильтры сезонов и окна дней.
+        with_decision: только train — добавить колонку ``decision`` (``REG``/``OT``/``SO``)
+            для Elo и ``games_train.csv``; в таблицу признаков она попасть не должна.
     """
     if config.mode == "train":
-        source = """
+        decision_col = (
+            """,
+                CASE WHEN g.is_shootouts THEN 'SO' WHEN g.is_overtime THEN 'OT' ELSE 'REG' END AS decision"""
+            if with_decision
+            else ""
+        )
+        source = f"""
             SELECT
                 g.game_id::bigint AS game_id,
                 g.day::date AS day,
@@ -99,7 +108,7 @@ def load_target_games(conn, config: DatasetBuildConfig) -> pd.DataFrame:
                 g.away_team_id::bigint AS away_team_id,
                 g.winner_id::bigint AS winner_id,
                 hs.goals::double precision AS home_goals_target,
-                aws.goals::double precision AS away_goals_target
+                aws.goals::double precision AS away_goals_target{decision_col}
             FROM games g
             LEFT JOIN game_team_stats hs
                 ON hs.game_id = g.game_id
@@ -294,6 +303,30 @@ def _connect_from_env():
     )
 
 
+_GAMES_TRAIN_COLUMNS = (
+    "game_id",
+    "day",
+    "season_id",
+    "home_team_id",
+    "away_team_id",
+    "home_goals",
+    "away_goals",
+    "decision",
+)
+
+
+def _write_games_train(played: pd.DataFrame, config: DatasetBuildConfig, path: Path) -> None:
+    """Write ``games_train.csv``: every played game of the loaded seasons, cold-start rows included.
+
+    The dataset drops games whose teams have too little prior history, but the Elo
+    benchmark (``modeling/elo.py``) needs the whole season with its OT/SO outcome.
+    """
+    games = played
+    if config.season_ids:
+        games = games[games["season_id"].isin([int(s) for s in config.season_ids])]
+    games[list(_GAMES_TRAIN_COLUMNS)].to_csv(path, index=False)
+
+
 def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     if config.mode not in {"train", "predict"}:
         raise ValueError("mode must be train|predict")
@@ -304,6 +337,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     dataset_path = config.output_dir / f"dataset_{config.mode}.csv"
     metadata_path = config.output_dir / f"metadata_{config.mode}.json"
     quality_path = config.output_dir / "data_quality_report.json"
+    games_path = config.output_dir / "games_train.csv"
 
     if config.mode == "predict" and config.train_metadata_path is None:
         raise ValueError("predict mode requires --train-metadata-path for strict schema parity")
@@ -335,7 +369,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         # rather than a near-duplicate query; only target_day_to still bounds it,
         # for a historical "as of" snapshot.
         elo_history = load_target_games(
-            conn, replace(config, mode="train", season_ids=[], target_day_from=None)
+            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_decision=True
         ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
 
     team_facts, team_facts_report = build_team_game_facts(history)
@@ -402,6 +436,8 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
 
     if not config.validate_only:
         assembled.to_csv(dataset_path, index=False)
+        if config.mode == "train":
+            _write_games_train(elo_history, config, games_path)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
     write_report(quality_path, quality_report)
 

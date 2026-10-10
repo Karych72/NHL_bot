@@ -22,7 +22,7 @@ Usage pattern (orchestrated by CLI stage 10)::
     save_model_artifact(path_dir, model=result.pipeline, metadata={...})
 
 Constraints:
-- fit() only on train_k; predict_proba() on val/cal/test/holdout.
+- fit() only on the train block; predict_proba() on val/cal/test.
 - No n_jobs=-1, no os.cpu_count(), no shuffle-based CV splitters.
 - No access to PostgreSQL or modeling.dataset_builder.*.
 - No CalibratedClassifierCV (calibration is stage 9).
@@ -263,7 +263,7 @@ def train_logreg_for_task(
     3. Returns a :class:`FitResult` with the fitted pipeline and diagnostics.
 
     The returned pipeline is fitted **only** on ``X_train`` / ``y_train``.
-    Calibration, test-set evaluation, and holdout scoring are handled by
+    Calibration and test-season evaluation are handled by
     later stages (9 and 10).
 
     Args:

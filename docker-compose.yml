@@ -105,6 +105,8 @@ services:
     # profiles: трек B в релиз не входит (решение человека, plan/open_tasks.md), поэтому обычные
     # `docker compose up -d`/`build` сервис не собирают и не запускают:
     # `docker compose --profile modeling up -d retrain`.
+    # Отключён до Задачи 68 (решение человека, 2026-10-10): home_win проигрывает Elo-эталону
+    # Задачи 66, каждый прогон был бы красным — профиль не поднимать (docs/modeling_training.md §9).
     profiles: ["modeling"]
     build:
       context: .

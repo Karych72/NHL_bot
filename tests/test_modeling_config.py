@@ -30,10 +30,10 @@ from modeling.dataset_builder.assemble import _wide_feature_columns
 from modeling.dataset_builder.features import (
     attach_pregame_elo,
     build_match_feature_snapshots,
-    compute_pregame_elo,
     compute_team_rolling_features,
 )
 from modeling.dataset_builder.schema import features_hash
+from modeling.elo import compute_pregame_elo
 
 
 def _minimal_manifest() -> list[dict[str, str]]:
@@ -76,15 +76,16 @@ def _minimal_yaml_text(**overrides: object) -> str:
           over_5_5:
             enabled: true
         split:
-          method: month
-          n_test_windows: 5
+          test_seasons: [20232024, 20242025]
           inner_val_games: 300
           calibration_games: 300
-          holdout:
-            fraction: 0.15
-            date_range:
-              from: null
-              to: null
+        elo:
+          grid:
+            k: [8]
+            home_advantage: [35]
+            season_regression: [0.333]
+            mov: [true, false]
+            ot_win_weight: [1.0, 0.5]
         models:
           logreg:
             grids:
@@ -139,7 +140,7 @@ class TestModelingConfigHappyPath(unittest.TestCase):
         metadata = _minimal_metadata()
         resolved = resolve_config(default_cfg, metadata)
         # platt is the default (Задача 40a): isotonic on the 300-game
-        # calibration block outputs exact 0/1 and blows up holdout log-loss.
+        # calibration block outputs exact 0/1 and blows up check-season log-loss.
         self.assertEqual(resolved.calibration.method.value, "platt")
         self.assertEqual(resolved.evaluation.bootstrap_samples, 1000)
 
@@ -162,11 +163,23 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("random_seed", msg)
 
-    def test_missing_split_n_test_windows(self) -> None:
+    def test_missing_split_test_seasons(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
-        del data["split"]["n_test_windows"]
+        del data["split"]["test_seasons"]
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("n_test_windows", msg)
+        self.assertIn("test_seasons", msg)
+
+    def test_missing_elo_section(self) -> None:
+        data = yaml.safe_load(_minimal_yaml_text())
+        del data["elo"]
+        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+        self.assertIn("elo", msg)
+
+    def test_empty_elo_grid_axis(self) -> None:
+        data = yaml.safe_load(_minimal_yaml_text())
+        data["elo"]["grid"]["k"] = []
+        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+        self.assertIn("elo.grid.k", msg)
 
     def test_missing_evaluation_epsilon_clip(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
@@ -183,16 +196,13 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         msg = self._resolve_expect_error(_minimal_yaml_text(random_seed="abc"))
         self.assertIn("random_seed", msg)
 
-    def test_n_test_windows_below_minimum(self) -> None:
-        # Задача 14, ruling Р2: floor is now sanitary-only (positive — zero and
-        # negative are both rejected); the real data-volume adequacy check
-        # lives in the build_walk_forward_splits guard, not here.
-        for value in (0, -1):
-            with self.subTest(n_test_windows=value):
+    def test_test_seasons_must_be_non_empty_and_increasing(self) -> None:
+        for value in ([], [20242025, 20232024], [20232024, 20232024]):
+            with self.subTest(test_seasons=value):
                 data = yaml.safe_load(_minimal_yaml_text())
-                data["split"]["n_test_windows"] = value
+                data["split"]["test_seasons"] = value
                 msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-                self.assertIn("n_test_windows", msg)
+                self.assertIn("test_seasons", msg)
 
     def test_inner_val_games_below_minimum(self) -> None:
         for value in (0, -1):
@@ -217,11 +227,13 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("enabled", msg.lower())
 
-    def test_invalid_split_method(self) -> None:
-        data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["method"] = "shuffle"
-        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("method", msg)
+    def test_removed_month_and_holdout_keys_forbidden(self) -> None:
+        for key, value in (("method", "month"), ("n_test_windows", 5), ("holdout", {"fraction": 0.15})):
+            with self.subTest(key=key):
+                data = yaml.safe_load(_minimal_yaml_text())
+                data["split"][key] = value
+                msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
+                self.assertIn(key, msg)
 
     def test_invalid_calibration_method(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
@@ -234,12 +246,6 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
         data["models"]["lgbm"]["monotone"]["home_win"]["f_a"] = 2
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("monotone", msg)
-
-    def test_holdout_fraction_and_date_range_mutually_exclusive(self) -> None:
-        data = yaml.safe_load(_minimal_yaml_text())
-        data["split"]["holdout"]["date_range"]["from"] = "2024-01-01"
-        msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
-        self.assertIn("exactly one", msg.lower())
 
 
 class TestMetadataMerge(unittest.TestCase):
@@ -510,10 +516,22 @@ class TestLgbmMonotoneNamesMatchDataset(unittest.TestCase):
                     msg=(
                         f"{cfg_path.name}: calibration.min_samples ({min_samples}) must not "
                         f"exceed split.calibration_games ({calibration_games}), or "
-                        "fit_calibrator silently skips calibration on every fold "
+                        "fit_calibrator silently skips calibration on every season run "
                         "(modeling/calibrate.py:196)"
                     ),
                 )
+
+
+class TestShippedEloGrid(unittest.TestCase):
+    def test_default_grid_is_the_agreed_480_points_and_smoke_grid_is_small(self) -> None:
+        from modeling.elo import expand_elo_grid
+
+        sizes = {}
+        for cfg_path in _TRAINING_CONFIG_PATHS:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            sizes[cfg_path.name] = len(expand_elo_grid(raw["elo"]["grid"]))
+        self.assertEqual(sizes["modeling_default.yaml"], 5 * 4 * 4 * 2 * 3)
+        self.assertLessEqual(sizes["modeling_smoke.yaml"], 4)
 
 
 class TestApplyOverrides(unittest.TestCase):

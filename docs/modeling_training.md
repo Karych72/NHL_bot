@@ -4,7 +4,7 @@ Practical guide to offline training of pre-match classifiers for NHL games: **`y
 
 **Source of truth for stages and acceptance criteria:** [`plan/classifier/nhl_classifier_modeling_plan_UPDATE.md`](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md).
 
-**Where the training table comes from:** [`docs/modeling_dataset_builder.md`](modeling_dataset_builder.md) (`modeling/dataset_builder/`, CLI `build-dataset`). Training consumes only the built artifacts — **no PostgreSQL access** in the train path (`dataset_train.csv` + `metadata_train.json` via `modeling/train_input.py`).
+**Where the training table comes from:** [`docs/modeling_dataset_builder.md`](modeling_dataset_builder.md) (`modeling/dataset_builder/`, CLI `build-dataset`). Training consumes only the built artifacts — **no PostgreSQL access** in the train path (`dataset_train.csv` + `metadata_train.json` via `modeling/train_input.py`; `games_train.csv` for the Elo benchmark via `modeling/elo.py`).
 
 ---
 
@@ -33,24 +33,111 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `random_seed` | Single seed for all subsystems (training, bootstrap, LightGBM, Platt calibration) |
 | `compute.num_threads`, `compute.log_level` | Thread limit for sklearn/LightGBM and log level for `run.log` |
 | `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
-| `split.*` | Walk-forward geometry: method, `n_test_windows`, `inner_val_games`, `calibration_games`, holdout (`fraction` or `date_range`) |
+| `split.*` | Season-by-season check: `test_seasons` (strictly increasing), `inner_val_games`, `calibration_games` — see §2a |
+| `elo.grid` | Search grid of the Elo benchmark (`k`, `home_advantage`, `season_regression`, `mov`, `ot_win_weight`) — see §2a |
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
 | `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
 | `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
 
-`split.*` bounds in `SplitConfig` are sanitary-only (positive integers); whether a
-geometry actually fits the available history is checked at split-build time by a
-data-volume guard in `modeling/splits.py` (`build_walk_forward_splits`, Задача 14):
-it fails loudly with both the required and the actual row counts instead of silently
-building an empty/degenerate split. The guard checks only a necessary lower bound on
-row counts, not the actual distribution of games across calendar months, so a geometry
-that passes it can still fail later in `_windows_calendar_month` / `_window_from_tail`.
-`configs/modeling_default.yaml` carries the
-multiseason geometry (`300`/`300`/`5` windows); `configs/modeling_smoke.yaml` is sized
-for a single season or smaller (`50`/`50`/`3` windows) for fast local/CI smoke runs.
-Each file's YAML comment above `split:` derives the guard's minimum row count for its
-own numbers.
+`configs/modeling_default.yaml` checks `[20232024, 20242025, 20252026]` with `300`/`300`
+inner_val/calibration games; `configs/modeling_smoke.yaml` is a small profile (two checked
+seasons, `50`/`50`, a 2-point Elo grid) for local/CI smoke runs on synthetic data with at
+least 3 seasons. `SplitConfig` bounds are sanitary only; a missing checked season or too little
+history before it fails loudly in `modeling/splits.py::build_season_splits`.
+
+### 2a. Season-by-season check and the Elo benchmark (Задача 66)
+
+Replaces the old monthly walk-forward windows plus a single holdout tail (994 games of one
+unrepresentative season; the gate compared with a constant).
+
+**Runs.** For each season `s` in `split.test_seasons` the model trains on **all rows with
+`season_id < s`**: the last `calibration_games` rows calibrate, the `inner_val_games` before them
+pick hyper-parameters, the rest train. It is then checked on **every row of `s`**. Rows after
+the last checked season (a season in progress) are not checked. The final model is fitted on
+every row of the dataset (`calibration_final` = last `calibration_games`, `inner_val` = tail of
+the rest). There is no holdout.
+
+**Elo benchmark** (`modeling/elo.py`, computed once per run from `games_train.csv`, which holds
+every played game with its `REG`/`OT`/`SO` outcome — the dataset itself loses cold-start games).
+For each checked season, Elo parameters (`elo.grid`) and a Platt curve
+`P(home) = sigmoid(a + b·d)`, `d = R_home − R_away` (no home bonus), are fitted **only on games of
+seasons before `s`, without the first season in the data** (warm-up: everybody starts at 1500) —
+the checked season never enters the fit. The Elo forecast is compared with the model on the
+**same `game_id`s**; Elo on the whole season (including games the dataset dropped) is reported
+separately as `elo_full_season`. `elo_raw` is the chess curve with the chosen home bonus.
+
+**Gate.** `home_win` is accepted only if the pooled (sum of checked seasons) calibrated log-loss
+of the best family is strictly below Elo's with the fitted curve; `over_5_5` (Elo does not
+predict totals) — strictly below the constant (share of "over 5.5" on all rows before the checked
+season). `games_train.csv` is required when `home_win` is trained; `over_5_5` alone does not
+need it.
+
+**Report** (`metrics.json` / `summary.md`):
+
+- `seasons[]` — per checked season: `n_test`, day range, `model_raw`, `model` (calibrated),
+  `constant`, and for `home_win` `elo_raw`, `elo`, `elo_params` (`k, home_advantage,
+  season_regression, mov, ot_win_weight, a, b`, fit log-loss/size), `elo_full_season`; each
+  metric block has `log_loss`, `brier`, `ece`.
+- `pooled` — the same over the sum of seasons, plus `diff_ci`: block-by-day paired bootstrap 95%
+  CI (same resampled days for both sides) of the log-loss difference `model_minus_elo` (home_win)
+  and `model_minus_constant`, keys `point, ci_low, ci_high`; `bootstrap` — CIs of the model's own
+  log-loss/Brier; `reliability_path`.
+- `calibration_table` — for the model and (home_win) Elo: 5 pp forecast bins, non-empty only.
+- `slices` (sum of seasons, same games for all columns): `season_start` (first 10% of each
+  season's games), `post_olympic_break` (2025/26, 2026-02-26…2026-03-11), `prior_games_<bucket>`
+  by `min(home, away prior_games_count)` — `<=7`, `8-10`, `11-20`, `21+` (the feature matrix must carry both prior-games columns, otherwise the run fails) — to choose
+  `--min-prior-games`.
+- `team_breakdown` and the reliability PNG are over the sum of seasons.
+
+**Artifacts.** Per-season raw model + calibrator: `models/<task>/<model>/<run_id>/season_<season_id>/`
+(replaces `fold_<k>/`). `final/metadata.json` carries `test_seasons`; the `holdout_*`, `test_days`,
+`n_rows_test`, `n_rows_holdout` fields are gone.
+
+**Результат на реальных данных** (2026-10-10, датасет `--min-prior-games 5`: 6049 строк,
+`games_train.csv` 6568 игр; конфиг по умолчанию, сетка Elo 480 точек; run
+`home_win_*_bb0c2b06_20261010T191936Z`). Log-loss на проверочных строках датасета (те же игры
+для всех колонок); `elo_full` — Elo на всех 1312 играх сезона.
+
+| сезон | n | константа | Elo сырой | Elo с кривой | `elo_full` | logreg | lgbm (калибр.) | lgbm сырой |
+|---|---|---|---|---|---|---|---|---|
+| 2023/24 | 1212 | 0.6898 | 0.6799 | **0.6629** | 0.6630 | 0.6770 | 0.6706 | 0.6649 |
+| 2024/25 | 1207 | 0.6864 | 0.6811 | 0.6713 | 0.6703 | **0.6633** | 0.6698 | 0.6730 |
+| 2025/26 | 1211 | 0.6929 | **0.6876** | 0.6919 | 0.6907 | 0.7085 | 0.7030 | 0.6894 |
+| сумма | 3630 | 0.6897 | 0.6829 | **0.6754** | — | 0.6830 | 0.6812 | 0.6758 |
+
+Подобранный Elo (только по сезонам до проверочного, без прогревочного 2021/22):
+
+| проверка | K | H | сдвиг к среднему | MOV | вес OT/SO | a | b | ECE на сезоне |
+|---|---|---|---|---|---|---|---|---|
+| 2023/24 | 2 | 0 | 0.75 | да | 1.0 | 0.111 | 0.0251 | 0.014 |
+| 2024/25 | 2 | 0 | 0.5 | да | 1.0 | 0.140 | 0.0183 | 0.040 |
+| 2025/26 | 3 | 10 | 0.5 | да | 1.0 | 0.181 | 0.0125 | 0.052 |
+
+Сумма сезонов, разности log-loss с 95% ДИ (парный bootstrap по игровым дням):
+lgbm − Elo **+0.0058 [−0.0002; +0.0118]**, logreg − Elo **+0.0076 [+0.0015; +0.0134]**;
+lgbm − константа −0.0086 [−0.0173; +0.0006]. Brier / ECE: Elo 0.2414 / 0.029, lgbm 0.2439 / 0.053.
+**Гейт не пройден ни одной моделью** (`failed_baseline_check`).
+
+Выводы:
+- Нынешние модели не лучше Elo; logreg хуже значимо. Калибровка Platt на 300 играх lgbm вредит
+  (сырой 0.6758 против калиброванного 0.6812) — вопрос к Задаче 68 (модель победы).
+- Сетка Elo — края по K и H: при расширении (K 2–3, H 0–10) подбор ушёл к краю, но вне выборки
+  стало чуть хуже (0.6754 против 0.6743 на сетке K 4–12, H 20–50), т.е. дальше это подгонка под
+  сезоны обучения. H почти не влияет: бонус дома несёт `a`. Вес OT/SO выбран 1.0 во всех прогонах.
+- Шахматная кривая (b = ln10/400 ≈ 0.0058) неверна для малых K: подобранная `b` в 2–4 раза круче.
+  Исключение — 2025/26, сезон паритета: там сырой Elo лучше подобранного.
+- ДИ разности «модель − Elo» шириной ≈ ±0.006 — в пределах прежних ±0.003–0.01 на holdout, а не
+  заметно уже, как ждала карточка: парная разность с Elo сильно коррелирована, но игр всё равно
+  мало. Разница меньше ~0.006 этой проверкой не различается.
+- Срезы lgbm (сумма): начало сезона 0.6887 против Elo 0.6794; `prior_games ≤7` 0.6855 / 0.6847,
+  `8-10` 0.7025 / 0.6831, `11-20` 0.6857 / 0.6860, `21+` 0.6790 / 0.6727; после олимпийской
+  паузы (n=110) 0.6903 / 0.6884. Ранние игры модель не проваливает сильнее поздних, так что
+  повышать `--min-prior-games` выше 5 данные не требуют.
+- Ограничение: константы фичи `diff_elo` (Задача 40) подбирались на 2022-10…2025-11, т.е. фича
+  модели частично видела проверочные сезоны; это работает в пользу модели, а не против неё.
+
+---
 
 ### Priority: YAML vs `metadata_train.json`
 
@@ -129,7 +216,7 @@ artifacts/
     home_win/
       lgbm/
         <run_id>/
-          fold_<k>/
+          season_<season_id>/
           final/{model.joblib, calibrator.joblib, metadata.json}
         latest -> <run_id>/final/
       logreg/
@@ -141,8 +228,8 @@ artifacts/
     <run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
 ```
 
-- **Walk-forward folds** — `artifacts/models/<task>/<model>/<run_id>/fold_<k>/` (per-fold raw model, calibrator, metadata).
-- **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final` after final retrain before holdout).
+- **Per-season runs** — `artifacts/models/<task>/<model>/<run_id>/season_<season_id>/` (raw model, calibrator, metadata of the run that was checked on that season; §2a).
+- **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final`, fitted on every row of the dataset).
   For LGBM, `model_final` is retrained on `train_full` for a **fixed** number of
   rounds — the `best_iteration` an honest inner-val grid search already picked —
   with no early stopping and no validation set carved out of `train_full`.
@@ -157,12 +244,12 @@ artifacts/
 - **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
-### `metadata.json` (final and fold artifacts)
+### `metadata.json` (final and per-season artifacts)
 
 Required fields include:
 
 - `features_hash` — must match `metadata_train.json`
-- Date ranges for train / inner_val / calibration / test / holdout slices
+- Date ranges for train / inner_val / calibration slices; `test_seasons` (final artifact)
 - Sample sizes per slice
 - Library versions (`sklearn`, `lightgbm`, `pandas`, `numpy`, …)
 - `git_commit` — short hash if `.git` exists, else `null`
@@ -203,7 +290,7 @@ open artifacts/reports/<run_id>/reliability_<task>.png   # macOS; use your viewe
 ls -la artifacts/models/<task>/<model>/latest/
 ```
 
-**`status: failed_baseline_check`** — first line of `summary.md` when, on holdout, the best model family for a task does **not strictly improve** calibrated log loss vs the trivial constant predictor (`trivial_base_rate` computed from train base rate). Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
+**`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a). Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
@@ -215,12 +302,12 @@ Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status
 
 Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md) (Diagnostics and acceptance):
 
-1. `python -m modeling.cli train --config configs/modeling_default.yaml` produces final models, walk-forward reports, and a holdout report with reliability PNG.
+1. `python -m modeling.cli train --config configs/modeling_default.yaml` produces final models and per-season reports (checked seasons, their sum, Elo) with reliability PNG.
 2. Stage-11 modeling tests pass (`tests/test_modeling_*.py`).
-3. Holdout report for each task includes: log loss, Brier, ECE before and after calibration, block-bootstrap 95% CIs, trivial baseline row, reliability PNG, team error breakdown.
+3. The report for each task includes, per checked season and for their sum: log loss, Brier, ECE before and after calibration, constant (and Elo for `home_win`), block-bootstrap 95% CIs of the differences, calibration table, slices, reliability PNG, team error breakdown.
 4. Each artifact `metadata.json` contains `features_hash`, date ranges, sample sizes, library versions, `git_commit`/`null`, `random_seed`, `run_id`.
 5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run (with `--no-promote` — after a manual `promote`, §9).
-6. On holdout, the best family must **strictly beat** `trivial_base_rate` log loss; otherwise `status: failed_baseline_check`.
+6. On the sum of checked seasons, the best family must **strictly beat** Elo (`home_win`) / the constant (`over_5_5`) in log loss; otherwise `status: failed_baseline_check`.
 
 ---
 
@@ -252,7 +339,7 @@ Steps performed by `run_predict()`:
 2. Load `model.joblib` + `metadata.json` (`load_model_artifact`) and
    `calibrator.joblib` (`load_latest_calibrator` — a plain estimator dump, distinct
    from the `model_raw.joblib` triple `modeling.calibrate.load_calibration_artifact`
-   reads for per-fold artifacts).
+   reads for per-season artifacts).
 3. Load the predict CSV + metadata with the same schema-generic loader training uses
    (`train_input.load_training_table_split`), then compare the loaded model's
    `features_hash` against the predict dataset's (`modeling.artifacts.check_features_hash_match`)
@@ -327,6 +414,9 @@ model under the old `p`-input, L2 fit).
 ---
 
 ## 8. Результаты Задачи 40
+
+> Историческая запись: числа ниже получены по схеме до Задачи 66 (месячные окна + holdout 2025-11-20…2026-04-16,
+> гейт против константы). Действующая схема — §2a.
 
 Реальный прогон (не разведка): `build-dataset --mode train` на живой БД (6049 строк, 5
 сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
@@ -405,6 +495,13 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 
 ## 9. Retrain по расписанию
 
+> **Отключён до Задачи 68** (модель победы; решение человека, 2026-10-10). По проверке Задачи 66 обе модели
+> `home_win` проигрывают Elo-эталону (§2a), поэтому каждый плановый прогон был бы красным, а
+> `promote` отказывал бы любому новому `run_id`. Профиль `modeling` не включать (`docker compose
+> --profile modeling up -d retrain` не выполнять); если он уже поднят — `docker compose
+> --profile modeling stop retrain`. Код сервиса не менялся: включить снова после модели, которая
+> проходит гейт.
+
 Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `up`/`build` его не трогают,
 запуск — `docker compose --profile modeling up -d retrain`; `pipeline/scheduled_retrain.py`, образ со стадией
 `modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ночью каждые 30 минут,
@@ -422,10 +519,11 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
   нет файла, `ok: false` или старше 26 часов — retrain не стартует, в `retrain_status.json`
   пишется неуспех (`failed_command` = предусловие), в лог — ошибка, `once` возвращает 1.
   Обучение на недогруженных данных хуже, чем отсутствие обучения.
-- **Только `home_win`.** `over_5_5` ни разу не проходила гейт (§8): включённая в расписание,
+- **Только `home_win`.** `over_5_5` ни разу не проходила гейт (§8, по старой схеме): включённая в расписание,
   она делала бы каждый прогон красным. Конфиг не менялся — задача выбирается флагом `--task`.
 - **`latest` автоматически не двигается** (решение человека, 2026-09-29): гейт лишь требует
-  бить `trivial_base_rate`, а запас над константой (~0.003 log loss) — в пределах шума;
+  бить Elo с подобранной кривой на сумме проверочных сезонов (с Задачи 66; раньше — константу на
+  holdout), а запас над эталоном может оказаться в пределах шума (см. `diff_ci` в отчёте);
   автозамена дёргала бы прогноз в боте без причины. Champion/challenger не реализован.
 - **Где итог.** `docker compose logs retrain`: строки `run_id=… task=… model=… status=…` из
   `train`, затем итоговая строка с командой продвижения; отчёт —

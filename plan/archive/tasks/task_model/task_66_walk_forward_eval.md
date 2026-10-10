@@ -3,9 +3,9 @@
 **Блок:** трек B · **Надобность:** 🔴 (для трека B) · **Зависит от:** ничего
 **Область:** `modeling/` (сплиты, Elo-эталон, отчёт, гейт), конфиги `modeling_*.yaml`,
 `docs/modeling_training.md`.
-**Источник:** исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](research/report_model_vs_bookmaker.md),
+**Источник:** исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](../../../tasks/task_model/research/report_model_vs_bookmaker.md),
 раздел «Holdout 2025-26 занижает качество»); метрики и Elo согласованы с человеком 2026-10-10.
-Реестр — [`../../open_tasks.md`](../../open_tasks.md).
+Реестр — [`../../closed_tasks.md`](../../closed_tasks.md).
 
 ## Кратко
 
