@@ -19,6 +19,7 @@ from modeling.metrics import (
     team_breakdown,
     trivial_baseline,
 )
+from tests._modeling_fixtures import sample_compose_kwargs
 from modeling.report import (
     compose_metrics_json,
     compose_summary_md,
@@ -50,49 +51,8 @@ EXPECTED_ECE_MINI = 0.175
 VALID_RUN_ID = "home_win_lgbm_b334df68_20260530T143022Z"
 
 
-def _metric_block(
-    *,
-    k: int | None = None,
-    n_test: int = 100,
-    raw: dict | None = None,
-    trivial: dict | None = None,
-) -> dict:
-    payload = {
-        "k": k,
-        "train_range": {"start": "2018-10-01", "end": "2020-03-31"},
-        "test_range": {"start": "2020-04-01", "end": "2020-04-30"},
-        "n_train": 1000,
-        "n_test": n_test,
-        "raw": raw
-        or {"log_loss": 0.62, "brier": 0.21, "ece": 0.04},
-        "calibrated": None,
-        "trivial_base_rate": trivial
-        or {"log_loss": 0.69, "brier": 0.25, "p": 0.54},
-    }
-    if k is None:
-        payload.pop("k")
-    return payload
-
-
 def _sample_metrics_json() -> dict:
-    fold = _metric_block(k=1)
-    holdout = _metric_block(n_test=200)
-    holdout["reliability_path"] = "reliability_home_win.png"
-    return compose_metrics_json(
-        run_id=VALID_RUN_ID,
-        task="home_win",
-        model="lgbm",
-        features_hash="b334df68cab14a12056b7a41b324face3cc9cd835c30b738caffdef1b72f81a1",
-        folds=[fold],
-        holdout=holdout,
-        team_breakdown={
-            "home_team_id": [
-                {"team_id": 1, "n_games": 10, "log_loss": 0.8, "log_loss_minus_overall": 0.2},
-                {"team_id": 2, "n_games": 12, "log_loss": 0.5, "log_loss_minus_overall": -0.1},
-            ],
-            "away_team_id": [],
-        },
-    )
+    return compose_metrics_json(**sample_compose_kwargs(task="home_win", model="lgbm", run_id=VALID_RUN_ID))
 
 
 class TestReferenceMetrics:
@@ -176,39 +136,59 @@ class TestReliabilityPlot:
 
 
 class TestComposeMetricsJson:
-    def test_valid_run_id_passes(self) -> None:
+    def test_valid_payload_keeps_seasons_pooled_and_slices(self) -> None:
         payload = _sample_metrics_json()
         assert payload["run_id"] == VALID_RUN_ID
-        assert payload["folds"][0]["trivial_base_rate"]["log_loss"] == 0.69
-        assert payload["holdout"]["trivial_base_rate"]["brier"] == 0.25
+        assert len(payload["seasons"]) == 2
+        assert payload["seasons"][0]["constant"]["log_loss"] == 0.69
+        assert payload["pooled"]["diff_ci"]["model_minus_elo"]["ci_low"] < payload["pooled"]["diff_ci"]["model_minus_elo"]["point"]
+        assert payload["slices"]["post_olympic_break"] == {"n": 0}
+        assert "folds" not in payload and "holdout" not in payload
 
     def test_invalid_run_id_raises(self) -> None:
+        kwargs = sample_compose_kwargs()
+        kwargs["run_id"] = "weird-id"
         with pytest.raises(ValueError, match="run_id must match"):
-            compose_metrics_json(
-                run_id="weird-id",
-                task="home_win",
-                model="logreg",
-                features_hash="abc",
-                folds=[],
-                holdout=_metric_block(),
-                team_breakdown={},
-            )
+            compose_metrics_json(**kwargs)
 
-    def test_fold_missing_trivial_base_rate_raises(self) -> None:
-        bad_fold = _metric_block(k=1)
-        del bad_fold["trivial_base_rate"]
-        holdout = _metric_block(n_test=200)
-        holdout["reliability_path"] = "reliability_home_win.png"
-        with pytest.raises(ValueError, match="trivial_base_rate"):
-            compose_metrics_json(
-                run_id=VALID_RUN_ID,
-                task="home_win",
-                model="lgbm",
-                features_hash="b334df68cab14a12056b7a41b324face3cc9cd835c30b738caffdef1b72f81a1",
-                folds=[bad_fold],
-                holdout=holdout,
-                team_breakdown={},
-            )
+    def test_empty_seasons_raise(self) -> None:
+        kwargs = sample_compose_kwargs()
+        kwargs["seasons"] = []
+        with pytest.raises(ValueError, match="seasons"):
+            compose_metrics_json(**kwargs)
+
+    def test_season_missing_constant_raises(self) -> None:
+        kwargs = sample_compose_kwargs()
+        del kwargs["seasons"][0]["constant"]
+        with pytest.raises(ValueError, match="constant"):
+            compose_metrics_json(**kwargs)
+
+    def test_pooled_missing_diff_ci_raises(self) -> None:
+        kwargs = sample_compose_kwargs()
+        del kwargs["pooled"]["diff_ci"]
+        with pytest.raises(ValueError, match="diff_ci"):
+            compose_metrics_json(**kwargs)
+
+    def test_metrics_without_ece_raise(self) -> None:
+        kwargs = sample_compose_kwargs()
+        del kwargs["pooled"]["model"]["ece"]
+        with pytest.raises(ValueError, match="ece"):
+            compose_metrics_json(**kwargs)
+
+
+class TestSummary:
+    def test_summary_lists_seasons_sum_row_differences_and_slices(self) -> None:
+        text = compose_summary_md(_sample_metrics_json())
+        assert "| 20202021 |" in text and "| sum |" in text
+        assert "model_minus_elo" in text and "model_minus_constant" in text
+        assert "Calibration (elo" in text
+        assert "| season_start | 20 |" in text
+
+    def test_over_task_summary_has_no_elo_section(self) -> None:
+        payload = compose_metrics_json(**sample_compose_kwargs(task="over_5_5", run_id="over_5_5_logreg_b334df68_20260530T143022Z"))
+        text = compose_summary_md(payload)
+        assert "model_minus_elo" not in text
+        assert "Calibration (elo" not in text
 
 
 class TestWriteReport:
@@ -269,3 +249,15 @@ class TestConfigureRunLogger:
         for handler in logger_a.handlers:
             handler.flush()
         assert "first line" in log_path.read_text(encoding="utf-8")
+
+
+def test_log_loss_per_game_matches_log_loss_and_clips() -> None:
+    from modeling.metrics import log_loss_per_game
+
+    per_game = log_loss_per_game(Y_MINI, P_MINI)
+    assert per_game.tolist() == pytest.approx(
+        [-math.log(0.9), -math.log(0.9), -math.log(0.7), -math.log(0.8)]
+    )
+    assert float(per_game.mean()) == pytest.approx(log_loss(Y_MINI, P_MINI), rel=1e-12)
+    extreme = log_loss_per_game([1, 0], [0.0, 1.0], epsilon=1e-3)
+    assert extreme.tolist() == pytest.approx([-math.log(1e-3)] * 2)

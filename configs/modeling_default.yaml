@@ -10,28 +10,24 @@ tasks:
   over_5_5:
     enabled: true
 
-# Working multiseason profile. Guard (modeling/splits.py, Задача 14) requires
-# wf_rows >= inner_val_games + calibration_games + n_test_windows*1 + 1
-#         = 300 + 300 + 5 + 1 = 606
-# and total rows >= holdout + 606, i.e. N >= ceil(606 / (1 - holdout.fraction))
-#         = ceil(606 / 0.85) = 713 rows minimum (guard's necessary lower bound
-# on raw row counts only -- NOT sufficient: the earliest of the n_test_windows
-# selected calendar months also needs a real inner_val+calibration pool
-# strictly before it, which depends on how games are distributed across
-# months, not just the total row count; that is checked separately, later,
-# by _window_from_tail). Checked against the actual dataset (Задача 30,
-# 2026-09-12): 6049 rows / 5 seasons, comfortably above both bounds -- fits.
-# For a single-season/smoke-sized dataset use configs/modeling_smoke.yaml.
+# Season-by-season check (Задача 66). For each season s in test_seasons the model
+# trains on all rows with season_id < s (last calibration_games rows calibrate, the
+# inner_val_games before them pick hyper-parameters) and is checked on all of s.
+# Rows after the last test season (a season in progress) are not checked.
 split:
-  method: month
-  n_test_windows: 5
+  test_seasons: [20232024, 20242025, 20252026]
   inner_val_games: 300
   calibration_games: 300
-  holdout:
-    fraction: 0.15
-    date_range:
-      from: null
-      to: null
+
+# Elo benchmark grid (modeling/elo.py): parameters are picked on seasons before the
+# checked one, 5*4*4*2*3 = 480 passes over the league history.
+elo:
+  grid:
+    k: [2, 3, 4, 6, 8]
+    home_advantage: [0, 10, 20, 35]
+    season_regression: [0.333, 0.5, 0.6, 0.75]
+    mov: [true, false]
+    ot_win_weight: [1.0, 0.75, 0.5]
 
 models:
   logreg:
@@ -79,7 +75,7 @@ models:
 
 calibration:
   # Isotonic on a 300-game calibration block outputs exact 0/1 at the extreme
-  # bins, which blows up holdout log-loss (spike 40a). Platt is the default.
+  # bins, which blows up check-season log-loss (spike 40a). Platt is the default.
   method: platt
   # Must not exceed split.calibration_games (300), or calibration is silently
   # skipped on every fold. See docs/modeling_training.md §7 (Задача 39).

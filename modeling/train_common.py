@@ -140,7 +140,7 @@ def predict_raw_proba(model_family: str, model: Any, X: pd.DataFrame) -> np.ndar
     """Return raw (pre-calibration) positive-class probabilities for *model_family*.
 
     Shared logreg-vs-lgbm dispatch used by both training (evaluating
-    calibration/test/holdout blocks in ``train_runner.py``) and inference
+    calibration/test blocks in ``train_runner.py``) and inference
     (``predict_runner.py``, scoring an already-frozen model), so this dispatch
     logic exists in exactly one place.
 

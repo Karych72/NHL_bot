@@ -1,19 +1,18 @@
-"""Walk-forward temporal splits for prematch classifiers (UPDATE plan stage 4).
+"""Season-by-season temporal splits for prematch classifiers (Задача 66).
 
-Embargo is **not** used: rolling features in the training dataset are built with
-``shift(1)`` and never consume in-match / same-row signals, so there is no
-information leak across block boundaries. See
-``plan/classifier/nhl_classifier_modeling_plan_UPDATE.md``, section
-"### 4. Временные сплиты без утечки".
+For every checked season ``s`` the model trains on all rows of earlier seasons
+(their tail is calibration and hyper-parameter selection) and is checked on every
+row of ``s``. Embargo is **not** used: rolling features are built with ``shift(1)``
+and never consume in-match signals, so nothing leaks across block boundaries.
 
-Block-order validation (``_assert_strictly_before``) compares **positions** in
-the sorted timeline, not calendar days, so a day with several games may
-legitimately straddle a block boundary. This is safe because every feature is
-either scoped to ``(team_id, season_id)`` and never looks across teams
-(Задача 32, ``modeling/dataset_builder/features.py``), or — Elo, the one
-exception (Задача 40, Task 3, ``features.py::compute_pregame_elo``) — is
-frozen per calendar day, so it never sees a same-day game's result either.
-See that function's docstring for the exact condition.
+Block-order validation (``_assert_strictly_before``) compares **positions** in the
+sorted timeline, not calendar days. Seasons do not overlap in time, so a boundary
+between two seasons never falls inside a day; the train / inner_val / calibration
+boundaries are cut by row count and may land inside a day. This is safe because every
+feature is either scoped to ``(team_id, season_id)`` and never looks across teams
+(``modeling/dataset_builder/features.py``), or — Elo, the one exception
+(``modeling/elo.py``) — is frozen per calendar day, so it never sees a same-day game's
+result either.
 
 Index convention
 ----------------
@@ -31,7 +30,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from modeling.config import ConfigError, HoldoutConfig, SplitConfig, SplitMethod
+from modeling.config import ConfigError, SplitConfig
 
 METADATA_PARITY_KEYS: tuple[str, ...] = (
     "feature_set_version",
@@ -42,7 +41,7 @@ METADATA_PARITY_KEYS: tuple[str, ...] = (
 
 
 class SplitError(ValueError):
-    """Invalid split geometry or insufficient history for the requested windows."""
+    """Invalid split geometry or insufficient history for the requested seasons."""
 
 
 @dataclass(frozen=True)
@@ -55,10 +54,10 @@ class DayRange:
 
 
 @dataclass(frozen=True)
-class OuterWindow:
-    """One walk-forward outer window ``k`` (1-indexed, chronological)."""
+class SeasonWindow:
+    """One checked season: what the model learns from and the season it is checked on."""
 
-    k: int
+    season_id: int
     train_idx: np.ndarray
     inner_val_idx: np.ndarray
     calibration_idx: np.ndarray
@@ -75,7 +74,7 @@ class OuterWindow:
     def to_log_dict(self) -> dict[str, Any]:
         """Structured metadata suitable for ``metrics.json`` / ``run.log``."""
         return {
-            "k": self.k,
+            "season_id": self.season_id,
             "train_size": self.train_size,
             "inner_val_size": self.inner_val_size,
             "calibration_size": self.calibration_size,
@@ -96,32 +95,15 @@ class OuterWindow:
 
 
 @dataclass(frozen=True)
-class HoldoutSplit:
-    holdout_idx: np.ndarray
-    holdout_days: DayRange
-    holdout_size: int
+class SeasonSplits:
+    """All per-season windows of a run, in ``split.test_seasons`` order."""
 
-    def to_log_dict(self) -> dict[str, Any]:
-        return {
-            "holdout_size": self.holdout_size,
-            "holdout_days": [
-                str(self.holdout_days.min_day.date()),
-                str(self.holdout_days.max_day.date()),
-            ],
-            "holdout_idx_range": _positional_range(self.holdout_idx),
-        }
-
-
-@dataclass(frozen=True)
-class WalkForwardSplits:
-    windows: tuple[OuterWindow, ...]
-    holdout: HoldoutSplit
+    windows: tuple[SeasonWindow, ...]
 
     def to_log_dict(self) -> dict[str, Any]:
         return {
             "n_windows": len(self.windows),
             "windows": [window.to_log_dict() for window in self.windows],
-            "holdout": self.holdout.to_log_dict(),
         }
 
 
@@ -158,25 +140,21 @@ def validate_metadata_parity(
         raise ConfigError("\n".join(lines))
 
 
-def build_walk_forward_splits(
+def build_season_splits(
     keys: pd.DataFrame,
     config: SplitConfig,
     *,
-    game_ids: pd.Series | None = None,
     yaml_reference: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
-) -> WalkForwardSplits:
-    """Build ordered walk-forward outer windows and a single final holdout.
+) -> SeasonSplits:
+    """Build one window per checked season (``config.test_seasons``).
 
     Parameters
     ----------
     keys:
-        DataFrame with required columns ``day`` (datetime64) and ``game_id``.
+        DataFrame with required columns ``day`` (datetime64), ``game_id`` and ``season_id``.
     config:
         Split section from ``modeling.config`` (``SplitConfig``).
-    game_ids:
-        Optional pre-extracted ``game_id`` series aligned with ``keys``; when
-        omitted, ``keys['game_id']`` is used after sorting.
     yaml_reference:
         Optional YAML reference mapping for metadata parity checks.
     metadata:
@@ -184,70 +162,54 @@ def build_walk_forward_splits(
 
     Returns
     -------
-    WalkForwardSplits
-        Chronological outer windows (``k=1..n_test_windows``) plus holdout cut
-        from the timeline tail **before** walk-forward windows are carved.
+    SeasonSplits
+        One :class:`SeasonWindow` per ``test_seasons`` entry, in that order. Rows after
+        the last checked season (a season in progress) belong to no window.
 
     Guarantees
     ----------
     - Stable sort by ``(day, game_id)``; input row order is ignored.
-    - Expanding train: ``train_k`` is strictly before ``inner_val_k`` **by
-      position** in the sorted timeline (not by calendar day — a day with
-      several games may straddle the ``train``/``inner_val`` boundary; see
-      ``_assert_strictly_before`` for why that is safe under the current
-      feature set, and when it would stop being safe).
-    - ``inner_val_k``, ``calibration_k``, ``test_k`` are consecutive,
-      non-overlapping blocks within each window (by position); holdout is
-      after all ``test_k`` (by position).
-    - ``test_k`` blocks do not overlap across windows (by ``game_id``).
-    - For ``method=month``, ``inner_val_k`` and ``calibration_k`` may overlap
-      across windows: each window takes the tail of games immediately before its
-      test month, so neighbouring windows share validation/calibration rows.
-      This is intentional (no test leakage — each ``test_k`` is isolated).
-      For ``method=fixed_games``, outer blocks are disjoint and inner_val/cal
-      do not overlap across windows.
+    - ``test`` = all rows of the season; ``train`` + ``inner_val`` + ``calibration`` =
+      all rows of earlier seasons, split as consecutive non-overlapping blocks by position
+      (the last ``calibration_games`` rows calibrate, the ``inner_val_games`` before them
+      pick hyper-parameters, the rest train).
     - Deterministic for fixed ``keys`` + ``config`` (no randomness, no clock).
+
+    Raises
+    ------
+    SplitError
+        A checked season is absent from the data, or fewer than
+        ``inner_val_games + calibration_games + 1`` rows precede it.
     """
     validate_metadata_parity(yaml_reference, metadata)
 
     sorted_keys = _prepare_keys(keys)
-    days = sorted_keys["day"]
-    ids = game_ids if game_ids is not None else sorted_keys["game_id"]
-    if len(ids) != len(sorted_keys):
-        raise SplitError("game_ids length must match keys after sorting")
+    seasons = sorted_keys["season_id"].to_numpy()
+    windows: list[SeasonWindow] = []
+    for season_id in config.test_seasons:
+        test = np.flatnonzero(seasons == season_id)
+        if len(test) == 0:
+            raise SplitError(f"checked season {season_id} is not in the data")
+        before = np.flatnonzero(seasons < season_id)
+        need = config.inner_val_games + config.calibration_games
+        if len(before) < need + 1:
+            raise SplitError(
+                f"not enough history before season {season_id}: need >= {need + 1} rows "
+                f"(inner_val_games={config.inner_val_games} + calibration_games="
+                f"{config.calibration_games} + train>=1), have {len(before)}"
+            )
+        calibration = before[-config.calibration_games :]
+        inner_val = before[-need : -config.calibration_games]
+        train = before[:-need]
+        windows.append(_make_window(sorted_keys, season_id, train, inner_val, calibration, test))
 
-    holdout_idx = _holdout_indices(days, config.holdout)
-    wf_mask = np.ones(len(sorted_keys), dtype=bool)
-    wf_mask[list(holdout_idx)] = False
-    wf_positions = np.flatnonzero(wf_mask)
-
-    _check_minimum_history(len(sorted_keys), len(holdout_idx), len(wf_positions), config)
-
-    if config.method == SplitMethod.month:
-        windows = _windows_calendar_month(sorted_keys, wf_positions, config)
-    elif config.method == SplitMethod.fixed_games:
-        windows = _windows_fixed_games(sorted_keys, wf_positions, config)
-    else:
-        raise SplitError(f"unsupported split method: {config.method!r}")
-
-    if len(windows) != config.n_test_windows:
-        raise SplitError(
-            f"expected {config.n_test_windows} outer windows, built {len(windows)}"
-        )
-
-    holdout_block = HoldoutSplit(
-        holdout_idx=holdout_idx,
-        holdout_days=_day_range(days, holdout_idx),
-        holdout_size=int(len(holdout_idx)),
-    )
-
-    result = WalkForwardSplits(windows=tuple(windows), holdout=holdout_block)
-    _validate_splits(sorted_keys, ids, result, config)
+    result = SeasonSplits(windows=tuple(windows))
+    _validate_splits(sorted_keys, result)
     return result
 
 
 def _prepare_keys(keys: pd.DataFrame) -> pd.DataFrame:
-    required = {"day", "game_id"}
+    required = {"day", "game_id", "season_id"}
     missing = required - set(keys.columns)
     if missing:
         raise SplitError(f"keys missing required columns: {sorted(missing)}")
@@ -257,198 +219,17 @@ def _prepare_keys(keys: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def _holdout_indices(days: pd.Series, holdout: HoldoutConfig) -> np.ndarray:
-    if holdout.fraction is not None:
-        unique_days = pd.Series(days.unique()).sort_values()
-        n_holdout_days = max(1, int(np.ceil(len(unique_days) * holdout.fraction)))
-        cutoff_days = set(unique_days.iloc[-n_holdout_days:].tolist())
-        return np.flatnonzero(days.isin(cutoff_days).to_numpy())
-    date_range = holdout.date_range
-    mask = pd.Series(True, index=days.index)
-    if date_range.from_ is not None:
-        mask &= days >= pd.Timestamp(date_range.from_)
-    if date_range.to is not None:
-        mask &= days <= pd.Timestamp(date_range.to)
-    holdout_idx = np.flatnonzero(mask.to_numpy())
-    if len(holdout_idx) == 0:
-        raise SplitError("holdout date_range matched zero rows")
-    return holdout_idx
-
-
-def _check_minimum_history(
-    total_rows: int,
-    holdout_size: int,
-    wf_rows: int,
-    config: SplitConfig,
-) -> None:
-    """Fail fast when the dataset is too small for the configured geometry.
-
-    Why: a fixed config (e.g. 300/300/5-windows) is tuned for multiseason
-    history and silently produces empty or nonsensical windows on a single
-    season instead of an explicit error (Задача 14,
-    ``docs/project_review_2026-06-29.md`` §B2). This is a top-level,
-    data-driven pre-check ahead of window carving; it does not replace the
-    detailed per-window ``SplitError``s in ``_windows_calendar_month``,
-    ``_window_from_tail`` and ``_windows_fixed_games`` below, which still run
-    and can still fail on real calendar-month shape even when this guard
-    passes (this guard only checks a necessary lower bound on row counts,
-    not the actual distribution of games across calendar months).
-
-    Minimum walk-forward rows, by method:
-    - ``fixed_games``: outer blocks are disjoint, so windows multiply in
-      full — ``n_test_windows * outer_block_games + train(>=1)``.
-    - ``month``: ``inner_val``/``calibration`` are a shared tail reused by
-      later (chronologically overlapping) windows — only the earliest
-      selected test month needs a dedicated ``inner_val + calibration``
-      pool before it. Only ``test`` (>=1 row/window, disjoint by
-      construction) multiplies by ``n_test_windows`` --
-      ``inner_val_games + calibration_games + n_test_windows * 1 + train(>=1)``.
-
-    Parameters
-    ----------
-    total_rows:
-        Total input rows (after sorting), before the holdout cut.
-    holdout_size:
-        Rows carved out for the holdout block.
-    wf_rows:
-        Rows remaining for walk-forward windows (``total_rows - holdout_size``).
-    config:
-        Split geometry to validate.
-    """
-    train_min = 1
-    if config.method == SplitMethod.fixed_games:
-        assert config.outer_block_games is not None
-        per_window_desc = f"outer_block_games={config.outer_block_games}"
-        required_wf = config.n_test_windows * config.outer_block_games + train_min
-    else:
-        per_window_desc = (
-            f"inner_val_games={config.inner_val_games} + calibration_games="
-            f"{config.calibration_games} + {config.n_test_windows} windows x test>=1"
-        )
-        required_wf = (
-            config.inner_val_games
-            + config.calibration_games
-            + config.n_test_windows * 1
-            + train_min
-        )
-    required_total = holdout_size + required_wf
-    if wf_rows < required_wf:
-        raise SplitError(
-            "not enough history for the configured split geometry: need >= "
-            f"{required_total} rows total (holdout {holdout_size} + {per_window_desc} "
-            f"+ train>={train_min} = {required_wf} walk-forward rows), have "
-            f"{total_rows} rows total ({wf_rows} walk-forward rows after holdout cut)"
-        )
-
-
-def _windows_calendar_month(
-    sorted_keys: pd.DataFrame,
-    wf_positions: np.ndarray,
-    config: SplitConfig,
-) -> list[OuterWindow]:
-    wf_days = sorted_keys.iloc[wf_positions]["day"]
-    month_codes = wf_days.dt.to_period("M")
-    unique_months = month_codes.drop_duplicates().tolist()
-    if len(unique_months) < config.n_test_windows:
-        raise SplitError(
-            "not enough history for "
-            f"{config.n_test_windows} outer windows with current split parameters "
-            f"(only {len(unique_months)} calendar months in walk-forward region)"
-        )
-
-    test_months = unique_months[-config.n_test_windows :]
-    windows: list[OuterWindow] = []
-    for k, month in enumerate(test_months, start=1):
-        month_positions = wf_positions[month_codes.to_numpy() == month]
-        if len(month_positions) == 0:
-            raise SplitError(f"calendar month {month} has zero games in walk-forward region")
-        test_start = int(month_positions[0])
-        before_test = wf_positions[wf_positions < test_start]
-        window = _window_from_tail(sorted_keys, before_test, month_positions, config, k)
-        windows.append(window)
-    return windows
-
-
-def _windows_fixed_games(
-    sorted_keys: pd.DataFrame,
-    wf_positions: np.ndarray,
-    config: SplitConfig,
-) -> list[OuterWindow]:
-    assert config.outer_block_games is not None
-    test_games = config.outer_block_games - config.inner_val_games - config.calibration_games
-    if test_games <= 0:
-        raise SplitError(
-            "fixed_games test block size must be > 0; increase split.outer_block_games"
-        )
-    block_size = config.outer_block_games
-    total_block_span = block_size * config.n_test_windows
-    # No row-count check here: _check_minimum_history already guarantees
-    # len(wf_positions) >= total_block_span + 1 for this method.
-    windows: list[OuterWindow] = []
-    base = len(wf_positions) - total_block_span
-    for k in range(1, config.n_test_windows + 1):
-        start = base + (k - 1) * block_size
-        block = wf_positions[start : start + block_size]
-        test = block[-test_games:]
-        cal = block[-(test_games + config.calibration_games) : -test_games]
-        inner_val = block[
-            -(test_games + config.calibration_games + config.inner_val_games) : -(
-                test_games + config.calibration_games
-            )
-        ]
-        train = wf_positions[wf_positions < int(block[0])]
-        windows.append(
-            _make_window(sorted_keys, k, train, inner_val, cal, test, config)
-        )
-    return windows
-
-
-def _window_from_tail(
-    sorted_keys: pd.DataFrame,
-    before_test: np.ndarray,
-    test_positions: np.ndarray,
-    config: SplitConfig,
-    k: int,
-) -> OuterWindow:
-    need = config.inner_val_games + config.calibration_games
-    if len(before_test) < need:
-        raise SplitError(
-            "not enough history for "
-            f"{config.n_test_windows} outer windows with current split parameters "
-            f"(window k={k}: need {need} rows before test, have {len(before_test)})"
-        )
-    cal = before_test[-config.calibration_games :]
-    inner_val = before_test[-(config.inner_val_games + config.calibration_games) : -config.calibration_games]
-    train = before_test[: -need]
-    return _make_window(sorted_keys, k, train, inner_val, cal, test_positions, config)
-
-
 def _make_window(
     sorted_keys: pd.DataFrame,
-    k: int,
+    season_id: int,
     train_idx: np.ndarray,
     inner_val_idx: np.ndarray,
     calibration_idx: np.ndarray,
     test_idx: np.ndarray,
-    config: SplitConfig,
-) -> OuterWindow:
+) -> SeasonWindow:
     days = sorted_keys["day"]
-    if len(train_idx) == 0:
-        raise SplitError(f"window k={k}: train block is empty")
-    if len(test_idx) == 0:
-        raise SplitError(f"window k={k}: test block is empty")
-    if len(inner_val_idx) < config.inner_val_games:
-        raise SplitError(
-            f"window k={k}: inner_val has {len(inner_val_idx)} rows, "
-            f"need >= {config.inner_val_games}"
-        )
-    if len(calibration_idx) < config.calibration_games:
-        raise SplitError(
-            f"window k={k}: calibration has {len(calibration_idx)} rows, "
-            f"need >= {config.calibration_games}"
-        )
-    return OuterWindow(
-        k=k,
+    return SeasonWindow(
+        season_id=int(season_id),
         train_idx=np.asarray(train_idx, dtype=np.int64),
         inner_val_idx=np.asarray(inner_val_idx, dtype=np.int64),
         calibration_idx=np.asarray(calibration_idx, dtype=np.int64),
@@ -476,66 +257,25 @@ def _positional_range(indices: np.ndarray) -> list[int | None]:
     return [int(indices.min()), int(indices.max())]
 
 
-def _validate_splits(
-    sorted_keys: pd.DataFrame,
-    game_ids: pd.Series,
-    splits: WalkForwardSplits,
-    config: SplitConfig,
-) -> None:
+def _validate_splits(sorted_keys: pd.DataFrame, splits: SeasonSplits) -> None:
     days = sorted_keys["day"]
-    holdout_ids = set(game_ids.iloc[splits.holdout.holdout_idx].tolist())
-
-    seen_test: list[np.ndarray] = []
-
     for window in splits.windows:
+        label = f"season {window.season_id}"
         _assert_strictly_before(
-            days,
-            window.train_idx,
-            window.inner_val_idx,
-            f"window k={window.k}: train must end before inner_val",
+            days, window.train_idx, window.inner_val_idx, f"{label}: train must end before inner_val"
         )
         _assert_strictly_before(
             days,
             window.inner_val_idx,
             window.calibration_idx,
-            f"window k={window.k}: inner_val must end before calibration",
+            f"{label}: inner_val must end before calibration",
         )
         _assert_strictly_before(
-            days,
-            window.calibration_idx,
-            window.test_idx,
-            f"window k={window.k}: calibration must end before test",
+            days, window.calibration_idx, window.test_idx, f"{label}: calibration must end before test"
         )
-        _assert_strictly_before(
-            days,
-            window.test_idx,
-            splits.holdout.holdout_idx,
-            f"window k={window.k}: test must end before holdout",
-        )
-
-        for label, idx in (
-            ("train", window.train_idx),
-            ("inner_val", window.inner_val_idx),
-            ("calibration", window.calibration_idx),
-            ("test", window.test_idx),
-        ):
-            overlap = holdout_ids.intersection(game_ids.iloc[idx].tolist())
-            if overlap:
-                raise SplitError(
-                    f"window k={window.k}: {label} overlaps holdout on "
-                    f"{len(overlap)} game_id(s)"
-                )
-
-        seen_test.append(window.test_idx)
-
-    _assert_no_cross_window_overlap(game_ids, seen_test, "test")
-    # ``fixed_games`` uses disjoint outer blocks; ``month`` reuses tail prefixes
-    # before each test month, so inner_val/cal may overlap across windows by design.
-    if config.method == SplitMethod.fixed_games:
-        seen_inner = [window.inner_val_idx for window in splits.windows]
-        seen_cal = [window.calibration_idx for window in splits.windows]
-        _assert_no_cross_window_overlap(game_ids, seen_inner, "inner_val")
-        _assert_no_cross_window_overlap(game_ids, seen_cal, "calibration")
+    _assert_no_cross_window_overlap(
+        sorted_keys["game_id"], [window.test_idx for window in splits.windows], "test"
+    )
 
 
 def _assert_strictly_before(
@@ -556,8 +296,8 @@ def _assert_strictly_before(
     Most rolling/as-of features are safe here because they are scoped to
     ``(team_id, season_id)`` and never look across teams
     (``modeling/dataset_builder/features.py``): two games on the same day
-    are four different teams with disjoint histories. Elo (Задача 40, Task 3,
-    ``features.py::compute_pregame_elo``) is the one exception — cross-team
+    are four different teams with disjoint histories. Elo
+    (``modeling/elo.py::compute_pregame_elo``) is the one exception — cross-team
     and cross-season — but is safe for a different reason: it freezes every
     rating at the start of each calendar day, so no game sees a same-day
     game's result regardless of block. A *future* cross-team/league-wide
@@ -605,10 +345,9 @@ def _assert_no_cross_window_overlap(
 
 __all__ = [
     "DayRange",
-    "HoldoutSplit",
-    "OuterWindow",
+    "SeasonSplits",
+    "SeasonWindow",
     "SplitError",
-    "WalkForwardSplits",
-    "build_walk_forward_splits",
+    "build_season_splits",
     "validate_metadata_parity",
 ]
