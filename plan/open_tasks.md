@@ -155,7 +155,7 @@ DEVELOPMENT.md и приёмки из карточки (перезагрузка
 Решение человека: явный `scipy` в `requirements-modeling.in` (сейчас транзитивный).
 
 ### Задача 68. Броски из play-by-play и командный xG ⬜ 🟡 (после 67)
-Карточка — на согласовании, отдельный PR (`tasks/task_model/task_68_shots_xg.md`).
+Карточка — [`tasks/task_model/task_68_shots_xg.md`](./tasks/task_model/task_68_shots_xg.md).
 Приёмка: таблица бросков заполнена за 5 сезонов; xG-модель проверена на отложенном сезоне;
 xG-ковариаты включены, только если улучшают walk-forward.
 
