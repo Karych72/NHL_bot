@@ -5,15 +5,16 @@ not team_id alone: a team's first game of a new season starts with an empty
 window, never carrying rolling stats or a snapshot row from the prior season.
 Team Elo (below) is the one exception: it is a cross-team, cross-season
 strength rating that persists between seasons (shrunk toward the mean, not
-reset) — see ``compute_pregame_elo``.
+reset) — see ``modeling.elo.compute_pregame_elo``.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Sequence
 
 import pandas as pd
+
+from modeling.elo import ELO_START
 
 
 ROLLING_BASE_FIELDS = (
@@ -170,124 +171,6 @@ def build_match_feature_snapshots(
     return out
 
 
-# Задача 40 (Task 3; tuning and evidence documented in
-# docs/modeling_dataset_builder.md, "Elo team-strength feature"): tuned
-# pre-game team-strength Elo.
-# K sizes each update; HFA is added to the home side before win-expectancy;
-# SEASON_REGRESSION shrinks every team 1/3 toward the field mean at a
-# season_id change (Elo persists across seasons, unlike the features above);
-# START is an unseen team's rating; MOV_* implement the margin-of-victory
-# multiplier ln(|goal_diff|+1)*MOV_BASE/(MOV_HFA_WEIGHT*winner_edge+MOV_BASE).
-# Tuning picked ot_s=1 (OT/SO wins count as full wins), so there is no
-# separate overtime branch here.
-ELO_START = 1500.0
-ELO_K = 8.0
-ELO_HFA = 35.0
-ELO_SEASON_REGRESSION = 1.0 / 3.0
-ELO_MOV_BASE = 2.2
-ELO_MOV_HFA_WEIGHT = 0.001
-
-
-def compute_pregame_elo(played_games: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, float]]:
-    """Pre-game team Elo rating for every played game, plus the final ratings.
-
-    Unlike the rolling/as-of features above (scoped to ``(team_id,
-    season_id)``, reset every season), Elo is one league-wide rating that
-    carries across seasons (Задача 40a) — so this makes its own sequential
-    pass over the full play history in ``(day, game_id)`` order, mutating a
-    single ``{team_id: rating}`` dict.
-
-    Args:
-        played_games: one row per played game with ``game_id``, ``day``,
-            ``season_id``, ``home_team_id``, ``away_team_id``, ``winner_id``,
-            ``home_goals``, ``away_goals`` (order doesn't matter, sorted
-            internally). Every row must have a non-null ``winner_id``/
-            ``home_goals``/``away_goals`` — a played game with no recorded
-            result is a data bug, not a case to paper over (Global
-            Constraint 4).
-
-    Returns:
-        ``(per_game, final_ratings)``:
-
-        - ``per_game``: ``game_id``, ``home_elo``, ``away_elo`` — the rating
-          each side held strictly *before* that game (recorded before the
-          update). Ratings are frozen at the start of each calendar day and
-          every game that day scores off that same snapshot, with the day's
-          updates applied together afterwards — the Elo analogue of this
-          module's ``intra_day_prev`` policy (a same-day predecessor is
-          masked out, not used).
-        - ``final_ratings``: ``team_id -> rating`` after the last processed
-          game, unaffected by any not-yet-played season transition. Used by
-          ``base.py`` to give predict-mode target games (no result yet) the
-          rating "as of after the last played game" instead of a per-game
-          as-of join.
-    """
-    per_game_dtypes = {"game_id": "int64", "home_elo": "float64", "away_elo": "float64"}
-    if played_games.empty:
-        return pd.DataFrame(columns=list(per_game_dtypes)).astype(per_game_dtypes), {}
-
-    games = played_games.copy()
-    games["day"] = pd.to_datetime(games["day"]).dt.normalize()
-    games = games.sort_values(["day", "game_id"], kind="mergesort")
-    if games[["winner_id", "home_goals", "away_goals"]].isna().any().any():
-        raise ValueError("compute_pregame_elo: a played game is missing winner_id/goals")
-
-    ratings: dict[int, float] = {}
-    season_id: int | None = None
-    out_game_id: list[int] = []
-    out_home_elo: list[float] = []
-    out_away_elo: list[float] = []
-
-    for _, day_games in games.groupby("day"):
-        day_season = int(day_games["season_id"].iloc[0])
-        if season_id is not None and day_season != season_id and ratings:
-            mean_rating = sum(ratings.values()) / len(ratings)
-            ratings = {
-                team: mean_rating + (1 - ELO_SEASON_REGRESSION) * (rating - mean_rating)
-                for team, rating in ratings.items()
-            }
-        season_id = day_season
-
-        pregame_snapshot = dict(ratings)  # frozen for the whole day: no intra-day leakage
-        deltas: dict[int, float] = {}
-        day_sorted = day_games.sort_values("game_id")
-        # Plain lists, not itertuples: mypy widens a namedtuple column to a
-        # cross-module dtype union and rejects arithmetic/dict indexing on it.
-        rows = zip(
-            day_sorted["game_id"].tolist(),
-            day_sorted["home_team_id"].tolist(),
-            day_sorted["away_team_id"].tolist(),
-            day_sorted["winner_id"].tolist(),
-            day_sorted["home_goals"].tolist(),
-            day_sorted["away_goals"].tolist(),
-        )
-        for game_id, home_team_id, away_team_id, winner_id, home_goals, away_goals in rows:
-            home_team_id = int(home_team_id)
-            away_team_id = int(away_team_id)
-            home_rating = pregame_snapshot.get(home_team_id, ELO_START)
-            away_rating = pregame_snapshot.get(away_team_id, ELO_START)
-            out_game_id.append(int(game_id))
-            out_home_elo.append(home_rating)
-            out_away_elo.append(away_rating)
-
-            diff = home_rating + ELO_HFA - away_rating
-            expected_home = 1.0 / (1.0 + 10.0 ** (-diff / 400.0))
-            home_won = int(winner_id) == home_team_id
-            actual_home = 1.0 if home_won else 0.0
-            winner_edge = diff if home_won else -diff
-            abs_goal_diff = abs(float(home_goals) - float(away_goals))
-            mov = math.log(abs_goal_diff + 1) * ELO_MOV_BASE / (ELO_MOV_HFA_WEIGHT * winner_edge + ELO_MOV_BASE)
-            delta = ELO_K * mov * (actual_home - expected_home)
-            deltas[home_team_id] = deltas.get(home_team_id, 0.0) + delta
-            deltas[away_team_id] = deltas.get(away_team_id, 0.0) - delta
-
-        for team, delta in deltas.items():
-            ratings[team] = ratings.get(team, ELO_START) + delta
-
-    per_game = pd.DataFrame({"game_id": out_game_id, "home_elo": out_home_elo, "away_elo": out_away_elo})
-    return per_game.astype(per_game_dtypes), ratings
-
-
 def attach_pregame_elo(
     target_games: pd.DataFrame,
     per_game_elo: pd.DataFrame,
@@ -297,7 +180,7 @@ def attach_pregame_elo(
 
     A row found by ``game_id`` in ``per_game_elo`` gets its pre-game rating;
     a row not found there (predict mode: no result yet) falls back to
-    ``final_ratings`` — see ``compute_pregame_elo``'s docstring for the as-of
+    ``final_ratings`` — see ``modeling.elo.compute_pregame_elo``'s docstring for the as-of
     contract behind both.
     """
     out = target_games.merge(per_game_elo, on="game_id", how="left")
