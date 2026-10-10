@@ -25,7 +25,7 @@
 
 | # | Карточка | Зависит от | Решение человека |
 |---|---|---|---|
-| 66 | [Walk-forward по сезонам и Elo-baseline](task_66_walk_forward_eval.md) | — | нет |
+| 66 | [Проверка модели по сезонам и эталон Elo](task_66_walk_forward_eval.md) | — | нет |
 | 67 | [Голевая модель v1](task_67_goal_model.md) | 66 | `scipy` явно в `requirements-modeling.in` |
 | 68 | [Броски из play-by-play и командный xG](task_68_shots_xg.md) | 67 | новая таблица бросков |
 | 69 | [Линии букмекеров и рыночный бенчмарк](task_69_odds_benchmark.md) | 66 | **покупка данных**, коммерческие условия |
