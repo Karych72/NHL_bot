@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raise when predict mode finds no games (default: allow empty predict aligned to train manifest)",
     )
 
-    train = sub.add_parser("train", help="Train classifiers (walk-forward + production artifact)")
+    train = sub.add_parser("train", help="Train classifiers (per-season checks vs Elo/constant + production artifact)")
     train.add_argument(
         "--config",
         default="configs/modeling_default.yaml",
@@ -99,7 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train.add_argument(
         "--dataset",
-        help="Path to dataset_train.csv (default: dataset_train.csv next to --metadata)",
+        help=(
+            "Path to dataset_train.csv (default: dataset_train.csv next to --metadata); "
+            "home_win also needs games_train.csv in the same directory"
+        ),
     )
     train.add_argument(
         "--no-fail-on-baseline",

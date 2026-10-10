@@ -12,6 +12,7 @@ import pytest
 from modeling.bootstrap import (
     BootstrapError,
     BootstrapResult,
+    bootstrap_mean_diff,
     bootstrap_metrics,
     standard_metric_fns,
 )
@@ -205,3 +206,52 @@ def test_standard_metric_fns_match_metrics_module() -> None:
     fns = _metric_fns()
     assert fns["log_loss"](y_true, y_pred) == log_loss(y_true, y_pred)
     assert fns["brier"](y_true, y_pred) == brier(y_true, y_pred)
+
+
+def _paired_losses(n_days: int = 60, per_day: int = 5) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(3)
+    day = np.repeat(pd.date_range("2024-01-01", periods=n_days, freq="D").to_numpy(), per_day)
+    day_effect = np.repeat(rng.normal(0.0, 0.2, size=n_days), per_day)
+    loss_b = 0.69 + day_effect + rng.normal(0.0, 0.1, size=day.size)
+    loss_a = loss_b - 0.02 + rng.normal(0.0, 0.05, size=day.size)
+    return loss_a, loss_b, day
+
+
+def test_mean_diff_point_is_difference_of_means_and_ci_contains_it() -> None:
+    loss_a, loss_b, day = _paired_losses()
+    out = bootstrap_mean_diff(loss_a, loss_b, day, n_resamples=300, seed=7)
+    assert out.point == pytest.approx(loss_a.mean() - loss_b.mean())
+    assert out.ci_low <= out.point <= out.ci_high
+    assert out.ci_high < 0.0  # the 0.02 edge is far larger than the paired noise
+    assert out.block_by_day is True
+
+
+def test_mean_diff_is_deterministic_per_seed_and_varies_across_seeds() -> None:
+    loss_a, loss_b, day = _paired_losses()
+    first = bootstrap_mean_diff(loss_a, loss_b, day, n_resamples=200, seed=11)
+    again = bootstrap_mean_diff(loss_a, loss_b, day, n_resamples=200, seed=11)
+    other = bootstrap_mean_diff(loss_a, loss_b, day, n_resamples=200, seed=12)
+    assert (first.ci_low, first.ci_high) == (again.ci_low, again.ci_high)
+    assert (first.ci_low, first.ci_high) != (other.ci_low, other.ci_high)
+
+
+def test_mean_diff_resamples_the_same_days_for_both_sides() -> None:
+    # Per day the two losses differ by exactly 0.1: any paired resample has a mean
+    # difference of 0.1, so the interval must collapse onto it. Independent resampling
+    # of each side would not.
+    rng = np.random.default_rng(0)
+    day = np.repeat(pd.date_range("2024-01-01", periods=30, freq="D").to_numpy(), 4)
+    loss_b = rng.normal(0.7, 0.3, size=day.size)
+    out = bootstrap_mean_diff(loss_b + 0.1, loss_b, day, n_resamples=200, seed=1)
+    assert out.ci_low == pytest.approx(0.1)
+    assert out.ci_high == pytest.approx(0.1)
+
+
+def test_mean_diff_rejects_misaligned_inputs() -> None:
+    loss_a, loss_b, day = _paired_losses()
+    with pytest.raises(BootstrapError):
+        bootstrap_mean_diff(loss_a[:-1], loss_b, day, seed=1)
+    with pytest.raises(BootstrapError):
+        bootstrap_mean_diff(loss_a, loss_b, day[:-1], seed=1)
+    with pytest.raises(BootstrapError):
+        bootstrap_mean_diff(loss_a[:5], loss_b[:5], np.repeat(day[0], 5), seed=1)

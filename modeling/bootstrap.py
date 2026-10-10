@@ -1,8 +1,9 @@
 """Bootstrap confidence intervals for log loss and Brier (UPDATE plan stage 6).
 
-Percentile 95% CIs on resampled metric values. Holdout callers should pass
-``block_by_day=True`` (block resample whole game days); walk-forward ``test_k``
-callers should pass ``block_by_day=False`` (i.i.d. match resampling).
+Percentile 95% CIs on resampled metric values. Callers checking a model over
+several seasons use ``block_by_day=True`` (block resample whole game days) and
+:func:`bootstrap_mean_diff` for paired differences of per-game losses;
+``block_by_day=False`` is i.i.d. match resampling.
 
 All randomness uses a single ``numpy.random.Generator`` from ``seed``
 (``bootstrap_seed = random_seed`` in YAML). Independent per-fold or per-metric
@@ -35,7 +36,7 @@ class BootstrapError(ValueError):
 
 @dataclass(frozen=True)
 class BootstrapResult:
-    """Bootstrap CI for one metric on one fold or holdout."""
+    """Bootstrap CI for one metric (or paired difference) on a block of games."""
 
     metric_name: str
     point: float
@@ -204,14 +205,13 @@ def bootstrap_metrics(
         Aligned length-``n`` arrays. Labels in ``{0, 1}``; probabilities in
         ``[0, 1]``. Clipping for log loss is done inside ``metric_fns`` (stage 5).
     day
-        Game day per row. Required when ``block_by_day=True`` (holdout).
-        Ignored when ``block_by_day=False`` (walk-forward ``test_k``).
+        Game day per row. Required when ``block_by_day=True``;
+        ignored when ``block_by_day=False``.
     n_resamples
         Number of bootstrap draws (``evaluation.bootstrap_samples``, default 1000).
     block_by_day
-        If True, block-bootstrap whole days (holdout). If False, i.i.d. match
-        resampling (``test_k``). Callers choose the mode per fold; this function
-        does not override ``block_by_day`` based on fold name.
+        If True, block-bootstrap whole game days. If False, i.i.d. match
+        resampling. The caller chooses the mode.
     seed
         ``random_seed`` from YAML (``bootstrap_seed``); no derived seeds.
     metric_fns
@@ -264,6 +264,60 @@ def bootstrap_metrics(
     return results
 
 
+def bootstrap_mean_diff(
+    loss_a: np.ndarray,
+    loss_b: np.ndarray,
+    day: pd.Series | np.ndarray | list | tuple,
+    *,
+    n_resamples: int = DEFAULT_N_RESAMPLES,
+    seed: int,
+) -> BootstrapResult:
+    """Paired block-by-day bootstrap CI for ``mean(loss_a) - mean(loss_b)``.
+
+    Used for the model-vs-Elo and model-vs-constant log-loss differences: both sides are
+    scored on the same games, and each resample draws the same game days for both, so
+    the interval reflects the paired difference, not two independent noises.
+
+    Parameters
+    ----------
+    loss_a, loss_b
+        Per-game penalties (e.g. ``-log p`` of the outcome) of the two predictors,
+        aligned with ``day``.
+    day
+        Game day per row; whole days are resampled together.
+    n_resamples, seed
+        As in :func:`bootstrap_metrics`.
+
+    Returns
+    -------
+    BootstrapResult
+        ``point`` is ``mean(loss_a) - mean(loss_b)``; negative means ``a`` is better.
+    """
+    n_resamples = _validate_n_resamples(n_resamples)
+    a = np.asarray(loss_a, dtype=float).ravel()
+    b = np.asarray(loss_b, dtype=float).ravel()
+    if a.shape != b.shape:
+        raise BootstrapError(f"loss_a length {a.size} != loss_b length {b.size}")
+    sorted_days, day_to_idx, d_count = _build_day_blocks(_normalize_day(day, a.size))
+    diff = a - b
+    rng = np.random.default_rng(seed)
+    resamples = np.array(
+        [
+            diff[_block_resample_indices(rng, sorted_days, day_to_idx, d_count)].mean()
+            for _ in range(n_resamples)
+        ]
+    )
+    return BootstrapResult(
+        metric_name="mean_diff",
+        point=float(diff.mean()),
+        ci_low=float(np.quantile(resamples, 0.025)),
+        ci_high=float(np.quantile(resamples, 0.975)),
+        n_resamples=n_resamples,
+        block_by_day=True,
+        seed=seed,
+    )
+
+
 def standard_metric_fns(
     *,
     epsilon: float | None = None,
@@ -287,6 +341,7 @@ __all__ = [
     "DEFAULT_N_RESAMPLES",
     "BootstrapError",
     "BootstrapResult",
+    "bootstrap_mean_diff",
     "bootstrap_metrics",
     "standard_metric_fns",
 ]
