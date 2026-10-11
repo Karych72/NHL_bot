@@ -286,6 +286,15 @@ def attach_pregame_shot_share(
     A row found by ``game_id`` in ``per_game_share`` gets its pre-game value; a row not found
     there (predict mode: no result yet) falls back to the team's ``final_state``, shrunk toward
     0.5 when the target's ``season_id`` is later than the state's. A team without state gets 0.5.
+
+    Args:
+        target_games: Games to annotate; needs ``game_id`` and, for rows missing from
+            ``per_game_share``, ``season_id`` and the team ids.
+        per_game_share: Pre-game shares by ``game_id`` from the shot-share pass.
+        final_state: Per team ``(share, season_id)`` after the last game seen.
+
+    Returns:
+        ``target_games`` with the two ``*_shot_share_ewm`` columns added.
     """
     out = target_games.merge(per_game_share, on="game_id", how="left")
     missing = out["home_shot_share_ewm"].isna()

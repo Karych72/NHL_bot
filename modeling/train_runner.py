@@ -54,6 +54,7 @@ from modeling.metrics import (
 from modeling.acceptance import (
     RunStatus,
     apply_acceptance_to_training_outcomes,
+    TaskModelEval,
     apply_latest_symlink_check,
 )
 from modeling.report import compose_metrics_json, compose_summary_md, configure_run_logger, write_report
@@ -129,11 +130,7 @@ class _TaskModelOutcome:
     task: str
     model: str
     result: RunResult
-    pooled_model_log_loss: float
-    benchmark_log_loss: float
-    benchmark: str
-    model_ece: float
-    benchmark_ece: float
+    evaluation: TaskModelEval
 
 
 def resolve_tasks(task_flag: str, config: ResolvedConfig) -> list[str]:
@@ -278,6 +275,15 @@ def collect_block_sizes(
     return {"seasons": season_sizes, "final_retrain": final_block.to_log_dict()}
 
 
+def _check_task_features(config: ResolvedConfig, X: pd.DataFrame, tasks: Sequence[str]) -> None:
+    """Fail with :class:`ConfigError` when ``tasks.<task>.features`` names a column the dataset lacks."""
+    for name in tasks:
+        features = getattr(config.tasks, name).features
+        unknown = [col for col in features or [] if col not in X.columns]
+        if unknown:
+            raise ConfigError(f"tasks.{name}.features: unknown columns {unknown}")
+
+
 def dry_run_training(
     config: ResolvedConfig,
     *,
@@ -287,8 +293,8 @@ def dry_run_training(
     model_flag: str = "both",
 ) -> dict[str, Any]:
     """Load data, build splits, return resolved config and block sizes (no training)."""
-    _X, keys, _labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
-    _X, keys, _labels = _sort_frames(_X, keys, _labels)
+    X, keys, labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
+    X, keys, labels = _sort_frames(X, keys, labels)
     splits = build_season_splits(
         keys,
         config.split,
@@ -297,6 +303,7 @@ def dry_run_training(
     )
     final_slices = compute_final_retrain_slices(keys, config.split)
     tasks = resolve_tasks(task_flag, config)
+    _check_task_features(config, X, tasks)
     models = list(dict.fromkeys(model for _task, model in resolve_pairs(tasks, model_flag)))
     return {
         "config": config.model_dump(by_alias=True),
@@ -340,6 +347,7 @@ class _SeasonEval:
     """Predictions of one per-season run on all rows of its checked season."""
 
     window: SeasonWindow
+    n_train: int
     y: np.ndarray
     p_raw: np.ndarray
     p_cal: np.ndarray
@@ -387,7 +395,7 @@ def _season_block(ev: _SeasonEval, keys: pd.DataFrame, *, epsilon: float, ece_bi
     window = ev.window
     block: dict[str, Any] = {
         "season_id": window.season_id,
-        "n_train": window.train_size + window.inner_val_size + window.calibration_size,
+        "n_train": ev.n_train,
         "n_test": window.test_size,
         "test_range": dict(zip(("start", "end"), _day_range_iso(keys, window.test_idx))),
         "model_raw": metric_block(ev.y, ev.p_raw, epsilon=epsilon, ece_bins=ece_bins),
@@ -725,6 +733,40 @@ def promote_model(task: str, model: str, run_id: str, *, artifacts_root: Path) -
     return final_dir
 
 
+def _fit_logreg(
+    task: str,
+    X: pd.DataFrame,
+    y_all: np.ndarray,
+    *,
+    hp_idx: np.ndarray,
+    inner_val_idx: np.ndarray,
+    fit_idx: np.ndarray,
+    config: ResolvedConfig,
+    log_loss_fn: Any,
+) -> FitResult:
+    """Choose ``C`` on ``hp_idx`` -> ``inner_val_idx``, then refit the logreg pipeline on ``fit_idx``."""
+    chosen_C, _pipe, loss_by_C = select_C_by_inner_val(
+        X.iloc[hp_idx],
+        y_all[hp_idx],
+        X.iloc[inner_val_idx],
+        y_all[inner_val_idx],
+        list(config.models.logreg.grids.C),
+        random_seed=config.random_seed,
+        log_loss_fn=log_loss_fn,
+    )
+    pipeline = build_logreg_pipeline(chosen_C, random_seed=config.random_seed)
+    pipeline.fit(X.iloc[fit_idx], y_all[fit_idx])
+    return FitResult(
+        task=task,
+        pipeline=pipeline,
+        chosen_C=chosen_C,
+        inner_val_log_loss_by_C=loss_by_C,
+        chosen_inner_val_log_loss=loss_by_C[chosen_C],
+        n_rows_train=len(fit_idx),
+        n_rows_inner_val=len(inner_val_idx),
+    )
+
+
 def _fit_final_raw_model(
     model_family: str,
     task: str,
@@ -745,33 +787,16 @@ def _fit_final_raw_model(
     hp_tr = final_slices.train_hp_idx
     hp_iv = final_slices.inner_val_idx
     train_full = final_slices.train_full_idx
+
+    if model_family == "logreg":
+        logreg_fit = _fit_logreg(
+            task, X, y_all, hp_idx=hp_tr, inner_val_idx=hp_iv, fit_idx=train_full, config=config, log_loss_fn=log_loss_fn
+        )
+        return logreg_fit.pipeline, logreg_fit
+
     y_hp_tr = y_all[hp_tr]
     y_hp_iv = y_all[hp_iv]
     y_train_full = y_all[train_full]
-
-    if model_family == "logreg":
-        chosen_C, _pipe, loss_by_C = select_C_by_inner_val(
-            X.iloc[hp_tr],
-            y_hp_tr,
-            X.iloc[hp_iv],
-            y_hp_iv,
-            list(config.models.logreg.grids.C),
-            random_seed=config.random_seed,
-            log_loss_fn=log_loss_fn,
-        )
-        final_pipeline = build_logreg_pipeline(chosen_C, random_seed=config.random_seed)
-        final_pipeline.fit(X.iloc[train_full], y_train_full)
-        fit: FitResult | LgbmFitResult = FitResult(
-            task=task,
-            pipeline=final_pipeline,
-            chosen_C=chosen_C,
-            inner_val_log_loss_by_C=loss_by_C,
-            chosen_inner_val_log_loss=loss_by_C[chosen_C],
-            n_rows_train=len(train_full),
-            n_rows_inner_val=len(hp_iv),
-        )
-        return final_pipeline, fit
-
     monotone_spec = getattr(config.models.lgbm.monotone, task)
     monotone = build_monotone_constraints(feature_names, monotone_spec)
     grid = expand_lgbm_grid(config.models.lgbm.grids.model_dump())
@@ -828,12 +853,13 @@ def _fit_home_win(
     fit_idx: np.ndarray,
     config: ResolvedConfig,
     log_loss_fn: Any,
-) -> FitResult:
+) -> tuple[FitResult, CalibratorFit, tuple[str, str]]:
     """``home_win`` model (Задача 68): C on ``inner_val``, then refit on every ``fit_idx`` row.
 
     Rows of the first season of the dataset (Elo warm-up: every team starts at 1500) are dropped
     from ``hp_train_idx`` and ``fit_idx``. There is no calibrator: the logistic fit on the
     training seasons is itself the fitted curve, and Platt on 300 games was measured to hurt.
+    Returns the fit, the identity calibrator and the day range of the rows actually fitted.
     """
     hp_train = _without_warmup(keys, hp_train_idx)
     fit_rows = _without_warmup(keys, fit_idx)
@@ -842,26 +868,18 @@ def _fit_home_win(
             f"home_win has no training rows after dropping the warm-up season "
             f"({len(hp_train_idx)} rows before, first season {keys['season_id'].min()})"
         )
-    chosen_C, _pipe, loss_by_C = select_C_by_inner_val(
-        X.iloc[hp_train],
-        y_all[hp_train],
-        X.iloc[inner_val_idx],
-        y_all[inner_val_idx],
-        list(config.models.logreg.grids.C),
-        random_seed=config.random_seed,
+    fit = _fit_logreg(
+        "home_win",
+        X,
+        y_all,
+        hp_idx=hp_train,
+        inner_val_idx=inner_val_idx,
+        fit_idx=fit_rows,
+        config=config,
         log_loss_fn=log_loss_fn,
     )
-    pipeline = build_logreg_pipeline(chosen_C, random_seed=config.random_seed)
-    pipeline.fit(X.iloc[fit_rows], y_all[fit_rows])
-    return FitResult(
-        task="home_win",
-        pipeline=pipeline,
-        chosen_C=chosen_C,
-        inner_val_log_loss_by_C=loss_by_C,
-        chosen_inner_val_log_loss=loss_by_C[chosen_C],
-        n_rows_train=len(fit_rows),
-        n_rows_inner_val=len(inner_val_idx),
-    )
+    calibrator = identity_calibrator(config.calibration.method.value, config.random_seed)
+    return fit, calibrator, _day_range_iso(keys, fit_rows)
 
 
 def _without_warmup(keys: pd.DataFrame, idx: np.ndarray) -> np.ndarray:
@@ -905,6 +923,7 @@ def run_training(
 
     X, keys, labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
     X, keys, labels = _sort_frames(X, keys, labels)
+    _check_task_features(config, X, tasks)
 
     splits = build_season_splits(
         keys,
@@ -961,21 +980,20 @@ def run_training(
                 )
                 fit: FitResult | LgbmFitResult
                 if task_name == "home_win":
-                    fit_idx = np.concatenate([tr, iv, cal])
-                    fit = _fit_home_win(
+                    fit, calibrator, train_days = _fit_home_win(
                         X_task,
                         y_all,
                         keys,
                         hp_train_idx=tr,
                         inner_val_idx=iv,
-                        fit_idx=fit_idx,
+                        fit_idx=np.concatenate([tr, iv, cal]),
                         config=config,
                         log_loss_fn=metric_fns["log_loss"],
                     )
                     raw_model = _raw_model_from_fit(model_family, fit)
-                    calibrator = identity_calibrator(config.calibration.method.value, config.random_seed)
-                    train_days = _day_range_iso(keys, _without_warmup(keys, fit_idx))
+                    n_train = fit.n_rows_train
                 else:
+                    n_train = window.train_size + window.inner_val_size + window.calibration_size
                     fit = _train_raw_model(
                         model_family,
                         task_name,
@@ -1025,7 +1043,7 @@ def run_training(
                     _elo_forecasts(elo, keys.iloc[te]["game_id"].to_numpy(), y_te) if elo else (None, None)
                 )
                 season_evals.append(
-                    _SeasonEval(window, y_te, p_test_raw, p_test, p_const, p_elo_raw, p_elo, elo)
+                    _SeasonEval(window, n_train, y_te, p_test_raw, p_test, p_const, p_elo_raw, p_elo, elo)
                 )
 
             season_blocks = [
@@ -1106,20 +1124,17 @@ def run_training(
             # Final retrain on every row: HP on train_hp + inner_val, then fit raw model on train_full.
             final_fit_full: FitResult | LgbmFitResult
             if task_name == "home_win":
-                all_rows = np.arange(len(keys))
-                final_fit_full = _fit_home_win(
+                final_fit_full, final_calibrator, final_train_days = _fit_home_win(
                     X_task,
                     y_all,
                     keys,
                     hp_train_idx=final_slices.train_hp_idx,
                     inner_val_idx=final_slices.inner_val_idx,
-                    fit_idx=all_rows,
+                    fit_idx=np.arange(len(keys)),
                     config=config,
                     log_loss_fn=metric_fns["log_loss"],
                 )
                 final_model = _raw_model_from_fit(model_family, final_fit_full)
-                final_calibrator = identity_calibrator(config.calibration.method.value, config.random_seed)
-                final_train_days = _day_range_iso(keys, _without_warmup(keys, all_rows))
             else:
                 final_model, final_fit_full = _fit_final_raw_model(
                     model_family,
@@ -1203,11 +1218,17 @@ def run_training(
                     task=task_name,
                     model=model_family,
                     result=result,
-                    pooled_model_log_loss=pooled_ll,
-                    benchmark_log_loss=pooled_block[benchmark_name]["log_loss"],
-                    benchmark=benchmark_name,
-                    model_ece=pooled_block["model"]["ece"],
-                    benchmark_ece=pooled_block[benchmark_name]["ece"],
+                    evaluation=TaskModelEval(
+                        task=task_name,
+                        model=model_family,
+                        run_id=pair_run_id,
+                        reports_dir=reports_dir,
+                        model_log_loss=pooled_ll,
+                        benchmark_log_loss=pooled_block[benchmark_name]["log_loss"],
+                        benchmark=benchmark_name,
+                        model_ece=pooled_block["model"]["ece"],
+                        benchmark_ece=pooled_block[benchmark_name]["ece"],
+                    ),
                 )
             )
             results.append(result)

@@ -39,7 +39,7 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
 | `models.lgbm.monotone.*` | Monotone constraint signs by feature name (`over_5_5` only; `home_win` has none) |
 | `tasks.*.features` | Optional list of feature columns of the task; unset — every dataset feature column. `home_win`: `diff_elo`, `home_is_b2b`, `away_is_b2b`, `diff_shot_share_ewm` |
-| `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
+| `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`); `home_win` ignores it (identity calibrator) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
 
 `configs/modeling_default.yaml` checks `[20232024, 20242025, 20252026]` with `300`/`300`
@@ -242,10 +242,9 @@ mean P(tie) within ±2 pp of the actual tie share (card acceptance).
 +0.24, b2b гостей +0.13, b2b хозяев −0.06. Срезы (модель / Elo): начало сезона 0.6692 / 0.6777,
 `prior_games ≤7` 0.6595 / 0.6690, после олимпийской паузы (n=110) 0.6905 / 0.6884.
 
-**Разведка** (одноразовый скрипт, датасет до фикса; полностью — спека
-`docs/superpowers/specs/2026-10-11-task-68-win-model-design.md`): к Elo b2b даёт −0.002, доля
-бросков −0.004, вместе −0.006; отдых в днях и разница голов ничего не добавляют. Platt на 300 играх
-ухудшал (−0.0035, ДИ через 0, ECE 0.036), прогревочный сезон в обучении — тоже.
+Разведка признаков и калибровки — в спеке `docs/superpowers/specs/2026-10-11-task-68-win-model-design.md`.
+Побочный эффект: `over_5_5` (признаки не заданы = все столбцы) теперь получает и три столбца
+`*_shot_share_ewm`.
 
 **Когда применять** (решение человека 2026-10-11): только к играм, где у **обеих команд ≥ 5 игр в
 текущем сезоне** — модель обучена и проверена лишь на таких играх (`--min-prior-games 5`). По
@@ -315,7 +314,7 @@ Every training run gets a canonical id shared by all artifacts and reports for t
 | `<features_hash[:8]>` | First 8 hex characters of the dataset `features_hash` from `metadata_train.json` |
 | `<utc_timestamp_YYYYmmddTHHMMSSZ>` | UTC wall time at run start, e.g. `20260530T143022Z` |
 
-**Example:** `home_win_lgbm_b334df68_20260530T143022Z`
+**Example:** `home_win_logreg_b334df68_20260530T143022Z`
 
 Built by `modeling.config.build_run_id()`. All `(task, model)` pairs in one CLI invocation share the same UTC timestamp; only the `<task>_<model>_` prefix differs.
 
@@ -331,16 +330,13 @@ Matches the UPDATE plan file map. All paths are under repository root.
 artifacts/
   models/
     home_win/
-      lgbm/
+      logreg/
         <run_id>/
           season_<season_id>/
           final/{model.joblib, calibrator.joblib, metadata.json}
         latest -> <run_id>/final/
-      logreg/
-        <run_id>/...
-        latest -> <run_id>/final/
     over_5_5/
-      ...
+      {logreg,lgbm}/ ...
   reports/
     <run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
 ```
@@ -407,7 +403,7 @@ open artifacts/reports/<run_id>/reliability_<task>.png   # macOS; use your viewe
 ls -la artifacts/models/<task>/<model>/latest/
 ```
 
-**`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a). Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
+**`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a); for `home_win` also pooled ECE must not be above Elo, and `reason` names the failed condition. Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 

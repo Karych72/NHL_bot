@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -497,11 +498,7 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
             task="home_win",
             model="logreg",
             result=result,
-            pooled_model_log_loss=run.model_log_loss,
-            benchmark_log_loss=run.benchmark_log_loss,
-            benchmark=run.benchmark,
-            model_ece=run.model_ece,
-            benchmark_ece=run.benchmark_ece,
+            evaluation=run,
         )
 
     def test_verify_latest_passes_on_valid_symlink(self) -> None:
@@ -562,11 +559,7 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                pooled_model_log_loss=run.model_log_loss,
-                benchmark_log_loss=run.benchmark_log_loss,
-                benchmark=run.benchmark,
-                model_ece=run.model_ece,
-                benchmark_ece=run.benchmark_ece,
+                evaluation=run,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
             combined, _, _ = apply_acceptance_to_training_outcomes(
@@ -671,11 +664,9 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                pooled_model_log_loss=0.99,
-                benchmark_log_loss=0.50,
-                benchmark="elo",
-                model_ece=0.01,
-                benchmark_ece=0.01,
+                evaluation=replace(
+                    run, model_log_loss=0.99, benchmark_log_loss=0.50, benchmark="elo", model_ece=0.01, benchmark_ece=0.01
+                ),
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
             apply_acceptance_to_training_outcomes(

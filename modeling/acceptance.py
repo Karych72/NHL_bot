@@ -529,23 +529,6 @@ def patch_metrics_acceptance(
     )
 
 
-def _evals_from_outcomes(outcomes: Sequence[Any]) -> list[TaskModelEval]:
-    return [
-        TaskModelEval(
-            task=item.task,
-            model=item.model,
-            run_id=item.result.run_id,
-            reports_dir=item.result.reports_dir,
-            model_log_loss=item.pooled_model_log_loss,
-            benchmark_log_loss=item.benchmark_log_loss,
-            benchmark=item.benchmark,
-            model_ece=item.model_ece,
-            benchmark_ece=item.benchmark_ece,
-        )
-        for item in outcomes
-    ]
-
-
 def apply_acceptance_to_training_outcomes(
     outcomes: Sequence[Any],
     *,
@@ -557,7 +540,7 @@ def apply_acceptance_to_training_outcomes(
     """End-of-run hook: baseline gate, artifact verification, patch reports."""
     from modeling.report import configure_run_logger
 
-    eval_runs = _evals_from_outcomes(outcomes)
+    eval_runs = [item.evaluation for item in outcomes]
     eval_by_task: dict[str, list[TaskModelEval]] = {}
     for entry in eval_runs:
         eval_by_task.setdefault(entry.task, []).append(entry)
@@ -664,7 +647,7 @@ def apply_latest_symlink_check(
         config=config,
         artifacts_root=artifacts_root,
         pairs=pairs,
-        runs=_evals_from_outcomes(outcomes),
+        runs=[item.evaluation for item in outcomes],
     )
     artifacts = ArtifactCheckResult(ok=False, issues=artifacts.issues + latest.issues)
 

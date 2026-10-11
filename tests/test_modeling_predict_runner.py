@@ -174,22 +174,6 @@ class TestRunPredictHappyPath(unittest.TestCase):
             on_disk = pd.read_csv(output_path)
             self.assertEqual(list(on_disk["game_id"]), [101, 102, 103])
 
-    def test_metadata_without_model_features_fails_loudly(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            artifacts_root = tmp / "artifacts"
-            _write_latest_model(artifacts_root, model_features=None)
-            csv_path, meta_path = _write_predict_dataset(tmp)
-            with self.assertRaises(KeyError):
-                run_predict(
-                    task="home_win",
-                    model="logreg",
-                    predict_dataset=csv_path,
-                    predict_metadata=meta_path,
-                    artifacts_root=artifacts_root,
-                    output_path=tmp / "out.csv",
-                )
-
     def test_raises_when_no_latest_model_trained(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

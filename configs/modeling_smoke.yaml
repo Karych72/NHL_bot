@@ -49,8 +49,8 @@ models:
       lambda_l1: [0.1]
       lambda_l2: [0.1]
       learning_rate: [0.05]
-    # Real dataset diff_/sum_ columns, same fix and sign reasoning as
-    # configs/modeling_default.yaml; see docs/modeling_training.md §7 (Задача 39).
+    # Real dataset sum_ columns, not aliases, same sign reasoning as
+    # configs/modeling_default.yaml (over_5_5, both +1); see docs/modeling_training.md §7 (Задача 39).
     monotone:
       over_5_5:
         sum_goals_for_roll_mean_5: 1

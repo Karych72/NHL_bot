@@ -352,6 +352,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             for key in ("holdout_days", "n_rows_holdout", "test_days", "n_rows_test"):
                 self.assertNotIn(key, meta)
             self.assertEqual(meta["test_seasons"], _test_config_yaml()["split"]["test_seasons"])
+            self.assertEqual(meta["n_rows_train"] + meta["n_rows_calibration"], 2000)
             self.assertIn("scikit-learn", meta["library_versions"])
             latest = artifacts / "models" / "over_5_5" / "logreg" / "latest"
             latest_txt = artifacts / "models" / "over_5_5" / "logreg" / "latest.txt"
@@ -495,6 +496,32 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertNotIn("elo", metrics["calibration_table"])
             self.assertEqual(metrics["acceptance"]["baseline_gate"]["per_task"][0]["benchmark"], "constant")
 
+    def test_unknown_feature_name_raises_config_error_in_train_and_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            csv_path, meta_path = _write_synthetic_dataset(tmp)
+            cfg = _test_config_yaml()
+            cfg["tasks"]["over_5_5"]["features"] = ["no_such_column"]
+            cfg_path = tmp / "cfg.yaml"
+            cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+            resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
+            for call in (
+                lambda: run_training(
+                    resolved,
+                    dataset_csv=csv_path,
+                    metadata_path=meta_path,
+                    task="over_5_5",
+                    model="logreg",
+                    artifacts_root=tmp / "artifacts",
+                ),
+                lambda: dry_run_training(
+                    resolved, dataset_csv=csv_path, metadata_path=meta_path, task_flag="over_5_5"
+                ),
+            ):
+                with self.assertRaises(ConfigError) as ctx:
+                    call()
+                self.assertIn("tasks.over_5_5.features: unknown columns ['no_such_column']", str(ctx.exception))
+
     def test_home_win_fails_loudly_without_games_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
@@ -554,7 +581,7 @@ class TestSliceMasks(unittest.TestCase):
             train_size=0, inner_val_size=0, calibration_size=0, test_size=len(days),
         )
         y = np.arange(len(days)) % 2
-        ev = _SeasonEval(window, y, np.full(len(days), 0.5), np.full(len(days), 0.5), np.full(len(days), 0.5), None, None, None)
+        ev = _SeasonEval(window, 0, y, np.full(len(days), 0.5), np.full(len(days), 0.5), np.full(len(days), 0.5), None, None, None)
 
         masks = _slice_masks([ev], keys, X)
 
@@ -584,7 +611,7 @@ class TestSliceMasks(unittest.TestCase):
             train_days=None, inner_val_days=None, calibration_days=None, test_days=None,  # type: ignore[arg-type]
             train_size=0, inner_val_size=0, calibration_size=0, test_size=4,
         )
-        ev = _SeasonEval(window, np.zeros(4), np.full(4, 0.5), np.full(4, 0.5), np.full(4, 0.5), None, None, None)
+        ev = _SeasonEval(window, 0, np.zeros(4), np.full(4, 0.5), np.full(4, 0.5), np.full(4, 0.5), None, None, None)
 
         with self.assertRaises(ConfigError) as ctx:
             _slice_masks([ev], keys, pd.DataFrame({"f_a": np.zeros(4)}))
@@ -693,6 +720,9 @@ class TestHomeWinLogregOnly(unittest.TestCase):
                 season_meta = meta(home, f"season_{season}")
                 self.assertGreaterEqual(season_meta["train_days"]["min"], second_season_first_day)
                 self.assertEqual(season_meta["train_days"]["max"], season_meta["calibration_days"]["max"])
+            metrics = json.loads((home.reports_dir / "metrics.json").read_text(encoding="utf-8"))
+            for block in metrics["seasons"]:
+                self.assertEqual(block["n_train"], meta(home, f"season_{block['season_id']}")["n_rows_train"])
             model = joblib.load(home.model_run_dir / "final" / "model.joblib")
             self.assertEqual(model.n_features_in_, len(final["model_features"]))
 
