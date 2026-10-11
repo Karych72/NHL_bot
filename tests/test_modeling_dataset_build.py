@@ -770,5 +770,88 @@ class TestGamesTrainCsv(unittest.TestCase):
         self.assertEqual(from_csv.diffs(params).tolist(), from_builder_frame.diffs(params).tolist())
 
 
+class TestShotShareEwm(unittest.TestCase):
+    """Задача 68: межсезонная доля бросков с затуханием, as-of по дням."""
+
+    @staticmethod
+    def _played(rows):
+        return pd.DataFrame(
+            rows,
+            columns=["game_id", "day", "season_id", "home_team_id", "away_team_id", "home_shots", "away_shots"],
+        )
+
+    def test_first_game_is_neutral_and_update_uses_alpha(self):
+        from modeling.dataset_builder.features import SHOT_SHARE_ALPHA, compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-10-01", 20252026, 10, 20, 30.0, 10.0),
+            (2, "2025-10-03", 20252026, 10, 20, 20.0, 20.0),
+        ])
+        per_game, final = compute_pregame_shot_share(played)
+        first = per_game.set_index("game_id").loc[1]
+        self.assertEqual((first.home_shot_share_ewm, first.away_shot_share_ewm), (0.5, 0.5))
+        second = per_game.set_index("game_id").loc[2]
+        self.assertAlmostEqual(second.home_shot_share_ewm, 0.5 + SHOT_SHARE_ALPHA * (0.75 - 0.5))
+        self.assertAlmostEqual(second.away_shot_share_ewm, 0.5 + SHOT_SHARE_ALPHA * (0.25 - 0.5))
+        self.assertEqual(final[10][1], 20252026)
+
+    def test_same_day_games_do_not_see_each_other(self):
+        from modeling.dataset_builder.features import compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-10-01", 20252026, 10, 20, 40.0, 10.0),
+            (2, "2025-10-01", 20252026, 30, 10, 10.0, 40.0),  # team 10 again, same day
+        ])
+        per_game, _ = compute_pregame_shot_share(played)
+        self.assertEqual(per_game.set_index("game_id").loc[2, "away_shot_share_ewm"], 0.5)
+
+    def test_season_change_shrinks_toward_half(self):
+        from modeling.dataset_builder.features import SHOT_SHARE_ALPHA, SHOT_SHARE_SEASON_KEEP, compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-04-01", 20242025, 10, 20, 30.0, 10.0),
+            (2, "2025-10-01", 20252026, 10, 20, 20.0, 20.0),
+        ])
+        per_game, _ = compute_pregame_shot_share(played)
+        after_first = 0.5 + SHOT_SHARE_ALPHA * 0.25
+        expected = 0.5 + SHOT_SHARE_SEASON_KEEP * (after_first - 0.5)
+        self.assertAlmostEqual(per_game.set_index("game_id").loc[2, "home_shot_share_ewm"], expected)
+
+    def test_missing_shots_in_played_game_raises(self):
+        from modeling.dataset_builder.features import compute_pregame_shot_share
+
+        played = self._played([(1, "2025-10-01", 20252026, 10, 20, None, 10.0)])
+        with self.assertRaises(ValueError):
+            compute_pregame_shot_share(played)
+
+    def test_predict_row_after_season_change_is_shrunk(self):
+        from modeling.dataset_builder.features import (
+            SHOT_SHARE_ALPHA, SHOT_SHARE_SEASON_KEEP, attach_pregame_shot_share, compute_pregame_shot_share,
+        )
+
+        played = self._played([(1, "2025-04-01", 20242025, 10, 20, 30.0, 10.0)])
+        per_game, final = compute_pregame_shot_share(played)
+        targets = pd.DataFrame({
+            "game_id": [99], "day": [pd.Timestamp("2025-10-08")], "season_id": [20252026],
+            "home_team_id": [10], "away_team_id": [77],  # 77: no history
+        })
+        out = attach_pregame_shot_share(targets, per_game, final)
+        after_first = 0.5 + SHOT_SHARE_ALPHA * 0.25
+        self.assertAlmostEqual(out.loc[0, "home_shot_share_ewm"], 0.5 + SHOT_SHARE_SEASON_KEEP * (after_first - 0.5))
+        self.assertEqual(out.loc[0, "away_shot_share_ewm"], 0.5)
+
+    def test_assemble_builds_diff_but_no_sum(self):
+        snapshots = pd.DataFrame([{
+            "game_id": 1, "day": "2026-01-01", "season_id": 20252026,
+            "home_team_id": 10, "away_team_id": 20, "winner_id": 10,
+            "home_goals_target": 4, "away_goals_target": 2,
+            "home_prior_games_count": 8, "away_prior_games_count": 8,
+            "home_shot_share_ewm": 0.55, "away_shot_share_ewm": 0.48,
+        }])
+        data, _ = assemble_dataset("train", snapshots, min_prior_games=0, cold_start_policy_predict="allow_with_flag")
+        self.assertAlmostEqual(data.loc[0, "diff_shot_share_ewm"], 0.07)
+        self.assertNotIn("sum_shot_share_ewm", data.columns)
+
+
 if __name__ == "__main__":
     unittest.main()

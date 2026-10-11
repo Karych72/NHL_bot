@@ -18,7 +18,9 @@ from modeling.elo import compute_pregame_elo
 from .assemble import assemble_dataset
 from .features import (
     attach_pregame_elo,
+    attach_pregame_shot_share,
     build_match_feature_snapshots,
+    compute_pregame_shot_share,
     compute_team_rolling_features,
 )
 from .schema import (
@@ -91,7 +93,8 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = 
         config: режим сборки, фильтры сезонов и окна дней.
         with_outcome: только train — добавить ``decision`` (``REG``/``OT``/``SO``) и голы
             основного времени ``home_reg_goals``/``away_reg_goals`` (сумма трёх периодов: ``goals``
-            хранит +1 победителю OT/буллитов) для Elo, голевой модели и ``games_train.csv``;
+            хранит +1 победителю OT/буллитов) для Elo, голевой модели и ``games_train.csv``, а также броски
+            ``home_shots``/``away_shots`` для доли бросков (Задача 68);
             в таблицу признаков они попасть не должны.
     """
     if config.mode == "train":
@@ -101,7 +104,9 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = 
                 (hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals)::double precision
                     AS home_reg_goals,
                 (aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals)::double precision
-                    AS away_reg_goals"""
+                    AS away_reg_goals,
+                hs.shots::double precision AS home_shots,
+                aws.shots::double precision AS away_shots"""
             if with_outcome
             else ""
         )
@@ -372,7 +377,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
-        # Elo (Task 3) persists across seasons, so it needs the *complete* played
+        # Elo (Task 3) and the shot share (Задача 68) persist across seasons, so it needs the *complete* played
         # history regardless of config.season_ids/target_day_from — reuse
         # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
         # rather than a near-duplicate query; only target_day_to still bounds it,
@@ -386,6 +391,8 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     snapshots = build_match_feature_snapshots(target_games, rolling)
     elo_per_game, elo_final_ratings = compute_pregame_elo(elo_history)
     snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
+    shot_per_game, shot_final = compute_pregame_shot_share(elo_history)
+    snapshots = attach_pregame_shot_share(snapshots, shot_per_game, shot_final)
     assembled, assemble_report = assemble_dataset(
         mode=config.mode,
         snapshots=snapshots,

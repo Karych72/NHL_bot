@@ -187,6 +187,27 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
   change is supposed to bump it (`plan/deprecated_plan/nhl_dataset_build_plan.md` §5.3); this
   also changes `features_hash`, as intended.
 
+## Shot-share feature (Задача 68)
+
+`features.py::compute_pregame_shot_share` keeps, like Elo, one cross-season `{team_id: (share,
+season_id)}` state over the whole played history (`base.py` feeds it the same `elo_history`,
+which now also carries `home_shots`/`away_shots` from `game_team_stats.shots`).
+
+- **Formula:** a team's share in a game is `shots_for / (shots_for + shots_against)`; the state
+  starts at `0.5` and updates `s += α·(x − s)`, `α = 1 − 0.5^(1/20)` (half-life 20 games,
+  `SHOT_SHARE_HALFLIFE_GAMES`). At a team's first game of a new season the state shrinks toward
+  0.5: `s ← 0.5 + 0.5·(s − 0.5)` (`SHOT_SHARE_SEASON_KEEP`).
+- **As-of:** the value recorded for a game is the state before it; a day's games all read the
+  state frozen at the start of the day (updates apply after), as with Elo.
+- **Predict mode:** target games absent from the pass take each team's final state
+  (`attach_pregame_shot_share`), shrunk if the target's `season_id` is later than the state's;
+  a team with no state gets 0.5.
+- **Fails loudly:** a played game with missing shots or zero shots on both sides raises
+  `ValueError` naming the `game_id`.
+- **Columns:** `home_shot_share_ewm`, `away_shot_share_ewm`, `diff_shot_share_ewm`; no
+  `sum_shot_share_ewm` (the sum of two shares carries no more signal than the difference).
+  The new columns change `features_hash` — train and predict must be rebuilt.
+
 ## Schema Parity and Versioning
 
 - Predict mode requires `--train-metadata-path` to load train manifest.

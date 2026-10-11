@@ -5,7 +5,8 @@ not team_id alone: a team's first game of a new season starts with an empty
 window, never carrying rolling stats or a snapshot row from the prior season.
 Team Elo (below) is the one exception: it is a cross-team, cross-season
 strength rating that persists between seasons (shrunk toward the mean, not
-reset) — see ``modeling.elo.compute_pregame_elo``.
+reset) — see ``modeling.elo.compute_pregame_elo``. The smoothed shot share
+(Задача 68, below) is likewise cross-season.
 """
 
 from __future__ import annotations
@@ -192,4 +193,96 @@ def attach_pregame_elo(
         out.loc[missing, "away_elo"] = away_ids.map(final_ratings).fillna(ELO_START)
     out["home_elo"] = out["home_elo"].astype("float64")
     out["away_elo"] = out["away_elo"].astype("float64")
+    return out
+
+
+# Задача 68: shot share of a team's games, smoothed over its games across seasons.
+SHOT_SHARE_START = 0.5
+SHOT_SHARE_HALFLIFE_GAMES = 20
+SHOT_SHARE_ALPHA = 1.0 - 0.5 ** (1.0 / SHOT_SHARE_HALFLIFE_GAMES)
+SHOT_SHARE_SEASON_KEEP = 0.5
+
+
+def _shrink_share(share: float) -> float:
+    """Pull a shot share toward ``SHOT_SHARE_START`` by ``1 - SHOT_SHARE_SEASON_KEEP``."""
+    return SHOT_SHARE_START + SHOT_SHARE_SEASON_KEEP * (share - SHOT_SHARE_START)
+
+
+def compute_pregame_shot_share(played_games: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, tuple[float, int]]]:
+    """Pre-game exponentially smoothed shot share of both teams, plus each team's final state.
+
+    The ``home_win`` model's shot-share feature (Задача 68). A team's share of the shots in a
+    game, ``shots_for / (shots_for + shots_against)``, updates ``s += α·(x − s)`` (half-life
+    ``SHOT_SHARE_HALFLIFE_GAMES``), starting at 0.5; at a team's first game of a new season it
+    is shrunk toward 0.5 by ``SHOT_SHARE_SEASON_KEEP``. Like Elo it runs over the whole played
+    history, not per season, and a day's games all read the state frozen at the start of that
+    day.
+
+    Args:
+        played_games: one row per played game with ``game_id``, ``day``, ``season_id``,
+            ``home_team_id``, ``away_team_id``, ``home_shots``, ``away_shots``.
+
+    Returns:
+        ``(per_game, final_state)``: ``game_id``, ``home_shot_share_ewm``,
+        ``away_shot_share_ewm`` per game; ``{team_id: (share, season_id of its last game)}``.
+
+    Raises:
+        ValueError: a played game lacks shots, or both sides have zero shots.
+    """
+    games = played_games.assign(day=pd.to_datetime(played_games["day"]).dt.normalize())
+    games = games.sort_values(["day", "game_id"], kind="mergesort").reset_index(drop=True)
+    total = games["home_shots"] + games["away_shots"]
+    bad = games["home_shots"].isna() | games["away_shots"].isna() | (total <= 0)
+    if bad.any():
+        raise ValueError(f"game {int(games.loc[bad, 'game_id'].iloc[0])} has missing or zero shots")
+    home_x = (games["home_shots"] / total).tolist()
+    ids = games["game_id"].astype("int64").tolist()
+    days = games["day"].tolist()
+    seasons = games["season_id"].astype("int64").tolist()
+    homes = games["home_team_id"].astype("int64").tolist()
+    aways = games["away_team_id"].astype("int64").tolist()
+
+    state: dict[int, tuple[float, int]] = {}
+    pending: list[tuple[int, float, int]] = []
+    cur_day = None
+    rows: list[tuple[int, float, float]] = []
+    for i, game_id in enumerate(ids):
+        if days[i] != cur_day:
+            state.update({team: (share, season) for team, share, season in pending})
+            pending = []
+            cur_day = days[i]
+        season = seasons[i]
+        pre = []
+        for team in (homes[i], aways[i]):
+            share, last_season = state.get(team, (SHOT_SHARE_START, season))
+            pre.append(_shrink_share(share) if last_season != season else share)
+        rows.append((game_id, pre[0], pre[1]))
+        pending.append((homes[i], pre[0] + SHOT_SHARE_ALPHA * (home_x[i] - pre[0]), season))
+        pending.append((aways[i], pre[1] + SHOT_SHARE_ALPHA * (1.0 - home_x[i] - pre[1]), season))
+    state.update({team: (share, season) for team, share, season in pending})
+    per_game = pd.DataFrame(rows, columns=["game_id", "home_shot_share_ewm", "away_shot_share_ewm"])
+    return per_game, state
+
+
+def attach_pregame_shot_share(
+    target_games: pd.DataFrame,
+    per_game_share: pd.DataFrame,
+    final_state: dict[int, tuple[float, int]],
+) -> pd.DataFrame:
+    """Add ``home_shot_share_ewm``/``away_shot_share_ewm`` to every row of ``target_games``.
+
+    A row found by ``game_id`` in ``per_game_share`` gets its pre-game value; a row not found
+    there (predict mode: no result yet) falls back to the team's ``final_state``, shrunk toward
+    0.5 when the target's ``season_id`` is later than the state's. A team without state gets 0.5.
+    """
+    out = target_games.merge(per_game_share, on="game_id", how="left")
+    missing = out["home_shot_share_ewm"].isna()
+    for side in ("home", "away"):
+        col = f"{side}_shot_share_ewm"
+        for idx in out.index[missing]:
+            share, last_season = final_state.get(int(out.at[idx, f"{side}_team_id"]), (SHOT_SHARE_START, 0))
+            if int(out.at[idx, "season_id"]) > last_season:
+                share = _shrink_share(share)
+            out.at[idx, col] = share
+        out[col] = out[col].astype("float64")
     return out
