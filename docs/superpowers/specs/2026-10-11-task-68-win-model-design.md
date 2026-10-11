@@ -1,7 +1,7 @@
 # Задача 68. Модель вероятности победы — дизайн
 
 **Дата:** 2026-10-11 · **Ветка:** `task-68-win-model` · **Карточка:**
-[`plan/tasks/task_model/task_68_win_model.md`](../../../plan/tasks/task_model/task_68_win_model.md)
+[`plan/archive/tasks/task_model/task_68_win_model.md`](../../../plan/archive/tasks/task_model/task_68_win_model.md)
 
 ## Цель
 
