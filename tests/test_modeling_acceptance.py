@@ -38,7 +38,13 @@ VALID_RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 
 
 def _eval_entry(
-    *, model_ll: float, benchmark_ll: float, model: str = "logreg", benchmark: str = "elo", model_ece: float = 0.01, benchmark_ece: float = 0.01
+    *,
+    model_ll: float,
+    benchmark_ll: float,
+    model: str = "logreg",
+    benchmark: str = "elo",
+    model_ece: float = 0.01,
+    benchmark_ece: float = 0.01,
 ) -> TaskModelEval:
     return TaskModelEval(
         task="home_win",
@@ -217,7 +223,9 @@ class TestBaselineGate(unittest.TestCase):
         text = format_baseline_summary_section(gate)
         self.assertIn("pooled test seasons, vs Elo|constant", text)
         self.assertIn("elo=0.660000", text)
-        failing = evaluate_baseline_gate(["home_win"], {"home_win": [_eval_entry(model_ll=0.6, benchmark_ll=0.66, model_ece=0.1)]})
+        failing = evaluate_baseline_gate(
+            ["home_win"], {"home_win": [_eval_entry(model_ll=0.6, benchmark_ll=0.66, model_ece=0.1)]}
+        )
         self.assertIn("ece above elo", format_baseline_summary_section(failing))
         self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
@@ -540,7 +548,7 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
             tmp = Path(tmp_str)
             _, meta_path = write_synthetic_train_dataset(tmp, n_days=20)
             config = load_config(ROOT / "configs" / "modeling_default.yaml", metadata=load_metadata_json(meta_path))
-            run = _write_valid_run_layout(tmp, features_hash=config.features_hash)
+            run = _write_valid_run_layout(tmp, features_hash=config.features_hash, symlink_ok=False)
             result = RunResult(
                 run_id=run.run_id,
                 task="home_win",
@@ -569,8 +577,13 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 artifacts_root=tmp / "artifacts",
             )
             self.assertEqual(combined, "ok")
+            result.status = combined
+            update_latest_symlink(
+                "home_win", "logreg", run.run_id, artifacts_root=tmp / "artifacts", status=result.status
+            )
             latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
             self.assertEqual(latest.resolve(), (latest.parent / run.run_id / "final").resolve())
+            self.assertTrue(verify_latest_symlinks([outcome], artifacts_root=tmp / "artifacts").ok)
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertTrue(summary.startswith("status:"))
             metrics = json.loads((run.reports_dir / "metrics.json").read_text(encoding="utf-8"))
