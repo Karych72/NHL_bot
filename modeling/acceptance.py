@@ -372,11 +372,13 @@ def verify_run_artifacts(
     after ``train_runner.update_latest_symlink`` (two-phase layout in
     :func:`apply_acceptance_to_training_outcomes` + ``train_runner.run_training``).
     """
+    from modeling.train_runner import TASK_MODEL_FAMILIES
+
     issues: list[str] = []
     run_by_pair = {(r.task, r.model): r for r in runs}
 
     for task in enabled_tasks:
-        for model in models:
+        for model in (m for m in models if m in TASK_MODEL_FAMILIES[task]):
             entry = run_by_pair.get((task, model))
             if entry is None:
                 _issue(issues, f"no training result for task={task} model={model}")

@@ -179,6 +179,17 @@ class CalibratorFit:
         }
 
 
+def identity_calibrator(method: str, seed: int) -> CalibratorFit:
+    """Calibrator for a model that is used as fitted: ``calibration_skipped`` and no calibration rows."""
+    return CalibratorFit(
+        method=_validate_method(method),
+        calibration_skipped=True,
+        n_calibration=0,
+        seed=seed,
+        calibrator=_IdentityCalibrator(),
+    )
+
+
 def fit_calibrator(
     raw_p_cal: np.ndarray,
     y_cal: np.ndarray,

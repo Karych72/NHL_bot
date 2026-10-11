@@ -120,6 +120,7 @@ def _write_latest_model(
             "features_hash": _features_hash(cold_start_policy_predict),
             "feature_set_version": FEATURE_SET_VERSION,
             "feature_manifest": MANIFEST,
+            "model_features": ["f_a", "f_b"],
             "method": calibrator_fit.method,
             "calibration_skipped": calibrator_fit.calibration_skipped,
             "n_calibration": calibrator_fit.n_calibration,
@@ -161,6 +162,26 @@ class TestRunPredictHappyPath(unittest.TestCase):
 
             on_disk = pd.read_csv(output_path)
             self.assertEqual(list(on_disk["game_id"]), [101, 102, 103])
+
+    def test_metadata_without_model_features_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            artifacts_root = tmp / "artifacts"
+            final_dir = _write_latest_model(artifacts_root)
+            meta_file = final_dir / "metadata.json"
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            del meta["model_features"]
+            meta_file.write_text(json.dumps(meta), encoding="utf-8")
+            csv_path, meta_path = _write_predict_dataset(tmp)
+            with self.assertRaises(KeyError):
+                run_predict(
+                    task="home_win",
+                    model="logreg",
+                    predict_dataset=csv_path,
+                    predict_metadata=meta_path,
+                    artifacts_root=artifacts_root,
+                    output_path=tmp / "out.csv",
+                )
 
     def test_raises_when_no_latest_model_trained(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:

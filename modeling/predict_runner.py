@@ -95,6 +95,7 @@ def run_predict(
     )
     check_features_hash_match(model_metadata, dataset_metadata)
 
+    X = X[model_metadata["model_features"]]
     model_family = model  # `train_common.predict_raw_proba`'s first arg is named model_family
     raw_p = predict_raw_proba(model_family, raw_model, X)
     calibrator_fit = calibrator_fit_from_metadata(model_metadata, calibrator)

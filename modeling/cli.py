@@ -194,7 +194,7 @@ def _handle_train(args: argparse.Namespace) -> int:
     from modeling.train_runner import (
         dry_run_training,
         format_dry_run_report,
-        resolve_models,
+        resolve_pairs,
         resolve_tasks,
         run_training,
         validate_run_id_override,
@@ -217,8 +217,7 @@ def _handle_train(args: argparse.Namespace) -> int:
 
     try:
         tasks = resolve_tasks(args.task, resolved)
-        models = resolve_models(args.model)
-        validate_run_id_override(tasks, models, args.run_id)
+        validate_run_id_override(resolve_pairs(tasks, args.model), args.run_id)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
@@ -292,9 +291,23 @@ def _handle_evaluate_goals(args: argparse.Namespace) -> int:
     return 0 if metrics["status"] == "ok" else 1
 
 
+def _unsupported_family(args: argparse.Namespace) -> bool:
+    """Report ``--model`` the task does not train (e.g. lgbm for home_win); True when rejected."""
+    from modeling.train_runner import resolve_models
+
+    try:
+        resolve_models(args.model, args.task)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return True
+    return False
+
+
 def _handle_promote(args: argparse.Namespace) -> int:
     from modeling.train_runner import promote_model
 
+    if _unsupported_family(args):
+        return 1
     try:
         promote_model(args.task, args.model, args.run_id, artifacts_root=Path("artifacts"))
     except (FileNotFoundError, ValueError) as exc:
@@ -307,6 +320,8 @@ def _handle_promote(args: argparse.Namespace) -> int:
 def _handle_predict(args: argparse.Namespace) -> int:
     from modeling.predict_runner import run_predict
 
+    if _unsupported_family(args):
+        return 1
     output_path = (
         Path(args.output)
         if args.output
@@ -337,6 +352,8 @@ def _handle_publish(args: argparse.Namespace) -> int:
     from modeling.dataset_builder.base import _connect_from_env
     from modeling.publish_predictions import publish_predictions
 
+    if _unsupported_family(args):
+        return 1
     artifacts_root = Path(args.artifacts_root)
     predictions_csv = (
         Path(args.predictions)
