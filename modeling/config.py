@@ -57,6 +57,8 @@ class ComputeConfig(_ForbidExtraModel):
 
 class TaskToggle(_ForbidExtraModel):
     enabled: bool
+    # Задача 68: the task's own feature columns; unset = every feature column of the dataset.
+    features: Optional[List[str]] = Field(default=None, min_length=1)
 
 
 class TasksConfig(_ForbidExtraModel):
@@ -180,7 +182,6 @@ class LgbmGrids(_ForbidExtraModel):
 
 
 class LgbmMonotone(_ForbidExtraModel):
-    home_win: Dict[str, int] = Field(default_factory=dict)
     over_5_5: Dict[str, int] = Field(default_factory=dict)
 
     @staticmethod
@@ -194,11 +195,6 @@ class LgbmMonotone(_ForbidExtraModel):
                     f"models.lgbm.monotone.{task}[{name!r}] must be one of {{-1, 0, 1}}, got {sign}"
                 )
         return mapping
-
-    @field_validator("home_win")
-    @classmethod
-    def _home_win_signs(cls, value: Dict[str, int]) -> Dict[str, int]:
-        return cls._validate_signs(value, "home_win")
 
     @field_validator("over_5_5")
     @classmethod

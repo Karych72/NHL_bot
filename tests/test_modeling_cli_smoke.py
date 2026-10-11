@@ -56,7 +56,7 @@ def _test_config_yaml() -> dict:
         "ot_win_weight": [1.0],
     }
     base["calibration"]["min_samples"] = 100
-    base["models"]["lgbm"]["monotone"] = {"home_win": {}, "over_5_5": {}}
+    base["models"]["lgbm"]["monotone"] = {"over_5_5": {}}
     return base
 
 
@@ -688,7 +688,7 @@ class TestCliTrainLgbmEndToEnd(unittest.TestCase):
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [1.0]
             lgbm_grid = cfg["models"]["lgbm"]["grids"]
             for key in lgbm_grid:
@@ -703,14 +703,14 @@ class TestCliTrainLgbmEndToEnd(unittest.TestCase):
                 resolved,
                 dataset_csv=csv_path,
                 metadata_path=meta_path,
-                task="home_win",
+                task="over_5_5",
                 model="lgbm",
-                run_id="home_win_lgbm_cafebabe_20260101T000000Z",
+                run_id="over_5_5_lgbm_cafebabe_20260101T000000Z",
                 artifacts_root=artifacts,
             )
             self.assertEqual(len(results), 1)
             final_dir = (
-                artifacts / "models" / "home_win" / "lgbm" / results[0].run_id / "final"
+                artifacts / "models" / "over_5_5" / "lgbm" / results[0].run_id / "final"
             )
             self.assertTrue((final_dir / "model.joblib").exists())
             meta = json.loads((final_dir / "metadata.json").read_text(encoding="utf-8"))

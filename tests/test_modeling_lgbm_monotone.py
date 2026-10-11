@@ -324,7 +324,7 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
                 "logreg": {"grids": {"C": [1.0]}},
                 "lgbm": {
                     "grids": grid,
-                    "monotone": {"home_win": {}, "over_5_5": {}},
+                    "monotone": {"over_5_5": {}},
                 },
             },
             "calibration": {"method": "platt", "min_samples": 1},
@@ -371,7 +371,7 @@ class TestFinalRetrainFixedRounds(unittest.TestCase):
 
         final_booster, fit = _fit_final_raw_model(
             "lgbm",
-            "home_win",
+            "over_5_5",
             X,
             y_all,
             final_slices,

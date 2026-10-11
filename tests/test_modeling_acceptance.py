@@ -577,7 +577,7 @@ def _test_config_yaml() -> dict:
         "ot_win_weight": [1.0],
     }
     base["calibration"]["min_samples"] = 100
-    base["models"]["lgbm"]["monotone"] = {"home_win": {}, "over_5_5": {}}
+    base["models"]["lgbm"]["monotone"] = {"over_5_5": {}}
     return base
 
 
