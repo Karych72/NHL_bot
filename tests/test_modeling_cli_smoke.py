@@ -306,7 +306,7 @@ class TestCliTrainSmoke(unittest.TestCase):
 
 
 class TestCliTrainMiniEndToEnd(unittest.TestCase):
-    # Promotion runs on over_5_5: the home_win gate needs ECE no worse than Elo, which synthetic data cannot give.
+    # over_5_5: the synthetic Elo has near-zero ECE, so home_win never passes the ECE gate here.
     def test_train_creates_season_final_and_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

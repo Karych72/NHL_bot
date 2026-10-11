@@ -38,13 +38,7 @@ VALID_RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 
 
 def _eval_entry(
-    *,
-    model_ll: float,
-    benchmark_ll: float,
-    model: str = "logreg",
-    benchmark: str = "elo",
-    model_ece: float = 0.01,
-    benchmark_ece: float = 0.01,
+    *, model_ll: float, benchmark_ll: float, model: str = "logreg", benchmark: str = "elo", model_ece: float = 0.01, benchmark_ece: float = 0.01
 ) -> TaskModelEval:
     return TaskModelEval(
         task="home_win",
@@ -184,8 +178,8 @@ class TestBaselineGate(unittest.TestCase):
         self.assertEqual(gate.per_task[0].winning_family, "lgbm")
 
     def test_home_win_gate_ece_not_above_elo(self) -> None:
-        def verdict(**kw: float):
-            entry = _eval_entry(model_ll=0.5, benchmark_ll=0.7, **kw)
+        def verdict(model_ll: float = 0.5, **kw: float):
+            entry = _eval_entry(model_ll=model_ll, benchmark_ll=0.7, **kw)
             return evaluate_baseline_gate(["home_win"], {"home_win": [entry]}).per_task[0]
 
         equal = verdict(model_ece=0.02, benchmark_ece=0.02)
@@ -194,10 +188,7 @@ class TestBaselineGate(unittest.TestCase):
         worse = verdict(model_ece=0.03, benchmark_ece=0.02)
         self.assertFalse(worse.passed)
         self.assertEqual(worse.reason, "ece above elo")
-        both = evaluate_baseline_gate(
-            ["home_win"],
-            {"home_win": [_eval_entry(model_ll=0.8, benchmark_ll=0.7, model_ece=0.03, benchmark_ece=0.02)]},
-        ).per_task[0]
+        both = verdict(model_ll=0.8, model_ece=0.03, benchmark_ece=0.02)
         self.assertEqual(both.reason, "log_loss not below elo; ece above elo")
 
     def test_constant_benchmark_ignores_ece(self) -> None:
@@ -226,9 +217,7 @@ class TestBaselineGate(unittest.TestCase):
         text = format_baseline_summary_section(gate)
         self.assertIn("pooled test seasons, vs Elo|constant", text)
         self.assertIn("elo=0.660000", text)
-        failing = evaluate_baseline_gate(
-            ["home_win"], {"home_win": [_eval_entry(model_ll=0.60, benchmark_ll=0.66, model_ece=0.1)]}
-        )
+        failing = evaluate_baseline_gate(["home_win"], {"home_win": [_eval_entry(model_ll=0.6, benchmark_ll=0.66, model_ece=0.1)]})
         self.assertIn("ece above elo", format_baseline_summary_section(failing))
         self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
@@ -579,7 +568,9 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 pairs=[("home_win", "logreg")],
                 artifacts_root=tmp / "artifacts",
             )
-            self.assertIn(combined, ("ok", "failed_baseline_check", "failed_artifact_check"))
+            self.assertEqual(combined, "ok")
+            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
+            self.assertEqual(latest.resolve(), (latest.parent / run.run_id / "final").resolve())
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertTrue(summary.startswith("status:"))
             metrics = json.loads((run.reports_dir / "metrics.json").read_text(encoding="utf-8"))
