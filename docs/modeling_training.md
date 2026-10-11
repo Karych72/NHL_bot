@@ -16,7 +16,7 @@ Modeling dependencies are **separate from bot runtime**. They are not in `requir
 make modeling-dev
 ```
 
-This installs packages from [`requirements-modeling.txt`](../requirements-modeling.txt): `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib`, and `pydantic` (config validation in `modeling/config.py`).
+This installs packages from [`requirements-modeling.txt`](../requirements-modeling.txt): `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib`, `pydantic` (config validation in `modeling/config.py`) and `scipy` (the goal model, §2b).
 
 ---
 
@@ -35,6 +35,7 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
 | `split.*` | Season-by-season check: `test_seasons` (strictly increasing), `inner_val_games`, `calibration_games` — see §2a |
 | `elo.grid` | Search grid of the Elo benchmark (`k`, `home_advantage`, `season_regression`, `mov`, `ot_win_weight`) — see §2a |
+| `goals.{alpha,tie_halflife_days}` | Goal model: ridge grid of the Poisson GLM, half-life of the tracked tie rate — see §2b |
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
 | `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
 | `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
@@ -136,6 +137,79 @@ lgbm − константа −0.0086 [−0.0173; +0.0006]. Brier / ECE: Elo 0.2
   повышать `--min-prior-games` выше 5 данные не требуют.
 - Ограничение: константы фичи `diff_elo` (Задача 40) подбирались на 2022-10…2025-11, т.е. фича
   модели частично видела проверочные сезоны; это работает в пользу модели, а не против неё.
+
+### 2b. Goal model (Задача 67)
+
+`modeling/goal_model.py`, command `python -m modeling.cli evaluate-goals [--config] [--set]
+[--games artifacts/datasets/games_train.csv] [--reports-root artifacts/reports]` → report
+`artifacts/reports/goals_<UTC>/{metrics.json, summary.md}`; exit code 0 only on `status: ok`.
+Needs only `games_train.csv` (rebuild with `build-dataset --mode train` — it now carries the
+regulation goals); no `metadata_train.json`, no PostgreSQL.
+
+**Model.** Target — regulation goals (`*_reg_goals`, three periods). Poisson GLM
+(`sklearn.linear_model.PoissonRegressor`, ridge `alpha`) on stacked team-games, two rows per game:
+`log λ = β0 + attack_team − defence_opponent + home + own back-to-back + opponent back-to-back`.
+A team without training games (a new franchise) is the league average. Score grid 0…14 × 0…14 —
+product of the two Poisson pmfs; the diagonal (ties after 60 minutes) gets one multiplier
+`1 + θ`, solved per game day so the day's mean P(tie) equals the **tracked league tie rate**
+(share of ties before that day, weight `0.5 ** (Δdays / tie_halflife_days)`). Settled total =
+regulation goals + 1 for a tie (OT to the first goal or +1 for the shootout):
+`P(Over L) = Σ_{i≠j, i+j>L} P(i,j) + Σ_{2i+1>L} P(i,i)`.
+
+**Check** — the §2a scheme on all games of `split.test_seasons` (not only dataset rows): the GLM
+is fitted **once** on every game before the checked season and forecasts the whole season
+(«летом обучили»); `alpha` is picked by over-5.5 log-loss on the seasons strictly between the
+first one and the checked one, each forecast by a fit on the seasons before it. Benchmark —
+the constant (over-5.5 share of all games before the checked season). `status: ok` requires
+the pooled paired bootstrap CI of `model − constant` entirely below 0 **and** every season's
+mean P(tie) within ±2 pp of the actual tie share (card acceptance).
+
+**Результат на реальных данных** (2026-10-11, `games_train.csv` 6568 игр, конфиг по умолчанию,
+`alpha` из `[0.01, 0.1, 0.3, 1.0, 3.0]`, полураспад ничьих 100 дней):
+
+| сезон | n | alpha | модель | константа | разница | ничьи прогноз / факт | тотал осн. времени прогноз / факт |
+|---|---|---|---|---|---|---|---|
+| 2023/24 | 1312 | 0.1 | 0.6838 | 0.6828 | +0.0010 | 0.217 / 0.207 | 6.09 / 6.02 |
+| 2024/25 | 1312 | 0.3 | 0.6916 | 0.6945 | −0.0029 | 0.203 / 0.207 | 6.07 / 5.87 |
+| 2025/26 | 1312 | 0.3 | 0.6818 | 0.6824 | −0.0006 | 0.245 / 0.248 | 6.02 / 6.01 |
+| сумма | 3936 | — | 0.6857 | 0.6866 | **−0.0008 [−0.0026; +0.0010]** | — | — |
+
+Калибровка P(Over 5.5) по корзинам (сумма сезонов): 0.50–0.55 — 0.538 / 0.539 (n=943),
+0.55–0.60 — 0.568 / 0.568 (n=2711), 0.60–0.65 — 0.617 / 0.576 (n=243); крайние корзины < 25 игр.
+По корзинам λ_h+λ_a: 5.5–6.0 — P(Over) 0.541 / факт 0.531 (n=1298), 6.0–6.5 — 0.573 / 0.578
+(n=2591), ≥ 6.5 — 0.645 / 0.489 (n=47). **Гейт не пройден** (`failed_baseline_check`): ничьи
+в пределах ±1 п.п. во всех сезонах, но ДИ разности с константой включает 0.
+
+Разведка вариантов (2026-10-10…11, одноразовые скрипты вне репозитория; та же схема: настройки
+только по прошлым сезонам, сумма трёх сезонов, разность log-loss с константой и 95% ДИ):
+
+| вариант | разность | ДИ |
+|---|---|---|
+| **принят:** обучение один раз на всех прошлых сезонах, силы команд | −0.0009 | [−0.0030; +0.0014] |
+| то же, обучение только на последнем сезоне | +0.0023 | [−0.0008; +0.0053] |
+| ежедневное переобучение, веса по давности exp(−ξΔt), ξ и перенос прошлого сезона подбираются | −0.0009 | [−0.0042; +0.0024] |
+| один «темп» на команду вместо атаки и обороны | −0.0006 | [−0.0032; +0.0021] |
+| без команд: только уровень лиги и дом | −0.0008 | [−0.0018; +0.0002] |
+| скользящие средние голов (EWMA) вместо команд | −0.0017 | [−0.0045; +0.0012] |
+| то же + броски | +0.0023 | [−0.0030; +0.0073] |
+| силы команд + Elo (разность и её модуль) | −0.0003 | [−0.0027; +0.0021] |
+| принятый + Platt или сдвиг поверх P(Over) | +0.0004…+0.0006 | ДИ включает 0 |
+
+Выводы:
+- Больше истории лучше одного сезона, но потолок близко: силы команд почти не двигают тотал —
+  модель без команд почти не уступает. Даже подгонка на самом проверочном сезоне (подглядывание)
+  даёт лишь −0.009…−0.013 к константе этого сезона, часть которых — переобучение 64 параметров;
+  честно достижимо порядка 0.002–0.005, а ДИ на трёх сезонах ±0.002–0.003.
+- Ничьи: независимый Poisson даёт ~17%, лига — 21–25%; 2025/26 — рекорд (24.8%). Постоянное
+  раздувание, подобранное по прошлым сезонам, промахивается на 2–4 п.п.; отслеживание доли
+  ничьих внутри сезона (полураспад 100 дней) держит все сезоны в ±1 п.п. Если же раздувание
+  подбирать по log-loss тотала, оно уходит к нулю (ничьи −4…−8 п.п.) — сетка не той формы.
+- Форма сетки: сумма голов основного времени недорассеяна (var/mean ≈ 0.9), а голы в пустые
+  ворота переводят 2:1 в 3:1 — модель завышает нечётные тоталы без ничьей (1, 3) и занижает
+  P(Over 5.5) примерно на 1 п.п. Цена — порядка 0.0002 log-loss; двухстадийная схема с ENG не
+  окупится, пока нет сигнала сильнее.
+- Back-to-back, дом и месяц сезона на тотал заметно не влияют; Elo и броски не помогают.
+- Сдвинуть тотал могут признаки, которых у сил команд нет: вратари (Задача 71) и xG (Задача 69).
 
 ---
 

@@ -824,6 +824,7 @@ scipy==1.17.1 \
     --hash=sha256:f8885db0bc2bffa59d5c1b72fad7a6a92d3e80e7257f967dd81abb553a90d293 \
     --hash=sha256:fcb310ddb270a06114bb64bbe53c94926b943f5b7f0842194d585c65eb4edd76
     # via
+    #   -r requirements-modeling.in
     #   lightgbm
     #   scikit-learn
 six==1.17.0 \

@@ -42,10 +42,10 @@ from modeling.elo import (
     fit_elo_benchmark,
 )
 from modeling.metrics import (
-    brier,
-    ece,
+    calibration_bins,
     log_loss,
     log_loss_per_game,
+    metric_block,
     reliability_table,
     team_breakdown,
     trivial_baseline,
@@ -320,7 +320,6 @@ _PRIOR_GAMES_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
     ("11-20", 11, 20),
     ("21+", 21, None),
 )
-_CALIBRATION_TABLE_BINS = 20  # 5 percentage points
 
 
 @dataclass
@@ -346,14 +345,6 @@ class _SeasonEval:
     elo: _EloSeason | None
 
 
-def _metrics(y: np.ndarray, p: np.ndarray, *, epsilon: float, ece_bins: int) -> dict[str, float]:
-    return {
-        "log_loss": log_loss(y, p, epsilon=epsilon),
-        "brier": brier(y, p),
-        "ece": ece(y, p, n_bins=ece_bins),
-    }
-
-
 def _fit_elo_seasons(games_csv: Path, config: ResolvedConfig) -> dict[int, _EloSeason]:
     """Run the Elo benchmark once per checked season from ``games_train.csv`` (all played games)."""
     if not games_csv.is_file():
@@ -371,8 +362,8 @@ def _fit_elo_seasons(games_csv: Path, config: ResolvedConfig) -> dict[int, _EloS
         y = predictions["home_win"].to_numpy()
         full_season = {
             "n_games": int(len(predictions)),
-            "elo": _metrics(y, predictions["p_fitted"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
-            "elo_raw": _metrics(y, predictions["p_raw"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
+            "elo": metric_block(y, predictions["p_fitted"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
+            "elo_raw": metric_block(y, predictions["p_raw"].to_numpy(), epsilon=epsilon, ece_bins=config.evaluation.ece_bins),
         }
         out[season_id] = _EloSeason(benchmark, predictions.set_index("game_id"), full_season)
         logger.info("Elo benchmark season %d: %s", season_id, benchmark.to_dict())
@@ -395,22 +386,16 @@ def _season_block(ev: _SeasonEval, keys: pd.DataFrame, *, epsilon: float, ece_bi
         "n_train": window.train_size + window.inner_val_size + window.calibration_size,
         "n_test": window.test_size,
         "test_range": dict(zip(("start", "end"), _day_range_iso(keys, window.test_idx))),
-        "model_raw": _metrics(ev.y, ev.p_raw, epsilon=epsilon, ece_bins=ece_bins),
-        "model": _metrics(ev.y, ev.p_cal, epsilon=epsilon, ece_bins=ece_bins),
-        "constant": {"p": float(ev.p_const[0]), **_metrics(ev.y, ev.p_const, epsilon=epsilon, ece_bins=ece_bins)},
+        "model_raw": metric_block(ev.y, ev.p_raw, epsilon=epsilon, ece_bins=ece_bins),
+        "model": metric_block(ev.y, ev.p_cal, epsilon=epsilon, ece_bins=ece_bins),
+        "constant": {"p": float(ev.p_const[0]), **metric_block(ev.y, ev.p_const, epsilon=epsilon, ece_bins=ece_bins)},
     }
     if ev.elo is not None and ev.p_elo is not None and ev.p_elo_raw is not None:
-        block["elo_raw"] = _metrics(ev.y, ev.p_elo_raw, epsilon=epsilon, ece_bins=ece_bins)
-        block["elo"] = _metrics(ev.y, ev.p_elo, epsilon=epsilon, ece_bins=ece_bins)
+        block["elo_raw"] = metric_block(ev.y, ev.p_elo_raw, epsilon=epsilon, ece_bins=ece_bins)
+        block["elo"] = metric_block(ev.y, ev.p_elo, epsilon=epsilon, ece_bins=ece_bins)
         block["elo_params"] = ev.elo.benchmark.to_dict()
         block["elo_full_season"] = ev.elo.full_season
     return block
-
-
-def _nonempty_bins(y: np.ndarray, p: np.ndarray) -> list[dict[str, Any]]:
-    table = reliability_table(y, p, n_bins=_CALIBRATION_TABLE_BINS)
-    table = table[table["count"] > 0].drop(columns=["weight"])
-    return cast("list[dict[str, Any]]", table.to_dict(orient="records"))
 
 
 def _slice_masks(evs: Sequence[_SeasonEval], keys: pd.DataFrame, X: pd.DataFrame) -> dict[str, np.ndarray]:
@@ -1009,18 +994,18 @@ def run_training(
             )
             pooled_block: dict[str, Any] = {
                 "n_test": int(len(y_pool)),
-                "model_raw": _metrics(y_pool, p_raw_pool, epsilon=epsilon, ece_bins=ece_bins),
-                "model": _metrics(y_pool, p_pool, epsilon=epsilon, ece_bins=ece_bins),
-                "constant": _metrics(y_pool, p_const_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "model_raw": metric_block(y_pool, p_raw_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "model": metric_block(y_pool, p_pool, epsilon=epsilon, ece_bins=ece_bins),
+                "constant": metric_block(y_pool, p_const_pool, epsilon=epsilon, ece_bins=ece_bins),
                 "diff_ci": diff_ci,
                 "bootstrap": {name: result.to_dict() for name, result in pool_bootstrap.items()},
                 "reliability_path": f"reliability_{task_name}.png",
             }
-            calibration_table = {"model": _nonempty_bins(y_pool, p_pool)}
+            calibration_table = {"model": calibration_bins(y_pool, p_pool)}
             if p_elo_pool is not None and p_elo_raw_pool is not None:
-                pooled_block["elo_raw"] = _metrics(y_pool, p_elo_raw_pool, epsilon=epsilon, ece_bins=ece_bins)
-                pooled_block["elo"] = _metrics(y_pool, p_elo_pool, epsilon=epsilon, ece_bins=ece_bins)
-                calibration_table["elo"] = _nonempty_bins(y_pool, p_elo_pool)
+                pooled_block["elo_raw"] = metric_block(y_pool, p_elo_raw_pool, epsilon=epsilon, ece_bins=ece_bins)
+                pooled_block["elo"] = metric_block(y_pool, p_elo_pool, epsilon=epsilon, ece_bins=ece_bins)
+                calibration_table["elo"] = calibration_bins(y_pool, p_elo_pool)
 
             slices = _slice_blocks(
                 _slice_masks(season_evals, keys, X), y_pool, p_pool, p_const_pool, p_elo_pool, epsilon=epsilon

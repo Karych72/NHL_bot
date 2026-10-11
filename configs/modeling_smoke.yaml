@@ -27,6 +27,10 @@ elo:
     mov: [true, false]
     ot_win_weight: [1.0]
 
+goals:
+  alpha: [0.01]
+  tie_halflife_days: 100
+
 # Smoke model grids: one arbitrary value per axis, unrelated in size or value to
 # configs/modeling_default.yaml's production grid -- only to exercise the
 # pipeline end to end. models.lgbm.monotone is kept as in production.

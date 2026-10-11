@@ -319,6 +319,7 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
                     "ot_win_weight": [1.0],
                 }
             },
+            "goals": {"alpha": [0.01], "tie_halflife_days": 100},
             "models": {
                 "logreg": {"grids": {"C": [1.0]}},
                 "lgbm": {
