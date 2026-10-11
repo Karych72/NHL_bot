@@ -194,7 +194,7 @@ def _handle_train(args: argparse.Namespace) -> int:
     from modeling.train_runner import (
         dry_run_training,
         format_dry_run_report,
-        resolve_models,
+        resolve_pairs,
         resolve_tasks,
         run_training,
         validate_run_id_override,
@@ -217,8 +217,7 @@ def _handle_train(args: argparse.Namespace) -> int:
 
     try:
         tasks = resolve_tasks(args.task, resolved)
-        models = resolve_models(args.model)
-        validate_run_id_override(tasks, models, args.run_id)
+        validate_run_id_override(resolve_pairs(tasks, args.model), args.run_id)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
@@ -293,9 +292,10 @@ def _handle_evaluate_goals(args: argparse.Namespace) -> int:
 
 
 def _handle_promote(args: argparse.Namespace) -> int:
-    from modeling.train_runner import promote_model
+    from modeling.train_runner import promote_model, resolve_models
 
     try:
+        resolve_models(args.model, args.task)
         promote_model(args.task, args.model, args.run_id, artifacts_root=Path("artifacts"))
     except (FileNotFoundError, ValueError) as exc:
         print(f"promote error: {exc}", file=sys.stderr)
@@ -306,6 +306,7 @@ def _handle_promote(args: argparse.Namespace) -> int:
 
 def _handle_predict(args: argparse.Namespace) -> int:
     from modeling.predict_runner import run_predict
+    from modeling.train_runner import resolve_models
 
     output_path = (
         Path(args.output)
@@ -313,6 +314,7 @@ def _handle_predict(args: argparse.Namespace) -> int:
         else Path(args.artifacts_root) / "predictions" / f"{args.task}_{args.model}_predictions.csv"
     )
     try:
+        resolve_models(args.model, args.task)
         result = run_predict(
             task=args.task,
             model=args.model,
@@ -336,7 +338,9 @@ def _handle_publish(args: argparse.Namespace) -> int:
     # Lazy import: psycopg2 lives only on the publish/build-dataset paths.
     from modeling.dataset_builder.base import _connect_from_env
     from modeling.publish_predictions import publish_predictions
+    from modeling.train_runner import resolve_models
 
+    resolve_models(args.model, args.task)
     artifacts_root = Path(args.artifacts_root)
     predictions_csv = (
         Path(args.predictions)

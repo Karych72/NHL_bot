@@ -4,8 +4,8 @@
 **Область:** `modeling/` (новая модель `home_win`, удаление старых классификаторов),
 `modeling/dataset_builder/` (признаки), `docs/modeling_*.md`.
 **Источник:** решение человека 2026-10-10 — победа отдельно от голевой модели (Задача 67);
-исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](research/report_model_vs_bookmaker.md)).
-Реестр — [`../../open_tasks.md`](../../open_tasks.md).
+исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](../../../tasks/task_model/research/report_model_vs_bookmaker.md)).
+Реестр — [`../../closed_tasks.md`](../../closed_tasks.md).
 
 ## Кратко
 

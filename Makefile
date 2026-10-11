@@ -80,7 +80,7 @@ modeling-train: modeling-dev
 # status != ok, publish-predictions удаляет строки задачи; без latest это же делает прямой
 # вызов publish-predictions. Расписание — Задача 26.
 TASK ?= home_win
-MODEL ?= lgbm
+MODEL ?= logreg
 modeling-publish: modeling-dev
 	$(PY) -m modeling.cli build-dataset --mode predict --output-dir artifacts/datasets \
 		--feature-set-version v2 --rolling-windows 5,10,20 --min-prior-games 5 \
@@ -89,7 +89,7 @@ modeling-publish: modeling-dev
 	$(PY) -m modeling.cli publish-predictions --task $(TASK) --model $(MODEL)
 
 # Ручное продвижение latest (Задача 26A): после `train --no-promote` и как откат на прежний run_id.
-# make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
+# make modeling-promote TASK=home_win MODEL=logreg RUN_ID=<run_id>
 modeling-promote: modeling-dev
 	@test -n "$(RUN_ID)" || { echo "RUN_ID is required: make modeling-promote TASK=... MODEL=... RUN_ID=<run_id>"; exit 1; }
 	$(PY) -m modeling.cli promote --task $(TASK) --model $(MODEL) --run-id $(RUN_ID)

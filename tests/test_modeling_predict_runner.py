@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from modeling.artifacts import save_model_artifact
-from modeling.calibrate import fit_calibrator
+from modeling.calibrate import apply_calibrator, calibrator_fit_from_metadata, fit_calibrator
 from modeling.feature_schema import features_hash
 from modeling.predict_runner import run_predict
 from modeling.train_logreg import build_logreg_pipeline
@@ -93,11 +93,12 @@ def _write_latest_model(
     model_family: str = "logreg",
     run_id: str = "home_win_logreg_deadbeef_20260101T000000Z",
     cold_start_policy_predict: str = "drop",
+    model_features: tuple[str, ...] | None = ("f_a",),
 ) -> Path:
     """Fit a tiny real pipeline + calibrator and write them as train_runner would."""
     rng = np.random.default_rng(0)
-    X_train = pd.DataFrame({"f_a": rng.uniform(size=40), "f_b": rng.uniform(size=40)})
-    y_train = (X_train["f_a"] > X_train["f_b"]).astype(int).to_numpy()
+    X_train = pd.DataFrame({"f_a": rng.uniform(size=40)})
+    y_train = (X_train["f_a"] > 0.5).astype(int).to_numpy()
 
     pipeline = build_logreg_pipeline(C=1.0, random_seed=42)
     pipeline.fit(X_train, y_train)
@@ -120,6 +121,7 @@ def _write_latest_model(
             "features_hash": _features_hash(cold_start_policy_predict),
             "feature_set_version": FEATURE_SET_VERSION,
             "feature_manifest": MANIFEST,
+            **({} if model_features is None else {"model_features": list(model_features)}),
             "method": calibrator_fit.method,
             "calibration_skipped": calibrator_fit.calibration_skipped,
             "n_calibration": calibrator_fit.n_calibration,
@@ -158,6 +160,16 @@ class TestRunPredictHappyPath(unittest.TestCase):
             )
             self.assertTrue(result.predictions["probability"].between(0.0, 1.0).all())
             self.assertTrue(output_path.exists())
+
+            pipeline = joblib.load(final_dir / "model.joblib")
+            expected = apply_calibrator(
+                calibrator_fit_from_metadata(
+                    json.loads((final_dir / "metadata.json").read_text(encoding="utf-8")),
+                    joblib.load(final_dir / "calibrator.joblib"),
+                ),
+                pipeline.predict_proba(pd.read_csv(csv_path)[["f_a"]])[:, 1],
+            )
+            np.testing.assert_allclose(result.predictions["probability"], expected)
 
             on_disk = pd.read_csv(output_path)
             self.assertEqual(list(on_disk["game_id"]), [101, 102, 103])

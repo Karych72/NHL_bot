@@ -13,6 +13,7 @@ from modeling.metrics import (
     DEFAULT_EPSILON,
     MetricsInputError,
     brier,
+    calibration_bins,
     ece,
     log_loss,
     reliability_table,
@@ -48,11 +49,11 @@ EXPECTED_BRIER_MINI = 0.0375
 # weighted |conf − acc| = 0.25 × (0.1 + 0.2 + 0.3 + 0.1) = 0.175
 EXPECTED_ECE_MINI = 0.175
 
-VALID_RUN_ID = "home_win_lgbm_b334df68_20260530T143022Z"
+VALID_RUN_ID = "home_win_logreg_b334df68_20260530T143022Z"
 
 
 def _sample_metrics_json() -> dict:
-    return compose_metrics_json(**sample_compose_kwargs(task="home_win", model="lgbm", run_id=VALID_RUN_ID))
+    return compose_metrics_json(**sample_compose_kwargs(task="home_win", model="logreg", run_id=VALID_RUN_ID))
 
 
 class TestReferenceMetrics:
@@ -87,6 +88,15 @@ class TestCalibrationMetrics:
         assert not empty.empty
         assert empty["mean_pred"].isna().all()
         assert empty["frac_positive"].isna().all()
+
+
+    def test_calibration_bins_noise_band(self) -> None:
+        p = np.full(100, 0.5)
+        for ones, outside in ((65, True), (55, False)):
+            y = np.array([1.0] * ones + [0.0] * (100 - ones))
+            (row,) = calibration_bins(y, p)
+            assert row["noise_2se"] == pytest.approx(1.96 * math.sqrt(0.25 / 100))
+            assert row["outside_noise"] is outside
 
 
 class TestTrivialBaseline:

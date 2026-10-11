@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -38,7 +39,13 @@ VALID_RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 
 
 def _eval_entry(
-    *, model_ll: float, benchmark_ll: float, model: str = "logreg", benchmark: str = "elo"
+    *,
+    model_ll: float,
+    benchmark_ll: float,
+    model: str = "logreg",
+    benchmark: str = "elo",
+    model_ece: float = 0.01,
+    benchmark_ece: float = 0.01,
 ) -> TaskModelEval:
     return TaskModelEval(
         task="home_win",
@@ -48,6 +55,8 @@ def _eval_entry(
         model_log_loss=model_ll,
         benchmark_log_loss=benchmark_ll,
         benchmark=benchmark,
+        model_ece=model_ece,
+        benchmark_ece=benchmark_ece,
     )
 
 
@@ -125,6 +134,8 @@ def _write_valid_run_layout(
         model_log_loss=metrics_payload["pooled"]["model"]["log_loss"],
         benchmark_log_loss=metrics_payload["pooled"][benchmark]["log_loss"],
         benchmark=benchmark,
+        model_ece=metrics_payload["pooled"]["model"]["ece"],
+        benchmark_ece=metrics_payload["pooled"][benchmark]["ece"],
     )
 
 
@@ -173,6 +184,27 @@ class TestBaselineGate(unittest.TestCase):
         )
         self.assertEqual(gate.per_task[0].winning_family, "lgbm")
 
+    def test_home_win_gate_ece_not_above_elo(self) -> None:
+        def verdict(model_ll: float = 0.5, **kw: float):
+            entry = _eval_entry(model_ll=model_ll, benchmark_ll=0.7, **kw)
+            return evaluate_baseline_gate(["home_win"], {"home_win": [entry]}).per_task[0]
+
+        equal = verdict(model_ece=0.02, benchmark_ece=0.02)
+        self.assertTrue(equal.passed)
+        self.assertEqual(equal.reason, "")
+        worse = verdict(model_ece=0.03, benchmark_ece=0.02)
+        self.assertFalse(worse.passed)
+        self.assertEqual(worse.reason, "ece above elo")
+        both = verdict(model_ll=0.8, model_ece=0.03, benchmark_ece=0.02)
+        self.assertEqual(both.reason, "log_loss not below elo; ece above elo")
+
+    def test_constant_benchmark_ignores_ece(self) -> None:
+        entry = _eval_entry(
+            model_ll=0.5, benchmark_ll=0.7, benchmark="constant", model_ece=0.5, benchmark_ece=0.0
+        )
+        verdict = evaluate_baseline_gate(["home_win"], {"home_win": [entry]}).per_task[0]
+        self.assertTrue(verdict.passed)
+
     def test_disabled_task_not_in_gate(self) -> None:
         gate = evaluate_baseline_gate(
             ["home_win"],
@@ -192,6 +224,10 @@ class TestBaselineGate(unittest.TestCase):
         text = format_baseline_summary_section(gate)
         self.assertIn("pooled test seasons, vs Elo|constant", text)
         self.assertIn("elo=0.660000", text)
+        failing = evaluate_baseline_gate(
+            ["home_win"], {"home_win": [_eval_entry(model_ll=0.6, benchmark_ll=0.66, model_ece=0.1)]}
+        )
+        self.assertIn("ece above elo", format_baseline_summary_section(failing))
         self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
 
@@ -218,8 +254,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(result.ok, msg=result.issues)
@@ -233,8 +268,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -252,8 +286,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(result.ok, msg=result.issues)
@@ -273,8 +306,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -289,8 +321,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -304,8 +335,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -342,8 +372,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(any("per-season" in issue for issue in result.issues), msg=result.issues)
@@ -356,8 +385,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(any("test_seasons" in issue for issue in result.issues), msg=result.issues)
@@ -374,8 +402,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -393,8 +420,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -406,8 +432,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -422,8 +447,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -474,9 +498,7 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
             task="home_win",
             model="logreg",
             result=result,
-            pooled_model_log_loss=run.model_log_loss,
-            benchmark_log_loss=run.benchmark_log_loss,
-            benchmark=run.benchmark,
+            evaluation=run,
         )
 
     def test_verify_latest_passes_on_valid_symlink(self) -> None:
@@ -523,7 +545,7 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
             tmp = Path(tmp_str)
             _, meta_path = write_synthetic_train_dataset(tmp, n_days=20)
             config = load_config(ROOT / "configs" / "modeling_default.yaml", metadata=load_metadata_json(meta_path))
-            run = _write_valid_run_layout(tmp, features_hash=config.features_hash)
+            run = _write_valid_run_layout(tmp, features_hash=config.features_hash, symlink_ok=False)
             result = RunResult(
                 run_id=run.run_id,
                 task="home_win",
@@ -537,19 +559,24 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                pooled_model_log_loss=run.model_log_loss,
-                benchmark_log_loss=run.benchmark_log_loss,
-                benchmark=run.benchmark,
+                evaluation=run,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
             combined, _, _ = apply_acceptance_to_training_outcomes(
                 [outcome],
                 config=config,
                 enabled_tasks=["home_win"],
-                models=["logreg"],
+                pairs=[("home_win", "logreg")],
                 artifacts_root=tmp / "artifacts",
             )
-            self.assertIn(combined, ("ok", "failed_baseline_check", "failed_artifact_check"))
+            self.assertEqual(combined, "ok")
+            self.assertEqual((outcome.result.status, outcome.result.exit_code), ("ok", 0))
+            update_latest_symlink(
+                "home_win", "logreg", run.run_id, artifacts_root=tmp / "artifacts", status=outcome.result.status
+            )
+            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
+            self.assertEqual(latest.resolve(), (latest.parent / run.run_id / "final").resolve())
+            self.assertTrue(verify_latest_symlinks([outcome], artifacts_root=tmp / "artifacts").ok)
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertTrue(summary.startswith("status:"))
             metrics = json.loads((run.reports_dir / "metrics.json").read_text(encoding="utf-8"))
@@ -577,7 +604,7 @@ def _test_config_yaml() -> dict:
         "ot_win_weight": [1.0],
     }
     base["calibration"]["min_samples"] = 100
-    base["models"]["lgbm"]["monotone"] = {"home_win": {}, "over_5_5": {}}
+    base["models"]["lgbm"]["monotone"] = {"over_5_5": {}}
     return base
 
 
@@ -637,16 +664,16 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 task="home_win",
                 model="logreg",
                 result=result,
-                pooled_model_log_loss=0.99,
-                benchmark_log_loss=0.50,
-                benchmark="elo",
+                evaluation=replace(
+                    run, model_log_loss=0.99, benchmark_log_loss=0.50, benchmark="elo", model_ece=0.01, benchmark_ece=0.01
+                ),
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
             apply_acceptance_to_training_outcomes(
                 [outcome],
                 config=config,
                 enabled_tasks=["home_win"],
-                models=["logreg"],
+                pairs=[("home_win", "logreg")],
                 artifacts_root=tmp / "artifacts",
             )
             model_base = tmp / "artifacts" / "models" / "home_win" / "logreg"

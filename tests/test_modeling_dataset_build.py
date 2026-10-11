@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from modeling.dataset_builder.assemble import (
@@ -62,7 +63,7 @@ class TestModelingDatasetBuild(unittest.TestCase):
         self.assertFalse((team_facts["game_id"] == 3).any())
         self.assertTrue(any(item["game_id"] == 3 for item in report["dropped_games"]))
 
-    def test_double_header_rolling_ignores_same_day_prior_shift(self):
+    def test_double_header_snapshot_excludes_target_day_and_includes_both_prior_games(self):
         def row(game_id, day, home, away, team, goals):
             return {
                 "game_id": game_id,
@@ -96,8 +97,22 @@ class TestModelingDatasetBuild(unittest.TestCase):
         )
         team_facts, _ = build_team_game_facts(hist)
         rolling = compute_team_rolling_features(team_facts, [5])
-        g3_team1 = rolling[(rolling["game_id"] == 3) & (rolling["team_id"] == 1)].iloc[0]
-        self.assertLess(float(g3_team1["goals_for_roll_mean_5"]), 50.0)
+        targets = pd.DataFrame(
+            [
+                # Same day as games 2 and 3: only game 1 is history.
+                {"game_id": 2, "day": "2026-01-02", "season_id": 20252026, "home_team_id": 1, "away_team_id": 2},
+                # Next day: both games of 2026-01-02 are history.
+                {"game_id": 50, "day": "2026-01-03", "season_id": 20252026, "home_team_id": 1, "away_team_id": 3},
+            ]
+        )
+        snap = build_match_feature_snapshots(targets, rolling).set_index("game_id")
+        self.assertEqual(float(snap.loc[2, "home_goals_for_roll_mean_5"]), 5.0)
+        self.assertEqual(int(snap.loc[2, "home_prior_games_count"]), 1)
+        self.assertEqual(int(snap.loc[2, "home_rest_days"]), 1)
+        self.assertEqual(float(snap.loc[50, "home_goals_for_roll_mean_5"]), 35.0)
+        self.assertEqual(int(snap.loc[50, "home_prior_games_count"]), 3)
+        self.assertEqual(int(snap.loc[50, "home_hist_game_id"]), 3)
+        self.assertEqual(int(snap.loc[50, "home_games_last_7d"]), 3)
 
     def test_zero_pp_opportunities_null_percentage_becomes_zero(self):
         hist = _history_df().copy()
@@ -196,12 +211,14 @@ class TestModelingDatasetBuild(unittest.TestCase):
         team_facts, _ = build_team_game_facts(hist)
         rolling = compute_team_rolling_features(team_facts, [5])
 
+        # A row is the state after its game: the season's first row counts only game 2.
         first_of_season = rolling[(rolling["game_id"] == 2) & (rolling["team_id"] == 10)].iloc[0]
-        self.assertEqual(int(first_of_season["prior_games_count"]), 0)
-        self.assertTrue(pd.isna(first_of_season["goals_for_roll_mean_5"]))
+        self.assertEqual(int(first_of_season["prior_games_count"]), 1)
+        self.assertEqual(float(first_of_season["goals_for_roll_mean_5"]), 1.0)
 
         second_of_season = rolling[(rolling["game_id"] == 3) & (rolling["team_id"] == 10)].iloc[0]
-        self.assertEqual(float(second_of_season["goals_for_roll_mean_5"]), 1.0)
+        self.assertEqual(int(second_of_season["prior_games_count"]), 2)
+        self.assertEqual(float(second_of_season["goals_for_roll_mean_5"]), 1.5)
 
         # Same check through the as-of snapshot path (build_match_feature_snapshots /
         # _snapshot_side): the merge_asof leak fixed independently of the rolling fix.
@@ -213,6 +230,9 @@ class TestModelingDatasetBuild(unittest.TestCase):
         snapshots = build_match_feature_snapshots(targets, rolling)
         self.assertTrue(pd.isna(snapshots.loc[0, "home_hist_game_id"]))
         self.assertTrue(pd.isna(snapshots.loc[0, "home_goals_for_roll_mean_5"]))
+        self.assertEqual(int(snapshots.loc[0, "home_prior_games_count"]), 0)
+        self.assertEqual(int(snapshots.loc[0, "home_rest_days"]), 99)
+        self.assertEqual(int(snapshots.loc[0, "home_games_last_7d"]), 0)
 
     def test_assemble_excludes_goals_target_wide_features(self):
         snapshots = pd.DataFrame(
@@ -441,6 +461,65 @@ class TestModelingDatasetBuild(unittest.TestCase):
             self.assertNotIn(col, features, f"{col} leaked into feature_columns_from_df")
 
 
+class TestTeamFeaturesAsOfTargetDay(unittest.TestCase):
+    """Задача 68: snapshot features describe the team on the target day, not after its previous game."""
+
+    def test_features_match_independent_recount_on_target_day(self):
+        rng = np.random.default_rng(7)
+        games = []  # (game_id, day, season_id, home, away, home_goals, away_goals)
+        for season_id, start in ((20242025, "2024-10-01"), (20252026, "2025-10-01")):
+            day = pd.Timestamp(start)
+            for _ in range(25):
+                teams = rng.permutation([1, 2, 3, 4]).tolist()
+                for i in range(int(rng.integers(1, 3))):
+                    games.append((len(games) + 1, day, season_id, teams[2 * i], teams[2 * i + 1], *rng.integers(0, 7, 2)))
+                day += pd.Timedelta(days=int(rng.choice([1, 1, 2, 3, 5])))
+        hist = pd.DataFrame(
+            [
+                {"game_id": g, "day": d, "season_id": s, "home_team_id": h, "away_team_id": a, "team_id": team,
+                 "goals": goals, "shots": 20, "pim": 5, "power_play_percentage": 20.0, "power_play_goals": 0,
+                 "power_play_opportunities": 3, "face_off_win_percentage": 50.0, "blocked": 10, "takeaways": 3,
+                 "giveaways": 5, "hits": 10}
+                for g, d, s, h, a, hg, ag in games
+                for team, goals in ((h, hg), (a, ag))
+            ]
+        )
+        last_day = games[-1][1]
+        targets = pd.concat(
+            [
+                hist.drop_duplicates("game_id")[["game_id", "day", "season_id", "home_team_id", "away_team_id"]],
+                pd.DataFrame([{"game_id": 9999, "day": last_day + pd.Timedelta(days=1), "season_id": 20252026,
+                               "home_team_id": 1, "away_team_id": 2}]),
+            ],
+            ignore_index=True,
+        )
+        team_facts, _ = build_team_game_facts(hist)
+        snapshots = build_match_feature_snapshots(targets, compute_team_rolling_features(team_facts, [5]))
+
+        seen_rest = set()
+        for row in snapshots.itertuples(index=False):
+            for side in ("home", "away"):
+                team = getattr(row, f"{side}_team_id")
+                past = [(d, gf) for _, d, s, h, a, hg, ag in games if s == row.season_id and d < row.day
+                        for t, gf in ((h, hg), (a, ag)) if t == team]
+                rest = (row.day - past[-1][0]).days if past else 99
+                seen_rest.add(rest)
+                ctx = f"game {row.game_id} {side}"
+                self.assertEqual(getattr(row, f"{side}_prior_games_count"), len(past), ctx)
+                self.assertEqual(getattr(row, f"{side}_rest_days"), rest, ctx)
+                self.assertEqual(getattr(row, f"{side}_is_b2b"), int(rest <= 1), ctx)
+                last7 = sum(1 for d, _ in past if d >= row.day - pd.Timedelta(days=7))
+                self.assertEqual(getattr(row, f"{side}_games_last_7d"), last7, ctx)
+                mean5 = getattr(row, f"{side}_goals_for_roll_mean_5")
+                if past:
+                    self.assertAlmostEqual(mean5, float(np.mean([gf for _, gf in past[-5:]])), msg=ctx)
+                else:
+                    self.assertTrue(pd.isna(mean5), ctx)
+        self.assertTrue({1, 99} <= seen_rest and max(seen_rest - {99}) >= 3, seen_rest)
+        for col in ("home_prior_games_count", "home_rest_days", "home_is_b2b", "home_games_last_7d"):
+            self.assertEqual(str(snapshots[col].dtype), "int64", col)
+
+
 class TestAlignPredictToManifest(unittest.TestCase):
     """Задача 15: `_align_predict_to_manifest` casts predict feature dtypes to
     the train manifest for *any* row count, not only the empty-predict case —
@@ -531,9 +610,8 @@ class TestPregameElo(unittest.TestCase):
     def test_same_day_games_do_not_see_each_others_result(self) -> None:
         """Two same-day games sharing a team: the second must not reflect the first's update.
 
-        Mirrors compute_team_rolling_features's intra_day_prev policy for rolling
-        features: a same-day predecessor is masked out, not used, even though it
-        sorts earlier by game_id.
+        Mirrors the as-of snapshot of rolling features (no exact-day matches): a
+        same-day predecessor is not used, even though it sorts earlier by game_id.
         """
         hist = pd.DataFrame(
             [
@@ -768,6 +846,89 @@ class TestGamesTrainCsv(unittest.TestCase):
 
         params = EloParams(ot_win_weight=0.5)
         self.assertEqual(from_csv.diffs(params).tolist(), from_builder_frame.diffs(params).tolist())
+
+
+class TestShotShareEwm(unittest.TestCase):
+    """Задача 68: межсезонная доля бросков с затуханием, as-of по дням."""
+
+    @staticmethod
+    def _played(rows):
+        return pd.DataFrame(
+            rows,
+            columns=["game_id", "day", "season_id", "home_team_id", "away_team_id", "home_shots", "away_shots"],
+        )
+
+    def test_first_game_is_neutral_and_update_uses_alpha(self):
+        from modeling.dataset_builder.features import SHOT_SHARE_ALPHA, compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-10-01", 20252026, 10, 20, 30.0, 10.0),
+            (2, "2025-10-03", 20252026, 10, 20, 20.0, 20.0),
+        ])
+        per_game, final = compute_pregame_shot_share(played)
+        first = per_game.set_index("game_id").loc[1]
+        self.assertEqual((first.home_shot_share_ewm, first.away_shot_share_ewm), (0.5, 0.5))
+        second = per_game.set_index("game_id").loc[2]
+        self.assertAlmostEqual(second.home_shot_share_ewm, 0.5 + SHOT_SHARE_ALPHA * (0.75 - 0.5))
+        self.assertAlmostEqual(second.away_shot_share_ewm, 0.5 + SHOT_SHARE_ALPHA * (0.25 - 0.5))
+        self.assertEqual(final[10][1], 20252026)
+
+    def test_same_day_games_do_not_see_each_other(self):
+        from modeling.dataset_builder.features import compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-10-01", 20252026, 10, 20, 40.0, 10.0),
+            (2, "2025-10-01", 20252026, 30, 10, 10.0, 40.0),  # team 10 again, same day
+        ])
+        per_game, _ = compute_pregame_shot_share(played)
+        self.assertEqual(per_game.set_index("game_id").loc[2, "away_shot_share_ewm"], 0.5)
+
+    def test_season_change_shrinks_toward_half(self):
+        from modeling.dataset_builder.features import SHOT_SHARE_ALPHA, SHOT_SHARE_SEASON_KEEP, compute_pregame_shot_share
+
+        played = self._played([
+            (1, "2025-04-01", 20242025, 10, 20, 30.0, 10.0),
+            (2, "2025-10-01", 20252026, 10, 20, 20.0, 20.0),
+        ])
+        per_game, _ = compute_pregame_shot_share(played)
+        after_first = 0.5 + SHOT_SHARE_ALPHA * 0.25
+        expected = 0.5 + SHOT_SHARE_SEASON_KEEP * (after_first - 0.5)
+        self.assertAlmostEqual(per_game.set_index("game_id").loc[2, "home_shot_share_ewm"], expected)
+
+    def test_missing_shots_in_played_game_raises(self):
+        from modeling.dataset_builder.features import compute_pregame_shot_share
+
+        played = self._played([(1, "2025-10-01", 20252026, 10, 20, None, 10.0)])
+        with self.assertRaises(ValueError):
+            compute_pregame_shot_share(played)
+
+    def test_predict_row_after_season_change_is_shrunk(self):
+        from modeling.dataset_builder.features import (
+            SHOT_SHARE_ALPHA, SHOT_SHARE_SEASON_KEEP, attach_pregame_shot_share, compute_pregame_shot_share,
+        )
+
+        played = self._played([(1, "2025-04-01", 20242025, 10, 20, 30.0, 10.0)])
+        per_game, final = compute_pregame_shot_share(played)
+        targets = pd.DataFrame({
+            "game_id": [99], "day": [pd.Timestamp("2025-10-08")], "season_id": [20252026],
+            "home_team_id": [10], "away_team_id": [77],  # 77: no history
+        })
+        out = attach_pregame_shot_share(targets, per_game, final)
+        after_first = 0.5 + SHOT_SHARE_ALPHA * 0.25
+        self.assertAlmostEqual(out.loc[0, "home_shot_share_ewm"], 0.5 + SHOT_SHARE_SEASON_KEEP * (after_first - 0.5))
+        self.assertEqual(out.loc[0, "away_shot_share_ewm"], 0.5)
+
+    def test_assemble_builds_diff_but_no_sum(self):
+        snapshots = pd.DataFrame([{
+            "game_id": 1, "day": "2026-01-01", "season_id": 20252026,
+            "home_team_id": 10, "away_team_id": 20, "winner_id": 10,
+            "home_goals_target": 4, "away_goals_target": 2,
+            "home_prior_games_count": 8, "away_prior_games_count": 8,
+            "home_shot_share_ewm": 0.55, "away_shot_share_ewm": 0.48,
+        }])
+        data, _ = assemble_dataset("train", snapshots, min_prior_games=0, cold_start_policy_predict="allow_with_flag")
+        self.assertAlmostEqual(data.loc[0, "diff_shot_share_ewm"], 0.07)
+        self.assertNotIn("sum_shot_share_ewm", data.columns)
 
 
 if __name__ == "__main__":
