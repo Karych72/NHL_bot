@@ -119,6 +119,24 @@ class EloConfig(_ForbidExtraModel):
     grid: EloGridConfig
 
 
+class GoalsConfig(_ForbidExtraModel):
+    """YAML ``goals.*``: the goal model (``modeling/goal_model.py``, Задача 67).
+
+    ``alpha`` — ridge grid of the Poisson GLM, picked on seasons before the checked one;
+    ``tie_halflife_days`` — half-life of the tracked league tie rate.
+    """
+
+    alpha: List[float]
+    tie_halflife_days: float = Field(..., gt=0)
+
+    @field_validator("alpha")
+    @classmethod
+    def _validate_alpha(cls, value: List[float]) -> List[float]:
+        if not value or any(item <= 0 for item in value):
+            raise ValueError("goals.alpha must be a non-empty list of values > 0")
+        return value
+
+
 class LogregGrids(_ForbidExtraModel):
     C: List[float]
 
@@ -225,6 +243,7 @@ class ModelingConfig(_ForbidExtraModel):
     tasks: TasksConfig
     split: SplitConfig
     elo: EloConfig
+    goals: GoalsConfig
     models: ModelsConfig
     calibration: CalibrationConfig
     evaluation: EvaluationConfig
@@ -409,6 +428,18 @@ def load_config(
     return resolve_config(yaml_path, metadata, overrides)
 
 
+def load_yaml_config(
+    yaml_path: Union[Path, str],
+    overrides: Mapping[str, Any] | Sequence[tuple[str, Any]] | None = None,
+) -> ModelingConfig:
+    """YAML config with overrides, validated, without the dataset metadata merge.
+
+    For commands that read ``games_train.csv`` rather than the feature dataset
+    (``evaluate-goals``), so they need no ``metadata_train.json``.
+    """
+    return _validate_modeling_config(apply_overrides(_load_yaml_mapping(Path(yaml_path)), overrides))
+
+
 def load_metadata_json(path: Union[Path, str]) -> dict[str, Any]:
     """Load ``metadata_train.json`` for config resolution."""
     meta_path = Path(path)
@@ -484,6 +515,7 @@ __all__ = [
     "derive_seed",
     "load_config",
     "load_metadata_json",
+    "load_yaml_config",
     "parse_override",
     "resolve_config",
     "resolved_config_to_yaml",

@@ -739,6 +739,29 @@ class TestNhlLoadedData(unittest.TestCase):
                 n = cur.fetchone()[0]
                 self.assertEqual(n, 0, f"orphan game_id in {tbl}")
 
+    def test_final_goals_are_regulation_plus_one_for_ot_or_shootout(self):
+        # Задача 67: the goal model's target is the three periods, and `goals` must be exactly
+        # that plus one for the OT/shootout winner (is_overtime is also true for shootouts).
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*), COUNT(*) FILTER (
+                    WHERE hs.goals + aws.goals
+                       <> hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals
+                        + aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals
+                        + CASE WHEN g.is_overtime THEN 1 ELSE 0 END
+                       OR hs.fst_period_goals IS NULL OR aws.fst_period_goals IS NULL
+                )
+                FROM games g
+                JOIN game_team_stats hs ON hs.game_id = g.game_id AND hs.team_id = g.home_team_id
+                JOIN game_team_stats aws ON aws.game_id = g.game_id AND aws.team_id = g.away_team_id
+                WHERE g.winner_id IS NOT NULL
+                """
+            )
+            played, broken = cur.fetchone()
+        self.assertGreater(played, 0)
+        self.assertEqual(broken, 0, "sum of goals != regulation periods + is_overtime")
+
     def test_rosters_team_ids_exist(self):
         # current_team_id is legally NULL (player landing fallback doesn't know
         # the season's team — see docs/pipeline_nulls_and_explicit_null_tz.md

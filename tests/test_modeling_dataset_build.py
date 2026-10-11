@@ -680,13 +680,20 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         self.assertIn("g.winner_id IS NOT NULL", query)
         self.assertNotIn("scheduled_games", query)
 
-    def test_decision_column_only_when_requested(self):
-        # The feature table must not grow a ``decision`` column: only Elo / games_train.csv ask for it.
-        self.assertNotIn("decision", self._query("train"))
-        query = self._query("train", with_decision=True)
+    def test_outcome_columns_only_when_requested(self):
+        # The feature table must not grow outcome columns: only Elo / goal model / games_train.csv ask for them.
+        plain = self._query("train")
+        self.assertNotIn("decision", plain)
+        self.assertNotIn("reg_goals", plain)
+        query = self._query("train", with_outcome=True)
         self.assertIn("g.is_shootouts THEN 'SO'", query)
         self.assertIn("g.is_overtime THEN 'OT'", query)
         self.assertIn("AS decision", query)
+        # Regulation goals are the three periods, not ``goals`` (which carries the OT/SO +1).
+        self.assertIn("(hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals)", query)
+        self.assertIn("AS home_reg_goals", query)
+        self.assertIn("(aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals)", query)
+        self.assertIn("AS away_reg_goals", query)
 
 
 class TestGamesTrainCsv(unittest.TestCase):
@@ -702,8 +709,10 @@ class TestGamesTrainCsv(unittest.TestCase):
                 "away_team_id": [2, 3, 3, 1],
                 "winner_id": [1, 3, 1, 1],
                 "home_goals": [3.0, 1.0, 4.0, 2.0],
-                "away_goals": [2.0, 2.0, 1.0, 3.0],
+                "away_goals": [2.0, 2.0, 3.0, 3.0],
                 "decision": ["REG", "OT", "SO", "REG"],
+                "home_reg_goals": [3.0, 1.0, 3.0, 2.0],
+                "away_reg_goals": [2.0, 1.0, 3.0, 3.0],
             }
         )
 
@@ -720,8 +729,12 @@ class TestGamesTrainCsv(unittest.TestCase):
 
         self.assertEqual(
             list(written.columns),
-            ["game_id", "day", "season_id", "home_team_id", "away_team_id", "home_goals", "away_goals", "decision"],
+            [
+                "game_id", "day", "season_id", "home_team_id", "away_team_id",
+                "home_goals", "away_goals", "decision", "home_reg_goals", "away_reg_goals",
+            ],
         )
+        self.assertEqual(written["home_reg_goals"].tolist(), [3.0, 1.0, 3.0, 2.0])
         self.assertEqual(written["game_id"].tolist(), [1, 2, 3, 4])
         self.assertEqual(written["decision"].tolist(), ["REG", "OT", "SO", "REG"])
         self.assertNotIn("winner_id", written.columns)

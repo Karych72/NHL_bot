@@ -86,6 +86,9 @@ def _minimal_yaml_text(**overrides: object) -> str:
             season_regression: [0.333]
             mov: [true, false]
             ot_win_weight: [1.0, 0.5]
+        goals:
+          alpha: [0.01]
+          tie_halflife_days: 100
         models:
           logreg:
             grids:

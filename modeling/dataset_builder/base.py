@@ -78,7 +78,7 @@ def _day_where_clause(config: DatasetBuildConfig) -> str:
     return ""
 
 
-def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool = False) -> pd.DataFrame:
+def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = False) -> pd.DataFrame:
     """Загружает игры-цели датасета: сыгранные (train) или будущие (predict).
 
     Train берёт завершённые игры из ``games`` вместе с фактическими голами;
@@ -89,14 +89,20 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool =
     Args:
         conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
         config: режим сборки, фильтры сезонов и окна дней.
-        with_decision: только train — добавить колонку ``decision`` (``REG``/``OT``/``SO``)
-            для Elo и ``games_train.csv``; в таблицу признаков она попасть не должна.
+        with_outcome: только train — добавить ``decision`` (``REG``/``OT``/``SO``) и голы
+            основного времени ``home_reg_goals``/``away_reg_goals`` (сумма трёх периодов: ``goals``
+            хранит +1 победителю OT/буллитов) для Elo, голевой модели и ``games_train.csv``;
+            в таблицу признаков они попасть не должны.
     """
     if config.mode == "train":
-        decision_col = (
+        outcome_cols = (
             """,
-                CASE WHEN g.is_shootouts THEN 'SO' WHEN g.is_overtime THEN 'OT' ELSE 'REG' END AS decision"""
-            if with_decision
+                CASE WHEN g.is_shootouts THEN 'SO' WHEN g.is_overtime THEN 'OT' ELSE 'REG' END AS decision,
+                (hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals)::double precision
+                    AS home_reg_goals,
+                (aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals)::double precision
+                    AS away_reg_goals"""
+            if with_outcome
             else ""
         )
         source = f"""
@@ -108,7 +114,7 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool =
                 g.away_team_id::bigint AS away_team_id,
                 g.winner_id::bigint AS winner_id,
                 hs.goals::double precision AS home_goals_target,
-                aws.goals::double precision AS away_goals_target{decision_col}
+                aws.goals::double precision AS away_goals_target{outcome_cols}
             FROM games g
             LEFT JOIN game_team_stats hs
                 ON hs.game_id = g.game_id
@@ -312,6 +318,8 @@ _GAMES_TRAIN_COLUMNS = (
     "home_goals",
     "away_goals",
     "decision",
+    "home_reg_goals",
+    "away_reg_goals",
 )
 
 
@@ -319,7 +327,8 @@ def _write_games_train(played: pd.DataFrame, config: DatasetBuildConfig, path: P
     """Write ``games_train.csv``: every played game of the loaded seasons, cold-start rows included.
 
     The dataset drops games whose teams have too little prior history, but the Elo
-    benchmark (``modeling/elo.py``) needs the whole season with its OT/SO outcome.
+    benchmark (``modeling/elo.py``) needs the whole season with its OT/SO outcome, and the
+    goal model (``modeling/goal_model.py``) the regulation goals.
     """
     games = played
     if config.season_ids:
@@ -369,7 +378,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         # rather than a near-duplicate query; only target_day_to still bounds it,
         # for a historical "as of" snapshot.
         elo_history = load_target_games(
-            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_decision=True
+            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_outcome=True
         ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
 
     team_facts, team_facts_report = build_team_game_facts(history)

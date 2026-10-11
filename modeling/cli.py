@@ -10,6 +10,7 @@ from modeling.config import (
     ConfigError,
     load_config,
     load_metadata_json,
+    load_yaml_config,
     parse_override,
     resolved_config_to_yaml,
 )
@@ -118,6 +119,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Train and write reports/artifacts but do not create or move `latest` (use `promote` later)",
     )
+
+    goals = sub.add_parser(
+        "evaluate-goals",
+        help="Check the goal model's over-5.5 forecast season by season against the constant (Задача 67)",
+    )
+    goals.add_argument("--config", default="configs/modeling_default.yaml")
+    goals.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
+    goals.add_argument("--reports-root", default="artifacts/reports")
 
     promote = sub.add_parser(
         "promote",
@@ -249,6 +259,39 @@ def _handle_train(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _handle_evaluate_goals(args: argparse.Namespace) -> int:
+    import json
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from modeling.goal_model import compose_goal_summary, evaluate_goal_model
+
+    try:
+        config = load_yaml_config(args.config, overrides=[parse_override(item) for item in args.set])
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    metrics = evaluate_goal_model(
+        pd.read_csv(args.games),
+        test_seasons=config.split.test_seasons,
+        alphas=config.goals.alpha,
+        tie_halflife_days=config.goals.tie_halflife_days,
+        ece_bins=config.evaluation.ece_bins,
+        epsilon=config.evaluation.epsilon_clip,
+        n_resamples=config.evaluation.bootstrap_samples,
+        seed=config.random_seed,
+    )
+    out_dir = Path(args.reports_root) / f"goals_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    out_dir.mkdir(parents=True)
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    summary = compose_goal_summary(metrics)
+    (out_dir / "summary.md").write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    print(f"report: {out_dir}")
+    return 0 if metrics["status"] == "ok" else 1
+
+
 def _handle_promote(args: argparse.Namespace) -> int:
     from modeling.train_runner import promote_model
 
@@ -347,6 +390,9 @@ def main() -> None:
 
     if args.command == "train":
         raise SystemExit(_handle_train(args))
+
+    if args.command == "evaluate-goals":
+        raise SystemExit(_handle_evaluate_goals(args))
 
     if args.command == "promote":
         raise SystemExit(_handle_promote(args))

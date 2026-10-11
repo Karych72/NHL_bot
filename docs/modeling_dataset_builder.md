@@ -104,11 +104,14 @@ first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08
 `build-dataset --mode train` writes, next to `dataset_train.csv`, `games_train.csv`: **every**
 played game of the loaded seasons — including the games the cold-start policy dropped from the
 dataset — with columns `game_id, day, season_id, home_team_id, away_team_id, home_goals,
-away_goals, decision` (`decision` ∈ `REG`/`OT`/`SO`, from `games.is_overtime`/`is_shootouts`).
-It is taken from the same `load_target_games(..., with_decision=True)` history that feeds the
-Elo pass (no extra query). `train` reads it for the Elo benchmark (`modeling/elo.py`) and fails
-loudly when `home_win` is trained without it. It is not part of `metadata_train.json` and not
-of the feature table.
+away_goals, decision, home_reg_goals, away_reg_goals` (`decision` ∈ `REG`/`OT`/`SO`, from
+`games.is_overtime`/`is_shootouts`; `*_reg_goals` — regulation goals, the sum of
+`fst/snd/trd_period_goals`, Задача 67: `*_goals` is the official final score with +1 to the OT
+or shootout winner). It is taken from the same `load_target_games(..., with_outcome=True)`
+history that feeds the Elo pass (no extra query). `train` reads it for the Elo benchmark
+(`modeling/elo.py`) and fails loudly when `home_win` is trained without it; `evaluate-goals`
+reads it for the goal model (`modeling/goal_model.py`). It is not part of `metadata_train.json`
+and not of the feature table.
 
 ## Elo team-strength feature
 
@@ -314,8 +317,10 @@ Implemented tests:
   valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
 - `tests/test_modeling_elo.py` (Задача 66): the default `EloParams` reproduce the pre-move
   feature values, OT-weight / MOV / per-day freeze / season shrink mechanics, benchmark leakage.
-- `TestGamesTrainCsv` / `TestLoadTargetGamesSource.test_decision_column_only_when_requested`
-  (Задача 66): `games_train.csv` content and that `decision` never reaches the feature table.
+- `TestGamesTrainCsv` / `TestLoadTargetGamesSource.test_outcome_columns_only_when_requested`
+  (Задачи 66, 67): `games_train.csv` content and that `decision` / `*_reg_goals` never reach the
+  feature table; `tests/test_db_nhl.py::TestNhlLoadedData::test_final_goals_are_regulation_plus_one_for_ot_or_shootout`
+  checks on the loaded DB that `goals` = regulation periods + `is_overtime` for every played game.
 - `TestPregameElo` (Задача 40, Task 3): `test_hand_computed_pregame_ratings` (3-game
   mini example, expected ratings computed independently from the formula in "Elo
   team-strength feature" above), `test_asof_future_result_does_not_change_earlier_rating`,

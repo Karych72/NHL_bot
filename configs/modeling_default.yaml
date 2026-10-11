@@ -29,6 +29,13 @@ elo:
     mov: [true, false]
     ot_win_weight: [1.0, 0.75, 0.5]
 
+# Goal model (modeling/goal_model.py, Задача 67; `evaluate-goals`): ridge grid of the
+# Poisson GLM, picked on seasons before the checked one; half-life of the tracked
+# league tie rate (100 days keeps every season within ±2 pp, docs/modeling_training.md §2b).
+goals:
+  alpha: [0.01, 0.1, 0.3, 1.0, 3.0]
+  tie_halflife_days: 100
+
 models:
   logreg:
     grids:
