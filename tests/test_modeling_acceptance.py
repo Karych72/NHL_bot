@@ -218,8 +218,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(result.ok, msg=result.issues)
@@ -233,8 +232,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -252,8 +250,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(result.ok, msg=result.issues)
@@ -273,8 +270,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -289,8 +285,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -304,8 +299,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -342,8 +336,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(any("per-season" in issue for issue in result.issues), msg=result.issues)
@@ -356,8 +349,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertTrue(any("test_seasons" in issue for issue in result.issues), msg=result.issues)
@@ -374,8 +366,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -393,8 +384,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -406,8 +396,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -422,8 +411,7 @@ class TestVerifyRunArtifacts(unittest.TestCase):
         result = verify_run_artifacts(
             config=self.config,
             artifacts_root=self.tmp / "artifacts",
-            enabled_tasks=["home_win"],
-            models=["logreg"],
+            pairs=[("home_win", "logreg")],
             runs=[run],
         )
         self.assertFalse(result.ok)
@@ -546,7 +534,7 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 [outcome],
                 config=config,
                 enabled_tasks=["home_win"],
-                models=["logreg"],
+                pairs=[("home_win", "logreg")],
                 artifacts_root=tmp / "artifacts",
             )
             self.assertIn(combined, ("ok", "failed_baseline_check", "failed_artifact_check"))
@@ -646,7 +634,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 [outcome],
                 config=config,
                 enabled_tasks=["home_win"],
-                models=["logreg"],
+                pairs=[("home_win", "logreg")],
                 artifacts_root=tmp / "artifacts",
             )
             model_base = tmp / "artifacts" / "models" / "home_win" / "logreg"

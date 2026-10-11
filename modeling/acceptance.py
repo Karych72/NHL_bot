@@ -362,8 +362,7 @@ def verify_run_artifacts(
     *,
     config: ResolvedConfig,
     artifacts_root: Path,
-    enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     runs: Sequence[TaskModelEval],
 ) -> ArtifactCheckResult:
     """Verify DoD artifacts for each trained (task, model) pair (presence only).
@@ -372,59 +371,56 @@ def verify_run_artifacts(
     after ``train_runner.update_latest_symlink`` (two-phase layout in
     :func:`apply_acceptance_to_training_outcomes` + ``train_runner.run_training``).
     """
-    from modeling.train_runner import TASK_MODEL_FAMILIES
-
     issues: list[str] = []
     run_by_pair = {(r.task, r.model): r for r in runs}
 
-    for task in enabled_tasks:
-        for model in (m for m in models if m in TASK_MODEL_FAMILIES[task]):
-            entry = run_by_pair.get((task, model))
-            if entry is None:
-                _issue(issues, f"no training result for task={task} model={model}")
-                continue
+    for task, model in pairs:
+        entry = run_by_pair.get((task, model))
+        if entry is None:
+            _issue(issues, f"no training result for task={task} model={model}")
+            continue
 
-            run_id = entry.run_id
-            reports_dir = entry.reports_dir
-            model_root = artifacts_root / "models" / task / model / run_id
-            final_dir = model_root / "final"
+        run_id = entry.run_id
+        reports_dir = entry.reports_dir
+        model_root = artifacts_root / "models" / task / model / run_id
+        final_dir = model_root / "final"
 
-            if not final_dir.is_dir():
-                _issue(issues, f"missing final/ directory: {final_dir}")
-            else:
-                for name in ("model.joblib", "calibrator.joblib", "metadata.json"):
-                    if not (final_dir / name).exists():
-                        _issue(issues, f"missing {name} in {final_dir}")
-                _validate_metadata_file(
-                    final_dir / "metadata.json",
-                    expected_features_hash=config.features_hash,
-                    expected_run_id=run_id,
+        if not final_dir.is_dir():
+            _issue(issues, f"missing final/ directory: {final_dir}")
+        else:
+            for name in ("model.joblib", "calibrator.joblib", "metadata.json"):
+                if not (final_dir / name).exists():
+                    _issue(issues, f"missing {name} in {final_dir}")
+            _validate_metadata_file(
+                final_dir / "metadata.json",
+                expected_features_hash=config.features_hash,
+                expected_run_id=run_id,
+                issues=issues,
+            )
+
+        if not list(model_root.glob("season_*")):
+            _issue(issues, f"no per-season run directories under {model_root}")
+
+        summary_path = reports_dir / "summary.md"
+        if not summary_path.is_file() or summary_path.stat().st_size == 0:
+            _issue(issues, f"missing or empty summary.md: {summary_path}")
+
+        metrics_path = reports_dir / "metrics.json"
+        if not metrics_path.is_file():
+            _issue(issues, f"missing metrics.json: {metrics_path}")
+        else:
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                _issue(issues, f"invalid metrics.json at {metrics_path}: {exc}")
+                metrics = {}
+            if isinstance(metrics, dict):
+                _validate_pooled_metrics_block(
+                    metrics,
+                    task=task,
+                    reports_dir=reports_dir,
                     issues=issues,
                 )
-
-            if not list(model_root.glob("season_*")):
-                _issue(issues, f"no per-season run directories under {model_root}")
-
-            summary_path = reports_dir / "summary.md"
-            if not summary_path.is_file() or summary_path.stat().st_size == 0:
-                _issue(issues, f"missing or empty summary.md: {summary_path}")
-
-            metrics_path = reports_dir / "metrics.json"
-            if not metrics_path.is_file():
-                _issue(issues, f"missing metrics.json: {metrics_path}")
-            else:
-                try:
-                    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as exc:
-                    _issue(issues, f"invalid metrics.json at {metrics_path}: {exc}")
-                    metrics = {}
-                if isinstance(metrics, dict):
-                    _validate_pooled_metrics_block(
-                        metrics,
-                        task=task,
-                        reports_dir=reports_dir,
-                        issues=issues,
-                    )
 
     return ArtifactCheckResult(ok=len(issues) == 0, issues=issues)
 
@@ -542,7 +538,7 @@ def apply_acceptance_to_training_outcomes(
     *,
     config: ResolvedConfig,
     enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     artifacts_root: Path,
 ) -> tuple[RunStatus, BaselineGateResult, ArtifactCheckResult]:
     """End-of-run hook: baseline gate, artifact verification, patch reports."""
@@ -559,8 +555,7 @@ def apply_acceptance_to_training_outcomes(
     artifacts = verify_run_artifacts(
         config=config,
         artifacts_root=artifacts_root,
-        enabled_tasks=enabled_tasks,
-        models=models,
+        pairs=pairs,
         runs=eval_runs,
     )
 
@@ -642,7 +637,7 @@ def apply_latest_symlink_check(
     *,
     config: ResolvedConfig,
     enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     artifacts_root: Path,
     baseline: BaselineGateResult,
 ) -> None:
@@ -656,8 +651,7 @@ def apply_latest_symlink_check(
     artifacts = verify_run_artifacts(
         config=config,
         artifacts_root=artifacts_root,
-        enabled_tasks=enabled_tasks,
-        models=models,
+        pairs=pairs,
         runs=_evals_from_outcomes(outcomes),
     )
     artifacts = ArtifactCheckResult(ok=False, issues=artifacts.issues + latest.issues)

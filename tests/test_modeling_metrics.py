@@ -48,11 +48,11 @@ EXPECTED_BRIER_MINI = 0.0375
 # weighted |conf − acc| = 0.25 × (0.1 + 0.2 + 0.3 + 0.1) = 0.175
 EXPECTED_ECE_MINI = 0.175
 
-VALID_RUN_ID = "home_win_lgbm_b334df68_20260530T143022Z"
+VALID_RUN_ID = "home_win_logreg_b334df68_20260530T143022Z"
 
 
 def _sample_metrics_json() -> dict:
-    return compose_metrics_json(**sample_compose_kwargs(task="home_win", model="lgbm", run_id=VALID_RUN_ID))
+    return compose_metrics_json(**sample_compose_kwargs(task="home_win", model="logreg", run_id=VALID_RUN_ID))
 
 
 class TestReferenceMetrics:

@@ -73,7 +73,6 @@ logger = logging.getLogger(__name__)
 
 TASK_NAMES: tuple[str, ...] = ("home_win", "over_5_5")
 MODEL_FAMILIES: tuple[str, ...] = ("logreg", "lgbm")
-# Задача 68: ``home_win`` is a logistic regression on a few own features; lgbm stays for ``over_5_5``.
 TASK_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {"home_win": ("logreg",), "over_5_5": ("logreg", "lgbm")}
 
 LGBM_NUM_BOOST_ROUND = 500
@@ -900,7 +899,6 @@ def run_training(
     start = run_start_utc or datetime.now(timezone.utc)
     tasks = resolve_tasks(task, config)
     pairs = resolve_pairs(tasks, model)
-    models = list(dict.fromkeys(family for _task, family in pairs))
     validate_run_id_override(pairs, run_id)
 
     X, keys, labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
@@ -959,21 +957,22 @@ def run_training(
                     y_all[cal],
                     y_all[te],
                 )
+                fit: FitResult | LgbmFitResult
                 if task_name == "home_win":
-                    home_fit = _fit_home_win(
+                    fit_idx = np.concatenate([tr, iv, cal])
+                    fit = _fit_home_win(
                         X_task,
                         y_all,
                         keys,
                         hp_train_idx=tr,
                         inner_val_idx=iv,
-                        fit_idx=np.concatenate([tr, iv, cal]),
+                        fit_idx=fit_idx,
                         config=config,
                         log_loss_fn=metric_fns["log_loss"],
                     )
-                    fit: FitResult | LgbmFitResult = home_fit
-                    raw_model: Any = home_fit.pipeline
+                    raw_model = _raw_model_from_fit(model_family, fit)
                     calibrator = identity_calibrator(config.calibration.method.value, config.random_seed)
-                    train_days = _day_range_iso(keys, _without_warmup(keys, tr))
+                    train_days = _day_range_iso(keys, _without_warmup(keys, fit_idx))
                 else:
                     fit = _train_raw_model(
                         model_family,
@@ -1103,9 +1102,10 @@ def run_training(
             )
 
             # Final retrain on every row: HP on train_hp + inner_val, then fit raw model on train_full.
+            final_fit_full: FitResult | LgbmFitResult
             if task_name == "home_win":
                 all_rows = np.arange(len(keys))
-                home_final = _fit_home_win(
+                final_fit_full = _fit_home_win(
                     X_task,
                     y_all,
                     keys,
@@ -1115,8 +1115,7 @@ def run_training(
                     config=config,
                     log_loss_fn=metric_fns["log_loss"],
                 )
-                final_fit_full: FitResult | LgbmFitResult = home_final
-                final_model = home_final.pipeline
+                final_model = _raw_model_from_fit(model_family, final_fit_full)
                 final_calibrator = identity_calibrator(config.calibration.method.value, config.random_seed)
                 final_train_days = _day_range_iso(keys, _without_warmup(keys, all_rows))
             else:
@@ -1214,7 +1213,7 @@ def run_training(
         outcomes,
         config=config,
         enabled_tasks=tasks,
-        models=models,
+        pairs=pairs,
         artifacts_root=artifacts,
     )
 
@@ -1238,7 +1237,7 @@ def run_training(
         outcomes,
         config=config,
         enabled_tasks=tasks,
-        models=models,
+        pairs=pairs,
         artifacts_root=artifacts,
         baseline=baseline,
     )

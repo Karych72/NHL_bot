@@ -646,8 +646,6 @@ class TestPromoteCommand(unittest.TestCase):
 
 
 class TestHomeWinLogregOnly(unittest.TestCase):
-    """Задача 68: ``home_win`` is logreg on its own features, no warm-up season, no calibrator."""
-
     def test_resolve_models(self) -> None:
         self.assertEqual(resolve_models("both", "home_win"), ["logreg"])
         self.assertEqual(resolve_models("both", "over_5_5"), ["logreg", "lgbm"])
@@ -688,7 +686,9 @@ class TestHomeWinLogregOnly(unittest.TestCase):
             table = pd.read_csv(csv_path)
             second_season_first_day = table[table["season_id"] != table["season_id"].min()]["day"].min()[:10]
             for season in cfg["split"]["test_seasons"]:
-                self.assertGreaterEqual(meta(home, f"season_{season}")["train_days"]["min"], second_season_first_day)
+                season_meta = meta(home, f"season_{season}")
+                self.assertGreaterEqual(season_meta["train_days"]["min"], second_season_first_day)
+                self.assertEqual(season_meta["train_days"]["max"], season_meta["calibration_days"]["max"])
             model = joblib.load(home.model_run_dir / "final" / "model.joblib")
             self.assertEqual(model.n_features_in_, len(final["model_features"]))
 

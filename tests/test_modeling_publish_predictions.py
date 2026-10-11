@@ -23,7 +23,7 @@ from tests.test_modeling_predict_runner import (
     _write_latest_model as _write_real_latest_model,
 )
 
-RUN_ID = "home_win_lgbm_deadbeef_20260101T000000Z"
+RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 DELETE = "DELETE FROM game_predictions WHERE task = %s"
 
 
@@ -62,7 +62,7 @@ class _Conn:
 
 
 def _write_latest(root: Path, status: str) -> None:
-    base = root / "models" / "home_win" / "lgbm"
+    base = root / "models" / "home_win" / "logreg"
     final = base / RUN_ID / "final"
     final.mkdir(parents=True)
     (final / "metadata.json").write_text(json.dumps({"run_id": RUN_ID, "status": status}), encoding="utf-8")
@@ -89,7 +89,7 @@ class TestPublishPredictions(unittest.TestCase):
         return publish_predictions(
             conn,
             task="home_win",
-            model="lgbm",
+            model="logreg",
             predictions_csv=_write_csv(tmp),
             artifacts_root=tmp / "artifacts",
         )
@@ -127,8 +127,8 @@ class TestPublishPredictions(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                (101, "home_win", "lgbm", RUN_ID, 0.61),
-                (102, "home_win", "lgbm", RUN_ID, 0.42),
+                (101, "home_win", "logreg", RUN_ID, 0.61),
+                (102, "home_win", "logreg", RUN_ID, 0.42),
             ],
         )
         self.assertEqual(conn.outcome, "commit")
@@ -142,7 +142,7 @@ class TestPublishPredictions(unittest.TestCase):
                 publish_predictions(
                     conn,
                     task="home_win",
-                    model="lgbm",
+                    model="logreg",
                     predictions_csv=tmp / "missing.csv",
                     artifacts_root=tmp / "artifacts",
                 )
