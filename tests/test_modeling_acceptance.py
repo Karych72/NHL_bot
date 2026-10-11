@@ -577,9 +577,9 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 artifacts_root=tmp / "artifacts",
             )
             self.assertEqual(combined, "ok")
-            result.status = combined
+            self.assertEqual((outcome.result.status, outcome.result.exit_code), ("ok", 0))
             update_latest_symlink(
-                "home_win", "logreg", run.run_id, artifacts_root=tmp / "artifacts", status=result.status
+                "home_win", "logreg", run.run_id, artifacts_root=tmp / "artifacts", status=outcome.result.status
             )
             latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
             self.assertEqual(latest.resolve(), (latest.parent / run.run_id / "final").resolve())
