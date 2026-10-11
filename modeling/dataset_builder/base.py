@@ -377,8 +377,9 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
-        # Elo (Task 3) and the shot share (Задача 68) persist across seasons, so it needs the *complete* played
-        # history regardless of config.season_ids/target_day_from — reuse
+        # Elo (Task 3) and the shot share (Задача 68) persist across seasons, so they
+        # need the *complete* played history regardless of
+        # config.season_ids/target_day_from — reuse
         # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
         # rather than a near-duplicate query; only target_day_to still bounds it,
         # for a historical "as of" snapshot.

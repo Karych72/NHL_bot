@@ -5,8 +5,7 @@ not team_id alone: a team's first game of a new season starts with an empty
 window, never carrying rolling stats or a snapshot row from the prior season.
 Team Elo (below) is the one exception: it is a cross-team, cross-season
 strength rating that persists between seasons (shrunk toward the mean, not
-reset) — see ``modeling.elo.compute_pregame_elo``. The smoothed shot share
-(Задача 68, below) is likewise cross-season.
+reset) — see ``modeling.elo.compute_pregame_elo``.
 """
 
 from __future__ import annotations
@@ -277,12 +276,12 @@ def attach_pregame_shot_share(
     """
     out = target_games.merge(per_game_share, on="game_id", how="left")
     missing = out["home_shot_share_ewm"].isna()
+    seasons = out.loc[missing, "season_id"].astype("int64")
     for side in ("home", "away"):
         col = f"{side}_shot_share_ewm"
-        for idx in out.index[missing]:
-            share, last_season = final_state.get(int(out.at[idx, f"{side}_team_id"]), (SHOT_SHARE_START, 0))
-            if int(out.at[idx, "season_id"]) > last_season:
-                share = _shrink_share(share)
-            out.at[idx, col] = share
+        ids = out.loc[missing, f"{side}_team_id"].astype("int64")
+        share = ids.map(lambda t: final_state.get(t, (SHOT_SHARE_START, 0))[0])
+        last_season = ids.map(lambda t: final_state.get(t, (SHOT_SHARE_START, 0))[1])
+        out.loc[missing, col] = share.where(seasons <= last_season, share.map(_shrink_share))
         out[col] = out[col].astype("float64")
     return out
