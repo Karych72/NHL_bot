@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import numpy as np
 import pandas as pd
 
 from modeling.elo import ELO_START
@@ -33,43 +34,28 @@ def compute_team_rolling_features(
     team_game_facts: pd.DataFrame,
     rolling_windows: Sequence[int],
 ) -> pd.DataFrame:
-    """Compute per-team rolling/context features, reset at each season boundary.
+    """Compute per-team rolling features, reset at each season boundary.
 
     Args:
         team_game_facts: long team-game rows (one row per team per game) with
             at least team_id, season_id, day, game_id and the ROLLING_BASE_FIELDS.
         rolling_windows: window sizes (in games) for the trailing means.
 
-    Windows, prior-game counts and rest-day features are grouped by
-    (team_id, season_id) so a team's stats never leak across a season change.
+    A row is the team's state *after* its game (the means include it,
+    ``prior_games_count`` counts it): the as-of snapshot of the latest game before a
+    target day is then the state on that day. Grouped by (team_id, season_id) so a
+    team's stats never leak across a season change.
     """
     if team_game_facts.empty:
         return team_game_facts.copy()
 
     data = team_game_facts.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
     grp = data.groupby(["team_id", "season_id"], sort=False)
-
-    data["prev_day"] = grp["day"].shift(1)
-    intra_day_prev = (data["day"] == data["prev_day"]) & data["prev_day"].notna()
-    rest = (data["day"] - data["prev_day"]).dt.days
-    rest = rest.mask(intra_day_prev)
-    data["rest_days"] = rest.fillna(99).astype("int64")
-    data["is_b2b"] = (data["rest_days"] <= 1).astype("int64")
-
-    day_num = data["day"].map(pd.Timestamp.toordinal)
-    data["_day_num"] = day_num
-    data["games_last_7d"] = grp["_day_num"].transform(
-        lambda s: s.apply(lambda v: int(((s < v) & (s >= v - 7)).sum()))
-    )
-    data["prior_games_count"] = grp.cumcount()
+    data["prior_games_count"] = grp.cumcount() + 1
 
     for window in rolling_windows:
         for field in ROLLING_BASE_FIELDS:
-            shifted = grp[field].shift(1)
-            shifted = shifted.mask(intra_day_prev)
-            rolled = shifted.groupby(
-                [data["team_id"], data["season_id"]], sort=False
-            ).transform(lambda s: s.rolling(window=window, min_periods=1).mean())
+            rolled = grp[field].transform(lambda s: s.rolling(window=window, min_periods=1).mean())
             data[f"{field}_roll_mean_{window}"] = rolled.astype("float64")
 
     goals_for_rm = (
@@ -94,7 +80,7 @@ def compute_team_rolling_features(
     )
     data["goal_diff_roll_mean_5"] = (goals_for_rm - goals_against_rm).astype("float64")
     data["pace_sum_roll_mean_5"] = (shots_for_rm + shots_against_rm).astype("float64")
-    return data.drop(columns=["prev_day", "_day_num"])
+    return data
 
 
 def _snapshot_side(
@@ -157,6 +143,16 @@ def build_match_feature_snapshots(
     target_games: pd.DataFrame,
     team_features: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Attach each side's as-of team snapshot plus its schedule context on the target day.
+
+    Args:
+        target_games: one row per target game (game_id, day, season_id, home/away_team_id).
+        team_features: output of ``compute_team_rolling_features``.
+
+    ``<side>_rest_days`` (99 without a prior game this season), ``<side>_is_b2b`` and
+    ``<side>_games_last_7d`` (games in [day − 7, day) of the same season) are measured
+    from the target day; ``<side>_prior_games_count`` is 0 without a prior game.
+    """
     if target_games.empty:
         return target_games.copy()
 
@@ -168,6 +164,23 @@ def build_match_feature_snapshots(
     home = home.drop(columns=["home_team_id"], errors="ignore")
     away = away.drop(columns=["away_team_id"], errors="ignore")
     out = targets.merge(home, on=["game_id", "day"], how="left").merge(away, on=["game_id", "day"], how="left")
+
+    team_days = {
+        key: np.sort(days.map(pd.Timestamp.toordinal).to_numpy())
+        for key, days in team_features.groupby(["team_id", "season_id"])["day"]
+    }
+    target_num = out["day"].map(pd.Timestamp.toordinal).to_numpy()
+    no_games = np.empty(0, dtype="int64")
+    for side in ("home", "away"):
+        rest = (out["day"] - pd.to_datetime(out[f"{side}_hist_day"])).dt.days
+        out[f"{side}_rest_days"] = rest.fillna(99).astype("int64")
+        out[f"{side}_is_b2b"] = (out[f"{side}_rest_days"] <= 1).astype("int64")
+        out[f"{side}_prior_games_count"] = out[f"{side}_prior_games_count"].fillna(0).astype("int64")
+        last_7d = []
+        for team, season, day in zip(out[f"{side}_team_id"], out["season_id"], target_num):
+            days = team_days.get((team, season), no_games)
+            last_7d.append(int(np.searchsorted(days, day) - np.searchsorted(days, day - 7)))
+        out[f"{side}_games_last_7d"] = pd.Series(last_7d, index=out.index, dtype="int64")
     return out
 
 

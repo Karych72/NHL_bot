@@ -33,9 +33,14 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Produces symmetric `*_for` and `*_against` fields.
 
 - `modeling/dataset_builder/features.py`
-  - Rolling features with mandatory `shift(1)` logic.
-  - Context features: `rest_days`, `is_b2b`, `games_last_7d`, `prior_games_count`.
-  - As-of snapshots for home/away teams per target game.
+  - Rolling features: a team-game row is the team's state *after* that game (the means
+    include it, `prior_games_count` counts it), so the as-of snapshot of the latest game
+    before the target day is the state on that day.
+  - As-of snapshots for home/away teams per target game, then context from the target day:
+    `rest_days` (target day − last game, 99 without one this season), `is_b2b` (`rest_days ≤ 1`),
+    `games_last_7d` (games in `[day − 7, day)` of the season).
+  - Before Задача 68 a row was the state *before* its game, so every snapshot feature lagged
+    one game (`prior_games_count` was the true count − 1, rest was measured before the previous game).
   - `attach_pregame_elo`: attaches the pre-game team Elo rating (`home_elo`, `away_elo`); the
     Elo pass itself is `modeling/elo.py::compute_pregame_elo` — see
     [Elo team-strength feature](#elo-team-strength-feature) below.
@@ -50,7 +55,7 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     - predict: allow with flag (or drop, from config)
   - Since rolling windows and as-of snapshots reset at each season boundary
     (`features.py`, Task 30), the first game of every season now has
-    `prior_games_count == 0` and NaN `*_roll_mean_*`. Train drops these rows via
+    `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Train drops these rows via
     cold-start; **predict with the default `allow_with_flag` policy does not** — it
     keeps them and flags `low_history_confidence`, so a predict build for a
     season's first games fails `validate.py`'s NaN check (`numeric_nan_inf`)
@@ -79,7 +84,6 @@ The builder enforces:
 - no use of current `game_id` as history
 
 Technical enforcement:
-- rolling metrics are built with `shift(1)`, excluding current game
 - as-of merge uses backward snapshots with exact-day matches disabled
 - validation fails if `home_hist_day` or `away_hist_day` is not strictly earlier than target day
 - validation fails if `home_hist_game_id == game_id` or `away_hist_game_id == game_id`
@@ -167,8 +171,8 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
   that game — recorded before the update, mirroring `_snapshot_side`'s backward as-of join.
   Games sharing a calendar day never see each other's result: ratings are frozen at the start
   of the day and every game that day is scored off that same snapshot, with all of that day's
-  updates applied together afterwards — the Elo analogue of `compute_team_rolling_features`'s
-  `intra_day_prev` policy for rolling features (a same-day predecessor is masked out, not used).
+  updates applied together afterwards — the Elo analogue of the rolling features' as-of
+  snapshot, which never takes a game from the target day.
 - **Predict mode:** target games come from the `scheduled_games` table (upcoming games written
   by the loader on every run, Task 22A, only those whose both teams already exist in `teams`
   for the season; `games` only ever holds played games), and have no
@@ -321,6 +325,9 @@ Implemented tests:
 - `test_validate_fails_on_nan_keys`
 - `test_rolling_and_snapshot_reset_at_season_boundary` — rolling windows and as-of
   snapshots do not cross a season boundary (Task 30)
+- `TestTeamFeaturesAsOfTargetDay` (Задача 68) — on a synthetic two-season schedule every
+  snapshot's rolling mean, `prior_games_count`, `rest_days`, `is_b2b`, `games_last_7d` equal an
+  independent recount of the team's games strictly before the target day (incl. a predict target)
 - `test_zero_pp_opportunities_null_percentage_becomes_zero`,
   `test_power_play_percentage_above_100_is_clipped` — `power_play_percentage` NULL
   (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to

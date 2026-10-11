@@ -2,8 +2,8 @@
 
 For every checked season ``s`` the model trains on all rows of earlier seasons
 (their tail is calibration and hyper-parameter selection) and is checked on every
-row of ``s``. Embargo is **not** used: rolling features are built with ``shift(1)``
-and never consume in-match signals, so nothing leaks across block boundaries.
+row of ``s``. Embargo is **not** used: rolling features are as-of snapshots of games strictly
+before the target day and never consume in-match signals, so nothing leaks across block boundaries.
 
 Block-order validation (``_assert_strictly_before``) compares **positions** in the
 sorted timeline, not calendar days. Seasons do not overlap in time, so a boundary

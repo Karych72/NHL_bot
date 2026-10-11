@@ -178,7 +178,7 @@ class TestEmbargoComment(unittest.TestCase):
     def test_splits_module_documents_embargo_policy(self) -> None:
         source = Path("modeling/splits.py").read_text(encoding="utf-8")
         self.assertIn("embargo", source.lower())
-        self.assertIn("shift(1)", source)
+        self.assertIn("strictly\nbefore the target day", source)
 
 
 class TestMetadataParity(unittest.TestCase):
