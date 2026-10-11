@@ -13,6 +13,7 @@ from modeling.metrics import (
     DEFAULT_EPSILON,
     MetricsInputError,
     brier,
+    calibration_bins,
     ece,
     log_loss,
     reliability_table,
@@ -87,6 +88,15 @@ class TestCalibrationMetrics:
         assert not empty.empty
         assert empty["mean_pred"].isna().all()
         assert empty["frac_positive"].isna().all()
+
+
+    def test_calibration_bins_noise_band(self) -> None:
+        p = np.full(100, 0.5)
+        for ones, outside in ((65, True), (55, False)):
+            y = np.array([1.0] * ones + [0.0] * (100 - ones))
+            (row,) = calibration_bins(y, p)
+            assert row["noise_2se"] == pytest.approx(1.96 * math.sqrt(0.25 / 100))
+            assert row["outside_noise"] is outside
 
 
 class TestTrivialBaseline:

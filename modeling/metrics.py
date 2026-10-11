@@ -177,9 +177,12 @@ def metric_block(
 
 
 def calibration_bins(y_true: np.ndarray, p: np.ndarray) -> list[dict[str, Any]]:
-    """Non-empty 5 pp forecast bins (mean forecast vs actual share) — the report's calibration table."""
+    """Non-empty 5 pp forecast bins (mean forecast vs actual share, ``noise_2se`` band) — the report's calibration table."""
     table = reliability_table(y_true, p, n_bins=_CALIBRATION_TABLE_BINS)
     table = table[table["count"] > 0].drop(columns=["weight"])
+    mean_pred = table["mean_pred"]
+    table["noise_2se"] = 1.96 * np.sqrt(mean_pred * (1 - mean_pred) / table["count"])
+    table["outside_noise"] = (table["frac_positive"] - mean_pred).abs() > table["noise_2se"]
     return cast("list[dict[str, Any]]", table.to_dict(orient="records"))
 
 

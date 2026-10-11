@@ -63,6 +63,8 @@ class TaskModelEval:
     model_log_loss: float
     benchmark_log_loss: float
     benchmark: str
+    model_ece: float
+    benchmark_ece: float
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class TaskBaselineVerdict:
     benchmark: str
     delta: float
     passed: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,7 @@ class BaselineGateResult:
                     "benchmark": v.benchmark,
                     "delta": v.delta,
                     "passed": v.passed,
+                    "reason": v.reason,
                 }
                 for v in self.per_task
             ],
@@ -131,7 +135,7 @@ def evaluate_baseline_gate(
     enabled_tasks: Sequence[str],
     eval_by_task: Mapping[str, Sequence[TaskModelEval]],
 ) -> BaselineGateResult:
-    """Compare best calibrated pooled-seasons log loss vs its benchmark (Elo / constant) per task."""
+    """Best calibrated pooled log loss must beat its benchmark (Elo / constant); vs Elo, ECE must also be no worse."""
     verdicts: list[TaskBaselineVerdict] = []
     all_passed = True
 
@@ -148,6 +152,7 @@ def evaluate_baseline_gate(
                     benchmark="",
                     delta=float("nan"),
                     passed=False,
+                    reason="no candidates",
                 )
             )
             continue
@@ -155,7 +160,12 @@ def evaluate_baseline_gate(
         winner = pick_winning_family(candidates)
         benchmark_ll = winner.benchmark_log_loss
         model_ll = winner.model_log_loss
-        passed = model_ll + BASELINE_STRICT_EPS < benchmark_ll
+        reasons = []
+        if not model_ll + BASELINE_STRICT_EPS < benchmark_ll:
+            reasons.append(f"log_loss not below {winner.benchmark}")
+        if winner.benchmark == "elo" and winner.model_ece > winner.benchmark_ece:
+            reasons.append("ece above elo")
+        passed = not reasons
         if not passed:
             all_passed = False
         verdicts.append(
@@ -167,6 +177,7 @@ def evaluate_baseline_gate(
                 benchmark=winner.benchmark,
                 delta=benchmark_ll - model_ll,
                 passed=passed,
+                reason="; ".join(reasons),
             )
         )
 
@@ -450,7 +461,7 @@ def format_baseline_summary_section(baseline: BaselineGateResult) -> str:
         lines.append(
             f"- **{verdict.task}**: {status_word} — best `{verdict.winning_family}` "
             f"log_loss={verdict.model_log_loss:.6f} vs {verdict.benchmark}={verdict.benchmark_log_loss:.6f} "
-            f"(delta={verdict.delta:+.6f})"
+            f"(delta={verdict.delta:+.6f})" + (f" — {verdict.reason}" if verdict.reason else "")
         )
     lines.append("")
     return "\n".join(lines)
@@ -528,6 +539,8 @@ def _evals_from_outcomes(outcomes: Sequence[Any]) -> list[TaskModelEval]:
             model_log_loss=item.pooled_model_log_loss,
             benchmark_log_loss=item.benchmark_log_loss,
             benchmark=item.benchmark,
+            model_ece=item.model_ece,
+            benchmark_ece=item.benchmark_ece,
         )
         for item in outcomes
     ]

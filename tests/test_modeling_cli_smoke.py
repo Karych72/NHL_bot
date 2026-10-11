@@ -157,6 +157,8 @@ class TestBaselineGate(unittest.TestCase):
                         model_log_loss=0.75,
                         benchmark_log_loss=0.70,
                         benchmark="elo",
+                        model_ece=0.01,
+                        benchmark_ece=0.01,
                     )
                 ]
             },
@@ -304,12 +306,13 @@ class TestCliTrainSmoke(unittest.TestCase):
 
 
 class TestCliTrainMiniEndToEnd(unittest.TestCase):
+    # Promotion runs on over_5_5: the home_win gate needs ECE no worse than Elo, which synthetic data cannot give.
     def test_train_creates_season_final_and_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [0.1, 1.0]
             cfg["evaluation"]["bootstrap_samples"] = 50
             cfg["compute"]["num_threads"] = 1
@@ -321,14 +324,14 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
                 resolved,
                 dataset_csv=csv_path,
                 metadata_path=meta_path,
-                task="home_win",
+                task="over_5_5",
                 model="logreg",
                 run_id=VALID_RUN_ID,
                 artifacts_root=artifacts,
             )
             self.assertEqual(len(results), 1)
             run_id = results[0].run_id
-            model_root = artifacts / "models" / "home_win" / "logreg" / run_id
+            model_root = artifacts / "models" / "over_5_5" / "logreg" / run_id
             for season in _test_config_yaml()["split"]["test_seasons"]:
                 self.assertTrue((model_root / f"season_{season}" / "model_raw.joblib").exists())
             self.assertFalse(list(model_root.glob("fold_*")))
@@ -350,8 +353,8 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
                 self.assertNotIn(key, meta)
             self.assertEqual(meta["test_seasons"], _test_config_yaml()["split"]["test_seasons"])
             self.assertIn("scikit-learn", meta["library_versions"])
-            latest = artifacts / "models" / "home_win" / "logreg" / "latest"
-            latest_txt = artifacts / "models" / "home_win" / "logreg" / "latest.txt"
+            latest = artifacts / "models" / "over_5_5" / "logreg" / "latest"
+            latest_txt = artifacts / "models" / "over_5_5" / "logreg" / "latest.txt"
             self.assertTrue(latest.exists() or latest_txt.exists())
             self.assertTrue((artifacts / "reports" / run_id / "metrics.json").exists())
             self.assertTrue((artifacts / "reports" / run_id / "run.log").exists())
@@ -362,7 +365,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [1.0]
             cfg["evaluation"]["bootstrap_samples"] = 20
             cfg["compute"]["num_threads"] = 1
@@ -370,7 +373,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
             artifacts = tmp / "artifacts"
             resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
-            base = artifacts / "models" / "home_win" / "logreg"
+            base = artifacts / "models" / "over_5_5" / "logreg"
             base.mkdir(parents=True)
             os.symlink(Path("previous_run") / "final", base / "latest")
 
@@ -379,7 +382,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
                     resolved,
                     dataset_csv=csv_path,
                     metadata_path=meta_path,
-                    task="home_win",
+                    task="over_5_5",
                     model="logreg",
                     run_id=run_id,
                     artifacts_root=artifacts,
@@ -512,7 +515,7 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertFalse((tmp / "artifacts").exists())
 
     def test_gate_compares_with_elo_not_with_constant(self) -> None:
-        # Predictable labels: the model beats Elo, so the home_win gate passes against Elo.
+        # Predictable labels: the model beats Elo on log loss but not on ECE (Elo has no signal), so the gate fails.
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             metrics = self._train(tmp, task="home_win")
@@ -520,7 +523,8 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertEqual(verdict["benchmark"], "elo")
             self.assertAlmostEqual(verdict["benchmark_log_loss"], metrics["pooled"]["elo"]["log_loss"])
             self.assertAlmostEqual(verdict["model_log_loss"], metrics["pooled"]["model"]["log_loss"])
-            self.assertTrue(verdict["passed"])
+            self.assertFalse(verdict["passed"])
+            self.assertEqual(verdict["reason"], "ece above elo")
 
 
 class TestSliceMasks(unittest.TestCase):

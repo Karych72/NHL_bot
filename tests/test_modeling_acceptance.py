@@ -38,7 +38,13 @@ VALID_RUN_ID = "home_win_logreg_deadbeef_20260101T000000Z"
 
 
 def _eval_entry(
-    *, model_ll: float, benchmark_ll: float, model: str = "logreg", benchmark: str = "elo"
+    *,
+    model_ll: float,
+    benchmark_ll: float,
+    model: str = "logreg",
+    benchmark: str = "elo",
+    model_ece: float = 0.01,
+    benchmark_ece: float = 0.01,
 ) -> TaskModelEval:
     return TaskModelEval(
         task="home_win",
@@ -48,6 +54,8 @@ def _eval_entry(
         model_log_loss=model_ll,
         benchmark_log_loss=benchmark_ll,
         benchmark=benchmark,
+        model_ece=model_ece,
+        benchmark_ece=benchmark_ece,
     )
 
 
@@ -125,6 +133,8 @@ def _write_valid_run_layout(
         model_log_loss=metrics_payload["pooled"]["model"]["log_loss"],
         benchmark_log_loss=metrics_payload["pooled"][benchmark]["log_loss"],
         benchmark=benchmark,
+        model_ece=metrics_payload["pooled"]["model"]["ece"],
+        benchmark_ece=metrics_payload["pooled"][benchmark]["ece"],
     )
 
 
@@ -173,6 +183,30 @@ class TestBaselineGate(unittest.TestCase):
         )
         self.assertEqual(gate.per_task[0].winning_family, "lgbm")
 
+    def test_home_win_gate_ece_not_above_elo(self) -> None:
+        def verdict(**kw: float):
+            entry = _eval_entry(model_ll=0.5, benchmark_ll=0.7, **kw)
+            return evaluate_baseline_gate(["home_win"], {"home_win": [entry]}).per_task[0]
+
+        equal = verdict(model_ece=0.02, benchmark_ece=0.02)
+        self.assertTrue(equal.passed)
+        self.assertEqual(equal.reason, "")
+        worse = verdict(model_ece=0.03, benchmark_ece=0.02)
+        self.assertFalse(worse.passed)
+        self.assertEqual(worse.reason, "ece above elo")
+        both = evaluate_baseline_gate(
+            ["home_win"],
+            {"home_win": [_eval_entry(model_ll=0.8, benchmark_ll=0.7, model_ece=0.03, benchmark_ece=0.02)]},
+        ).per_task[0]
+        self.assertEqual(both.reason, "log_loss not below elo; ece above elo")
+
+    def test_constant_benchmark_ignores_ece(self) -> None:
+        entry = _eval_entry(
+            model_ll=0.5, benchmark_ll=0.7, benchmark="constant", model_ece=0.5, benchmark_ece=0.0
+        )
+        verdict = evaluate_baseline_gate(["home_win"], {"home_win": [entry]}).per_task[0]
+        self.assertTrue(verdict.passed)
+
     def test_disabled_task_not_in_gate(self) -> None:
         gate = evaluate_baseline_gate(
             ["home_win"],
@@ -192,6 +226,10 @@ class TestBaselineGate(unittest.TestCase):
         text = format_baseline_summary_section(gate)
         self.assertIn("pooled test seasons, vs Elo|constant", text)
         self.assertIn("elo=0.660000", text)
+        failing = evaluate_baseline_gate(
+            ["home_win"], {"home_win": [_eval_entry(model_ll=0.60, benchmark_ll=0.66, model_ece=0.1)]}
+        )
+        self.assertIn("ece above elo", format_baseline_summary_section(failing))
         self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
 
@@ -465,6 +503,8 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
             pooled_model_log_loss=run.model_log_loss,
             benchmark_log_loss=run.benchmark_log_loss,
             benchmark=run.benchmark,
+            model_ece=run.model_ece,
+            benchmark_ece=run.benchmark_ece,
         )
 
     def test_verify_latest_passes_on_valid_symlink(self) -> None:
@@ -528,6 +568,8 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 pooled_model_log_loss=run.model_log_loss,
                 benchmark_log_loss=run.benchmark_log_loss,
                 benchmark=run.benchmark,
+                model_ece=run.model_ece,
+                benchmark_ece=run.benchmark_ece,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
             combined, _, _ = apply_acceptance_to_training_outcomes(
@@ -628,6 +670,8 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 pooled_model_log_loss=0.99,
                 benchmark_log_loss=0.50,
                 benchmark="elo",
+                model_ece=0.01,
+                benchmark_ece=0.01,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
             apply_acceptance_to_training_outcomes(

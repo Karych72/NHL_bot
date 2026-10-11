@@ -132,6 +132,8 @@ class _TaskModelOutcome:
     pooled_model_log_loss: float
     benchmark_log_loss: float
     benchmark: str
+    model_ece: float
+    benchmark_ece: float
 
 
 def resolve_tasks(task_flag: str, config: ResolvedConfig) -> list[str]:
@@ -1204,6 +1206,8 @@ def run_training(
                     pooled_model_log_loss=pooled_ll,
                     benchmark_log_loss=pooled_block[benchmark_name]["log_loss"],
                     benchmark=benchmark_name,
+                    model_ece=pooled_block["model"]["ece"],
+                    benchmark_ece=pooled_block[benchmark_name]["ece"],
                 )
             )
             results.append(result)
