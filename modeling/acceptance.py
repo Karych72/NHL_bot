@@ -636,7 +636,6 @@ def apply_latest_symlink_check(
     outcomes: Sequence[Any],
     *,
     config: ResolvedConfig,
-    enabled_tasks: Sequence[str],
     pairs: Sequence[tuple[str, str]],
     artifacts_root: Path,
     baseline: BaselineGateResult,

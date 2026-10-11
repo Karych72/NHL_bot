@@ -93,7 +93,7 @@ def _write_latest_model(
     model_family: str = "logreg",
     run_id: str = "home_win_logreg_deadbeef_20260101T000000Z",
     cold_start_policy_predict: str = "drop",
-    model_features: list[str] | None = ["f_a"],
+    model_features: tuple[str, ...] | None = ("f_a",),
 ) -> Path:
     """Fit a tiny real pipeline + calibrator and write them as train_runner would."""
     rng = np.random.default_rng(0)
@@ -121,7 +121,7 @@ def _write_latest_model(
             "features_hash": _features_hash(cold_start_policy_predict),
             "feature_set_version": FEATURE_SET_VERSION,
             "feature_manifest": MANIFEST,
-            **({} if model_features is None else {"model_features": model_features}),
+            **({} if model_features is None else {"model_features": list(model_features)}),
             "method": calibrator_fit.method,
             "calibration_skipped": calibrator_fit.calibration_skipped,
             "n_calibration": calibrator_fit.n_calibration,

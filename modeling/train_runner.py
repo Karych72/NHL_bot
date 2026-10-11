@@ -1236,7 +1236,6 @@ def run_training(
     apply_latest_symlink_check(
         outcomes,
         config=config,
-        enabled_tasks=tasks,
         pairs=pairs,
         artifacts_root=artifacts,
         baseline=baseline,

@@ -340,11 +340,11 @@ class TestHelpers(unittest.TestCase):
     def test_build_run_id_format(self) -> None:
         run_id = build_run_id(
             "home_win",
-            "lgbm",
+            "logreg",
             "b334df68cab14a12056b7a41b324face3cc9cd835c30b738caffdef1b72f81a1",
             datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc),
         )
-        pattern = r"^home_win_lgbm_b334df68_20260530T120000Z$"
+        pattern = r"^home_win_logreg_b334df68_20260530T120000Z$"
         self.assertRegex(run_id, pattern)
 
     def test_derive_seed_deterministic(self) -> None:
