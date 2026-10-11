@@ -37,7 +37,8 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `elo.grid` | Search grid of the Elo benchmark (`k`, `home_advantage`, `season_regression`, `mov`, `ot_win_weight`) — see §2a |
 | `goals.{alpha,tie_halflife_days}` | Goal model: ridge grid of the Poisson GLM, half-life of the tracked tie rate — see §2b |
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
-| `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
+| `models.lgbm.monotone.*` | Monotone constraint signs by feature name (`over_5_5` only; `home_win` has none) |
+| `tasks.*.features` | Optional list of feature columns of the task; unset — every dataset feature column. `home_win`: `diff_elo`, `home_is_b2b`, `away_is_b2b`, `diff_shot_share_ewm` |
 | `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
 
@@ -69,7 +70,7 @@ the checked season never enters the fit. The Elo forecast is compared with the m
 separately as `elo_full_season`. `elo_raw` is the chess curve with the chosen home bonus.
 
 **Gate.** `home_win` is accepted only if the pooled (sum of checked seasons) calibrated log-loss
-of the best family is strictly below Elo's with the fitted curve; `over_5_5` (Elo does not
+of the best family is strictly below Elo's with the fitted curve **and** pooled ECE is not above Elo's (`reason` — in `metrics.json` and `summary.md`); `over_5_5` (Elo does not
 predict totals) — strictly below the constant (share of "over 5.5" on all rows before the checked
 season). `games_train.csv` is required when `home_win` is trained; `over_5_5` alone does not
 need it.
@@ -84,12 +85,21 @@ need it.
   CI (same resampled days for both sides) of the log-loss difference `model_minus_elo` (home_win)
   and `model_minus_constant`, keys `point, ci_low, ci_high`; `bootstrap` — CIs of the model's own
   log-loss/Brier; `reliability_path`.
-- `calibration_table` — for the model and (home_win) Elo: 5 pp forecast bins, non-empty only.
+- `calibration_table` — for the model and (home_win) Elo: 5 pp forecast bins, non-empty only; rows carry `noise_2se` and `outside_noise` (±2 SE band, report only).
 - `slices` (sum of seasons, same games for all columns): `season_start` (first 10% of each
   season's games), `post_olympic_break` (2025/26, 2026-02-26…2026-03-11), `prior_games_<bucket>`
   by `min(home, away prior_games_count)` — `<=7`, `8-10`, `11-20`, `21+` (the feature matrix must carry both prior-games columns, otherwise the run fails) — to choose
   `--min-prior-games`.
 - `team_breakdown` and the reliability PNG are over the sum of seasons.
+
+**Home_win: схема обучения и критерий (Задача 68).** Свои признаки (`tasks.home_win.features`),
+только `logreg` (`TASK_MODEL_FAMILIES`; `home_win`+`lgbm` отвергается CLI), первый сезон датасета
+в обучение не входит (прогрев Elo). `C` выбирается на inner_val, затем модель переобучается на
+train+inner_val+calibration; Platt нет, калибратор тождественный (`calibration_skipped`): logreg на
+обучающих сезонах сама есть подобранная кривая, а Platt на 300 играх при замере ухудшал (см.
+«Результаты Задачи 68»). `final/metadata.json` несёт `model_features` — predict подаёт только их.
+Критерий карточки «≤ 2 п.п. в корзинах от 100 игр» заменён решением человека 2026-10-11: шум корзины
+±4–8 п.п., и сам Elo его не проходит; корзины получили полосу шума ±2 SE, только в отчёте.
 
 **Artifacts.** Per-season raw model + calibrator: `models/<task>/<model>/<run_id>/season_<season_id>/`
 (replaces `fold_<k>/`). `final/metadata.json` carries `test_seasons`; the `holdout_*`, `test_days`,
@@ -394,13 +404,13 @@ in [`modeling/predict_runner.py`](../modeling/predict_runner.py) (new module, З
 `train`: no PostgreSQL, no `modeling.dataset_builder` import.
 
 ```bash
-python -m modeling.cli predict --task home_win --model lgbm
+python -m modeling.cli predict --task home_win --model logreg
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--task {home_win,over_5_5}` | required |
-| `--model {logreg,lgbm}` | required |
+| `--model {logreg,lgbm}` | required; `home_win` — only `logreg`. Predict feeds only `model_features` from `metadata.json` |
 | `--predict-dataset PATH` | default `artifacts/datasets/dataset_predict.csv` |
 | `--predict-metadata PATH` | default `artifacts/datasets/metadata_predict.json` |
 | `--artifacts-root PATH` | default `artifacts` (root of `models/<task>/<model>/latest`) |
@@ -434,7 +444,7 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 по-прежнему не касается БД). Гейт — по артефакту, не пересчитывается: нет `latest` или
 `metadata.json` по `latest` имеет `status != ok` → строки этой `task` удаляются, вставки нет,
 код выхода 0. Иначе строки задачи заменяются (delete + insert в одной транзакции), `run_id` берётся
-из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=lgbm]`:
+из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=logreg]`:
 `build-dataset --mode predict` (по `scheduled_games`, манифест берётся из `latest/metadata.json`
 пары; политика cold-start — дефолтная `allow_with_flag`, как при обучении: она входит в `features_hash`,
 и другое значение роняет build-dataset на `features_hash mismatch`) → `predict` → `publish-predictions`. Цель требует `latest`: без него build-dataset/predict
@@ -496,7 +506,7 @@ model under the old `p`-input, L2 fit).
 сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
 задачи, обе модели, один вызов, `run_start_utc` общий для всех 4 пар —
 `bb0c2b06_20260928T183528Z` в `run_id`). Конфиг уже включает результаты Задач 1–3 этой
-карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone`,
+карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone` (на тот момент; для `home_win` позже убрано),
 8-точечная сетка lgbm, финальный retrain lgbm на фиксированном `num_boost_round` без
 утечки early stopping.
 
@@ -569,13 +579,6 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 
 ## 9. Retrain по расписанию
 
-> **Отключён до Задачи 68** (модель победы; решение человека, 2026-10-10). По проверке Задачи 66 обе модели
-> `home_win` проигрывают Elo-эталону (§2a), поэтому каждый плановый прогон был бы красным, а
-> `promote` отказывал бы любому новому `run_id`. Профиль `modeling` не включать (`docker compose
-> --profile modeling up -d retrain` не выполнять); если он уже поднят — `docker compose
-> --profile modeling stop retrain`. Код сервиса не менялся: включить снова после модели, которая
-> проходит гейт.
-
 Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `up`/`build` его не трогают,
 запуск — `docker compose --profile modeling up -d retrain`; `pipeline/scheduled_retrain.py`, образ со стадией
 `modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ночью каждые 30 минут,
@@ -612,8 +615,8 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 остаётся прежним. Сдвигает его человек — отдельной командой:
 
 ```bash
-make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
-# то же без make: python -m modeling.cli promote --task home_win --model lgbm --run-id <run_id>
+make modeling-promote TASK=home_win MODEL=logreg RUN_ID=<run_id>
+# то же без make: python -m modeling.cli promote --task home_win --model logreg --run-id <run_id>
 ```
 
 Команда читает `artifacts/models/<task>/<model>/<run_id>/final/metadata.json`: файла нет или

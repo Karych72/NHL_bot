@@ -165,7 +165,7 @@ def run_retrain(
         logger.info(
             "Retrain ok, latest NOT moved. Run ids are in the train lines above "
             "(run_id=... task=... model=... status=...). Promote manually: "
-            "make modeling-promote TASK=home_win MODEL=<lgbm|logreg> RUN_ID=<run_id>; "
+            "make modeling-promote TASK=home_win MODEL=logreg RUN_ID=<run_id>; "
             "report: artifacts/reports/<run_id>/summary.md"
         )
     return ok
