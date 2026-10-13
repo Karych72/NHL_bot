@@ -190,6 +190,39 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
     return pd.read_sql_query(query, conn)
 
 
+def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+    """Загружает попытки бросков сыгранных игр для xG-модели (Задача 69) — содержимое ``shots_train.csv``.
+
+    Строки ``shot_attempts`` с ``season_id``, ``day``, ``home_team_id``, ``away_team_id`` из
+    ``games``; сезоны — ``config.season_ids`` (все, если пусто), ``target_day_to`` ограничивает
+    дни, ``target_day_from`` не действует: как и ``games_train.csv``, сезоны берутся целиком.
+
+    Args:
+        conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
+        config: фильтры сезонов и последнего дня.
+    """
+    query = f"""
+        SELECT
+            s.game_id::bigint AS game_id,
+            s.event_id, s.sort_order, s.period, s.period_type, s.time_in_period,
+            s.team_id::bigint AS team_id,
+            s.event_type, s.x_coord, s.y_coord, s.zone_code, s.shot_type,
+            s.situation_code, s.home_team_defending_side, s.shooter_id, s.goalie_in_net_id,
+            g.season_id::bigint AS season_id,
+            g.day::date AS day,
+            g.home_team_id::bigint AS home_team_id,
+            g.away_team_id::bigint AS away_team_id
+        FROM shot_attempts s
+        JOIN games g ON g.game_id = s.game_id
+        WHERE g.winner_id IS NOT NULL
+          AND g.day IS NOT NULL
+          {_season_where_clause(config)}
+          {_day_where_clause(replace(config, target_day_from=None))}
+        ORDER BY g.day, s.game_id, s.sort_order
+    """
+    return pd.read_sql_query(query, conn)
+
+
 def _load_train_metadata(path: Path) -> Dict[str, object]:
     data = json.loads(path.read_text(encoding="utf-8"))
     manifest = data.get("feature_manifest")
@@ -352,6 +385,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     metadata_path = config.output_dir / f"metadata_{config.mode}.json"
     quality_path = config.output_dir / "data_quality_report.json"
     games_path = config.output_dir / "games_train.csv"
+    shots_path = config.output_dir / "shots_train.csv"
 
     if config.mode == "predict" and config.train_metadata_path is None:
         raise ValueError("predict mode requires --train-metadata-path for strict schema parity")
@@ -386,6 +420,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         elo_history = load_target_games(
             conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_outcome=True
         ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
+        shots = load_shot_attempts(conn, config) if config.mode == "train" else None
 
     team_facts, team_facts_report = build_team_game_facts(history)
     rolling = compute_team_rolling_features(team_facts, config.rolling_windows)
@@ -455,6 +490,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         assembled.to_csv(dataset_path, index=False)
         if config.mode == "train":
             _write_games_train(elo_history, config, games_path)
+            cast(pd.DataFrame, shots).to_csv(shots_path, index=False)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
     write_report(quality_path, quality_report)
 

@@ -117,6 +117,15 @@ history that feeds the Elo pass (no extra query). `train` reads it for the Elo b
 reads it for the goal model (`modeling/goal_model.py`). It is not part of `metadata_train.json`
 and not of the feature table.
 
+## `shots_train.csv`
+
+Also in train mode (Задача 69): every `shot_attempts` row of played games of the loaded
+seasons (`--season-ids`; whole seasons — `--target-day-from` does not apply, `--target-day-to`
+does), plus `season_id, day, home_team_id, away_team_id` from `games`, ordered by
+`day, game_id, sort_order` (`load_shot_attempts`). `evaluate-xg` reads it for the xG model
+(`modeling/xg_model.py`; `situation_code` must be read as text). Not part of the metadata or
+the feature table.
+
 ## Elo team-strength feature
 
 Added Задача 40 (Task 3; tuned via a read-only diagnostic spike, 40a, before any code
