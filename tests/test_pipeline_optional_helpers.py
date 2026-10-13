@@ -220,6 +220,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             game_player_rows,
             game_goalie_rows,
             game_three_stars_rows,
+            shot_attempt_rows,
         ) = instance.build_game_rows(games_meta)
 
         self.assertEqual(len(all_goals_rows), 1)

@@ -126,6 +126,11 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "short_handed_save_percentage", "even_strength_save_percentage",
     ),
     "game_three_stars": ("game_id", "star", "player_id", "team_id"),
+    "shot_attempts": (
+        "game_id", "event_id", "sort_order", "period", "period_type", "time_in_period",
+        "team_id", "event_type", "x_coord", "y_coord", "zone_code", "shot_type",
+        "situation_code", "home_team_defending_side", "shooter_id", "goalie_in_net_id",
+    ),
 }
 
 

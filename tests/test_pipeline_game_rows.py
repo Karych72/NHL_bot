@@ -1,11 +1,11 @@
 """Per-game row assembly in ``pipeline/load_season_modern.py``.
 
 Runs ``ModernNhlLoader.build_game_rows`` over the trimmed real play-by-play,
-boxscore and landing payloads of WSH 4:1 OTT (2026-03-18) and checks the six
+boxscore and landing payloads of WSH 4:1 OTT (2026-03-18) and checks the seven
 tuples it produces — ``games``, ``all_goals``, ``game_team_stats``,
-``game_player_stats``, ``game_goalie_stats``, ``game_three_stars``. Both
-directions of ``docs/pipeline_nulls_and_explicit_null_tz.md`` §2 are asserted
-on real payloads (a value the API sent, a real 0 included, survives; a field
+``game_player_stats``, ``game_goalie_stats``, ``game_three_stars``,
+``shot_attempts``. Both directions of
+``docs/pipeline_nulls_and_explicit_null_tz.md`` §2 are asserted on real payloads (a value the API sent, a real 0 included, survives; a field
 it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 """
 
@@ -26,6 +26,7 @@ from tests._pipeline_fixtures import (
     SEASON_ID,
     SEASON_LABEL,
     SOURDIF,
+    TABLE_COLUMNS,
     THOMPSON,
     ULLMARK,
     WILSON,
@@ -108,7 +109,7 @@ class GameRowsTest(LoaderApiTestCase):
 
     def test_game_not_yet_off_in_gamecenter_produces_no_rows(self):
         """Stats REST already lists the game as finished, but one gamecenter
-        payload still says ``FINAL``/``LIVE``: no row in any of the six tables,
+        payload still says ``FINAL``/``LIVE``: no row in any of the seven tables,
         so ``run()`` neither writes nor deletes it until a later run."""
         for payload_name in ("pbp", "box", "landing"):
             for state in ("FINAL", "LIVE"):
@@ -123,7 +124,7 @@ class GameRowsTest(LoaderApiTestCase):
                     }[payload_name]
                     payload = dict(load_fixture(fixture))
                     payload["gameState"] = state
-                    self.assertEqual(self._build(**{payload_name: payload}), ([],) * 6)
+                    self.assertEqual(self._build(**{payload_name: payload}), ([],) * 7)
 
     def test_is_shootouts_true_for_a_game_actually_decided_in_the_shootout(self):
         pbp = dict(load_fixture("nhl_game_play_by_play.json"))
@@ -165,7 +166,9 @@ class GameRowsTest(LoaderApiTestCase):
     def test_goal_row_nulls_every_column_the_play_omits(self):
         pbp = load_fixture("nhl_game_play_by_play.json")
         first_goal = next(p for p in pbp["plays"] if p.get("typeDescKey") == "goal")
-        stripped = without(first_goal, "timeInPeriod", "eventId", "periodDescriptor")
+        # ``eventId`` is not stripped here: it is shot_attempts' primary key, so a
+        # goal without one fails loudly (test_shot_attempt_without_event_id_fails).
+        stripped = without(first_goal, "timeInPeriod", "periodDescriptor")
         stripped["details"] = without(
             first_goal["details"],
             "scoringPlayerId", "scoringPlayerTotal", "assist1PlayerId",
@@ -174,17 +177,102 @@ class GameRowsTest(LoaderApiTestCase):
         pbp["plays"] = [stripped if p is first_goal else p for p in pbp["plays"]]
         goal = self._build(pbp=pbp)[1][0]
 
-        # §2.1 end to end: period / time / both scores / event_id were the
-        # columns that used to be 0 or "" — all NULL now. The four situation
-        # flags of §3 are derived from the play, not read off it, so they stay set.
+        # §2.1 end to end: period / time / both scores were the columns that
+        # used to be 0 or "" — all NULL now. The four situation flags of §3 are
+        # derived from the play, not read off it, so they stay set.
         situation_flags = ("empty_net", "winner_goal", "is_ppg", "is_shg")
         self.assertColumnsNone(
-            goal, "all_goals", keep=("team_id", "game_id") + situation_flags
+            goal, "all_goals", keep=("team_id", "game_id", "event_id") + situation_flags
         )
+        self.assertEqual(field(goal, "all_goals", "event_id"), 710)
         self.assertEqual(field(goal, "all_goals", "team_id"), WSH)
         self.assertEqual(field(goal, "all_goals", "game_id"), GAME_ID)
         for flag in situation_flags:
             self.assertIsInstance(field(goal, "all_goals", flag), bool, flag)
+
+    def _shots(self, pbp=None):
+        """``shot_attempts`` rows of the fixture, keyed by ``event_id``."""
+        return {
+            field(r, "shot_attempts", "event_id"): r for r in self._build(pbp=pbp)[6]
+        }
+
+    def _shot_columns(self, row):
+        return {c: field(row, "shot_attempts", c) for c in TABLE_COLUMNS["shot_attempts"]}
+
+    def test_shot_attempts_cover_the_four_types_and_skip_the_shootout(self):
+        shots = self._shots()
+        types = {eid: field(r, "shot_attempts", "event_type") for eid, r in shots.items()}
+        # Fixture: 1 blocked, 5 goals, 1 missed, 1 shot-on-goal in play, plus one
+        # shootout shot-on-goal (event 449, period 5 / "SO") that must not appear.
+        self.assertEqual(
+            types,
+            {
+                58: "blocked-shot", 710: "goal", 841: "goal", 1109: "goal", 1125: "goal",
+                1140: "goal", 301: "missed-shot", 56: "shot-on-goal",
+            },
+        )
+
+    def test_shot_attempt_rows_keep_real_values(self):
+        shots = self._shots()
+        # shot-on-goal: shooter / goalie / coordinates / shotType as sent.
+        self.assertEqual(
+            self._shot_columns(shots[56]),
+            {
+                "game_id": GAME_ID, "event_id": 56, "sort_order": 13, "period": 1,
+                "period_type": "REG", "time_in_period": "00:38", "team_id": 3,
+                "event_type": "shot-on-goal", "x_coord": -68, "y_coord": 21,
+                "zone_code": "O", "shot_type": "snap", "situation_code": "1551",
+                "home_team_defending_side": "right", "shooter_id": 8482073,
+                "goalie_in_net_id": 8484170,
+            },
+        )
+        self.assertEqual(field(shots[301], "shot_attempts", "event_type"), "missed-shot")
+        self.assertEqual(field(shots[301], "shot_attempts", "shooter_id"), 8476459)
+        # goal: the shooter is ``scoringPlayerId``; the period flips the defended side.
+        goal = self._shot_columns(shots[710])
+        self.assertEqual(goal["shooter_id"], 8471214)
+        self.assertEqual(goal["goalie_in_net_id"], 8476999)
+        self.assertEqual((goal["period"], goal["time_in_period"]), (2, "08:09"))
+        self.assertEqual(goal["home_team_defending_side"], "left")
+        self.assertEqual(goal["shot_type"], "tip-in")
+        # An empty-net goal has no goalie: NULL, not 0.
+        self.assertIsNone(field(shots[1125], "shot_attempts", "goalie_in_net_id"))
+
+    def test_blocked_shot_belongs_to_the_shooting_team(self):
+        # ``eventOwnerTeamId`` of a blocked shot is the shooting team (checked
+        # against rosterSpots of real games); the API sends no shotType for it.
+        blocked = self._shot_columns(self._shots()[58])
+        self.assertEqual(blocked["team_id"], WSH)
+        self.assertEqual(blocked["shooter_id"], 8483573)
+        self.assertEqual(blocked["event_type"], "blocked-shot")
+        self.assertIsNone(blocked["shot_type"])
+        self.assertIsNone(blocked["goalie_in_net_id"])
+        self.assertEqual((blocked["x_coord"], blocked["y_coord"]), (-85, 1))
+
+    def test_shot_attempt_nulls_fields_the_play_omits(self):
+        pbp = load_fixture("nhl_game_play_by_play.json")
+        shot = next(p for p in pbp["plays"] if p["eventId"] == 56)
+        stripped = without(shot, "situationCode", "homeTeamDefendingSide")
+        stripped["details"] = without(
+            shot["details"], "xCoord", "yCoord", "zoneCode", "shotType", "goalieInNetId"
+        )
+        pbp["plays"] = [stripped if p is shot else p for p in pbp["plays"]]
+        row = self._shots(pbp)[56]
+        self.assertColumnsNone(
+            row,
+            "shot_attempts",
+            keep=("game_id", "event_id", "sort_order", "period", "period_type",
+                  "time_in_period", "team_id", "event_type", "shooter_id"),
+        )
+        self.assertEqual(field(row, "shot_attempts", "shooter_id"), 8482073)
+        self.assertEqual(field(row, "shot_attempts", "team_id"), 3)
+
+    def test_shot_attempt_without_event_id_fails(self):
+        pbp = load_fixture("nhl_game_play_by_play.json")
+        shot = next(p for p in pbp["plays"] if p["eventId"] == 56)
+        pbp["plays"] = [without(shot, "eventId") if p is shot else p for p in pbp["plays"]]
+        with self.assertRaises(KeyError):
+            self._build(pbp=pbp)
 
     def test_goal_flags_follow_situation_code_and_final_score(self):
         goals = self._build()[1]
@@ -304,7 +392,7 @@ class GameRowsTest(LoaderApiTestCase):
         home = box["playerByGameStats"]["homeTeam"]
         home["forwards"] = [without(home["forwards"][0], *SKATER_BOXSCORE_KEYS)]
         home["goalies"] = [without(home["goalies"][0], *GOALIE_BOXSCORE_KEYS)]
-        _, _, _, player_rows, goalie_rows, _ = self._build(box=box)
+        _, _, _, player_rows, goalie_rows, _, _ = self._build(box=box)
 
         # §2.2: nothing left but the keys — no 0 / "00:00" stand-ins. The PBP
         # aggregates of §3 keep their 0: they never came from the boxscore.
