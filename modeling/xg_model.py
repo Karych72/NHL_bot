@@ -3,7 +3,8 @@
 Input is ``shots_train.csv`` (``shot_attempts`` rows of played games plus ``season_id``, ``day``
 and the two teams). :func:`prepare_shots` normalises the rink so every shooter attacks the net
 at ``x = +89`` and builds the features; :func:`fit_xg` / :func:`predict_xg` are a logistic
-regression on them (team xGF/xGA for the goal model — Задача 69B2 — come from these two).
+regression on them (team xGF/xGA from them were tried as goal-model covariates and not
+included — docs/modeling_training.md §2b).
 ``evaluate_xg_model`` checks it season by season (fit on earlier seasons). No PostgreSQL.
 """
 
