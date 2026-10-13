@@ -84,9 +84,9 @@ def prepare_shots(shots: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     minutes, seconds = frame["time_in_period"].str.split(":", expand=True).astype(int).T.to_numpy()
     frame["clock"] = minutes * 60 + seconds
     by_period = frame.groupby(["game_id", "period"], sort=False)
+    gap = frame["clock"] - by_period["clock"].shift()
     frame["rebound"] = (
-        (by_period["team_id"].shift() == frame["team_id"])
-        & (frame["clock"] - by_period["clock"].shift() <= REBOUND_SECONDS)
+        (by_period["team_id"].shift() == frame["team_id"]) & gap.between(0, REBOUND_SECONDS)
     ).astype(float)
 
     digits = {k: code.str[i].astype(int) for i, k in enumerate(["away_g", "away_s", "home_s", "home_g"])}
@@ -136,10 +136,12 @@ def fit_xg(shots: pd.DataFrame) -> Pipeline:
         [
             ("numeric", StandardScaler(), _NUMERIC),
             (
-                "categorical",
+                "shot_type",
                 OneHotEncoder(handle_unknown="infrequent_if_exist", min_frequency=MIN_SHOT_TYPE_SHOTS),
-                _CATEGORICAL,
+                ["shot_type"],
             ),
+            # Four fixed levels: an unseen one is a bug upstream, not a new category.
+            ("strength", OneHotEncoder(handle_unknown="error"), ["strength"]),
         ]
     )
     model = make_pipeline(columns, LogisticRegression(max_iter=1000))

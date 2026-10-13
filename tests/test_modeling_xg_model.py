@@ -98,9 +98,10 @@ class TestFeatures(unittest.TestCase):
             _attempt(time_in_period="05:08", team_id=AWAY),  # other team: not
             _attempt(time_in_period="05:09"),  # previous attempt is the opponent's: not
             _attempt(time_in_period="00:01", period=2),  # new period: not
+            _attempt(time_in_period="00:00", period=2),  # clock before the previous attempt: not
         )
         prepared, _ = prepare_shots(frame)
-        self.assertEqual(prepared["rebound"].tolist(), [1.0, 0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(prepared["rebound"].tolist(), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
     def test_rebound_follows_sort_order_not_row_order(self) -> None:
         frame = _frame(_attempt(time_in_period="05:02"), _attempt(time_in_period="05:00"))
