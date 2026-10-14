@@ -33,9 +33,14 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Produces symmetric `*_for` and `*_against` fields.
 
 - `modeling/dataset_builder/features.py`
-  - Rolling features with mandatory `shift(1)` logic.
-  - Context features: `rest_days`, `is_b2b`, `games_last_7d`, `prior_games_count`.
-  - As-of snapshots for home/away teams per target game.
+  - Rolling features: a team-game row is the team's state *after* that game (the means
+    include it, `prior_games_count` counts it), so the as-of snapshot of the latest game
+    before the target day is the state on that day.
+  - As-of snapshots for home/away teams per target game, then context from the target day:
+    `rest_days` (target day − last game, 99 without one this season), `is_b2b` (`rest_days ≤ 1`),
+    `games_last_7d` (games in `[day − 7, day)` of the season).
+  - Before Задача 68 a row was the state *before* its game, so every snapshot feature lagged
+    one game (`prior_games_count` was the true count − 1, rest was measured before the previous game).
   - `attach_pregame_elo`: attaches the pre-game team Elo rating (`home_elo`, `away_elo`); the
     Elo pass itself is `modeling/elo.py::compute_pregame_elo` — see
     [Elo team-strength feature](#elo-team-strength-feature) below.
@@ -50,7 +55,7 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     - predict: allow with flag (or drop, from config)
   - Since rolling windows and as-of snapshots reset at each season boundary
     (`features.py`, Task 30), the first game of every season now has
-    `prior_games_count == 0` and NaN `*_roll_mean_*`. Train drops these rows via
+    `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Train drops these rows via
     cold-start; **predict with the default `allow_with_flag` policy does not** — it
     keeps them and flags `low_history_confidence`, so a predict build for a
     season's first games fails `validate.py`'s NaN check (`numeric_nan_inf`)
@@ -79,7 +84,6 @@ The builder enforces:
 - no use of current `game_id` as history
 
 Technical enforcement:
-- rolling metrics are built with `shift(1)`, excluding current game
 - as-of merge uses backward snapshots with exact-day matches disabled
 - validation fails if `home_hist_day` or `away_hist_day` is not strictly earlier than target day
 - validation fails if `home_hist_game_id == game_id` or `away_hist_game_id == game_id`
@@ -104,11 +108,23 @@ first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08
 `build-dataset --mode train` writes, next to `dataset_train.csv`, `games_train.csv`: **every**
 played game of the loaded seasons — including the games the cold-start policy dropped from the
 dataset — with columns `game_id, day, season_id, home_team_id, away_team_id, home_goals,
-away_goals, decision` (`decision` ∈ `REG`/`OT`/`SO`, from `games.is_overtime`/`is_shootouts`).
-It is taken from the same `load_target_games(..., with_decision=True)` history that feeds the
-Elo pass (no extra query). `train` reads it for the Elo benchmark (`modeling/elo.py`) and fails
-loudly when `home_win` is trained without it. It is not part of `metadata_train.json` and not
-of the feature table.
+away_goals, decision, home_reg_goals, away_reg_goals` (`decision` ∈ `REG`/`OT`/`SO`, from
+`games.is_overtime`/`is_shootouts`; `*_reg_goals` — regulation goals, the sum of
+`fst/snd/trd_period_goals`, Задача 67: `*_goals` is the official final score with +1 to the OT
+or shootout winner). It is taken from the same `load_target_games(..., with_outcome=True)`
+history that feeds the Elo pass (no extra query). `train` reads it for the Elo benchmark
+(`modeling/elo.py`) and fails loudly when `home_win` is trained without it; `evaluate-goals`
+reads it for the goal model (`modeling/goal_model.py`). It is not part of `metadata_train.json`
+and not of the feature table.
+
+## `shots_train.csv`
+
+Also in train mode (Задача 69): every `shot_attempts` row of played games of the loaded
+seasons (`--season-ids`; whole seasons — `--target-day-from` does not apply, `--target-day-to`
+does), plus `season_id, day, home_team_id, away_team_id` from `games`, ordered by
+`day, game_id, sort_order` (`load_shot_attempts`). `evaluate-xg` reads it for the xG model
+(`modeling/xg_model.py`; `situation_code` must be read as text). Not part of the metadata or
+the feature table.
 
 ## Elo team-strength feature
 
@@ -164,8 +180,8 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
   that game — recorded before the update, mirroring `_snapshot_side`'s backward as-of join.
   Games sharing a calendar day never see each other's result: ratings are frozen at the start
   of the day and every game that day is scored off that same snapshot, with all of that day's
-  updates applied together afterwards — the Elo analogue of `compute_team_rolling_features`'s
-  `intra_day_prev` policy for rolling features (a same-day predecessor is masked out, not used).
+  updates applied together afterwards — the Elo analogue of the rolling features' as-of
+  snapshot, which never takes a game from the target day.
 - **Predict mode:** target games come from the `scheduled_games` table (upcoming games written
   by the loader on every run, Task 22A, only those whose both teams already exist in `teams`
   for the season; `games` only ever holds played games), and have no
@@ -183,6 +199,16 @@ itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-du
 - Bumped `feature_set_version` default `v1 → v2` (CLI and `DatasetBuildConfig`) — any feature
   change is supposed to bump it (`plan/deprecated_plan/nhl_dataset_build_plan.md` §5.3); this
   also changes `features_hash`, as intended.
+
+## Shot-share feature (Задача 68)
+
+`features.py::compute_pregame_shot_share` (details in its docstring): per team, a cross-season
+EWM of `shots_for / (shots_for + shots_against)` over the same `elo_history` as Elo (now with
+`home_shots`/`away_shots`); start 0.5, half-life 20 games, shrunk halfway to 0.5 at a new
+season; a day's games read the state frozen at day start. Predict rows take the final state
+(shrunk if the season is newer, 0.5 for unseen teams). Missing/zero shots raise `ValueError`.
+Columns `home_/away_/diff_shot_share_ewm`, no `sum_`. They change `features_hash`: rebuild
+train and predict.
 
 ## Schema Parity and Versioning
 
@@ -308,14 +334,19 @@ Implemented tests:
 - `test_validate_fails_on_nan_keys`
 - `test_rolling_and_snapshot_reset_at_season_boundary` — rolling windows and as-of
   snapshots do not cross a season boundary (Task 30)
+- `TestTeamFeaturesAsOfTargetDay` (Задача 68) — on a synthetic two-season schedule every
+  snapshot's rolling mean, `prior_games_count`, `rest_days`, `is_b2b`, `games_last_7d` equal an
+  independent recount of the team's games strictly before the target day (incl. a predict target)
 - `test_zero_pp_opportunities_null_percentage_becomes_zero`,
   `test_power_play_percentage_above_100_is_clipped` — `power_play_percentage` NULL
   (0 PP opportunities) and >100 (rare PBP opportunity-count artifact) are normalized to
   valid `[0, 100]` feature values instead of failing the dataset builder's fail-fast checks
 - `tests/test_modeling_elo.py` (Задача 66): the default `EloParams` reproduce the pre-move
   feature values, OT-weight / MOV / per-day freeze / season shrink mechanics, benchmark leakage.
-- `TestGamesTrainCsv` / `TestLoadTargetGamesSource.test_decision_column_only_when_requested`
-  (Задача 66): `games_train.csv` content and that `decision` never reaches the feature table.
+- `TestGamesTrainCsv` / `TestLoadTargetGamesSource.test_outcome_columns_only_when_requested`
+  (Задачи 66, 67): `games_train.csv` content and that `decision` / `*_reg_goals` never reach the
+  feature table; `tests/test_db_nhl.py::TestNhlLoadedData::test_final_goals_are_regulation_plus_one_for_ot_or_shootout`
+  checks on the loaded DB that `goals` = regulation periods + `is_overtime` for every played game.
 - `TestPregameElo` (Задача 40, Task 3): `test_hand_computed_pregame_ratings` (3-game
   mini example, expected ratings computed independently from the formula in "Elo
   team-strength feature" above), `test_asof_future_result_does_not_change_earlier_rating`,

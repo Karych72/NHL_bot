@@ -63,6 +63,8 @@ class TaskModelEval:
     model_log_loss: float
     benchmark_log_loss: float
     benchmark: str
+    model_ece: float
+    benchmark_ece: float
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class TaskBaselineVerdict:
     benchmark: str
     delta: float
     passed: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,7 @@ class BaselineGateResult:
                     "benchmark": v.benchmark,
                     "delta": v.delta,
                     "passed": v.passed,
+                    "reason": v.reason,
                 }
                 for v in self.per_task
             ],
@@ -131,7 +135,7 @@ def evaluate_baseline_gate(
     enabled_tasks: Sequence[str],
     eval_by_task: Mapping[str, Sequence[TaskModelEval]],
 ) -> BaselineGateResult:
-    """Compare best calibrated pooled-seasons log loss vs its benchmark (Elo / constant) per task."""
+    """Best calibrated pooled log loss must beat its benchmark (Elo / constant); vs Elo, ECE must also be no worse."""
     verdicts: list[TaskBaselineVerdict] = []
     all_passed = True
 
@@ -148,6 +152,7 @@ def evaluate_baseline_gate(
                     benchmark="",
                     delta=float("nan"),
                     passed=False,
+                    reason="no candidates",
                 )
             )
             continue
@@ -155,7 +160,12 @@ def evaluate_baseline_gate(
         winner = pick_winning_family(candidates)
         benchmark_ll = winner.benchmark_log_loss
         model_ll = winner.model_log_loss
-        passed = model_ll + BASELINE_STRICT_EPS < benchmark_ll
+        reasons = []
+        if not model_ll + BASELINE_STRICT_EPS < benchmark_ll:
+            reasons.append(f"log_loss not below {winner.benchmark}")
+        if winner.benchmark == "elo" and winner.model_ece > winner.benchmark_ece:
+            reasons.append("ece above elo")
+        passed = not reasons
         if not passed:
             all_passed = False
         verdicts.append(
@@ -167,6 +177,7 @@ def evaluate_baseline_gate(
                 benchmark=winner.benchmark,
                 delta=benchmark_ll - model_ll,
                 passed=passed,
+                reason="; ".join(reasons),
             )
         )
 
@@ -362,8 +373,7 @@ def verify_run_artifacts(
     *,
     config: ResolvedConfig,
     artifacts_root: Path,
-    enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     runs: Sequence[TaskModelEval],
 ) -> ArtifactCheckResult:
     """Verify DoD artifacts for each trained (task, model) pair (presence only).
@@ -375,54 +385,53 @@ def verify_run_artifacts(
     issues: list[str] = []
     run_by_pair = {(r.task, r.model): r for r in runs}
 
-    for task in enabled_tasks:
-        for model in models:
-            entry = run_by_pair.get((task, model))
-            if entry is None:
-                _issue(issues, f"no training result for task={task} model={model}")
-                continue
+    for task, model in pairs:
+        entry = run_by_pair.get((task, model))
+        if entry is None:
+            _issue(issues, f"no training result for task={task} model={model}")
+            continue
 
-            run_id = entry.run_id
-            reports_dir = entry.reports_dir
-            model_root = artifacts_root / "models" / task / model / run_id
-            final_dir = model_root / "final"
+        run_id = entry.run_id
+        reports_dir = entry.reports_dir
+        model_root = artifacts_root / "models" / task / model / run_id
+        final_dir = model_root / "final"
 
-            if not final_dir.is_dir():
-                _issue(issues, f"missing final/ directory: {final_dir}")
-            else:
-                for name in ("model.joblib", "calibrator.joblib", "metadata.json"):
-                    if not (final_dir / name).exists():
-                        _issue(issues, f"missing {name} in {final_dir}")
-                _validate_metadata_file(
-                    final_dir / "metadata.json",
-                    expected_features_hash=config.features_hash,
-                    expected_run_id=run_id,
+        if not final_dir.is_dir():
+            _issue(issues, f"missing final/ directory: {final_dir}")
+        else:
+            for name in ("model.joblib", "calibrator.joblib", "metadata.json"):
+                if not (final_dir / name).exists():
+                    _issue(issues, f"missing {name} in {final_dir}")
+            _validate_metadata_file(
+                final_dir / "metadata.json",
+                expected_features_hash=config.features_hash,
+                expected_run_id=run_id,
+                issues=issues,
+            )
+
+        if not list(model_root.glob("season_*")):
+            _issue(issues, f"no per-season run directories under {model_root}")
+
+        summary_path = reports_dir / "summary.md"
+        if not summary_path.is_file() or summary_path.stat().st_size == 0:
+            _issue(issues, f"missing or empty summary.md: {summary_path}")
+
+        metrics_path = reports_dir / "metrics.json"
+        if not metrics_path.is_file():
+            _issue(issues, f"missing metrics.json: {metrics_path}")
+        else:
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                _issue(issues, f"invalid metrics.json at {metrics_path}: {exc}")
+                metrics = {}
+            if isinstance(metrics, dict):
+                _validate_pooled_metrics_block(
+                    metrics,
+                    task=task,
+                    reports_dir=reports_dir,
                     issues=issues,
                 )
-
-            if not list(model_root.glob("season_*")):
-                _issue(issues, f"no per-season run directories under {model_root}")
-
-            summary_path = reports_dir / "summary.md"
-            if not summary_path.is_file() or summary_path.stat().st_size == 0:
-                _issue(issues, f"missing or empty summary.md: {summary_path}")
-
-            metrics_path = reports_dir / "metrics.json"
-            if not metrics_path.is_file():
-                _issue(issues, f"missing metrics.json: {metrics_path}")
-            else:
-                try:
-                    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as exc:
-                    _issue(issues, f"invalid metrics.json at {metrics_path}: {exc}")
-                    metrics = {}
-                if isinstance(metrics, dict):
-                    _validate_pooled_metrics_block(
-                        metrics,
-                        task=task,
-                        reports_dir=reports_dir,
-                        issues=issues,
-                    )
 
     return ArtifactCheckResult(ok=len(issues) == 0, issues=issues)
 
@@ -452,7 +461,7 @@ def format_baseline_summary_section(baseline: BaselineGateResult) -> str:
         lines.append(
             f"- **{verdict.task}**: {status_word} — best `{verdict.winning_family}` "
             f"log_loss={verdict.model_log_loss:.6f} vs {verdict.benchmark}={verdict.benchmark_log_loss:.6f} "
-            f"(delta={verdict.delta:+.6f})"
+            f"(delta={verdict.delta:+.6f})" + (f" — {verdict.reason}" if verdict.reason else "")
         )
     lines.append("")
     return "\n".join(lines)
@@ -520,33 +529,18 @@ def patch_metrics_acceptance(
     )
 
 
-def _evals_from_outcomes(outcomes: Sequence[Any]) -> list[TaskModelEval]:
-    return [
-        TaskModelEval(
-            task=item.task,
-            model=item.model,
-            run_id=item.result.run_id,
-            reports_dir=item.result.reports_dir,
-            model_log_loss=item.pooled_model_log_loss,
-            benchmark_log_loss=item.benchmark_log_loss,
-            benchmark=item.benchmark,
-        )
-        for item in outcomes
-    ]
-
-
 def apply_acceptance_to_training_outcomes(
     outcomes: Sequence[Any],
     *,
     config: ResolvedConfig,
     enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     artifacts_root: Path,
 ) -> tuple[RunStatus, BaselineGateResult, ArtifactCheckResult]:
     """End-of-run hook: baseline gate, artifact verification, patch reports."""
     from modeling.report import configure_run_logger
 
-    eval_runs = _evals_from_outcomes(outcomes)
+    eval_runs = [item.evaluation for item in outcomes]
     eval_by_task: dict[str, list[TaskModelEval]] = {}
     for entry in eval_runs:
         eval_by_task.setdefault(entry.task, []).append(entry)
@@ -557,8 +551,7 @@ def apply_acceptance_to_training_outcomes(
     artifacts = verify_run_artifacts(
         config=config,
         artifacts_root=artifacts_root,
-        enabled_tasks=enabled_tasks,
-        models=models,
+        pairs=pairs,
         runs=eval_runs,
     )
 
@@ -639,8 +632,7 @@ def apply_latest_symlink_check(
     outcomes: Sequence[Any],
     *,
     config: ResolvedConfig,
-    enabled_tasks: Sequence[str],
-    models: Sequence[str],
+    pairs: Sequence[tuple[str, str]],
     artifacts_root: Path,
     baseline: BaselineGateResult,
 ) -> None:
@@ -654,9 +646,8 @@ def apply_latest_symlink_check(
     artifacts = verify_run_artifacts(
         config=config,
         artifacts_root=artifacts_root,
-        enabled_tasks=enabled_tasks,
-        models=models,
-        runs=_evals_from_outcomes(outcomes),
+        pairs=pairs,
+        runs=[item.evaluation for item in outcomes],
     )
     artifacts = ArtifactCheckResult(ok=False, issues=artifacts.issues + latest.issues)
 

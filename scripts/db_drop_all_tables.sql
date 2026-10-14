@@ -1,6 +1,7 @@
 -- One-shot teardown for NHL_bot tables (no ALTER / migration path).
 -- Run before applying data_tables/t.*.sql from scratch.
 
+DROP TABLE IF EXISTS shot_attempts CASCADE;
 DROP TABLE IF EXISTS all_goals CASCADE;
 DROP TABLE IF EXISTS game_goalie_stats CASCADE;
 DROP TABLE IF EXISTS game_player_stats CASCADE;

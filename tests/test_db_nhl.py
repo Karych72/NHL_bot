@@ -142,6 +142,7 @@ class TestNhlSchema(unittest.TestCase):
             self.assertEqual(_pk_columns(cur, "games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "scheduled_games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "game_predictions"), ["game_id", "task"])
+            self.assertEqual(_pk_columns(cur, "shot_attempts"), ["game_id", "event_id"])
 
     def test_games_has_season_id(self):
         with self.conn.cursor() as cur:
@@ -554,7 +555,9 @@ class TestCountryNightSql(unittest.TestCase):
 
     SEASON = 99999999
     NIGHT = date(2099, 1, 2)
-    GAME = 9999999901
+    # В int: карточка матча (`get_game_stats(integer)`) — часть сообщения (Задача 75).
+    GAME = 2099990001
+    GAME2 = 2099990002
     TEAM = 900001
     OPPONENT = 900002
 
@@ -562,24 +565,39 @@ class TestCountryNightSql(unittest.TestCase):
         import bot_messages
 
         self.messages = bot_messages
+        # Шаблон карточки (`messages/game_message.txt`) читается от каталога бота.
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(TELEGRAM_BOT)
         self._cleanup()
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO teams (team_id, season_id, abbreviation) "
-                "VALUES (%s, %s, 'HOM'), (%s, %s, 'AWY')",
+                "INSERT INTO teams (team_id, season_id, abbreviation, short_name) "
+                "VALUES (%s, %s, 'HOM', 'Home'), (%s, %s, 'AWY', 'Away')",
                 (self.TEAM, self.SEASON, self.OPPONENT, self.SEASON),
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, is_shootouts, "
-                "season_id) VALUES (%s, %s, %s, %s, TRUE, %s)",
-                (self.GAME, self.NIGHT, self.TEAM, self.OPPONENT, self.SEASON),
+                "season_id) VALUES (%s, %s, %s, %s, TRUE, %s), (%s, %s, %s, %s, FALSE, %s)",
+                (self.GAME, self.NIGHT, self.TEAM, self.OPPONENT, self.SEASON,
+                 self.GAME2, self.NIGHT, self.OPPONENT, self.TEAM, self.SEASON),
             )
+            # Счёт и броски команд — из них карточка матча (`get_game_stats`).
+            for game, home, away in (
+                (self.GAME, self.TEAM, self.OPPONENT), (self.GAME2, self.OPPONENT, self.TEAM),
+            ):
+                cur.execute(
+                    "INSERT INTO game_team_stats (game_id, team_id, field, goals, pim, shots, "
+                    "blocked, hits) VALUES (%s, %s, 'home', 3, 2, 30, 5, 10), "
+                    "(%s, %s, 'away', 2, 4, 25, 6, 12)",
+                    (game, home, game, away),
+                )
             # (player_id, фамилия, позиция, страна)
             for player in (
                 (-1, "Скорер<", "C", "ZZZ"), (-2, "Тень", "L", "ZZZ"), (-3, "Чужой", "C", "YYY"),
                 (-4, "Стенка", "G", "ZZZ"), (-5, "Запасной", "G", "ZZZ"),
                 (-6, "Крыло", "R", "ZZZ"), (-7, "Защитник", "D", "ZZZ"),
+                (-8, "Гость", "L", "ZZZ"),
             ):
                 cur.execute(
                     "INSERT INTO rosters (player_id, season_id, lastname, position, nationality) "
@@ -598,6 +616,13 @@ class TestCountryNightSql(unittest.TestCase):
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (stat[0], self.TEAM, self.GAME, *stat[1:]),
                 )
+            # Второй матч ночи: игрок ZZZ за соперника, без голов.
+            cur.execute(
+                "INSERT INTO game_player_stats (player_id, team_id, game_id, goals, assists, "
+                "shots, plus_minus, hits, blocked, time_on_ice) "
+                "VALUES (-8, %s, %s, 0, 0, 1, 0, 2, 0, '12:00')",
+                (self.OPPONENT, self.GAME2),
+            )
             for goalie in ((-4, "59:47", 30, 33, 90.91), (-5, "00:00", 0, 0, None)):
                 cur.execute(
                     "INSERT INTO game_goalie_stats (player_id, team_id, game_id, timeonice, "
@@ -617,19 +642,27 @@ class TestCountryNightSql(unittest.TestCase):
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for table in ("all_goals", "game_goalie_stats", "game_player_stats"):
-                cur.execute(f"DELETE FROM {table} WHERE game_id = %s", (self.GAME,))
-            cur.execute("DELETE FROM games WHERE game_id = %s", (self.GAME,))
+            games = ([self.GAME, self.GAME2],)
+            for table in ("all_goals", "game_goalie_stats", "game_player_stats", "game_team_stats"):
+                cur.execute(f"DELETE FROM {table} WHERE game_id = ANY(%s)", games)
+            cur.execute("DELETE FROM games WHERE game_id = ANY(%s)", games)
             cur.execute("DELETE FROM rosters WHERE season_id = %s", (self.SEASON,))
             cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
 
-    def test_message_two_lines_per_player_by_position_and_none_without_players(self):
-        """Задача 64: у C — хиты и вбрасывания, у R — хиты, у D — блоки вместо хитов,
+    def test_games_card_then_players_by_position_and_empty_without_players(self):
+        """Задача 75: сообщение — матч: карточка (`game_message`), под ней игроки страны.
+        Задача 64: у C — хиты и вбрасывания, у R — хиты, у D — блоки вместо хитов,
         у G — сейвы; пометка позиции только «ц»/«защ»; между игроками пустая строка."""
+        games = self.messages.country_night_games("ZZZ", self.NIGHT)
+        self.assertEqual([game_id for game_id, _ in games], [self.GAME, self.GAME2])
+        card = self.messages.game_message(self.GAME)[0]
+        self.assertIn("Home", card)
         self.assertEqual(
-            self.messages.country_night_message("ZZZ", self.NIGHT).split("\n"),
-            [
-                "<b>ZZZ — ночь 2099-01-02</b>",
+            games[0][1],
+            "\n".join([
+                card,
+                "",
+                "<b>ZZZ</b>",
                 "",
                 "<b>Скорер&lt;</b> (HOM, ц)",
                 "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
@@ -642,18 +675,25 @@ class TestCountryNightSql(unittest.TestCase):
                 "",
                 "<b>Стенка</b> (HOM)",
                 "30/33 · 90.91% · 59:47",
-            ],
+            ]),
         )
-        self.assertIsNone(self.messages.country_night_message("XXX", self.NIGHT))
+        self.assertEqual(
+            games[1][1],
+            "\n".join([
+                self.messages.game_message(self.GAME2)[0],
+                "",
+                "<b>ZZZ</b>",
+                "",
+                "<b>Гость</b> (AWY)",
+                "0+0 · +0 · 1 бр. · 2 хита · 12:00",
+            ]),
+        )
+        self.assertEqual(self.messages.country_night_games("XXX", self.NIGHT), [])
 
     def test_goals_of_country_skip_shootout_in_game_order(self):
         self.assertEqual(
             self.messages.country_night_goals("ZZZ", self.NIGHT),
-            [
-                (self.GAME, 5, "Скорер< (HOM) — AWY, 1-й период 02:00"),
-                (self.GAME, 10, "Скорер< (HOM) — AWY, 1-й период 10:00"),
-                (self.GAME, 30, "Крыло (HOM) — AWY, овертайм 03:15"),
-            ],
+            [(self.GAME, 5), (self.GAME, 10), (self.GAME, 30)],
         )
 
 
@@ -729,6 +769,7 @@ class TestNhlLoadedData(unittest.TestCase):
                 "game_goalie_stats",
                 "all_goals",
                 "game_three_stars",
+                "shot_attempts",
             ):
                 cur.execute(
                     f"""
@@ -738,6 +779,29 @@ class TestNhlLoadedData(unittest.TestCase):
                 )
                 n = cur.fetchone()[0]
                 self.assertEqual(n, 0, f"orphan game_id in {tbl}")
+
+    def test_final_goals_are_regulation_plus_one_for_ot_or_shootout(self):
+        # Задача 67: the goal model's target is the three periods, and `goals` must be exactly
+        # that plus one for the OT/shootout winner (is_overtime is also true for shootouts).
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*), COUNT(*) FILTER (
+                    WHERE hs.goals + aws.goals
+                       <> hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals
+                        + aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals
+                        + CASE WHEN g.is_overtime THEN 1 ELSE 0 END
+                       OR hs.fst_period_goals IS NULL OR aws.fst_period_goals IS NULL
+                )
+                FROM games g
+                JOIN game_team_stats hs ON hs.game_id = g.game_id AND hs.team_id = g.home_team_id
+                JOIN game_team_stats aws ON aws.game_id = g.game_id AND aws.team_id = g.away_team_id
+                WHERE g.winner_id IS NOT NULL
+                """
+            )
+            played, broken = cur.fetchone()
+        self.assertGreater(played, 0)
+        self.assertEqual(broken, 0, "sum of goals != regulation periods + is_overtime")
 
     def test_rosters_team_ids_exist(self):
         # current_team_id is legally NULL (player landing fallback doesn't know

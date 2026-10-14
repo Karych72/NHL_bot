@@ -5,7 +5,7 @@
 (признаки), `docs/modeling_*.md`, `requirements-modeling.in` (явный `scipy`).
 **Источник:** исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](research/report_model_vs_bookmaker.md),
 разделы «Модель голов…» и «Признаки…»); решение человека 2026-10-10 — победа не здесь, а в
-Задаче 68 ([`task_68_win_model.md`](task_68_win_model.md)). Реестр — [`../../open_tasks.md`](../../open_tasks.md).
+Задаче 68 ([`task_68_win_model.md`](../../archive/tasks/task_model/task_68_win_model.md)). Реестр — [`../../open_tasks.md`](../../open_tasks.md).
 
 ## Кратко
 

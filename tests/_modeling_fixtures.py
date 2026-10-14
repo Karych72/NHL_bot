@@ -64,6 +64,10 @@ def minimal_feature_manifest() -> list[dict[str, str]]:
         {"name": "f_b", "dtype": "float64", "position": "1"},
         {"name": "home_prior_games_count", "dtype": "int64", "position": "2"},
         {"name": "away_prior_games_count", "dtype": "int64", "position": "3"},
+        {"name": "diff_elo", "dtype": "float64", "position": "4"},
+        {"name": "home_is_b2b", "dtype": "int64", "position": "5"},
+        {"name": "away_is_b2b", "dtype": "int64", "position": "6"},
+        {"name": "diff_shot_share_ewm", "dtype": "float64", "position": "7"},
     ]
 
 
@@ -132,6 +136,10 @@ def write_synthetic_train_dataset(
                     "f_b": ((game_id + 3) % 10) / 10.0,
                     "home_prior_games_count": 5 + game_id % 30,
                     "away_prior_games_count": 5 + (game_id * 7) % 30,
+                    "diff_elo": 80.0 * (2 * home_win - 1) + float(rng.normal(0, 100)),
+                    "home_is_b2b": int(rng.integers(0, 2)),
+                    "away_is_b2b": int(rng.integers(0, 2)),
+                    "diff_shot_share_ewm": float(rng.normal(0, 0.03)),
                     "y_home_win": home_win,
                     "y_over_5_5": (game_id + 1) % 2,
                     "feature_set_version": "v1",

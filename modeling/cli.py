@@ -10,6 +10,7 @@ from modeling.config import (
     ConfigError,
     load_config,
     load_metadata_json,
+    load_yaml_config,
     parse_override,
     resolved_config_to_yaml,
 )
@@ -119,6 +120,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Train and write reports/artifacts but do not create or move `latest` (use `promote` later)",
     )
 
+    goals = sub.add_parser(
+        "evaluate-goals",
+        help="Check the goal model's over-5.5 forecast season by season against the constant (Задача 67)",
+    )
+    goals.add_argument("--config", default="configs/modeling_default.yaml")
+    goals.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
+    goals.add_argument("--reports-root", default="artifacts/reports")
+
+    xg = sub.add_parser(
+        "evaluate-xg",
+        help="Check the Fenwick-xG model season by season (fit on earlier seasons; Задача 69)",
+    )
+    xg.add_argument("--config", default="configs/modeling_default.yaml")
+    xg.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    xg.add_argument("--shots", default="artifacts/datasets/shots_train.csv")
+    xg.add_argument("--reports-root", default="artifacts/reports")
+
     promote = sub.add_parser(
         "promote",
         help="Point `latest` of a (task, model) pair at a finished run (also the rollback command)",
@@ -184,7 +203,7 @@ def _handle_train(args: argparse.Namespace) -> int:
     from modeling.train_runner import (
         dry_run_training,
         format_dry_run_report,
-        resolve_models,
+        resolve_pairs,
         resolve_tasks,
         run_training,
         validate_run_id_override,
@@ -207,8 +226,7 @@ def _handle_train(args: argparse.Namespace) -> int:
 
     try:
         tasks = resolve_tasks(args.task, resolved)
-        models = resolve_models(args.model)
-        validate_run_id_override(tasks, models, args.run_id)
+        validate_run_id_override(resolve_pairs(tasks, args.model), args.run_id)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
@@ -249,10 +267,73 @@ def _handle_train(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def _handle_promote(args: argparse.Namespace) -> int:
-    from modeling.train_runner import promote_model
+def _handle_evaluate_goals(args: argparse.Namespace) -> int:
+    import json
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from modeling.goal_model import compose_goal_summary, evaluate_goal_model
 
     try:
+        config = load_yaml_config(args.config, overrides=[parse_override(item) for item in args.set])
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    metrics = evaluate_goal_model(
+        pd.read_csv(args.games),
+        test_seasons=config.split.test_seasons,
+        alphas=config.goals.alpha,
+        tie_halflife_days=config.goals.tie_halflife_days,
+        ece_bins=config.evaluation.ece_bins,
+        epsilon=config.evaluation.epsilon_clip,
+        n_resamples=config.evaluation.bootstrap_samples,
+        seed=config.random_seed,
+    )
+    out_dir = Path(args.reports_root) / f"goals_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    out_dir.mkdir(parents=True)
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    summary = compose_goal_summary(metrics)
+    (out_dir / "summary.md").write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    print(f"report: {out_dir}")
+    return 0 if metrics["status"] == "ok" else 1
+
+
+def _handle_evaluate_xg(args: argparse.Namespace) -> int:
+    import json
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from modeling.xg_model import compose_xg_summary, evaluate_xg_model
+
+    try:
+        config = load_yaml_config(args.config, overrides=[parse_override(item) for item in args.set])
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    metrics = evaluate_xg_model(
+        # "0651" (home net empty) would lose its leading zero as a number.
+        pd.read_csv(args.shots, dtype={"situation_code": str}),
+        test_seasons=config.split.test_seasons,
+        epsilon=config.evaluation.epsilon_clip,
+    )
+    out_dir = Path(args.reports_root) / f"xg_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    out_dir.mkdir(parents=True)
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    summary = compose_xg_summary(metrics)
+    (out_dir / "summary.md").write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    print(f"report: {out_dir}")
+    return 0 if metrics["status"] == "ok" else 1
+
+
+def _handle_promote(args: argparse.Namespace) -> int:
+    from modeling.train_runner import promote_model, resolve_models
+
+    try:
+        resolve_models(args.model, args.task)
         promote_model(args.task, args.model, args.run_id, artifacts_root=Path("artifacts"))
     except (FileNotFoundError, ValueError) as exc:
         print(f"promote error: {exc}", file=sys.stderr)
@@ -263,6 +344,7 @@ def _handle_promote(args: argparse.Namespace) -> int:
 
 def _handle_predict(args: argparse.Namespace) -> int:
     from modeling.predict_runner import run_predict
+    from modeling.train_runner import resolve_models
 
     output_path = (
         Path(args.output)
@@ -270,6 +352,7 @@ def _handle_predict(args: argparse.Namespace) -> int:
         else Path(args.artifacts_root) / "predictions" / f"{args.task}_{args.model}_predictions.csv"
     )
     try:
+        resolve_models(args.model, args.task)
         result = run_predict(
             task=args.task,
             model=args.model,
@@ -293,7 +376,9 @@ def _handle_publish(args: argparse.Namespace) -> int:
     # Lazy import: psycopg2 lives only on the publish/build-dataset paths.
     from modeling.dataset_builder.base import _connect_from_env
     from modeling.publish_predictions import publish_predictions
+    from modeling.train_runner import resolve_models
 
+    resolve_models(args.model, args.task)
     artifacts_root = Path(args.artifacts_root)
     predictions_csv = (
         Path(args.predictions)
@@ -347,6 +432,12 @@ def main() -> None:
 
     if args.command == "train":
         raise SystemExit(_handle_train(args))
+
+    if args.command == "evaluate-goals":
+        raise SystemExit(_handle_evaluate_goals(args))
+
+    if args.command == "evaluate-xg":
+        raise SystemExit(_handle_evaluate_xg(args))
 
     if args.command == "promote":
         raise SystemExit(_handle_promote(args))

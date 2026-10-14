@@ -15,9 +15,11 @@ from pathlib import Path
 
 import pandas as pd
 import yaml
+from pydantic import ValidationError
 
 from modeling.config import (
     ConfigError,
+    ModelingConfig,
     ResolvedConfig,
     apply_overrides,
     build_run_id,
@@ -29,6 +31,7 @@ from modeling.config import (
 from modeling.dataset_builder.assemble import _wide_feature_columns
 from modeling.dataset_builder.features import (
     attach_pregame_elo,
+    attach_pregame_shot_share,
     build_match_feature_snapshots,
     compute_team_rolling_features,
 )
@@ -86,6 +89,9 @@ def _minimal_yaml_text(**overrides: object) -> str:
             season_regression: [0.333]
             mov: [true, false]
             ot_win_weight: [1.0, 0.5]
+        goals:
+          alpha: [0.01]
+          tie_halflife_days: 100
         models:
           logreg:
             grids:
@@ -100,8 +106,6 @@ def _minimal_yaml_text(**overrides: object) -> str:
               lambda_l2: [0.0]
               learning_rate: [0.05]
             monotone:
-              home_win:
-                f_a: 1
               over_5_5:
                 f_b: 1
         calibration:
@@ -243,9 +247,30 @@ class TestModelingConfigValidationErrors(unittest.TestCase):
 
     def test_invalid_monotone_sign(self) -> None:
         data = yaml.safe_load(_minimal_yaml_text())
-        data["models"]["lgbm"]["monotone"]["home_win"]["f_a"] = 2
+        data["models"]["lgbm"]["monotone"]["over_5_5"]["f_b"] = 2
         msg = self._resolve_expect_error(yaml.safe_dump(data, sort_keys=False))
         self.assertIn("monotone", msg)
+
+
+class TestTaskFeatures(unittest.TestCase):
+    def test_features_parsed_and_default_none(self) -> None:
+        data = yaml.safe_load(_minimal_yaml_text())
+        data["tasks"]["home_win"]["features"] = ["f_a"]
+        cfg = ModelingConfig.model_validate(data)
+        self.assertEqual(cfg.tasks.home_win.features, ["f_a"])
+        self.assertIsNone(cfg.tasks.over_5_5.features)
+
+    def test_empty_features_rejected(self) -> None:
+        data = yaml.safe_load(_minimal_yaml_text())
+        data["tasks"]["home_win"]["features"] = []
+        with self.assertRaises(ValidationError):
+            ModelingConfig.model_validate(data)
+
+    def test_monotone_home_win_forbidden(self) -> None:
+        data = yaml.safe_load(_minimal_yaml_text())
+        data["models"]["lgbm"]["monotone"]["home_win"] = {"f_a": 1}
+        with self.assertRaises(ValidationError):
+            ModelingConfig.model_validate(data)
 
 
 class TestMetadataMerge(unittest.TestCase):
@@ -315,11 +340,11 @@ class TestHelpers(unittest.TestCase):
     def test_build_run_id_format(self) -> None:
         run_id = build_run_id(
             "home_win",
-            "lgbm",
+            "logreg",
             "b334df68cab14a12056b7a41b324face3cc9cd835c30b738caffdef1b72f81a1",
             datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc),
         )
-        pattern = r"^home_win_lgbm_b334df68_20260530T120000Z$"
+        pattern = r"^home_win_logreg_b334df68_20260530T120000Z$"
         self.assertRegex(run_id, pattern)
 
     def test_derive_seed_deterministic(self) -> None:
@@ -421,7 +446,7 @@ _PRODUCTION_ROLLING_WINDOWS: tuple[int, ...] = (5, 10, 20)
 
 
 def _dataset_feature_columns(rolling_windows: tuple[int, ...] = _PRODUCTION_ROLLING_WINDOWS) -> set[str]:
-    """Real ``diff_``/``sum_`` column names the training pipeline produces.
+    """Real feature column names the training pipeline produces.
 
     Runs a tiny synthetic history through the actual
     ``modeling.dataset_builder.features``/``assemble`` code (not a hand-written
@@ -465,8 +490,9 @@ def _dataset_feature_columns(rolling_windows: tuple[int, ...] = _PRODUCTION_ROLL
     snapshots = build_match_feature_snapshots(target_games, team_features)
     elo_per_game, elo_final_ratings = compute_pregame_elo(pd.DataFrame())
     snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
+    snapshots = attach_pregame_shot_share(snapshots, pd.DataFrame(columns=["game_id", "home_shot_share_ewm", "away_shot_share_ewm"]), {})
     _, built_columns = _wide_feature_columns(snapshots)
-    return {c for c in built_columns if c.startswith("diff_") or c.startswith("sum_")}
+    return set(built_columns)
 
 
 _TRAINING_CONFIG_PATHS = (
@@ -503,6 +529,18 @@ class TestLgbmMonotoneNamesMatchDataset(unittest.TestCase):
                             f"non-existent dataset columns: {unknown}"
                         ),
                     )
+
+    def test_home_win_features_are_real_columns_and_exact(self) -> None:
+        dataset_columns = _dataset_feature_columns()
+        for cfg_path in _TRAINING_CONFIG_PATHS:
+            with self.subTest(config=cfg_path.name):
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+                features = raw["tasks"]["home_win"]["features"]
+                self.assertEqual(
+                    features, ["diff_elo", "home_is_b2b", "away_is_b2b", "diff_shot_share_ewm"]
+                )
+                self.assertEqual(sorted(set(features) - dataset_columns), [])
+                self.assertIsNone(raw["tasks"]["over_5_5"].get("features"))
 
     def test_calibration_min_samples_within_calibration_games(self) -> None:
         for cfg_path in _TRAINING_CONFIG_PATHS:

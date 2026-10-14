@@ -9,7 +9,7 @@ Report serialization lives in :mod:`modeling.report` (``metrics.json`` keys,
 
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Any, Literal, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -162,6 +162,30 @@ def reliability_table(
     return pd.DataFrame(rows)
 
 
+_CALIBRATION_TABLE_BINS = 20  # 5 percentage points
+
+
+def metric_block(
+    y_true: np.ndarray, p: np.ndarray, *, epsilon: float, ece_bins: int
+) -> dict[str, float]:
+    """``log_loss`` / ``brier`` / ``ece`` of one predictor — a metric block of ``metrics.json``."""
+    return {
+        "log_loss": log_loss(y_true, p, epsilon=epsilon),
+        "brier": brier(y_true, p),
+        "ece": ece(y_true, p, n_bins=ece_bins),
+    }
+
+
+def calibration_bins(y_true: np.ndarray, p: np.ndarray) -> list[dict[str, Any]]:
+    """Non-empty 5 pp forecast bins (mean forecast vs actual share, ``noise_2se`` band) — the report's calibration table."""
+    table = reliability_table(y_true, p, n_bins=_CALIBRATION_TABLE_BINS)
+    table = table[table["count"] > 0].drop(columns=["weight"])
+    mean_pred = table["mean_pred"]
+    table["noise_2se"] = 1.96 * np.sqrt(mean_pred * (1 - mean_pred) / table["count"])
+    table["outside_noise"] = (table["frac_positive"] - mean_pred).abs() > table["noise_2se"]
+    return cast("list[dict[str, Any]]", table.to_dict(orient="records"))
+
+
 def team_breakdown(
     y_true: Union[np.ndarray, pd.Series, list, tuple],
     p: Union[np.ndarray, pd.Series, list, tuple],
@@ -235,9 +259,11 @@ __all__ = [
     "MetricsInputError",
     "TeamBreakdownBy",
     "brier",
+    "calibration_bins",
     "ece",
     "log_loss",
     "log_loss_per_game",
+    "metric_block",
     "reliability_table",
     "team_breakdown",
     "trivial_baseline",

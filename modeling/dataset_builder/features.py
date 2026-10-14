@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import numpy as np
 import pandas as pd
 
 from modeling.elo import ELO_START
@@ -33,43 +34,28 @@ def compute_team_rolling_features(
     team_game_facts: pd.DataFrame,
     rolling_windows: Sequence[int],
 ) -> pd.DataFrame:
-    """Compute per-team rolling/context features, reset at each season boundary.
+    """Compute per-team rolling features, reset at each season boundary.
 
     Args:
         team_game_facts: long team-game rows (one row per team per game) with
             at least team_id, season_id, day, game_id and the ROLLING_BASE_FIELDS.
         rolling_windows: window sizes (in games) for the trailing means.
 
-    Windows, prior-game counts and rest-day features are grouped by
-    (team_id, season_id) so a team's stats never leak across a season change.
+    A row is the team's state *after* its game (the means include it,
+    ``prior_games_count`` counts it): the as-of snapshot of the latest game before a
+    target day is then the state on that day. Grouped by (team_id, season_id) so a
+    team's stats never leak across a season change.
     """
     if team_game_facts.empty:
         return team_game_facts.copy()
 
     data = team_game_facts.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
     grp = data.groupby(["team_id", "season_id"], sort=False)
-
-    data["prev_day"] = grp["day"].shift(1)
-    intra_day_prev = (data["day"] == data["prev_day"]) & data["prev_day"].notna()
-    rest = (data["day"] - data["prev_day"]).dt.days
-    rest = rest.mask(intra_day_prev)
-    data["rest_days"] = rest.fillna(99).astype("int64")
-    data["is_b2b"] = (data["rest_days"] <= 1).astype("int64")
-
-    day_num = data["day"].map(pd.Timestamp.toordinal)
-    data["_day_num"] = day_num
-    data["games_last_7d"] = grp["_day_num"].transform(
-        lambda s: s.apply(lambda v: int(((s < v) & (s >= v - 7)).sum()))
-    )
-    data["prior_games_count"] = grp.cumcount()
+    data["prior_games_count"] = grp.cumcount() + 1
 
     for window in rolling_windows:
         for field in ROLLING_BASE_FIELDS:
-            shifted = grp[field].shift(1)
-            shifted = shifted.mask(intra_day_prev)
-            rolled = shifted.groupby(
-                [data["team_id"], data["season_id"]], sort=False
-            ).transform(lambda s: s.rolling(window=window, min_periods=1).mean())
+            rolled = grp[field].transform(lambda s: s.rolling(window=window, min_periods=1).mean())
             data[f"{field}_roll_mean_{window}"] = rolled.astype("float64")
 
     goals_for_rm = (
@@ -94,7 +80,7 @@ def compute_team_rolling_features(
     )
     data["goal_diff_roll_mean_5"] = (goals_for_rm - goals_against_rm).astype("float64")
     data["pace_sum_roll_mean_5"] = (shots_for_rm + shots_against_rm).astype("float64")
-    return data.drop(columns=["prev_day", "_day_num"])
+    return data
 
 
 def _snapshot_side(
@@ -157,6 +143,16 @@ def build_match_feature_snapshots(
     target_games: pd.DataFrame,
     team_features: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Attach each side's as-of team snapshot plus its schedule context on the target day.
+
+    Args:
+        target_games: one row per target game (game_id, day, season_id, home/away_team_id).
+        team_features: output of ``compute_team_rolling_features``.
+
+    ``<side>_rest_days`` (99 without a prior game this season), ``<side>_is_b2b`` and
+    ``<side>_games_last_7d`` (games in [day − 7, day) of the same season) are measured
+    from the target day; ``<side>_prior_games_count`` is 0 without a prior game.
+    """
     if target_games.empty:
         return target_games.copy()
 
@@ -168,6 +164,23 @@ def build_match_feature_snapshots(
     home = home.drop(columns=["home_team_id"], errors="ignore")
     away = away.drop(columns=["away_team_id"], errors="ignore")
     out = targets.merge(home, on=["game_id", "day"], how="left").merge(away, on=["game_id", "day"], how="left")
+
+    team_days = {
+        key: np.sort(days.map(pd.Timestamp.toordinal).to_numpy())
+        for key, days in team_features.groupby(["team_id", "season_id"])["day"]
+    }
+    target_num = out["day"].map(pd.Timestamp.toordinal).to_numpy()
+    no_games = np.empty(0, dtype="int64")
+    for side in ("home", "away"):
+        rest = (out["day"] - pd.to_datetime(out[f"{side}_hist_day"])).dt.days
+        out[f"{side}_rest_days"] = rest.fillna(99).astype("int64")
+        out[f"{side}_is_b2b"] = (out[f"{side}_rest_days"] <= 1).astype("int64")
+        out[f"{side}_prior_games_count"] = out[f"{side}_prior_games_count"].fillna(0).astype("int64")
+        last_7d = []
+        for team, season, day in zip(out[f"{side}_team_id"], out["season_id"], target_num):
+            days = team_days.get((team, season), no_games)
+            last_7d.append(int(np.searchsorted(days, day) - np.searchsorted(days, day - 7)))
+        out[f"{side}_games_last_7d"] = pd.Series(last_7d, index=out.index, dtype="int64")
     return out
 
 
@@ -192,4 +205,105 @@ def attach_pregame_elo(
         out.loc[missing, "away_elo"] = away_ids.map(final_ratings).fillna(ELO_START)
     out["home_elo"] = out["home_elo"].astype("float64")
     out["away_elo"] = out["away_elo"].astype("float64")
+    return out
+
+
+# Задача 68: shot share of a team's games, smoothed over its games across seasons.
+SHOT_SHARE_START = 0.5
+SHOT_SHARE_HALFLIFE_GAMES = 20
+SHOT_SHARE_ALPHA = 1.0 - 0.5 ** (1.0 / SHOT_SHARE_HALFLIFE_GAMES)
+SHOT_SHARE_SEASON_KEEP = 0.5
+
+
+def _shrink_share(share: float) -> float:
+    """Pull a shot share toward ``SHOT_SHARE_START`` by ``1 - SHOT_SHARE_SEASON_KEEP``."""
+    return SHOT_SHARE_START + SHOT_SHARE_SEASON_KEEP * (share - SHOT_SHARE_START)
+
+
+def compute_pregame_shot_share(played_games: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, tuple[float, int]]]:
+    """Pre-game exponentially smoothed shot share of both teams, plus each team's final state.
+
+    The ``home_win`` model's shot-share feature (Задача 68). A team's share of the shots in a
+    game, ``shots_for / (shots_for + shots_against)``, updates ``s += α·(x − s)`` (half-life
+    ``SHOT_SHARE_HALFLIFE_GAMES``), starting at 0.5; at a team's first game of a new season it
+    is shrunk toward 0.5 by ``SHOT_SHARE_SEASON_KEEP``. Like Elo it runs over the whole played
+    history, not per season, and a day's games all read the state frozen at the start of that
+    day.
+
+    Args:
+        played_games: one row per played game with ``game_id``, ``day``, ``season_id``,
+            ``home_team_id``, ``away_team_id``, ``home_shots``, ``away_shots``.
+
+    Returns:
+        ``(per_game, final_state)``: ``game_id``, ``home_shot_share_ewm``,
+        ``away_shot_share_ewm`` per game; ``{team_id: (share, season_id of its last game)}``.
+
+    Raises:
+        ValueError: a played game lacks shots, or both sides have zero shots.
+    """
+    games = played_games.assign(day=pd.to_datetime(played_games["day"]).dt.normalize())
+    games = games.sort_values(["day", "game_id"], kind="mergesort").reset_index(drop=True)
+    total = games["home_shots"] + games["away_shots"]
+    bad = games["home_shots"].isna() | games["away_shots"].isna() | (total <= 0)
+    if bad.any():
+        raise ValueError(f"game {int(games.loc[bad, 'game_id'].iloc[0])} has missing or zero shots")
+    home_x = (games["home_shots"] / total).tolist()
+    ids = games["game_id"].astype("int64").tolist()
+    days = games["day"].tolist()
+    seasons = games["season_id"].astype("int64").tolist()
+    homes = games["home_team_id"].astype("int64").tolist()
+    aways = games["away_team_id"].astype("int64").tolist()
+
+    state: dict[int, tuple[float, int]] = {}
+    pending: list[tuple[int, float, int]] = []
+    cur_day = None
+    rows: list[tuple[int, float, float]] = []
+    for i, game_id in enumerate(ids):
+        if days[i] != cur_day:
+            state.update({team: (share, season) for team, share, season in pending})
+            pending = []
+            cur_day = days[i]
+        season = seasons[i]
+        pre = []
+        for team in (homes[i], aways[i]):
+            share, last_season = state.get(team, (SHOT_SHARE_START, season))
+            pre.append(_shrink_share(share) if last_season != season else share)
+        rows.append((game_id, pre[0], pre[1]))
+        pending.append((homes[i], pre[0] + SHOT_SHARE_ALPHA * (home_x[i] - pre[0]), season))
+        pending.append((aways[i], pre[1] + SHOT_SHARE_ALPHA * (1.0 - home_x[i] - pre[1]), season))
+    state.update({team: (share, season) for team, share, season in pending})
+    per_game = pd.DataFrame(rows, columns=["game_id", "home_shot_share_ewm", "away_shot_share_ewm"])
+    return per_game, state
+
+
+def attach_pregame_shot_share(
+    target_games: pd.DataFrame,
+    per_game_share: pd.DataFrame,
+    final_state: dict[int, tuple[float, int]],
+) -> pd.DataFrame:
+    """Add ``home_shot_share_ewm``/``away_shot_share_ewm`` to every row of ``target_games``.
+
+    A row found by ``game_id`` in ``per_game_share`` gets its pre-game value; a row not found
+    there (predict mode: no result yet) falls back to the team's ``final_state``, shrunk toward
+    0.5 when the target's ``season_id`` is later than the state's. A team without state gets 0.5.
+
+    Args:
+        target_games: Games to annotate; needs ``game_id`` and, for rows missing from
+            ``per_game_share``, ``season_id`` and the team ids.
+        per_game_share: Pre-game shares by ``game_id`` from the shot-share pass.
+        final_state: Per team ``(share, season_id)`` after the last game seen.
+
+    Returns:
+        ``target_games`` with the two ``*_shot_share_ewm`` columns added.
+    """
+    out = target_games.merge(per_game_share, on="game_id", how="left")
+    missing = out["home_shot_share_ewm"].isna()
+    seasons = out.loc[missing, "season_id"].astype("int64")
+    for side in ("home", "away"):
+        col = f"{side}_shot_share_ewm"
+        ids = out.loc[missing, f"{side}_team_id"].astype("int64")
+        share = ids.map(lambda t: final_state.get(t, (SHOT_SHARE_START, 0))[0])
+        last_season = ids.map(lambda t: final_state.get(t, (SHOT_SHARE_START, 0))[1])
+        out.loc[missing, col] = share.where(seasons <= last_season, share.map(_shrink_share))
+        out[col] = out[col].astype("float64")
     return out

@@ -462,6 +462,83 @@
         "discreteClipFr": 6391153535112
       },
       "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025021079/ev1140.json"
+    },
+    {
+      "eventId": 301,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:58",
+      "timeRemaining": "19:02",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 507,
+      "typeDescKey": "missed-shot",
+      "sortOrder": 22,
+      "details": {
+        "xCoord": -84,
+        "yCoord": -3,
+        "zoneCode": "O",
+        "reason": "wide-right",
+        "shotType": "snap",
+        "shootingPlayerId": 8476459,
+        "goalieInNetId": 8484170,
+        "eventOwnerTeamId": 3
+      }
+    },
+    {
+      "eventId": 56,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:38",
+      "timeRemaining": "19:22",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 506,
+      "typeDescKey": "shot-on-goal",
+      "sortOrder": 13,
+      "details": {
+        "xCoord": -68,
+        "yCoord": 21,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "shootingPlayerId": 8482073,
+        "goalieInNetId": 8484170,
+        "eventOwnerTeamId": 3,
+        "awaySOG": 0,
+        "homeSOG": 1
+      }
+    },
+    {
+      "eventId": 449,
+      "periodDescriptor": {
+        "number": 5,
+        "periodType": "SO",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:00",
+      "timeRemaining": "00:00",
+      "situationCode": "1010",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 506,
+      "typeDescKey": "shot-on-goal",
+      "sortOrder": 895,
+      "details": {
+        "xCoord": -77,
+        "yCoord": 1,
+        "zoneCode": "O",
+        "shotType": "wrist",
+        "shootingPlayerId": 8482074,
+        "goalieInNetId": 8477968,
+        "eventOwnerTeamId": 20,
+        "awaySOG": 35,
+        "homeSOG": 23
+      }
     }
   ],
   "rosterSpots": [

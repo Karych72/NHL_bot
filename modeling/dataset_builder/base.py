@@ -18,7 +18,9 @@ from modeling.elo import compute_pregame_elo
 from .assemble import assemble_dataset
 from .features import (
     attach_pregame_elo,
+    attach_pregame_shot_share,
     build_match_feature_snapshots,
+    compute_pregame_shot_share,
     compute_team_rolling_features,
 )
 from .schema import (
@@ -78,7 +80,7 @@ def _day_where_clause(config: DatasetBuildConfig) -> str:
     return ""
 
 
-def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool = False) -> pd.DataFrame:
+def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = False) -> pd.DataFrame:
     """Загружает игры-цели датасета: сыгранные (train) или будущие (predict).
 
     Train берёт завершённые игры из ``games`` вместе с фактическими голами;
@@ -89,14 +91,23 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool =
     Args:
         conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
         config: режим сборки, фильтры сезонов и окна дней.
-        with_decision: только train — добавить колонку ``decision`` (``REG``/``OT``/``SO``)
-            для Elo и ``games_train.csv``; в таблицу признаков она попасть не должна.
+        with_outcome: только train — добавить ``decision`` (``REG``/``OT``/``SO``) и голы
+            основного времени ``home_reg_goals``/``away_reg_goals`` (сумма трёх периодов: ``goals``
+            хранит +1 победителю OT/буллитов) для Elo, голевой модели и ``games_train.csv``, а также броски
+            ``home_shots``/``away_shots`` для доли бросков (Задача 68);
+            в таблицу признаков они попасть не должны.
     """
     if config.mode == "train":
-        decision_col = (
+        outcome_cols = (
             """,
-                CASE WHEN g.is_shootouts THEN 'SO' WHEN g.is_overtime THEN 'OT' ELSE 'REG' END AS decision"""
-            if with_decision
+                CASE WHEN g.is_shootouts THEN 'SO' WHEN g.is_overtime THEN 'OT' ELSE 'REG' END AS decision,
+                (hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals)::double precision
+                    AS home_reg_goals,
+                (aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals)::double precision
+                    AS away_reg_goals,
+                hs.shots::double precision AS home_shots,
+                aws.shots::double precision AS away_shots"""
+            if with_outcome
             else ""
         )
         source = f"""
@@ -108,7 +119,7 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_decision: bool =
                 g.away_team_id::bigint AS away_team_id,
                 g.winner_id::bigint AS winner_id,
                 hs.goals::double precision AS home_goals_target,
-                aws.goals::double precision AS away_goals_target{decision_col}
+                aws.goals::double precision AS away_goals_target{outcome_cols}
             FROM games g
             LEFT JOIN game_team_stats hs
                 ON hs.game_id = g.game_id
@@ -175,6 +186,39 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
           {_season_where_clause(config)}
           {max_day_clause}
         ORDER BY g.day, g.game_id, s.team_id
+    """
+    return pd.read_sql_query(query, conn)
+
+
+def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+    """Загружает попытки бросков сыгранных игр для xG-модели (Задача 69) — содержимое ``shots_train.csv``.
+
+    Строки ``shot_attempts`` с ``season_id``, ``day``, ``home_team_id``, ``away_team_id`` из
+    ``games``; сезоны — ``config.season_ids`` (все, если пусто), ``target_day_to`` ограничивает
+    дни, ``target_day_from`` не действует: как и ``games_train.csv``, сезоны берутся целиком.
+
+    Args:
+        conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
+        config: фильтры сезонов и последнего дня.
+    """
+    query = f"""
+        SELECT
+            s.game_id::bigint AS game_id,
+            s.event_id, s.sort_order, s.period, s.period_type, s.time_in_period,
+            s.team_id::bigint AS team_id,
+            s.event_type, s.x_coord, s.y_coord, s.zone_code, s.shot_type,
+            s.situation_code, s.home_team_defending_side, s.shooter_id, s.goalie_in_net_id,
+            g.season_id::bigint AS season_id,
+            g.day::date AS day,
+            g.home_team_id::bigint AS home_team_id,
+            g.away_team_id::bigint AS away_team_id
+        FROM shot_attempts s
+        JOIN games g ON g.game_id = s.game_id
+        WHERE g.winner_id IS NOT NULL
+          AND g.day IS NOT NULL
+          {_season_where_clause(config)}
+          {_day_where_clause(replace(config, target_day_from=None))}
+        ORDER BY g.day, s.game_id, s.sort_order
     """
     return pd.read_sql_query(query, conn)
 
@@ -312,6 +356,8 @@ _GAMES_TRAIN_COLUMNS = (
     "home_goals",
     "away_goals",
     "decision",
+    "home_reg_goals",
+    "away_reg_goals",
 )
 
 
@@ -319,7 +365,8 @@ def _write_games_train(played: pd.DataFrame, config: DatasetBuildConfig, path: P
     """Write ``games_train.csv``: every played game of the loaded seasons, cold-start rows included.
 
     The dataset drops games whose teams have too little prior history, but the Elo
-    benchmark (``modeling/elo.py``) needs the whole season with its OT/SO outcome.
+    benchmark (``modeling/elo.py``) needs the whole season with its OT/SO outcome, and the
+    goal model (``modeling/goal_model.py``) the regulation goals.
     """
     games = played
     if config.season_ids:
@@ -338,6 +385,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     metadata_path = config.output_dir / f"metadata_{config.mode}.json"
     quality_path = config.output_dir / "data_quality_report.json"
     games_path = config.output_dir / "games_train.csv"
+    shots_path = config.output_dir / "shots_train.csv"
 
     if config.mode == "predict" and config.train_metadata_path is None:
         raise ValueError("predict mode requires --train-metadata-path for strict schema parity")
@@ -363,20 +411,24 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
-        # Elo (Task 3) persists across seasons, so it needs the *complete* played
-        # history regardless of config.season_ids/target_day_from — reuse
+        # Elo (Task 3) and the shot share (Задача 68) persist across seasons, so they
+        # need the *complete* played history regardless of
+        # config.season_ids/target_day_from — reuse
         # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
         # rather than a near-duplicate query; only target_day_to still bounds it,
         # for a historical "as of" snapshot.
         elo_history = load_target_games(
-            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_decision=True
+            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_outcome=True
         ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
+        shots = load_shot_attempts(conn, config) if config.mode == "train" else None
 
     team_facts, team_facts_report = build_team_game_facts(history)
     rolling = compute_team_rolling_features(team_facts, config.rolling_windows)
     snapshots = build_match_feature_snapshots(target_games, rolling)
     elo_per_game, elo_final_ratings = compute_pregame_elo(elo_history)
     snapshots = attach_pregame_elo(snapshots, elo_per_game, elo_final_ratings)
+    shot_per_game, shot_final = compute_pregame_shot_share(elo_history)
+    snapshots = attach_pregame_shot_share(snapshots, shot_per_game, shot_final)
     assembled, assemble_report = assemble_dataset(
         mode=config.mode,
         snapshots=snapshots,
@@ -438,6 +490,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         assembled.to_csv(dataset_path, index=False)
         if config.mode == "train":
             _write_games_train(elo_history, config, games_path)
+            cast(pd.DataFrame, shots).to_csv(shots_path, index=False)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
     write_report(quality_path, quality_report)
 

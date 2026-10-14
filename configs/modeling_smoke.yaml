@@ -7,6 +7,8 @@ compute:
 tasks:
   home_win:
     enabled: true
+    # Задача 68: logreg on four features (docs/modeling_training.md, «Результаты Задачи 68»).
+    features: [diff_elo, home_is_b2b, away_is_b2b, diff_shot_share_ewm]
   over_5_5:
     enabled: true
 
@@ -27,6 +29,10 @@ elo:
     mov: [true, false]
     ot_win_weight: [1.0]
 
+goals:
+  alpha: [0.01]
+  tie_halflife_days: 100
+
 # Smoke model grids: one arbitrary value per axis, unrelated in size or value to
 # configs/modeling_default.yaml's production grid -- only to exercise the
 # pipeline end to end. models.lgbm.monotone is kept as in production.
@@ -43,21 +49,9 @@ models:
       lambda_l1: [0.1]
       lambda_l2: [0.1]
       learning_rate: [0.05]
-    # Real dataset diff_/sum_ columns, same fix and sign reasoning as
-    # configs/modeling_default.yaml; see docs/modeling_training.md §7 (Задача 39).
+    # Real dataset sum_ columns, not aliases, same sign reasoning as
+    # configs/modeling_default.yaml (over_5_5, both +1); see docs/modeling_training.md §7 (Задача 39).
     monotone:
-      home_win:
-        diff_goals_for_roll_mean_5: 1
-        diff_goals_for_roll_mean_10: 1
-        diff_goals_for_roll_mean_20: 1
-        diff_goals_against_roll_mean_5: -1
-        diff_goals_against_roll_mean_10: -1
-        diff_goals_against_roll_mean_20: -1
-        diff_goal_diff_roll_mean_5: 1
-        # Задача 40 (Task 3): pre-game Elo diff, home - away; see
-        # configs/modeling_default.yaml and docs/modeling_dataset_builder.md
-        # "Elo team-strength feature".
-        diff_elo: 1
       over_5_5:
         sum_goals_for_roll_mean_5: 1
         sum_goals_for_roll_mean_10: 1

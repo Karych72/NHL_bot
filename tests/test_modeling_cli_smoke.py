@@ -12,12 +12,16 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+import joblib
+import pandas as pd
 import yaml
 
 from modeling.config import ConfigError, build_run_id, load_config, load_metadata_json
 from modeling.train_runner import (
     dry_run_training,
+    RunResult,
     format_dry_run_report,
+    resolve_models,
     resolve_run_id,
     resolve_tasks,
     run_training,
@@ -56,7 +60,7 @@ def _test_config_yaml() -> dict:
         "ot_win_weight": [1.0],
     }
     base["calibration"]["min_samples"] = 100
-    base["models"]["lgbm"]["monotone"] = {"home_win": {}, "over_5_5": {}}
+    base["models"]["lgbm"]["monotone"] = {"over_5_5": {}}
     return base
 
 
@@ -129,15 +133,14 @@ class TestRunIdOverrideValidation(unittest.TestCase):
     def test_run_id_rejected_for_multiple_pairs(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
             validate_run_id_override(
-                ["home_win", "over_5_5"],
-                ["logreg", "lgbm"],
+                [("home_win", "logreg"), ("over_5_5", "logreg"), ("over_5_5", "lgbm")],
                 "fixed_run_id",
             )
         self.assertIn("--run-id", str(ctx.exception))
-        self.assertIn("4", str(ctx.exception))
+        self.assertIn("3", str(ctx.exception))
 
     def test_run_id_allowed_for_single_pair(self) -> None:
-        validate_run_id_override(["home_win"], ["logreg"], VALID_RUN_ID)
+        validate_run_id_override([("home_win", "logreg")], VALID_RUN_ID)
 
 
 class TestBaselineGate(unittest.TestCase):
@@ -154,6 +157,8 @@ class TestBaselineGate(unittest.TestCase):
                         model_log_loss=0.75,
                         benchmark_log_loss=0.70,
                         benchmark="elo",
+                        model_ece=0.01,
+                        benchmark_ece=0.01,
                     )
                 ]
             },
@@ -301,12 +306,13 @@ class TestCliTrainSmoke(unittest.TestCase):
 
 
 class TestCliTrainMiniEndToEnd(unittest.TestCase):
+    # over_5_5: the synthetic Elo has near-zero ECE, so home_win never passes the ECE gate here.
     def test_train_creates_season_final_and_latest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [0.1, 1.0]
             cfg["evaluation"]["bootstrap_samples"] = 50
             cfg["compute"]["num_threads"] = 1
@@ -318,14 +324,14 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
                 resolved,
                 dataset_csv=csv_path,
                 metadata_path=meta_path,
-                task="home_win",
+                task="over_5_5",
                 model="logreg",
                 run_id=VALID_RUN_ID,
                 artifacts_root=artifacts,
             )
             self.assertEqual(len(results), 1)
             run_id = results[0].run_id
-            model_root = artifacts / "models" / "home_win" / "logreg" / run_id
+            model_root = artifacts / "models" / "over_5_5" / "logreg" / run_id
             for season in _test_config_yaml()["split"]["test_seasons"]:
                 self.assertTrue((model_root / f"season_{season}" / "model_raw.joblib").exists())
             self.assertFalse(list(model_root.glob("fold_*")))
@@ -348,8 +354,8 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             self.assertEqual(meta["test_seasons"], _test_config_yaml()["split"]["test_seasons"])
             self.assertEqual(meta["n_rows_train"] + meta["n_rows_calibration"], 2000)
             self.assertIn("scikit-learn", meta["library_versions"])
-            latest = artifacts / "models" / "home_win" / "logreg" / "latest"
-            latest_txt = artifacts / "models" / "home_win" / "logreg" / "latest.txt"
+            latest = artifacts / "models" / "over_5_5" / "logreg" / "latest"
+            latest_txt = artifacts / "models" / "over_5_5" / "logreg" / "latest.txt"
             self.assertTrue(latest.exists() or latest_txt.exists())
             self.assertTrue((artifacts / "reports" / run_id / "metrics.json").exists())
             self.assertTrue((artifacts / "reports" / run_id / "run.log").exists())
@@ -360,7 +366,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [1.0]
             cfg["evaluation"]["bootstrap_samples"] = 20
             cfg["compute"]["num_threads"] = 1
@@ -368,7 +374,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
             artifacts = tmp / "artifacts"
             resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
-            base = artifacts / "models" / "home_win" / "logreg"
+            base = artifacts / "models" / "over_5_5" / "logreg"
             base.mkdir(parents=True)
             os.symlink(Path("previous_run") / "final", base / "latest")
 
@@ -377,7 +383,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
                     resolved,
                     dataset_csv=csv_path,
                     metadata_path=meta_path,
-                    task="home_win",
+                    task="over_5_5",
                     model="logreg",
                     run_id=run_id,
                     artifacts_root=artifacts,
@@ -490,6 +496,32 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertNotIn("elo", metrics["calibration_table"])
             self.assertEqual(metrics["acceptance"]["baseline_gate"]["per_task"][0]["benchmark"], "constant")
 
+    def test_unknown_feature_name_raises_config_error_in_train_and_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            csv_path, meta_path = _write_synthetic_dataset(tmp)
+            cfg = _test_config_yaml()
+            cfg["tasks"]["over_5_5"]["features"] = ["no_such_column"]
+            cfg_path = tmp / "cfg.yaml"
+            cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+            resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
+            for call in (
+                lambda: run_training(
+                    resolved,
+                    dataset_csv=csv_path,
+                    metadata_path=meta_path,
+                    task="over_5_5",
+                    model="logreg",
+                    artifacts_root=tmp / "artifacts",
+                ),
+                lambda: dry_run_training(
+                    resolved, dataset_csv=csv_path, metadata_path=meta_path, task_flag="over_5_5"
+                ),
+            ):
+                with self.assertRaises(ConfigError) as ctx:
+                    call()
+                self.assertIn("tasks.over_5_5.features: unknown columns ['no_such_column']", str(ctx.exception))
+
     def test_home_win_fails_loudly_without_games_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
@@ -510,7 +542,7 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertFalse((tmp / "artifacts").exists())
 
     def test_gate_compares_with_elo_not_with_constant(self) -> None:
-        # Predictable labels: the model beats Elo, so the home_win gate passes against Elo.
+        # Predictable labels: the model beats Elo on log loss but not on ECE (Elo has no signal), so the gate fails.
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             metrics = self._train(tmp, task="home_win")
@@ -518,7 +550,8 @@ class TestSeasonReportContents(unittest.TestCase):
             self.assertEqual(verdict["benchmark"], "elo")
             self.assertAlmostEqual(verdict["benchmark_log_loss"], metrics["pooled"]["elo"]["log_loss"])
             self.assertAlmostEqual(verdict["model_log_loss"], metrics["pooled"]["model"]["log_loss"])
-            self.assertTrue(verdict["passed"])
+            self.assertFalse(verdict["passed"])
+            self.assertEqual(verdict["reason"], "ece above elo")
 
 
 class TestSliceMasks(unittest.TestCase):
@@ -548,7 +581,7 @@ class TestSliceMasks(unittest.TestCase):
             train_size=0, inner_val_size=0, calibration_size=0, test_size=len(days),
         )
         y = np.arange(len(days)) % 2
-        ev = _SeasonEval(window, y, np.full(len(days), 0.5), np.full(len(days), 0.5), np.full(len(days), 0.5), None, None, None)
+        ev = _SeasonEval(window, 0, y, np.full(len(days), 0.5), np.full(len(days), 0.5), np.full(len(days), 0.5), None, None, None)
 
         masks = _slice_masks([ev], keys, X)
 
@@ -578,7 +611,7 @@ class TestSliceMasks(unittest.TestCase):
             train_days=None, inner_val_days=None, calibration_days=None, test_days=None,  # type: ignore[arg-type]
             train_size=0, inner_val_size=0, calibration_size=0, test_size=4,
         )
-        ev = _SeasonEval(window, np.zeros(4), np.full(4, 0.5), np.full(4, 0.5), np.full(4, 0.5), None, None, None)
+        ev = _SeasonEval(window, 0, np.zeros(4), np.full(4, 0.5), np.full(4, 0.5), np.full(4, 0.5), None, None, None)
 
         with self.assertRaises(ConfigError) as ctx:
             _slice_masks([ev], keys, pd.DataFrame({"f_a": np.zeros(4)}))
@@ -643,43 +676,73 @@ class TestPromoteCommand(unittest.TestCase):
                 self.assertEqual(os.readlink(latest), str(Path("run_good") / "final"))
 
 
-class TestCalibrationSkipped(unittest.TestCase):
-    def test_high_min_samples_skips_calibration_in_season_metadata(self) -> None:
+class TestHomeWinLogregOnly(unittest.TestCase):
+    def test_resolve_models(self) -> None:
+        self.assertEqual(resolve_models("both", "home_win"), ["logreg"])
+        self.assertEqual(resolve_models("both", "over_5_5"), ["logreg", "lgbm"])
+        with self.assertRaises(ConfigError):
+            resolve_models("lgbm", "home_win")
+
+    def test_train_both_writes_three_pairs_with_own_features_and_no_warmup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
+            csv_path, meta_path = _write_synthetic_dataset(tmp)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [1.0]
-            cfg["calibration"]["min_samples"] = 999_999
+            cfg["models"]["lgbm"]["grids"] = {k: [v[0]] for k, v in cfg["models"]["lgbm"]["grids"].items()}
             cfg["evaluation"]["bootstrap_samples"] = 20
             cfg["compute"]["num_threads"] = 1
             cfg_path = tmp / "cfg.yaml"
             cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-            artifacts = tmp / "artifacts"
             resolved = load_config(cfg_path, metadata=load_metadata_json(meta_path))
             results = run_training(
-                resolved,
-                dataset_csv=csv_path,
-                metadata_path=meta_path,
-                task="home_win",
-                model="logreg",
-                run_id="home_win_logreg_cafebabe_20260101T000000Z",
-                artifacts_root=artifacts,
+                resolved, dataset_csv=csv_path, metadata_path=meta_path, artifacts_root=tmp / "artifacts"
             )
-            self.assertEqual(results[0].status, "ok")
-            season_meta = json.loads(
-                (
-                    artifacts
-                    / "models"
-                    / "home_win"
-                    / "logreg"
-                    / results[0].run_id
-                    / f"season_{synthetic_season_id(2)}"
-                    / "metadata.json"
-                ).read_text(encoding="utf-8")
+            self.assertEqual(sorted((r.task, r.model) for r in results),
+                             [("home_win", "logreg"), ("over_5_5", "lgbm"), ("over_5_5", "logreg")])
+            self.assertFalse((tmp / "artifacts" / "models" / "home_win" / "lgbm").exists())
+
+            def meta(result: RunResult, sub: str) -> dict:
+                path = result.model_run_dir / sub / "metadata.json"
+                return json.loads(path.read_text(encoding="utf-8"))
+
+            home = next(r for r in results if r.task == "home_win")
+            final = meta(home, "final")
+            self.assertEqual(final["model_features"], resolved.tasks.home_win.features)
+            self.assertTrue(final["calibration_skipped"])
+            self.assertEqual(final["n_rows_calibration"], 0)
+            for result in results:
+                if result.task == "over_5_5":
+                    self.assertEqual(len(meta(result, "final")["model_features"]), 8)
+            table = pd.read_csv(csv_path)
+            second_season_first_day = table[table["season_id"] != table["season_id"].min()]["day"].min()[:10]
+            for season in cfg["split"]["test_seasons"]:
+                season_meta = meta(home, f"season_{season}")
+                self.assertGreaterEqual(season_meta["train_days"]["min"], second_season_first_day)
+                self.assertEqual(season_meta["train_days"]["max"], season_meta["calibration_days"]["max"])
+            metrics = json.loads((home.reports_dir / "metrics.json").read_text(encoding="utf-8"))
+            for block in metrics["seasons"]:
+                self.assertEqual(block["n_train"], meta(home, f"season_{block['season_id']}")["n_rows_train"])
+            model = joblib.load(home.model_run_dir / "final" / "model.joblib")
+            self.assertEqual(model.n_features_in_, len(final["model_features"]))
+
+    def test_cli_rejects_lgbm_for_home_win(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            _write_synthetic_dataset(tmp, n_days=100)
+            (tmp / "cfg.yaml").write_text(yaml.safe_dump(_test_config_yaml()), encoding="utf-8")
+            proc = _cli_train(
+                ["--task", "home_win", "--model", "lgbm", "--config", str(tmp / "cfg.yaml"),
+                 "--metadata", str(tmp / "metadata_train.json"), "--dataset", str(tmp / "dataset_train.csv")]
             )
-            self.assertTrue(season_meta["calibration_skipped"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("does not support", proc.stderr)
+        for command in ("predict", "promote", "publish-predictions"):
+            extra = ["--run-id", VALID_RUN_ID] if command == "promote" else []
+            cmd = [PY, "-m", "modeling.cli", command, "--task", "home_win", "--model", "lgbm", *extra]
+            proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
+            self.assertNotEqual(proc.returncode, 0, msg=command)
+            self.assertIn("does not support", proc.stderr, msg=command)
 
 
 class TestCliTrainLgbmEndToEnd(unittest.TestCase):
@@ -688,7 +751,7 @@ class TestCliTrainLgbmEndToEnd(unittest.TestCase):
             tmp = Path(tmp_str)
             csv_path, meta_path = _write_synthetic_dataset(tmp, games_per_day=1)
             cfg = _test_config_yaml()
-            cfg["tasks"]["over_5_5"]["enabled"] = False
+            cfg["tasks"]["home_win"]["enabled"] = False
             cfg["models"]["logreg"]["grids"]["C"] = [1.0]
             lgbm_grid = cfg["models"]["lgbm"]["grids"]
             for key in lgbm_grid:
@@ -703,14 +766,14 @@ class TestCliTrainLgbmEndToEnd(unittest.TestCase):
                 resolved,
                 dataset_csv=csv_path,
                 metadata_path=meta_path,
-                task="home_win",
+                task="over_5_5",
                 model="lgbm",
-                run_id="home_win_lgbm_cafebabe_20260101T000000Z",
+                run_id="over_5_5_lgbm_cafebabe_20260101T000000Z",
                 artifacts_root=artifacts,
             )
             self.assertEqual(len(results), 1)
             final_dir = (
-                artifacts / "models" / "home_win" / "lgbm" / results[0].run_id / "final"
+                artifacts / "models" / "over_5_5" / "lgbm" / results[0].run_id / "final"
             )
             self.assertTrue((final_dir / "model.joblib").exists())
             meta = json.loads((final_dir / "metadata.json").read_text(encoding="utf-8"))

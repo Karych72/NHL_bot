@@ -16,7 +16,7 @@ Modeling dependencies are **separate from bot runtime**. They are not in `requir
 make modeling-dev
 ```
 
-This installs packages from [`requirements-modeling.txt`](../requirements-modeling.txt): `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib`, and `pydantic` (config validation in `modeling/config.py`).
+This installs packages from [`requirements-modeling.txt`](../requirements-modeling.txt): `numpy`, `pandas`, `scikit-learn`, `lightgbm`, `matplotlib`, `pyyaml`, `joblib`, `pydantic` (config validation in `modeling/config.py`) and `scipy` (the goal model, §2b).
 
 ---
 
@@ -35,9 +35,11 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
 | `split.*` | Season-by-season check: `test_seasons` (strictly increasing), `inner_val_games`, `calibration_games` — see §2a |
 | `elo.grid` | Search grid of the Elo benchmark (`k`, `home_advantage`, `season_regression`, `mov`, `ot_win_weight`) — see §2a |
+| `goals.{alpha,tie_halflife_days}` | Goal model: ridge grid of the Poisson GLM, half-life of the tracked tie rate — see §2b |
 | `models.{logreg,lgbm}.grids` | Hyperparameter search grids |
-| `models.lgbm.monotone.*` | Monotone constraint signs by feature name |
-| `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`) |
+| `models.lgbm.monotone.*` | Monotone constraint signs by feature name (`over_5_5` only; `home_win` has none) |
+| `tasks.*.features` | Optional list of feature columns of the task; unset — every dataset feature column. `home_win`: `diff_elo`, `home_is_b2b`, `away_is_b2b`, `diff_shot_share_ewm` |
+| `calibration.{method,min_samples}` | Post-hoc calibration (`isotonic` or `platt`); `home_win` ignores it (identity calibrator) |
 | `evaluation.*` | ECE bins, bootstrap settings, probability clip epsilon |
 
 `configs/modeling_default.yaml` checks `[20232024, 20242025, 20252026]` with `300`/`300`
@@ -68,7 +70,7 @@ the checked season never enters the fit. The Elo forecast is compared with the m
 separately as `elo_full_season`. `elo_raw` is the chess curve with the chosen home bonus.
 
 **Gate.** `home_win` is accepted only if the pooled (sum of checked seasons) calibrated log-loss
-of the best family is strictly below Elo's with the fitted curve; `over_5_5` (Elo does not
+of the best family is strictly below Elo's with the fitted curve **and** pooled ECE is not above Elo's (`reason` — in `metrics.json` and `summary.md`); `over_5_5` (Elo does not
 predict totals) — strictly below the constant (share of "over 5.5" on all rows before the checked
 season). `games_train.csv` is required when `home_win` is trained; `over_5_5` alone does not
 need it.
@@ -83,12 +85,21 @@ need it.
   CI (same resampled days for both sides) of the log-loss difference `model_minus_elo` (home_win)
   and `model_minus_constant`, keys `point, ci_low, ci_high`; `bootstrap` — CIs of the model's own
   log-loss/Brier; `reliability_path`.
-- `calibration_table` — for the model and (home_win) Elo: 5 pp forecast bins, non-empty only.
+- `calibration_table` — for the model and (home_win) Elo: 5 pp forecast bins, non-empty only; rows carry `noise_2se` and `outside_noise` (±2 SE band, report only).
 - `slices` (sum of seasons, same games for all columns): `season_start` (first 10% of each
   season's games), `post_olympic_break` (2025/26, 2026-02-26…2026-03-11), `prior_games_<bucket>`
   by `min(home, away prior_games_count)` — `<=7`, `8-10`, `11-20`, `21+` (the feature matrix must carry both prior-games columns, otherwise the run fails) — to choose
   `--min-prior-games`.
 - `team_breakdown` and the reliability PNG are over the sum of seasons.
+
+**Home_win: схема обучения и критерий (Задача 68).** Свои признаки (`tasks.home_win.features`),
+только `logreg` (`TASK_MODEL_FAMILIES`; `home_win`+`lgbm` отвергается CLI), первый сезон датасета
+в обучение не входит (прогрев Elo). `C` выбирается на inner_val, затем модель переобучается на
+train+inner_val+calibration; Platt нет, калибратор тождественный (`calibration_skipped`): logreg на
+обучающих сезонах сама есть подобранная кривая, а Platt на 300 играх при замере ухудшал (см.
+«Результаты Задачи 68»). `final/metadata.json` несёт `model_features` — predict подаёт только их.
+Критерий карточки «≤ 2 п.п. в корзинах от 100 игр» заменён решением человека 2026-10-11: шум корзины
+±4–8 п.п., и сам Elo его не проходит; корзины получили полосу шума ±2 SE, только в отчёте.
 
 **Artifacts.** Per-season raw model + calibrator: `models/<task>/<model>/<run_id>/season_<season_id>/`
 (replaces `fold_<k>/`). `final/metadata.json` carries `test_seasons`; the `holdout_*`, `test_days`,
@@ -137,6 +148,205 @@ lgbm − константа −0.0086 [−0.0173; +0.0006]. Brier / ECE: Elo 0.2
 - Ограничение: константы фичи `diff_elo` (Задача 40) подбирались на 2022-10…2025-11, т.е. фича
   модели частично видела проверочные сезоны; это работает в пользу модели, а не против неё.
 
+### 2b. Goal model (Задача 67)
+
+`modeling/goal_model.py`, command `python -m modeling.cli evaluate-goals [--config] [--set]
+[--games artifacts/datasets/games_train.csv] [--reports-root artifacts/reports]` → report
+`artifacts/reports/goals_<UTC>/{metrics.json, summary.md}`; exit code 0 only on `status: ok`.
+Needs only `games_train.csv` (rebuild with `build-dataset --mode train` — it now carries the
+regulation goals); no `metadata_train.json`, no PostgreSQL.
+
+**Model.** Target — regulation goals (`*_reg_goals`, three periods). Poisson GLM
+(`sklearn.linear_model.PoissonRegressor`, ridge `alpha`) on stacked team-games, two rows per game:
+`log λ = β0 + attack_team − defence_opponent + home + own back-to-back + opponent back-to-back`.
+A team without training games (a new franchise) is the league average. Score grid 0…14 × 0…14 —
+product of the two Poisson pmfs; the diagonal (ties after 60 minutes) gets one multiplier
+`1 + θ`, solved per game day so the day's mean P(tie) equals the **tracked league tie rate**
+(share of ties before that day, weight `0.5 ** (Δdays / tie_halflife_days)`). Settled total =
+regulation goals + 1 for a tie (OT to the first goal or +1 for the shootout):
+`P(Over L) = Σ_{i≠j, i+j>L} P(i,j) + Σ_{2i+1>L} P(i,i)`.
+
+**Check** — the §2a scheme on all games of `split.test_seasons` (not only dataset rows): the GLM
+is fitted **once** on every game before the checked season and forecasts the whole season
+(«летом обучили»); `alpha` is picked by over-5.5 log-loss on the seasons strictly between the
+first one and the checked one, each forecast by a fit on the seasons before it. Benchmark —
+the constant (over-5.5 share of all games before the checked season). `status: ok` requires
+the pooled paired bootstrap CI of `model − constant` entirely below 0 **and** every season's
+mean P(tie) within ±2 pp of the actual tie share (card acceptance).
+
+**Результат на реальных данных** (2026-10-11, `games_train.csv` 6568 игр, конфиг по умолчанию,
+`alpha` из `[0.01, 0.1, 0.3, 1.0, 3.0]`, полураспад ничьих 100 дней):
+
+| сезон | n | alpha | модель | константа | разница | ничьи прогноз / факт | тотал осн. времени прогноз / факт |
+|---|---|---|---|---|---|---|---|
+| 2023/24 | 1312 | 0.1 | 0.6838 | 0.6828 | +0.0010 | 0.217 / 0.207 | 6.09 / 6.02 |
+| 2024/25 | 1312 | 0.3 | 0.6916 | 0.6945 | −0.0029 | 0.203 / 0.207 | 6.07 / 5.87 |
+| 2025/26 | 1312 | 0.3 | 0.6818 | 0.6824 | −0.0006 | 0.245 / 0.248 | 6.02 / 6.01 |
+| сумма | 3936 | — | 0.6857 | 0.6866 | **−0.0008 [−0.0026; +0.0010]** | — | — |
+
+Калибровка P(Over 5.5) по корзинам (сумма сезонов): 0.50–0.55 — 0.538 / 0.539 (n=943),
+0.55–0.60 — 0.568 / 0.568 (n=2711), 0.60–0.65 — 0.617 / 0.576 (n=243); крайние корзины < 25 игр.
+По корзинам λ_h+λ_a: 5.5–6.0 — P(Over) 0.541 / факт 0.531 (n=1298), 6.0–6.5 — 0.573 / 0.578
+(n=2591), ≥ 6.5 — 0.645 / 0.489 (n=47). **Гейт не пройден** (`failed_baseline_check`): ничьи
+в пределах ±1 п.п. во всех сезонах, но ДИ разности с константой включает 0.
+
+Разведка вариантов (2026-10-10…11, одноразовые скрипты вне репозитория; та же схема: настройки
+только по прошлым сезонам, сумма трёх сезонов, разность log-loss с константой и 95% ДИ):
+
+| вариант | разность | ДИ |
+|---|---|---|
+| **принят:** обучение один раз на всех прошлых сезонах, силы команд | −0.0009 | [−0.0030; +0.0014] |
+| то же, обучение только на последнем сезоне | +0.0023 | [−0.0008; +0.0053] |
+| ежедневное переобучение, веса по давности exp(−ξΔt), ξ и перенос прошлого сезона подбираются | −0.0009 | [−0.0042; +0.0024] |
+| один «темп» на команду вместо атаки и обороны | −0.0006 | [−0.0032; +0.0021] |
+| без команд: только уровень лиги и дом | −0.0008 | [−0.0018; +0.0002] |
+| скользящие средние голов (EWMA) вместо команд | −0.0017 | [−0.0045; +0.0012] |
+| то же + броски | +0.0023 | [−0.0030; +0.0073] |
+| силы команд + Elo (разность и её модуль) | −0.0003 | [−0.0027; +0.0021] |
+| принятый + Platt или сдвиг поверх P(Over) | +0.0004…+0.0006 | ДИ включает 0 |
+
+Выводы:
+- Больше истории лучше одного сезона, но потолок близко: силы команд почти не двигают тотал —
+  модель без команд почти не уступает. Даже подгонка на самом проверочном сезоне (подглядывание)
+  даёт лишь −0.009…−0.013 к константе этого сезона, часть которых — переобучение 64 параметров;
+  честно достижимо порядка 0.002–0.005, а ДИ на трёх сезонах ±0.002–0.003.
+- Ничьи: независимый Poisson даёт ~17%, лига — 21–25%; 2025/26 — рекорд (24.8%). Постоянное
+  раздувание, подобранное по прошлым сезонам, промахивается на 2–4 п.п.; отслеживание доли
+  ничьих внутри сезона (полураспад 100 дней) держит все сезоны в ±1 п.п. Если же раздувание
+  подбирать по log-loss тотала, оно уходит к нулю (ничьи −4…−8 п.п.) — сетка не той формы.
+- Форма сетки: сумма голов основного времени недорассеяна (var/mean ≈ 0.9), а голы в пустые
+  ворота переводят 2:1 в 3:1 — модель завышает нечётные тоталы без ничьей (1, 3) и занижает
+  P(Over 5.5) примерно на 1 п.п. Цена — порядка 0.0002 log-loss; двухстадийная схема с ENG не
+  окупится, пока нет сигнала сильнее.
+- Back-to-back, дом и месяц сезона на тотал заметно не влияют; Elo и броски не помогают.
+- Сдвинуть тотал могут признаки, которых у сил команд нет: вратари (Задача 71) и xG (Задача 69);
+  xG проверен — не помог (ниже).
+
+**xG-ковариаты (Задача 69, 2026-10-14): не включены.** Правило включения — верхняя граница ДИ
+разницы «с xG − без» по сумме сезонов < 0; не выполнено ни при одном из двух центрирований.
+Кода ковариат в репозитории нет; эксперимент — одноразовый скрипт вне репозитория (схема ниже,
+чтобы не повторять вслепую).
+
+- *xG по игре.* Для сезона `t` (проверяемого или тюнингового) xG-модель с признаками §2d
+  обучается только на бросках периодов 1–3 сезонов `< t` (не модель §2d, обученная на всех
+  периодах) и считает xG бросков периодов 1–3 сезонов `≤ t` (цель — голы основного времени).
+  xGF стороны — сумма xG её бросков, xGA — соперника.
+- *Ковариата до игры.* По команде — EWMA per-game xGF и xGA по её играм строго раньше дня игры,
+  полураспад в **играх команды** (не в днях: летний перерыв в днях обнулил бы прошлый сезон,
+  а история идёт через границу сезонов). Ковариата — `log(EWMA команды)` минус центр, два
+  варианта: **по срезу дня** — среднее `log(EWMA)` всех команд с историей на этот день (сдвиг
+  уровня xG, как +5% в 2025/26, гасится целиком, но гасится и реальный сдвиг уровня лиги);
+  **по окну обучения** — одна константа, среднее по строкам обучения GLM (уровень
+  проверяемого сезона доходит до λ). Команда без истории — 0 (лига). В GLM для забивающей
+  стороны — своя xGF-ковариата и xGA-ковариата соперника, стандартизованные на обучении;
+  силы команд остаются. Ковариаты делят ridge `alpha` с командными индикаторами — лёгкое
+  стягивание их коэффициентов к нулю.
+- *Подбор.* `alpha` и полураспад из {5, 10, 20, 40, 80} игр — сеткой по log-loss тотала на
+  сезонах строго между первым и проверяемым, как `alpha` у базовой модели. По срезу дня: 20 игр
+  во всех трёх проверках, `alpha` 0.1 / 1.0 / 1.0, коэффициенты (на 1 σ) +0.05…+0.07 у обеих.
+  По окну обучения: 80 / 10 / 10 игр, `alpha` 0.1 / 3.0 / 3.0, коэффициенты +0.04…+0.06.
+
+| сезон | без xG | с xG, срез дня | с xG, окно обучения | deviance голов: без / день / окно | тотал осн. вр. прогноз: без / день / окно, факт |
+|---|---|---|---|---|---|
+| 2023/24 | 0.6838 | 0.6838 (−0.0001) | 0.6856 (+0.0018) | 1.112 / 1.096 / 1.108 | 6.09 / 6.09 / 6.32, 6.02 |
+| 2024/25 | 0.6916 | 0.6908 (−0.0008) | 0.6886 (−0.0030) | 1.144 / 1.138 / 1.140 | 6.07 / 6.06 / 5.92, 5.87 |
+| 2025/26 | 0.6818 | 0.6803 (−0.0015) | 0.6801 (−0.0016) | 1.064 / 1.053 / 1.057 | 6.02 / 6.02 / 6.15, 6.01 |
+| сумма (3936) | 0.6857 | 0.6850 | 0.6848 | — | — |
+| «с xG − без», ДИ | — | **−0.0008 [−0.0028; +0.0014]** | **−0.0010 [−0.0033; +0.0013]** | — | — |
+
+ДИ — парный bootstrap по игровым дням, 2000 повторов, seed 42. При фиксированном полураспаде
+(5 / 10 / 20 / 40 / 80 игр, `alpha` подбирается): по срезу дня разница −0.0004…−0.0009, верхняя
+граница ДИ +0.0009…+0.0016; по окну обучения −0.0006…−0.0019, верхняя граница +0.0003…+0.0013 —
+ни один не проходит (фиксированный полураспад — справка, выбор по проверяемым сезонам был бы
+подглядыванием). Выводы: срез дня улучшает прогноз голов каждой стороны (deviance ниже во всех
+сезонах), но тотал 5.5 почти не двигает. Окно обучения пропускает уровень xG в λ — и ловит
+спад 2024/25, и промахивается вверх в 2023/24 (+0.3 гола) и 2025/26 (переоценка xG на 5%, §2d):
+уровень xG по прошлым сезонам — ненадёжный сигнал уровня голов. Различия ~0.001 меньше шума трёх
+сезонов (±0.002) — тот же потолок, что у EWMA голов и бросков в разведке выше.
+
+### 2c. Результаты Задачи 68 (модель победы)
+
+**Прогон** 2026-10-11, run `home_win_logreg_cfbd6e06_20261011T124609Z`, конфиг по умолчанию;
+датасет `--min-prior-games 5` — 6128 строк (после фикса отставания признаков на одну игру, см.
+`modeling_dataset_builder.md`; таблица §2a и разведка ниже — на датасете до фикса, 6049 строк).
+Логрег на `diff_elo`, `home_is_b2b`, `away_is_b2b`, `diff_shot_share_ewm`. **Гейт пройден.**
+
+| сезон | n | константа | Elo сырой | Elo с кривой | модель | ECE модель / Elo |
+|---|---|---|---|---|---|---|
+| 2023/24 | 1227 | 0.6901 | 0.6799 | 0.6627 | **0.6581** | 0.027 / 0.015 |
+| 2024/25 | 1225 | 0.6869 | 0.6810 | 0.6709 | **0.6621** | 0.035 / 0.044 |
+| 2025/26 | 1226 | 0.6927 | 0.6875 | 0.6917 | **0.6862** | 0.045 / 0.054 |
+| сумма | 3678 | 0.6899 | 0.6828 | 0.6751 | **0.6688** | 0.018 / 0.028 |
+
+Модель − Elo **−0.0063 [−0.0102; −0.0027]** (парный bootstrap по игровым дням); Brier 0.2383
+против 0.2412. Корзины от 100 игр: 8 из 9 в полосе шума; 30–35% (n=140) — прогноз 0.327, факт
+0.421 при полосе ±0.078: хозяев-андердогов модель недооценивает, у Elo то же. Выбранный `C`: 0.01 /
+10 / 10, финальный 0.01 (4902 строки). Коэффициенты (стандартизованные): Elo +0.24, доля бросков
++0.24, b2b гостей +0.13, b2b хозяев −0.06. Срезы (модель / Elo): начало сезона 0.6692 / 0.6777,
+`prior_games ≤7` 0.6595 / 0.6690, после олимпийской паузы (n=110) 0.6905 / 0.6884.
+
+Разведка признаков и калибровки — в спеке `docs/superpowers/specs/2026-10-11-task-68-win-model-design.md`.
+Побочный эффект: `over_5_5` (признаки не заданы = все столбцы) теперь получает и три столбца
+`*_shot_share_ewm`.
+
+**Когда применять** (решение человека 2026-10-11): только к играм, где у **обеих команд ≥ 5 игр в
+текущем сезоне** — модель обучена и проверена лишь на таких играх (`--min-prior-games 5`). По
+сезонам 2021–2025 это наступает для всей лиги на 12–19-й день сезона (19–27 октября), до этого —
+7–8% игр сезона. В первые дни predict и так падает (у команд без игр в сезоне rolling-колонки
+пусты, `validate.py` их отклоняет); с 1 до 4 игр строки проходят с флагом `low_history_confidence` —
+показ таких прогнозов отсекает потребитель (Задача 73A).
+
+### 2d. Fenwick-xG (Задача 69)
+
+`modeling/xg_model.py`, команда `python -m modeling.cli evaluate-xg [--config] [--set]
+[--shots artifacts/datasets/shots_train.csv] [--reports-root artifacts/reports]` → отчёт
+`artifacts/reports/xg_<UTC>/{metrics.json, summary.md}`; код выхода 0 только при `status: ok`.
+Нужен только `shots_train.csv` (`build-dataset --mode train`, см. `modeling_dataset_builder.md`).
+
+**Модель.** P(гол) незаблокированной попытки (`shot-on-goal`, `missed-shot`, `goal`; у
+`blocked-shot` нет типа броска, а координата — место блока). Логистическая регрессия sklearn на:
+расстоянии и угле до ворот (89, 0) после нормировки сторон (хозяева атакуют `+x`, когда защищают
+`left`; сторона меняется по периодам), типе броска (one-hot, редкие < 100 бросков и не виденные в
+обучении — одна категория `infrequent`, NULL — `unknown`), составе с точки зрения бросавшего по
+`situation_code` (`even` / `pp` / `sh` / `other` — свои ворота пусты; сюда же попадают буллиты по
+ходу игры, коды `1010` / `0101`), признаке подбора (предыдущая попытка периода — той же команды,
+0–3 с назад, считается по всем попыткам, включая заблокированные). Исключаются и считаются в отчёте
+броски в пустые ворота и броски без координат. Командные xGF/xGA на `prepare_shots` → `fit_xg` /
+`predict_xg` проверены как ковариаты голевой модели и не включены — §2b.
+
+**Проверка** — схема §2a: на каждый сезон `split.test_seasons` обучение на всех сезонах раньше,
+проверка на всех бросках сезона. Константа — доля голов в обучении. `status: ok`, если log-loss ниже
+константы в каждом сезоне.
+
+**Результат на реальных данных** (2026-10-14, `shots_train.csv` 769 955 попыток за 5 сезонов,
+конфиг по умолчанию). Fenwick 566 545; исключено: пустые ворота 4171, без координат 0; в модели
+562 374. Нормировка проверена: после неё за синей линией атакуемой зоны (x > 25) забито 99.94%
+голов, `zone_code = 'O'` API согласуется с x > 25 у 99.92% бросков.
+
+| сезон | обучение | проверка | AUC | log-loss | константа | сумма xG | голы | xG / голы |
+|---|---|---|---|---|---|---|---|---|
+| 2023/24 | 225 912 | 114 059 | 0.7498 | 0.2211 | 0.2458 | 7688.8 | 7639 | 1.007 |
+| 2024/25 | 339 971 | 111 304 | 0.7487 | 0.2195 | 0.2439 | 7439.5 | 7377 | 1.008 |
+| 2025/26 | 451 275 | 111 099 | 0.7373 | 0.2267 | 0.2490 | 7965.7 | 7578 | 1.051 |
+
+Голы — без голов в пустые ворота. В 2025/26 модель переоценила голы на 5%: реализация бросков
+упала относительно прошлых сезонов, а модель, обученная на прошлых сезонах, этого видеть не может.
+
+**Сверка с MoneyPuck** (только проверка: их командные сводки `situation = all`, скачаны вне
+репозитория, в продукт не попадают). Суммы нашей модели по команде и сезону против
+`xGoalsFor` / `xGoalsAgainst`, 32 команды:
+
+| сезон | корр. xGF | корр. xGA | наша / MP, xGF | наша / MP, xGA |
+|---|---|---|---|---|
+| 2023/24 | 0.948 | 0.935 | 0.938 | 0.937 |
+| 2024/25 | 0.920 | 0.892 | 0.915 | 0.916 |
+| 2025/26 | 0.970 | 0.938 | 0.969 | 0.968 |
+
+Наши суммы ниже на 3–9%: MoneyPuck считает и броски в пустые ворота (с ними голов в 2023/24 —
+8086 против наших 7639 без них) и, возможно, иную выборку попыток. Ранжирование команд совпадает
+(корреляция 0.89–0.97); корреляция xGF с фактическими голами команды у нас 0.54–0.80, у MoneyPuck
+0.56–0.85.
+
 ---
 
 ### Priority: YAML vs `metadata_train.json`
@@ -165,7 +375,7 @@ Rules (UPDATE plan cross-cutting requirements):
 | `--print-resolved-config` | Print merged config and exit (no training) |
 | `--dry-run` | Load data, build splits, print resolved config and all block sizes; no training or artifacts |
 | `--task {home_win,over_5_5,both}` | Tasks to train (default: `both`; respects `tasks.*.enabled`) |
-| `--model {logreg,lgbm,both}` | Model families (default: `both`) |
+| `--model {logreg,lgbm,both}` | Model families (default: `both`; for `home_win` `both` resolves to logreg, `lgbm` is rejected) |
 | `--run-id RUN_ID` | Override autogenerated `<run_id>` (single `(task, model)` pair only) |
 | `--metadata <path>` | Path to `metadata_train.json` (default: `artifacts/datasets/metadata_train.json`) |
 | `--dataset <path>` | Path to `dataset_train.csv` (default: next to `--metadata`) |
@@ -198,7 +408,7 @@ Every training run gets a canonical id shared by all artifacts and reports for t
 | `<features_hash[:8]>` | First 8 hex characters of the dataset `features_hash` from `metadata_train.json` |
 | `<utc_timestamp_YYYYmmddTHHMMSSZ>` | UTC wall time at run start, e.g. `20260530T143022Z` |
 
-**Example:** `home_win_lgbm_b334df68_20260530T143022Z`
+**Example:** `home_win_logreg_b334df68_20260530T143022Z`
 
 Built by `modeling.config.build_run_id()`. All `(task, model)` pairs in one CLI invocation share the same UTC timestamp; only the `<task>_<model>_` prefix differs.
 
@@ -214,16 +424,13 @@ Matches the UPDATE plan file map. All paths are under repository root.
 artifacts/
   models/
     home_win/
-      lgbm/
+      logreg/
         <run_id>/
           season_<season_id>/
           final/{model.joblib, calibrator.joblib, metadata.json}
         latest -> <run_id>/final/
-      logreg/
-        <run_id>/...
-        latest -> <run_id>/final/
     over_5_5/
-      ...
+      {logreg,lgbm}/ ...
   reports/
     <run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
 ```
@@ -290,7 +497,7 @@ open artifacts/reports/<run_id>/reliability_<task>.png   # macOS; use your viewe
 ls -la artifacts/models/<task>/<model>/latest/
 ```
 
-**`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a). Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
+**`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a); for `home_win` also pooled ECE must not be above Elo, and `reason` names the failed condition. Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
@@ -306,8 +513,8 @@ Per UPDATE plan [§12](../plan/classifier/nhl_classifier_modeling_plan_UPDATE.md
 2. Stage-11 modeling tests pass (`tests/test_modeling_*.py`).
 3. The report for each task includes, per checked season and for their sum: log loss, Brier, ECE before and after calibration, constant (and Elo for `home_win`), block-bootstrap 95% CIs of the differences, calibration table, slices, reliability PNG, team error breakdown.
 4. Each artifact `metadata.json` contains `features_hash`, date ranges, sample sizes, library versions, `git_commit`/`null`, `random_seed`, `run_id`.
-5. Final artifacts exist for both tasks under `artifacts/models/<task>/lgbm/<run_id>/final/` and `artifacts/models/<task>/logreg/<run_id>/final/`; `latest` points to the successful run (with `--no-promote` — after a manual `promote`, §9).
-6. On the sum of checked seasons, the best family must **strictly beat** Elo (`home_win`) / the constant (`over_5_5`) in log loss; otherwise `status: failed_baseline_check`.
+5. Final artifacts exist under `artifacts/models/<task>/logreg/<run_id>/final/` (both tasks) and `artifacts/models/over_5_5/lgbm/<run_id>/final/` (`home_win` — logreg only); `latest` points to the successful run (with `--no-promote` — after a manual `promote`, §9).
+6. On the sum of checked seasons, the best family must **strictly beat** Elo (`home_win`) / the constant (`over_5_5`) in log loss (`home_win` — and pooled ECE not above Elo); otherwise `status: failed_baseline_check`.
 
 ---
 
@@ -320,13 +527,13 @@ in [`modeling/predict_runner.py`](../modeling/predict_runner.py) (new module, З
 `train`: no PostgreSQL, no `modeling.dataset_builder` import.
 
 ```bash
-python -m modeling.cli predict --task home_win --model lgbm
+python -m modeling.cli predict --task home_win --model logreg
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--task {home_win,over_5_5}` | required |
-| `--model {logreg,lgbm}` | required |
+| `--model {logreg,lgbm}` | required; `home_win` — only `logreg`. Predict feeds only `model_features` from `metadata.json` |
 | `--predict-dataset PATH` | default `artifacts/datasets/dataset_predict.csv` |
 | `--predict-metadata PATH` | default `artifacts/datasets/metadata_predict.json` |
 | `--artifacts-root PATH` | default `artifacts` (root of `models/<task>/<model>/latest`) |
@@ -360,7 +567,7 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 по-прежнему не касается БД). Гейт — по артефакту, не пересчитывается: нет `latest` или
 `metadata.json` по `latest` имеет `status != ok` → строки этой `task` удаляются, вставки нет,
 код выхода 0. Иначе строки задачи заменяются (delete + insert в одной транзакции), `run_id` берётся
-из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=lgbm]`:
+из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=logreg]`:
 `build-dataset --mode predict` (по `scheduled_games`, манифест берётся из `latest/metadata.json`
 пары; политика cold-start — дефолтная `allow_with_flag`, как при обучении: она входит в `features_hash`,
 и другое значение роняет build-dataset на `features_hash mismatch`) → `predict` → `publish-predictions`. Цель требует `latest`: без него build-dataset/predict
@@ -422,7 +629,7 @@ model under the old `p`-input, L2 fit).
 сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
 задачи, обе модели, один вызов, `run_start_utc` общий для всех 4 пар —
 `bb0c2b06_20260928T183528Z` в `run_id`). Конфиг уже включает результаты Задач 1–3 этой
-карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone`,
+карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone` (на тот момент; для `home_win` позже убрано),
 8-точечная сетка lgbm, финальный retrain lgbm на фиксированном `num_boost_round` без
 утечки early stopping.
 
@@ -495,13 +702,6 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 
 ## 9. Retrain по расписанию
 
-> **Отключён до Задачи 68** (модель победы; решение человека, 2026-10-10). По проверке Задачи 66 обе модели
-> `home_win` проигрывают Elo-эталону (§2a), поэтому каждый плановый прогон был бы красным, а
-> `promote` отказывал бы любому новому `run_id`. Профиль `modeling` не включать (`docker compose
-> --profile modeling up -d retrain` не выполнять); если он уже поднят — `docker compose
-> --profile modeling stop retrain`. Код сервиса не менялся: включить снова после модели, которая
-> проходит гейт.
-
 Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `up`/`build` его не трогают,
 запуск — `docker compose --profile modeling up -d retrain`; `pipeline/scheduled_retrain.py`, образ со стадией
 `modeling` Dockerfile) раз в неделю — **понедельник 12:00 UTC** (`sync` — ночью каждые 30 минут,
@@ -538,8 +738,8 @@ No manual `latest` symlink existed in the main checkout — no cleanup was neede
 остаётся прежним. Сдвигает его человек — отдельной командой:
 
 ```bash
-make modeling-promote TASK=home_win MODEL=lgbm RUN_ID=<run_id>
-# то же без make: python -m modeling.cli promote --task home_win --model lgbm --run-id <run_id>
+make modeling-promote TASK=home_win MODEL=logreg RUN_ID=<run_id>
+# то же без make: python -m modeling.cli promote --task home_win --model logreg --run-id <run_id>
 ```
 
 Команда читает `artifacts/models/<task>/<model>/<run_id>/final/metadata.json`: файла нет или
