@@ -1,0 +1,1146 @@
+{
+  "bootstrap": {
+    "N": 1000,
+    "block_by_day": true,
+    "seed": 42
+  },
+  "calibration_days": {
+    "max": "2026-04-16",
+    "min": "2026-03-10"
+  },
+  "calibration_skipped": true,
+  "chosen_C": 0.01,
+  "class_weight": null,
+  "feature_manifest": [
+    {
+      "dtype": "float64",
+      "name": "home_is_home",
+      "position": "0"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_for",
+      "position": "1"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_against",
+      "position": "2"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_for",
+      "position": "3"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_against",
+      "position": "4"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_for",
+      "position": "5"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_against",
+      "position": "6"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_for",
+      "position": "7"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_against",
+      "position": "8"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_goals_for",
+      "position": "9"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_goals_against",
+      "position": "10"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_opportunities_for",
+      "position": "11"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_opportunities_against",
+      "position": "12"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_face_off_win_percentage_for",
+      "position": "13"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_face_off_win_percentage_against",
+      "position": "14"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_blocked_for",
+      "position": "15"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_blocked_against",
+      "position": "16"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_takeaways_for",
+      "position": "17"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_takeaways_against",
+      "position": "18"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_giveaways_for",
+      "position": "19"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_giveaways_against",
+      "position": "20"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_hits_for",
+      "position": "21"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_hits_against",
+      "position": "22"
+    },
+    {
+      "dtype": "int64",
+      "name": "home_prior_games_count",
+      "position": "23"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_for_roll_mean_5",
+      "position": "24"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_against_roll_mean_5",
+      "position": "25"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_for_roll_mean_5",
+      "position": "26"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_against_roll_mean_5",
+      "position": "27"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_for_roll_mean_5",
+      "position": "28"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_against_roll_mean_5",
+      "position": "29"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_for_roll_mean_5",
+      "position": "30"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_against_roll_mean_5",
+      "position": "31"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_for_roll_mean_10",
+      "position": "32"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_against_roll_mean_10",
+      "position": "33"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_for_roll_mean_10",
+      "position": "34"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_against_roll_mean_10",
+      "position": "35"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_for_roll_mean_10",
+      "position": "36"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_against_roll_mean_10",
+      "position": "37"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_for_roll_mean_10",
+      "position": "38"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_against_roll_mean_10",
+      "position": "39"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_for_roll_mean_20",
+      "position": "40"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goals_against_roll_mean_20",
+      "position": "41"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_for_roll_mean_20",
+      "position": "42"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shots_against_roll_mean_20",
+      "position": "43"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_for_roll_mean_20",
+      "position": "44"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pim_against_roll_mean_20",
+      "position": "45"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_for_roll_mean_20",
+      "position": "46"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_power_play_percentage_against_roll_mean_20",
+      "position": "47"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_goal_diff_roll_mean_5",
+      "position": "48"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_pace_sum_roll_mean_5",
+      "position": "49"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_is_home",
+      "position": "50"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_for",
+      "position": "51"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_against",
+      "position": "52"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_for",
+      "position": "53"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_against",
+      "position": "54"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_for",
+      "position": "55"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_against",
+      "position": "56"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_for",
+      "position": "57"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_against",
+      "position": "58"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_goals_for",
+      "position": "59"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_goals_against",
+      "position": "60"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_opportunities_for",
+      "position": "61"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_opportunities_against",
+      "position": "62"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_face_off_win_percentage_for",
+      "position": "63"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_face_off_win_percentage_against",
+      "position": "64"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_blocked_for",
+      "position": "65"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_blocked_against",
+      "position": "66"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_takeaways_for",
+      "position": "67"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_takeaways_against",
+      "position": "68"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_giveaways_for",
+      "position": "69"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_giveaways_against",
+      "position": "70"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_hits_for",
+      "position": "71"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_hits_against",
+      "position": "72"
+    },
+    {
+      "dtype": "int64",
+      "name": "away_prior_games_count",
+      "position": "73"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_for_roll_mean_5",
+      "position": "74"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_against_roll_mean_5",
+      "position": "75"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_for_roll_mean_5",
+      "position": "76"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_against_roll_mean_5",
+      "position": "77"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_for_roll_mean_5",
+      "position": "78"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_against_roll_mean_5",
+      "position": "79"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_for_roll_mean_5",
+      "position": "80"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_against_roll_mean_5",
+      "position": "81"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_for_roll_mean_10",
+      "position": "82"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_against_roll_mean_10",
+      "position": "83"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_for_roll_mean_10",
+      "position": "84"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_against_roll_mean_10",
+      "position": "85"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_for_roll_mean_10",
+      "position": "86"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_against_roll_mean_10",
+      "position": "87"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_for_roll_mean_10",
+      "position": "88"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_against_roll_mean_10",
+      "position": "89"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_for_roll_mean_20",
+      "position": "90"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goals_against_roll_mean_20",
+      "position": "91"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_for_roll_mean_20",
+      "position": "92"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shots_against_roll_mean_20",
+      "position": "93"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_for_roll_mean_20",
+      "position": "94"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pim_against_roll_mean_20",
+      "position": "95"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_for_roll_mean_20",
+      "position": "96"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_power_play_percentage_against_roll_mean_20",
+      "position": "97"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_goal_diff_roll_mean_5",
+      "position": "98"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_pace_sum_roll_mean_5",
+      "position": "99"
+    },
+    {
+      "dtype": "int64",
+      "name": "home_rest_days",
+      "position": "100"
+    },
+    {
+      "dtype": "int64",
+      "name": "home_is_b2b",
+      "position": "101"
+    },
+    {
+      "dtype": "int64",
+      "name": "home_games_last_7d",
+      "position": "102"
+    },
+    {
+      "dtype": "int64",
+      "name": "away_rest_days",
+      "position": "103"
+    },
+    {
+      "dtype": "int64",
+      "name": "away_is_b2b",
+      "position": "104"
+    },
+    {
+      "dtype": "int64",
+      "name": "away_games_last_7d",
+      "position": "105"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_elo",
+      "position": "106"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_elo",
+      "position": "107"
+    },
+    {
+      "dtype": "float64",
+      "name": "home_shot_share_ewm",
+      "position": "108"
+    },
+    {
+      "dtype": "float64",
+      "name": "away_shot_share_ewm",
+      "position": "109"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_is_home",
+      "position": "110"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_is_home",
+      "position": "111"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_for",
+      "position": "112"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_for",
+      "position": "113"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_against",
+      "position": "114"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_against",
+      "position": "115"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_for",
+      "position": "116"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_for",
+      "position": "117"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_against",
+      "position": "118"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_against",
+      "position": "119"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_for",
+      "position": "120"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_for",
+      "position": "121"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_against",
+      "position": "122"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_against",
+      "position": "123"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_for",
+      "position": "124"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_for",
+      "position": "125"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_against",
+      "position": "126"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_against",
+      "position": "127"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_goals_for",
+      "position": "128"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_goals_for",
+      "position": "129"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_goals_against",
+      "position": "130"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_goals_against",
+      "position": "131"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_opportunities_for",
+      "position": "132"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_opportunities_for",
+      "position": "133"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_opportunities_against",
+      "position": "134"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_opportunities_against",
+      "position": "135"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_face_off_win_percentage_for",
+      "position": "136"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_face_off_win_percentage_for",
+      "position": "137"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_face_off_win_percentage_against",
+      "position": "138"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_face_off_win_percentage_against",
+      "position": "139"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_blocked_for",
+      "position": "140"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_blocked_for",
+      "position": "141"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_blocked_against",
+      "position": "142"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_blocked_against",
+      "position": "143"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_takeaways_for",
+      "position": "144"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_takeaways_for",
+      "position": "145"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_takeaways_against",
+      "position": "146"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_takeaways_against",
+      "position": "147"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_giveaways_for",
+      "position": "148"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_giveaways_for",
+      "position": "149"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_giveaways_against",
+      "position": "150"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_giveaways_against",
+      "position": "151"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_hits_for",
+      "position": "152"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_hits_for",
+      "position": "153"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_hits_against",
+      "position": "154"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_hits_against",
+      "position": "155"
+    },
+    {
+      "dtype": "int64",
+      "name": "diff_prior_games_count",
+      "position": "156"
+    },
+    {
+      "dtype": "int64",
+      "name": "sum_prior_games_count",
+      "position": "157"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_for_roll_mean_5",
+      "position": "158"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_for_roll_mean_5",
+      "position": "159"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_against_roll_mean_5",
+      "position": "160"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_against_roll_mean_5",
+      "position": "161"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_for_roll_mean_5",
+      "position": "162"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_for_roll_mean_5",
+      "position": "163"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_against_roll_mean_5",
+      "position": "164"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_against_roll_mean_5",
+      "position": "165"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_for_roll_mean_5",
+      "position": "166"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_for_roll_mean_5",
+      "position": "167"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_against_roll_mean_5",
+      "position": "168"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_against_roll_mean_5",
+      "position": "169"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_for_roll_mean_5",
+      "position": "170"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_for_roll_mean_5",
+      "position": "171"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_against_roll_mean_5",
+      "position": "172"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_against_roll_mean_5",
+      "position": "173"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_for_roll_mean_10",
+      "position": "174"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_for_roll_mean_10",
+      "position": "175"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_against_roll_mean_10",
+      "position": "176"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_against_roll_mean_10",
+      "position": "177"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_for_roll_mean_10",
+      "position": "178"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_for_roll_mean_10",
+      "position": "179"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_against_roll_mean_10",
+      "position": "180"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_against_roll_mean_10",
+      "position": "181"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_for_roll_mean_10",
+      "position": "182"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_for_roll_mean_10",
+      "position": "183"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_against_roll_mean_10",
+      "position": "184"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_against_roll_mean_10",
+      "position": "185"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_for_roll_mean_10",
+      "position": "186"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_for_roll_mean_10",
+      "position": "187"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_against_roll_mean_10",
+      "position": "188"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_against_roll_mean_10",
+      "position": "189"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_for_roll_mean_20",
+      "position": "190"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_for_roll_mean_20",
+      "position": "191"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goals_against_roll_mean_20",
+      "position": "192"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goals_against_roll_mean_20",
+      "position": "193"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_for_roll_mean_20",
+      "position": "194"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_for_roll_mean_20",
+      "position": "195"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shots_against_roll_mean_20",
+      "position": "196"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_shots_against_roll_mean_20",
+      "position": "197"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_for_roll_mean_20",
+      "position": "198"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_for_roll_mean_20",
+      "position": "199"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pim_against_roll_mean_20",
+      "position": "200"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pim_against_roll_mean_20",
+      "position": "201"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_for_roll_mean_20",
+      "position": "202"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_for_roll_mean_20",
+      "position": "203"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_power_play_percentage_against_roll_mean_20",
+      "position": "204"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_power_play_percentage_against_roll_mean_20",
+      "position": "205"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_goal_diff_roll_mean_5",
+      "position": "206"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_goal_diff_roll_mean_5",
+      "position": "207"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_pace_sum_roll_mean_5",
+      "position": "208"
+    },
+    {
+      "dtype": "float64",
+      "name": "sum_pace_sum_roll_mean_5",
+      "position": "209"
+    },
+    {
+      "dtype": "int64",
+      "name": "diff_rest_days",
+      "position": "210"
+    },
+    {
+      "dtype": "int64",
+      "name": "sum_rest_days",
+      "position": "211"
+    },
+    {
+      "dtype": "int64",
+      "name": "diff_is_b2b",
+      "position": "212"
+    },
+    {
+      "dtype": "int64",
+      "name": "sum_is_b2b",
+      "position": "213"
+    },
+    {
+      "dtype": "int64",
+      "name": "diff_games_last_7d",
+      "position": "214"
+    },
+    {
+      "dtype": "int64",
+      "name": "sum_games_last_7d",
+      "position": "215"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_elo",
+      "position": "216"
+    },
+    {
+      "dtype": "float64",
+      "name": "diff_shot_share_ewm",
+      "position": "217"
+    }
+  ],
+  "feature_set_version": "v2",
+  "features_hash": "1af96405e2fb9227d70e445c327490c1061018fa4402e759fbd22443b95a303f",
+  "git_commit": "dba1ac7810b5760fc07b4a72a65657d9e5611658",
+  "inner_val_days": {
+    "max": "2026-03-10",
+    "min": "2026-01-11"
+  },
+  "library_versions": {
+    "joblib": "1.4.2",
+    "lightgbm": "4.6.0",
+    "numpy": "2.2.6",
+    "pandas": "2.2.3",
+    "scikit-learn": "1.6.1"
+  },
+  "method": "platt",
+  "model_family": "logreg",
+  "model_features": [
+    "diff_elo",
+    "home_is_b2b",
+    "away_is_b2b",
+    "diff_shot_share_ewm"
+  ],
+  "n_calibration": 0,
+  "n_rows_calibration": 0,
+  "n_rows_inner_val": 300,
+  "n_rows_train": 4902,
+  "random_seed": 42,
+  "run_id": "home_win_logreg_1af96405_20261014T195338Z",
+  "seed": 42,
+  "status": "ok",
+  "task": "home_win",
+  "test_seasons": [
+    20232024,
+    20242025,
+    20252026
+  ],
+  "train_days": {
+    "max": "2026-04-16",
+    "min": "2022-10-22"
+  }
+}

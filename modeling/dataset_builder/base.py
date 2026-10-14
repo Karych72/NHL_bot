@@ -41,7 +41,7 @@ class DatasetBuildConfig:
     feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
-    cold_start_policy_predict: str = "allow_with_flag"
+    cold_start_policy_predict: str = "drop"
     min_rows_threshold: int = 0
     season_ids: Sequence[int] = field(default_factory=list)
     target_day_from: Optional[str] = None
@@ -488,8 +488,9 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
 
     if not config.validate_only:
         assembled.to_csv(dataset_path, index=False)
+        # predict too: the goal model's forecast needs the played history (Задача 73).
+        _write_games_train(elo_history, config, games_path)
         if config.mode == "train":
-            _write_games_train(elo_history, config, games_path)
             cast(pd.DataFrame, shots).to_csv(shots_path, index=False)
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
     write_report(quality_path, quality_report)

@@ -60,6 +60,7 @@ NHL_bot/
 ├── deploy/                             # Только прод-VM: токен бота из Secret Manager (Задача 65, DEVELOPMENT.md §«Прод-деплой»)
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
 │   ├── fetch-secrets.sh                # Secret Manager → /run/nhl_bot/telegram_bot_token (tmpfs)
+│   ├── models/                         # Задача 73: модели прода в образе — home_win/logreg и over_5_5/goals (<run_id>/final + latest)
 │   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
@@ -84,7 +85,8 @@ NHL_bot/
 ├── pipeline/                           # ETL: NHL API → PostgreSQL
 │   ├── load_season_modern.py           # Класс ModernNhlLoader
 │   ├── scheduled_sync.py               # Задачи 34, 56: ночной планировщик (сервис `sync`)
-│   └── scheduled_retrain.py            # Задача 26: еженедельный retrain (сервис `retrain`)
+│   ├── scheduled_retrain.py            # Задача 26: еженедельный retrain (сервис `retrain`)
+│   └── scheduled_publish.py            # Задача 73: ежедневная публикация прогноза (сервис `predict`)
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
@@ -129,7 +131,7 @@ NHL_bot/
 │   ├── goal_model.py                    # Задача 67: Poisson GLM голов основного времени → сетка счёта → P(тотал > L) по правилу букмекеров; проверка по сезонам против константы (`evaluate-goals`, читает games_train.csv)
 │   ├── xg_model.py                      # Задача 69: Fenwick-xG — логрег P(гол) по расстоянию, углу, типу броска, составу, подбору; нормировка сторон по home_team_defending_side; fit_xg/predict_xg, проверка по сезонам (`evaluate-xg`, читает shots_train.csv)
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
-│   ├── publish_predictions.py           # Задача 22B: CSV predict → таблица game_predictions (гейт по status latest)
+│   ├── publish_predictions.py           # Задачи 22B, 73: CSV predict → game_predictions (гейт по status latest); прогноз тотала голевой моделью
 │   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py (прогоны по сезонам), config.py, artifacts.py, и др.
 │
 └── artifacts/                           # datasets/, models/, predictions/, reports/*/ — в .gitignore (см. .gitignore)
@@ -335,6 +337,17 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `base`: `libgomp1` + `requirements-modeling.txt`); стадия `bot` идёт последней, поэтому
 `build: .` у `bot`/`sync` собирает прежний образ без modeling-стека. Подробности —
 `docs/modeling_training.md` §9 и `DEVELOPMENT.md` §Docker. Тесты — `tests/test_scheduled_retrain.py`.
+
+### Модуль: `pipeline/scheduled_publish.py` (Задача 73, ежедневная публикация прогноза)
+
+Сервис `predict` в `docker-compose.yml` (без профиля — выкатывается на прод; образ — стадия
+`modeling`, в релизе `ghcr.io/karych72/nhl_bot:<тег>-modeling`). Раз в сутки в 12:00 UTC (слот
+`scheduled_retrain.seconds_until_next_run`), после успешного свежего sync (`run_after_sync` из
+`scheduled_retrain` — общее предусловие), прогоняет `build-dataset --mode predict` →
+`predict` → `publish-predictions` → `publish-goals`; модели — из `deploy/models/` в образе, не
+обучаются. Догоняющий прогон при старте — если статуса нет или он старше суток. Статус —
+`all_data/publish_status.json` в томе `syncdata`, healthcheck — ok и моложе 26 часов. Тесты —
+`tests/test_scheduled_publish.py`.
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
 устроен и сервис `backup` (Задача 35): ежесуточный `pg_dump` тома `pgdata` на bind mount
@@ -705,12 +718,15 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 | `away_team_id` | bigint | NOT NULL. FK → teams (team_id, season_id) |
 | `season_id` | bigint | NOT NULL |
 
-#### `game_predictions` — Вероятности модели (Задача 22B)
+#### `game_predictions` — Вероятности модели (Задачи 22B, 73)
 
 Поток: `scheduled_games` → `build-dataset --mode predict` → `predict` (CSV) →
-`publish-predictions` → `game_predictions` → бот (читает только PG; `make modeling-publish`).
-Бот читает `home_win` в превью `/tonight` (`matchup_season_preview`, запрос без кэша по `game_id`
-кнопки) и добавляет строку «Модельная оценка»; нет строки — нет и строки в превью.
+`publish-predictions` (`home_win`) и `publish-goals` (`over_5_5`, `model = goals`) →
+`game_predictions` → бот (читает только PG). Ежедневно публикует сервис `predict`
+(`pipeline/scheduled_publish.py`). Строки есть только у игр, где у обеих команд ≥ 5 игр в сезоне.
+Бот читает обе задачи в превью `/tonight` (`matchup_season_preview`, запрос без кэша по `game_id`
+кнопки) и добавляет строку «Оценка модели: победа HOME — N%, тотал больше 5.5 — M%»; части без
+строки в таблице пропускаются, нет ни одной — нет и строки.
 Строки задачи целиком заменяются при каждой публикации; при непройденном гейте
 (нет `latest` / `status != ok`) строки задачи удаляются. FK на `games` нет — игра ещё не сыграна.
 

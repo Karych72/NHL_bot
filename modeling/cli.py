@@ -36,7 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--cold-start-policy-predict",
         choices=("allow_with_flag", "drop"),
-        default="allow_with_flag",
+        # drop: the bot shows a forecast only when both teams have min_prior_games games
+        # this season (Задача 73); allow_with_flag leaves NaN features that fail validation.
+        default="drop",
     )
     build.add_argument("--min-rows-threshold", type=int, default=0)
     build.add_argument("--season-ids", default="")
@@ -129,6 +131,14 @@ def build_parser() -> argparse.ArgumentParser:
     goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
     goals.add_argument("--reports-root", default="artifacts/reports")
 
+    fit_goals = sub.add_parser(
+        "fit-goals",
+        help="Fit the goal model on every played game for publishing (Задача 73)",
+    )
+    fit_goals.add_argument("--config", default="configs/modeling_default.yaml")
+    fit_goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
+    fit_goals.add_argument("--artifacts-root", default="artifacts")
+
     xg = sub.add_parser(
         "evaluate-xg",
         help="Check the Fenwick-xG model season by season (fit on earlier seasons; Задача 69)",
@@ -190,6 +200,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="artifacts",
         help="Root containing models/<task>/<model>/latest (default: artifacts)",
     )
+
+    publish_goals = sub.add_parser(
+        "publish-goals",
+        help="Publish the goal model's P(total over 5.5) of predict-dataset games to game_predictions",
+    )
+    publish_goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
+    publish_goals.add_argument("--predict-dataset", default="artifacts/datasets/dataset_predict.csv")
+    publish_goals.add_argument("--artifacts-root", default="artifacts")
     return parser
 
 
@@ -300,6 +318,47 @@ def _handle_evaluate_goals(args: argparse.Namespace) -> int:
     return 0 if metrics["status"] == "ok" else 1
 
 
+def _handle_fit_goals(args: argparse.Namespace) -> int:
+    import json
+    from datetime import datetime, timezone
+
+    import joblib
+    import pandas as pd
+
+    from modeling.goal_model import fit_for_upcoming
+    from modeling.publish_predictions import GOAL_MODEL
+    from modeling.train_runner import update_latest_symlink
+
+    try:
+        config = load_yaml_config(args.config)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    games = pd.read_csv(args.games)
+    model, alpha = fit_for_upcoming(
+        games,
+        alphas=config.goals.alpha,
+        tie_halflife_days=config.goals.tie_halflife_days,
+        epsilon=config.evaluation.epsilon_clip,
+    )
+    run_id = f"over_5_5_{GOAL_MODEL}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    root = Path(args.artifacts_root)
+    final = root / "models" / "over_5_5" / GOAL_MODEL / run_id / "final"
+    final.mkdir(parents=True)
+    joblib.dump(model, final / "model.joblib")
+    metadata = {
+        "run_id": run_id,
+        "alpha": alpha,
+        "tie_halflife_days": config.goals.tie_halflife_days,
+        "n_games": len(games),
+        "last_day": str(games["day"].max()),
+    }
+    (final / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    update_latest_symlink("over_5_5", GOAL_MODEL, run_id, artifacts_root=root, status="ok")
+    print(f"run_id={run_id} alpha={alpha} games={len(games)}")
+    return 0
+
+
 def _handle_evaluate_xg(args: argparse.Namespace) -> int:
     import json
     from datetime import datetime, timezone
@@ -400,6 +459,24 @@ def _handle_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_publish_goals(args: argparse.Namespace) -> int:
+    from modeling.dataset_builder.base import _connect_from_env
+    from modeling.publish_predictions import publish_goal_predictions
+
+    conn = _connect_from_env()
+    try:
+        inserted = publish_goal_predictions(
+            conn,
+            games_csv=Path(args.games),
+            predict_dataset=Path(args.predict_dataset),
+            artifacts_root=Path(args.artifacts_root),
+        )
+    finally:
+        conn.close()
+    print(f"task=over_5_5 published_rows={inserted}")
+    return 0
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -436,6 +513,9 @@ def main() -> None:
     if args.command == "evaluate-goals":
         raise SystemExit(_handle_evaluate_goals(args))
 
+    if args.command == "fit-goals":
+        raise SystemExit(_handle_fit_goals(args))
+
     if args.command == "evaluate-xg":
         raise SystemExit(_handle_evaluate_xg(args))
 
@@ -447,6 +527,9 @@ def main() -> None:
 
     if args.command == "publish-predictions":
         raise SystemExit(_handle_publish(args))
+
+    if args.command == "publish-goals":
+        raise SystemExit(_handle_publish_goals(args))
 
 
 if __name__ == "__main__":

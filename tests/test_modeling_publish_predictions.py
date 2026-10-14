@@ -12,10 +12,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import joblib
+import numpy as np
 import pandas as pd
 
 from modeling.dataset_builder.base import _load_train_metadata
-from modeling.publish_predictions import publish_predictions
+from modeling.goal_model import fit_goal_model, forecast_upcoming, prepare_games
+from modeling.publish_predictions import GOAL_MODEL, publish_goal_predictions, publish_predictions
+from tests.test_modeling_goal_model import _synthetic_games
 from tests.test_modeling_predict_runner import (
     FEATURE_SET_VERSION,
     MANIFEST,
@@ -147,6 +151,43 @@ class TestPublishPredictions(unittest.TestCase):
                     artifacts_root=tmp / "artifacts",
                 )
         self.assertEqual(conn.log, [])
+
+
+class TestPublishGoalPredictions(unittest.TestCase):
+    """Задача 73: тотал — прогноз голевой модели по играм predict-датасета, без гейта."""
+
+    def test_replaces_over_rows_with_the_goal_forecast_of_predict_games(self) -> None:
+        games = _synthetic_games()
+        model = fit_goal_model(prepare_games(games), alpha=0.01)
+        upcoming = pd.DataFrame(
+            {"game_id": [901, 902], "day": ["2024-12-01", "2024-12-01"], "home_team_id": [1, 2], "away_team_id": [3, 4]}
+        )
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            base = tmp / "artifacts" / "models" / "over_5_5" / GOAL_MODEL
+            final = base / "goals_run" / "final"
+            final.mkdir(parents=True)
+            joblib.dump(model, final / "model.joblib")
+            (final / "metadata.json").write_text(
+                json.dumps({"run_id": "goals_run", "tie_halflife_days": 100}), encoding="utf-8"
+            )
+            os.symlink(Path("goals_run") / "final", base / "latest")
+            games.to_csv(tmp / "games_train.csv", index=False)
+            upcoming.to_csv(tmp / "dataset_predict.csv", index=False)
+            conn = _Conn()
+            inserted = publish_goal_predictions(
+                conn,
+                games_csv=tmp / "games_train.csv",
+                predict_dataset=tmp / "dataset_predict.csv",
+                artifacts_root=tmp / "artifacts",
+            )
+        expected = forecast_upcoming(model, games, upcoming, 100)
+        self.assertEqual(inserted, 2)
+        self.assertEqual(conn.log[0], ("execute", DELETE, ("over_5_5",)))
+        _, _, rows = conn.log[1]
+        self.assertEqual([row[:4] for row in rows], [(901, "over_5_5", "goals", "goals_run"), (902, "over_5_5", "goals", "goals_run")])
+        np.testing.assert_allclose([row[4] for row in rows], expected["p_over"])
+        self.assertEqual(conn.outcome, "commit")
 
 
 class TestLatestMetadataIsValidTrainMetadata(unittest.TestCase):

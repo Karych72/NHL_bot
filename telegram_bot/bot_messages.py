@@ -800,21 +800,28 @@ def _team_record_line(
 
 
 def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
-    """Строка модельной оценки победы хозяев для превью или None, если её нет.
+    """Строка оценки модели для превью: победа хозяев и тотал больше 5.5; None, если прогноза нет.
 
-    Читает `game_predictions` (Задача 22B) по точному `game_id`; строки там есть
-    только у пары, прошедшей гейт качества, поэтому статус модели бот не проверяет.
-    Запрос без кэша: публикация может удалить строку после провала гейта.
+    Читает `game_predictions` (Задачи 22B, 73) по точному `game_id`. Публикация пишет строки
+    только для игр, где у обеих команд не меньше 5 игр в сезоне, и только для победы,
+    прошедшей гейт, — поэтому ни сезон, ни статус модели бот не проверяет; каждой части
+    строки может не быть отдельно. Запрос без кэша: ежедневная публикация заменяет строки.
     """
-    row = fetch_all(
-        "SELECT probability FROM game_predictions WHERE game_id = %s AND task = 'home_win'",
+    rows = fetch_all(
+        "SELECT task, probability FROM game_predictions "
+        "WHERE game_id = %s AND task IN ('home_win', 'over_5_5')",
         (game_id,),
-        columns=["probability"],
+        columns=["task", "probability"],
     )
-    if row["count_rows"] == 0:
+    pct = {task: round(float(p) * 100) for task, p in zip(rows["task"], rows["probability"])}
+    parts = []
+    if "home_win" in pct:
+        parts.append(f"победа {esc_home} — {pct['home_win']}%")
+    if "over_5_5" in pct:
+        parts.append(f"тотал больше 5.5 — {pct['over_5_5']}%")
+    if not parts:
         return None
-    pct = round(float(row["probability"][0]) * 100)
-    return f"🤖 Модельная оценка (не совет): победа {esc_home} — {pct}%"
+    return "🤖 Оценка модели: " + ", ".join(parts)
 
 
 def _fmt_signed(val: Union[int, float, None]) -> str:
