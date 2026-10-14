@@ -1,4 +1,4 @@
-🏒 <b>{{ team_home }} {{ home_score }}:{{ away_score }} {{ team_away }}</b>{{ extra }}
+{{ score_line }}
 <i>Периоды: {{ period_scores }}</i>
 {%- if recent_form %}
 {{ recent_form }}

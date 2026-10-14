@@ -296,7 +296,7 @@ def _form_route(form_by_team):
 
 
 def _game_card_routes(games_by_id, form_by_team):
-    """Семь общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
+    """Восемь общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
     игр `games_by_id` (`game_id` → ответы формы `_GAMES`) и форме
     `form_by_team` — общий строитель для любого сценария (не копировать
     построчно под каждый)."""
@@ -314,6 +314,8 @@ def _game_card_routes(games_by_id, form_by_team):
         ("SELECT * FROM get_goalies_game", by_game("goalies")),
         ("SELECT * FROM get_three_stars_game", by_game("three_stars")),
         ("ORDER BY day DESC NULLS LAST", _form_route(form_by_team)),
+        # Подписки чата — блок страны под карточкой (Задача 76); у чата сценария их нет.
+        ("FROM bot_subscriptions", []),
     ]
 
 
@@ -347,8 +349,9 @@ async def test_game_card_renders_full_card(
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
-    # Семь разных запросов, восемь обращений: форма спрашивается на каждую карточку.
-    assert len(cursor.executed) == 8
+    # Восемь разных запросов, девять обращений: форма спрашивается на каждую карточку,
+    # подписки чата — ради блока страны (Задача 76).
+    assert len(cursor.executed) == 9
     assert sent["parse_mode"] == "HTML"
     assert "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>" in text
     # 3-0-2 / 1-0-4, а не 3-1-1 / 1-3-1: см. комментарий к _FORM_BY_TEAM (Д1).
@@ -378,6 +381,37 @@ async def test_game_card_renders_full_card(
     assert "★1 Panarin (NYR) — 2+1" in text
     assert "★2 Shesterkin (NYR) — 25/27, 92.59%" in text
     assert "★3 Marchand (BOS) — 1+0" in text
+    assert text.endswith("★3 Marchand (BOS) — 1+0"), "без подписки на страну блока страны нет"
+
+
+@pytest.mark.asyncio
+async def test_game_card_of_country_subscriber_ends_with_country_block(
+    bot_module, fake_db_router, make_message_update, fake_context
+):
+    """Задача 76: подписчику страны под полной карточкой — блок игроков страны в матче."""
+    bot = bot_module("bot")
+    cursor = fake_db_router([
+        ("FROM bot_subscriptions", [("country_players", None, "RUS")]),
+        # (game_id, фамилия, команда, позиция, Г, П, броски, ±, хиты, блоки, вбр., время)
+        ("FROM game_player_stats s", [
+            (GAME_ONE, "Panarin", "NYR", "L", 2, 1, 5, 2, 0, 0, None, None, "20:15"),
+        ]),
+        ("FROM game_goalie_stats s", []),
+    ] + _GAME_CARD_ROUTES)
+    update = make_message_update(f"/start game_{GAME_ONE}")
+    fake_context.args = [f"game_{GAME_ONE}"]
+
+    await bot.cmd_start(update, fake_context)
+
+    (sent,) = fake_context.bot.sent_messages
+    assert sent["text"].endswith(
+        "★3 Marchand (BOS) — 1+0\n\n"
+        "<b>🇷🇺 Россия</b>\n\n"
+        "<b>Panarin</b> (NYR)\n"
+        "2+1 · +2 · 5 бр. · 0 хитов · 20:15"
+    )
+    block_queries = [p for q, p in cursor.executed if "r.nationality" in q]
+    assert block_queries == [(GAME_ONE, "RUS")] * 2, "блок — по этому матчу и этой стране"
 
 
 @pytest.mark.asyncio

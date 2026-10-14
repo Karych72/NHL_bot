@@ -24,6 +24,7 @@ from bot_messages import (
     DIGEST_GAME_SEPARATOR,
     LEADERBOARD_PAGE_SIZE,
     conference_summary,
+    country_game_block,
     country_page,
     country_rankings,
     day_digest,
@@ -60,6 +61,7 @@ from dialog_states import (
     build_menu,
 )
 from help_text import ADVANCED_COMMAND_INTRO, SUBSCRIPTIONS_FOOTER
+from subscription_repo import get_chat_subscriptions
 from leaderboard_specs import (
     ADV_STANDALONE_TO_STAT,
     PLAYER_STAT_TITLES,
@@ -647,7 +649,8 @@ async def send_game_card_message(
     reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> Message:
     """Полная карточка матча (текст + опционально клавиатура); возвращает
-    отправленное сообщение."""
+    отправленное сообщение. Подписчику страны под карточкой — блок игроков каждой
+    его страны, сыгравших в матче (Задача 76)."""
     if not game_exists(game_id):
         return await context.bot.send_message(
             chat_id=chat_id,
@@ -655,6 +658,10 @@ async def send_game_card_message(
             parse_mode="HTML",
         )
     text, goals_meta = game_message(game_id)
+    for country in get_chat_subscriptions(chat_id)[2]:
+        block = country_game_block(country, game_id)
+        if block is not None:
+            text += f"\n\n{block}"
     markup = reply_markup if reply_markup is not None else goal_video_markup(goals_meta)
     return await context.bot.send_message(
         chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,

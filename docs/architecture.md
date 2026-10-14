@@ -53,7 +53,9 @@ NHL_bot/
 │       ├── 0007_drop_digest_time.up.sql   # Подписки без времени доставки (Задача 63)
 │       ├── 0007_drop_digest_time.down.sql
 │       ├── 0008_shot_attempts.up.sql   # Попытки бросков из play-by-play (Задача 69A)
-│       └── 0008_shot_attempts.down.sql
+│       ├── 0008_shot_attempts.down.sql
+│       ├── 0009_country_game_sent.up.sql   # Подписка на страну по матчу: отметка «матч ушёл» (Задача 76)
+│       └── 0009_country_game_sent.down.sql
 │
 ├── deploy/                             # Только прод-VM: токен бота из Secret Manager (Задача 65, DEVELOPMENT.md §«Прод-деплой»)
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
