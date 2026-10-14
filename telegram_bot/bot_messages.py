@@ -2069,7 +2069,7 @@ _NIGHT_PLAYERS_FROM = (
 
 
 def _night_skater_lines(s: Dict, i: int) -> List[str]:
-    """Две строки полевого игрока `i` выборки `country_night_message`: фамилия и
+    """Две строки полевого игрока `i` выборки `country_night_games`: фамилия и
     команда (у центрального — «ц», у защитника — «защ»), под ними статистика:
     у всех голы+передачи, ±, броски и время; у нападающих — хиты, у центральных
     ещё вбрасывания, у защитников — блоки вместо хитов."""
@@ -2093,37 +2093,38 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
     return [head, " · ".join(parts)]
 
 
-def country_night_message(code: str, night: date) -> Optional[str]:
-    """HTML-сообщение об игроках страны `code` за ночь `night` (игровой день):
-    у игрока две строки — имя и статистика по позиции, между игроками пустая
-    строка; полевые по очкам и голам, затем вратари. `None`, если никто из них
-    не играл. Нужно рассылке подписки на страну (`push_digest_job.run_country_broadcast`)."""
+def country_night_games(code: str, night: date) -> List[Tuple[int, str]]:
+    """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
+    (game_id, HTML) по порядку `game_id`. HTML — карточка матча (`game_message`)
+    и под ней блок страны: у игрока две строки — имя и статистика по позиции,
+    между игроками пустая строка; полевые по очкам и голам, затем вратари.
+    Пустой список, если никто из страны не играл. Нужно рассылке подписки на
+    страну (`push_digest_job.run_country_broadcast`, Задача 75): сообщение — матч."""
     skaters = fetch_all(
-        "SELECT r.lastname, t.abbreviation, r.position, s.goals, s.assists, s.shots, "
+        "SELECT s.game_id, r.lastname, t.abbreviation, r.position, s.goals, s.assists, s.shots, "
         "s.plus_minus, s.hits, s.blocked, s.face_off_wins, s.face_off_taken, s.time_on_ice "
         + _NIGHT_PLAYERS_FROM.format(stats="game_player_stats")
         + "r.position <> 'G' AND s.time_on_ice IS NOT NULL AND s.time_on_ice <> '00:00' "
         "ORDER BY COALESCE(s.goals, 0) + COALESCE(s.assists, 0) DESC, "
         "COALESCE(s.goals, 0) DESC, r.lastname",
         (night, code),
-        columns=["lastname", "team", "position", "goals", "assists", "shots", "plus_minus",
-                 "hits", "blocked", "fo_wins", "fo_taken", "toi"],
+        columns=["game_id", "lastname", "team", "position", "goals", "assists", "shots",
+                 "plus_minus", "hits", "blocked", "fo_wins", "fo_taken", "toi"],
     )
     goalies = fetch_all(
-        "SELECT r.lastname, t.abbreviation, s.saves, s.shots, s.save_percentage, s.timeonice "
+        "SELECT s.game_id, r.lastname, t.abbreviation, s.saves, s.shots, s.save_percentage, "
+        "s.timeonice "
         + _NIGHT_PLAYERS_FROM.format(stats="game_goalie_stats")
         + "s.timeonice IS NOT NULL AND s.timeonice <> '00:00' ORDER BY r.lastname",
         (night, code),
-        columns=["lastname", "team", "saves", "shots", "save_percentage", "toi"],
+        columns=["game_id", "lastname", "team", "saves", "shots", "save_percentage", "toi"],
     )
-    if not skaters["count_rows"] and not goalies["count_rows"]:
-        return None
-    lines = [f"<b>{_country_label(code)} — ночь {night.isoformat()}</b>"]
+    players: Dict[int, List[str]] = defaultdict(list)
     for i in range(skaters["count_rows"]):
-        lines += [""] + _night_skater_lines(skaters, i)
+        players[int(skaters["game_id"][i])] += [""] + _night_skater_lines(skaters, i)
     for i in range(goalies["count_rows"]):
         pct = goalies["save_percentage"][i]
-        lines += [
+        players[int(goalies["game_id"][i])] += [
             "",
             f"<b>{html.escape(goalies['lastname'][i])}</b> "
             f"({html.escape(goalies['team'][i] or '?')})",
@@ -2131,44 +2132,32 @@ def country_night_message(code: str, night: date) -> Optional[str]:
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
-    return truncate_telegram_text("\n".join(lines))
+    heading = f"<b>{_country_label(code)}</b>"
+    # Без обрезки: матч заведомо короче 4096 символов (на живых ночах — до ~2000), а обрезка
+    # сырого HTML разрезала бы `<pre>` карточки — Telegram отверг бы сообщение.
+    return [
+        (game_id, "\n".join([game_message(game_id)[0], "", heading] + players[game_id]))
+        for game_id in sorted(players)
+    ]
 
 
-def _goal_period_label(period: int) -> str:
-    """«2-й период» для периодов 1–3, «овертайм» для 4-го и «2-й овертайм» и
-    далее — для овертаймов плей-офф."""
-    if period <= 3:
-        return f"{period}-й период"
-    if period == 4:
-        return "овертайм"
-    return f"{period - 3}-й овертайм"
-
-
-def country_night_goals(code: str, night: date) -> List[Tuple[int, int, str]]:
+def country_night_goals(code: str, night: date) -> List[Tuple[int, int]]:
     """Голы игроков страны `code` за ночь `night` для видео в рассылке:
-    (game_id, event_id, «Фамилия (КОМ) — СОП, 2-й период 12:34») по порядку игры;
-    время — от начала периода. Голы без `event_id` и буллиты (`period >= 5`
-    в матче с `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются."""
+    (game_id, event_id) по порядку игры. Голы без `event_id` и буллиты
+    (`period >= 5` в матче с `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются."""
     goals = fetch_all(
-        "SELECT a.game_id, a.event_id, r.lastname, t.abbreviation, o.abbreviation, "
-        "a.period, a.time "
+        "SELECT a.game_id, a.event_id "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
         "JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
-        "LEFT JOIN teams t ON t.team_id = a.team_id AND t.season_id = g.season_id "
-        "LEFT JOIN teams o ON o.season_id = g.season_id AND o.team_id = "
-        "CASE a.team_id WHEN g.home_team_id THEN g.away_team_id "
-        "WHEN g.away_team_id THEN g.home_team_id END "
         "WHERE g.day = %s AND r.nationality = %s AND a.event_id IS NOT NULL "
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
         (night, code),
-        columns=["game_id", "event_id", "lastname", "team", "opponent", "period", "time"],
+        columns=["game_id", "event_id"],
     )
     return [
-        (int(goals["game_id"][i]), int(goals["event_id"][i]),
-         f"{goals['lastname'][i]} ({goals['team'][i] or '?'}) — {goals['opponent'][i] or '?'}, "
-         f"{_goal_period_label(goals['period'][i])} {goals['time'][i]}")
+        (int(goals["game_id"][i]), int(goals["event_id"][i]))
         for i in range(goals["count_rows"])
     ]
 
