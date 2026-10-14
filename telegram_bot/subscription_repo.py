@@ -1,8 +1,9 @@
 """Хранение подписок на рассылку (таблица bot_subscriptions).
 
 Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
-включение и отключение подписок (дайджест, команда, страна) и отметка
-о последней отправленной ночи, защищающая от дублей при получасовых прогонах sync.
+включение и отключение подписок (дайджест, команда, страна) и отметки об отправке —
+ночи (дайджест, команда) и матча (страна, `bot_country_game_sent`), — защищающие от
+дублей при получасовых прогонах sync.
 """
 
 from __future__ import annotations
@@ -146,41 +147,67 @@ def upsert_country(chat_id: int, country: str) -> None:
         conn.commit()
 
 
-def list_active_country_rows() -> List[Tuple[int, str, Optional[date]]]:
+def list_active_country_rows() -> List[Tuple[int, int, str]]:
     """Активные подписки на страны — источник рассылки для `push_digest_job.py`:
-    кортежи (chat_id, country, last_sent_night)."""
+    кортежи (id подписки, chat_id, country)."""
     row = fetch_all(
-        "SELECT chat_id, country, last_sent_night FROM bot_subscriptions "
+        "SELECT id, chat_id, country FROM bot_subscriptions "
         "WHERE kind = 'country_players' AND active = TRUE ORDER BY chat_id, country",
         None,
-        columns=["chat_id", "country", "last_sent_night"],
+        columns=["id", "chat_id", "country"],
     )
     return [
-        (int(row["chat_id"][i]), row["country"][i], row["last_sent_night"][i])
+        (int(row["id"][i]), int(row["chat_id"][i]), row["country"][i])
         for i in range(row["count_rows"])
     ]
 
 
-def mark_night_sent(
-    chat_id: int, kind: str, team_id: Optional[int], night: date, country: Optional[str] = None
-) -> None:
+def sent_country_games(game_ids: List[int]) -> Set[Tuple[int, int]]:
+    """Какие из матчей `game_ids` уже ушли подписчикам страны: пары
+    (id подписки, game_id) из `bot_country_game_sent`.
+
+    Зачем: рассылка по стране идёт по матчу (Задача 76) и запускается после каждого
+    получасового прогона sync — без отметки матч уходил бы каждые полчаса."""
+    row = fetch_all(
+        "SELECT subscription_id, game_id FROM bot_country_game_sent WHERE game_id = ANY(%s)",
+        (game_ids,),
+        columns=["subscription_id", "game_id"],
+    )
+    return {
+        (int(row["subscription_id"][i]), int(row["game_id"][i]))
+        for i in range(row["count_rows"])
+    }
+
+
+def mark_country_game_sent(subscription_id: int, game_id: int) -> None:
+    """Отмечает, что матч `game_id` подписке на страну `subscription_id` уже ушёл
+    (см. `sent_country_games`); повторная отметка — no-op."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_country_game_sent (subscription_id, game_id) VALUES (%s, %s) "
+                "ON CONFLICT DO NOTHING",
+                (subscription_id, game_id),
+            )
+        conn.commit()
+
+
+def mark_night_sent(chat_id: int, kind: str, team_id: Optional[int], night: date) -> None:
     """Отмечает, что рассылка `kind` за ночь `night` чату уже ушла.
 
     Зачем: `push_digest_job.py` запускается после каждого получасового
     прогона sync — без отметки дайджест уходил бы каждые полчаса.
 
     Args:
-        team_id: `None` для morning_digest и country_players; команда — для team_scores.
+        team_id: `None` для morning_digest; команда — для team_scores.
         night: игровая дата ночи (`push_digest_job.night_of`).
-        country: код страны для country_players, иначе `None`.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET last_sent_night = %s, updated_at = now() "
-                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s "
-                "AND country IS NOT DISTINCT FROM %s",
-                (night, chat_id, kind, team_id, country),
+                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s",
+                (night, chat_id, kind, team_id),
             )
         conn.commit()
 

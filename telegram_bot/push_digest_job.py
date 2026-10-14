@@ -4,11 +4,11 @@
 Отдельный скрипт вне процесса бота: поднимает собственный ``Application``
 (без polling и без ``JobQueue``), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
-раз в 30 минут ночью — и сам решает, пора ли: всё уходит одной рассылкой, как только
-загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63; времени у
-подписчика нет). Отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на
-страну (Задачи 61, 75) — по сообщению на матч: альбом видео голов страны, подписью к нему
-карточка матча и игроки страны.
+раз в 30 минут ночью — и сам решает, пора ли: дайджест и команды уходят одной рассылкой,
+как только загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63;
+времени у подписчика нет); отметка ``last_sent_night`` не даёт отправить ночь дважды.
+Подписка на страну (Задачи 61, 75, 76) — по матчу, на первом прогоне после его конца,
+когда выложены клипы голов: счёт и игроки страны с кнопкой карточки, за ними видео голов.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
@@ -21,10 +21,8 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import os
-import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
@@ -32,7 +30,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
-from telegram import Bot, InputMediaVideo
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackContext
 
@@ -44,23 +42,30 @@ if _HERE not in sys.path:
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MSK,
-    country_night_games,
+    country_night_blocks,
     country_night_goals,
     day_digest,
     game_message,
+    game_score_line,
 )
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import fetch_score  # noqa: E402
-from stats_handlers import dispatch_day_digest_messages, goal_video_markup  # noqa: E402
+from stats_handlers import (  # noqa: E402
+    DIGEST_EXPAND_PREFIX,
+    dispatch_day_digest_messages,
+    goal_video_markup,
+)
 from subscription_repo import (  # noqa: E402
     list_active_country_rows,
     list_active_morning_digest_rows,
     list_active_team_scores_rows,
+    mark_country_game_sent,
     mark_night_sent,
     mark_subscription_inactive_by_chat_kind_team,
+    sent_country_games,
 )
 from database import fetch_all  # noqa: E402
-from video_replay import download_goal_video  # noqa: E402
+from video_replay import download_goal_video, goal_clip_published  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -90,11 +95,6 @@ _ALBUM_SIZE = 10
 # Telegram отверг, и голы ночи 2026-10-13 не ушли (Задача 75). Бюджет — с запасом на
 # multipart-обвязку; клип из кэша (``file_id``) не загружается и бюджет не тратит.
 _UPLOAD_BUDGET_BYTES = 45_000_000
-
-# Подпись к видео и альбому — до 1024 символов видимого текста (UTF-16, без HTML-разметки).
-_CAPTION_LIMIT = 1024
-
-_HTML_TAG = re.compile(r"<[^>]+>")
 
 _T = TypeVar("_T")
 
@@ -352,102 +352,114 @@ def _albums(clips: List[_Clip]) -> List[List[_Clip]]:
     return albums
 
 
-def _caption_length(text: str) -> int:
-    """Длина подписи из HTML-текста — видимые символы в UTF-16, не меньше, чем насчитает
-    Telegram (он ещё отбрасывает пробелы по краям)."""
-    return len(html.unescape(_HTML_TAG.sub("", text)).encode("utf-16-le")) // 2
-
-
 async def _send_country_game(
     bot: Bot,
     chat_id: int,
     text: str,
+    game_id: int,
     goals: List[Tuple[int, int]],
     cache: Dict[Tuple[int, int], Optional[str]],
 ) -> None:
-    """Один матч рассылки по стране (Задача 75): видео голов страны в матче альбомом,
-    подписью к первому клипу — ``text`` (карточка матча и игроки страны).
+    """Один матч рассылки по стране (Задача 76): короткое сообщение ``text`` (счёт и
+    игроки страны) с кнопкой полной карточки матча, за ним видео голов страны альбомом.
 
-    Без клипов уходит только ``text``; текст длиннее ``_CAPTION_LIMIT`` — отдельным
-    сообщением перед видео. Клипы, не влезающие в один запрос (``_albums``), идут
-    несколькими альбомами подряд; одиночный клип — ``send_video``: альбом требует
-    минимум два медиа. ``file_id`` отправленных видео кладётся в ``cache`` —
-    следующим подписчикам клип уходит без повторной загрузки.
+    Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет. Клипы, не
+    влезающие в один запрос (``_albums``), идут несколькими альбомами подряд;
+    одиночный клип — ``send_video``: альбом требует минимум два медиа. ``file_id``
+    отправленных видео кладётся в ``cache`` — следующим подписчикам клип уходит без
+    повторной загрузки.
 
     Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — HTML сообщения;
-    ``goals`` — (game_id, event_id) голов матча; ``cache`` — см. ``_prepare_goal_clips``.
+    ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов страны в
+    матче; ``cache`` — см. ``_prepare_goal_clips``.
     """
-    clips = await _prepare_goal_clips(goals, cache)
-    caption: Optional[str] = text
-    if not clips or _caption_length(text) > _CAPTION_LIMIT:
-        await _throttled(
-            lambda: bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"), chat_id
-        )
-        caption = None
-    for album in _albums(clips):
+    card_button = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}")]]
+    )
+    await _throttled(
+        lambda: bot.send_message(
+            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=card_button
+        ),
+        chat_id,
+    )
+    for album in _albums(await _prepare_goal_clips(goals, cache)):
         if len(album) == 1:
             _, video, params = album[0]
             sent = [
                 await _throttled(
                     lambda: bot.send_video(
-                        chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
-                        supports_streaming=True, **params,
+                        chat_id=chat_id, video=video, supports_streaming=True, **params
                     ),
                     chat_id,
                 )
             ]
         else:
             media = [
-                InputMediaVideo(
-                    video, caption=caption if n == 0 else None, parse_mode="HTML",
-                    supports_streaming=True, **params,
-                )
-                for n, (_, video, params) in enumerate(album)
+                InputMediaVideo(video, supports_streaming=True, **params)
+                for _, video, params in album
             ]
             sent = list(
                 await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
             )
-        caption = None
         for (key, _, _), message in zip(album, sent):
             assert message.video is not None  # ответ на отправку видео всегда содержит video
             cache[key] = message.video.file_id
 
 
-async def run_country_broadcast(context: CallbackContext, night: date) -> None:
-    """Матчи ночи *night* с игроками страны — подписчикам ``country_players``.
+async def _clips_published(
+    goals: List[Tuple[int, int]], published: Dict[Tuple[int, int], bool]
+) -> bool:
+    """Выложены ли клипы всех голов ``goals``; ответы NHL кэшируются в ``published``
+    на прогон — матч проверяется один раз, сколько бы у него ни было подписчиков."""
+    for goal in goals:
+        if goal not in published:
+            published[goal] = await asyncio.to_thread(goal_clip_published, *goal)
+        if not published[goal]:
+            return False
+    return True
 
-    Зачем: подписка на страну (Задачи 61, 75) — по сообщению на матч
-    (``_send_country_game``); ``last_sent_night`` — по каждой паре (чат, страна).
-    Сбой одного матча не срывает остальные: прежде альбом сверх лимита загрузки
-    гасил всю рассылку чату. Ночь без игроков страны ничего не шлёт, но отмечается
-    отправленной.
+
+async def run_country_broadcast(context: CallbackContext, night: date, final: bool) -> None:
+    """Матчи ночи *night* с игроками страны — подписчикам ``country_players``, по матчу.
+
+    Зачем: подписка на страну (Задача 76) — сообщение о матче через полчаса после его
+    конца, а не утром. Матч уходит на первом прогоне sync, когда он уже в ``games`` и у
+    всех голов страны в нём NHL выложила клипы; ``final`` (крайний срок ночи) — с тем,
+    что есть. Отметка — по паре (подписка, матч) в ``bot_country_game_sent``, ставится
+    после попытки: сбой одного матча логируется и не повторяется, остальные уходят.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``night`` — игровая дата ночи (``night_of``).
+    ``night`` — игровая дата ночи (``night_of``); ``final`` — наступил ли крайний срок.
     """
-    due = [
-        (chat_id, country)
-        for chat_id, country, last_sent in list_active_country_rows()
-        if last_sent != night
-    ]
+    rows = list_active_country_rows()
     games: Dict[str, List[Tuple[int, str, List[Tuple[int, int]]]]] = {}
+    for country in sorted({country for _, _, country in rows}):
+        goals_by_game: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+        for goal in country_night_goals(country, night):
+            goals_by_game[goal[0]].append(goal)
+        games[country] = [
+            (game_id, block, goals_by_game[game_id])
+            for game_id, block in country_night_blocks(country, night)
+        ]
+    game_ids = sorted({game_id for country_games in games.values() for game_id, _, _ in country_games})
+    if not game_ids:
+        return
+    sent = sent_country_games(game_ids)
+    published: Dict[Tuple[int, int], bool] = {}
+    score_lines: Dict[int, str] = {}
     file_ids: Dict[Tuple[int, int], Optional[str]] = {}
-    for chat_id, country in due:
-        if country not in games:
-            goals_by_game: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
-            for goal in country_night_goals(country, night):
-                goals_by_game[goal[0]].append(goal)
-            games[country] = [
-                (game_id, text, goals_by_game[game_id])
-                for game_id, text in country_night_games(country, night)
-            ]
-        if not games[country]:
-            logger.info("No %s players in night %s: nothing sent", country, night)
-        for game_id, text, goals in games[country]:
+    for subscription_id, chat_id, country in rows:
+        for game_id, block, goals in games[country]:
+            if (subscription_id, game_id) in sent:
+                continue
+            if not final and not await _clips_published(goals, published):
+                logger.info("game_id=%s: клипы %s ещё не выложены, ждём", game_id, country)
+                continue
+            if game_id not in score_lines:
+                score_lines[game_id] = game_score_line(game_id)
+            text = f"{score_lines[game_id]}\n\n{block}\n\n{SUBSCRIPTIONS_FOOTER}"
             try:
-                await _send_country_game(
-                    context.bot, chat_id, f"{text}\n\n{SUBSCRIPTIONS_FOOTER}", goals, file_ids
-                )
+                await _send_country_game(context.bot, chat_id, text, game_id, goals, file_ids)
             except Forbidden:
                 logger.info("chat_id=%s blocked bot; deactivate country %s", chat_id, country)
                 mark_subscription_inactive_by_chat_kind_team(
@@ -459,25 +471,28 @@ async def run_country_broadcast(context: CallbackContext, night: date) -> None:
                     "country send failed chat_id=%s %s game_id=%s: %s",
                     chat_id, country, game_id, exc,
                 )
-        mark_night_sent(chat_id, "country_players", None, night, country=country)
+            mark_country_game_sent(subscription_id, game_id)
 
 
 async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
-    """Прогоняет три рассылки за ночь момента *now*, если пора.
+    """Прогоняет рассылки за ночь момента *now*.
 
-    Пора, когда ночь загружена целиком (``night_is_loaded``) или наступил крайний срок
-    ``NIGHT_DEADLINE_MSK``; иначе не шлётся ничего. После крайнего срока NHL API не
-    спрашивается, чтобы его сбой не сорвал отправку по сроку.
+    Дайджест и команды — когда ночь загружена целиком (``night_is_loaded``) или
+    наступил крайний срок ``NIGHT_DEADLINE_MSK``. Страна — на каждом прогоне, по
+    готовым матчам (``run_country_broadcast``), и последней: её сбой (NHL, ffmpeg) не
+    срывает дайджест на крайнем сроке, у которого следующей попытки нет. После
+    крайнего срока NHL API о готовности ночи не спрашивается.
 
     Аргументы: ``context`` — контекст PTB; ``now`` — текущий момент (aware).
     """
     night = night_of(now)
-    if now < _msk_moment(night, NIGHT_DEADLINE_MSK) and not night_is_loaded(night):
-        logger.info("Ночь %s загружена не целиком: рассылка отложена.", night)
-        return
-    await run_morning_digest_broadcast(context, night)
-    await run_team_scores_broadcast(context, night)
-    await run_country_broadcast(context, night)
+    final = now >= _msk_moment(night, NIGHT_DEADLINE_MSK)
+    if final or night_is_loaded(night):
+        await run_morning_digest_broadcast(context, night)
+        await run_team_scores_broadcast(context, night)
+    else:
+        logger.info("Ночь %s загружена не целиком: дайджест и команды отложены.", night)
+    await run_country_broadcast(context, night, final)
 
 
 async def main() -> None:

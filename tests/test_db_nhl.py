@@ -310,7 +310,7 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         self.assertEqual(self._team_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, self.TEAM, None)])
 
     def _country_rows(self, chat_id=CHAT):
-        return [r for r in self.repo.list_active_country_rows() if r[0] == chat_id]
+        return [r for r in self.repo.list_active_country_rows() if r[1] == chat_id]
 
     def test_country_subscriptions(self):
         repo = self.repo
@@ -318,13 +318,22 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.upsert_country(self.CHAT, "FIN")
         repo.upsert_country(self.OTHER_CHAT, "RUS")
         repo.upsert_morning_digest(self.CHAT)
-
-        # Отметка ночи — только у своей страны; дайджест и чужой чат не задеты.
-        repo.mark_night_sent(self.CHAT, "country_players", None, self.NIGHT, country="RUS")
+        (fin, _, _), (rus, _, _) = self._country_rows()
+        ((other_rus, _, _),) = self._country_rows(self.OTHER_CHAT)
         self.assertEqual(
-            self._country_rows(), [(self.CHAT, "FIN", None), (self.CHAT, "RUS", self.NIGHT)]
+            [r[1:] for r in self._country_rows()], [(self.CHAT, "FIN"), (self.CHAT, "RUS")]
         )
-        self.assertEqual(self._country_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, "RUS", None)])
+
+        # Задача 76: отметка матча — только у своей подписки; повторная — no-op.
+        game, other_game = 2099990001, 2099990002
+        repo.mark_country_game_sent(rus, game)
+        repo.mark_country_game_sent(rus, game)
+        repo.mark_country_game_sent(other_rus, other_game)
+        self.assertEqual(repo.sent_country_games([game]), {(rus, game)})
+        self.assertEqual(
+            repo.sent_country_games([game, other_game]), {(rus, game), (other_rus, other_game)}
+        )
+        self.assertNotIn((fin, game), repo.sent_country_games([game]))
         self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
         # Отписка от одной страны; переподписка реактивирует ту же строку.
@@ -649,46 +658,39 @@ class TestCountryNightSql(unittest.TestCase):
             cur.execute("DELETE FROM rosters WHERE season_id = %s", (self.SEASON,))
             cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
 
-    def test_games_card_then_players_by_position_and_empty_without_players(self):
-        """Задача 75: сообщение — матч: карточка (`game_message`), под ней игроки страны.
+    def test_country_blocks_by_game_by_position_and_empty_without_players(self):
+        """Задача 76: блок страны — по матчу, за ночь и для одного матча (карточка).
         Задача 64: у C — хиты и вбрасывания, у R — хиты, у D — блоки вместо хитов,
         у G — сейвы; пометка позиции только «ц»/«защ»; между игроками пустая строка."""
-        games = self.messages.country_night_games("ZZZ", self.NIGHT)
-        self.assertEqual([game_id for game_id, _ in games], [self.GAME, self.GAME2])
-        card = self.messages.game_message(self.GAME)[0]
-        self.assertIn("Home", card)
+        block_game = "\n".join([
+            "<b>ZZZ</b>",
+            "",
+            "<b>Скорер&lt;</b> (HOM, ц)",
+            "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
+            "",
+            "<b>Крыло</b> (HOM)",
+            "0+1 · −1 · 2 бр. · 3 хита · 15:30",
+            "",
+            "<b>Защитник</b> (HOM, защ)",
+            "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
+            "",
+            "<b>Стенка</b> (HOM)",
+            "30/33 · 90.91% · 59:47",
+        ])
+        block_game2 = "<b>ZZZ</b>\n\n<b>Гость</b> (AWY)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
-            games[0][1],
-            "\n".join([
-                card,
-                "",
-                "<b>ZZZ</b>",
-                "",
-                "<b>Скорер&lt;</b> (HOM, ц)",
-                "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
-                "",
-                "<b>Крыло</b> (HOM)",
-                "0+1 · −1 · 2 бр. · 3 хита · 15:30",
-                "",
-                "<b>Защитник</b> (HOM, защ)",
-                "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
-                "",
-                "<b>Стенка</b> (HOM)",
-                "30/33 · 90.91% · 59:47",
-            ]),
+            self.messages.country_night_blocks("ZZZ", self.NIGHT),
+            [(self.GAME, block_game), (self.GAME2, block_game2)],
         )
-        self.assertEqual(
-            games[1][1],
-            "\n".join([
-                self.messages.game_message(self.GAME2)[0],
-                "",
-                "<b>ZZZ</b>",
-                "",
-                "<b>Гость</b> (AWY)",
-                "0+0 · +0 · 1 бр. · 2 хита · 12:00",
-            ]),
-        )
-        self.assertEqual(self.messages.country_night_games("XXX", self.NIGHT), [])
+        self.assertEqual(self.messages.country_game_block("ZZZ", self.GAME2), block_game2)
+        self.assertEqual(self.messages.country_night_blocks("XXX", self.NIGHT), [])
+        self.assertIsNone(self.messages.country_game_block("XXX", self.GAME))
+
+    def test_score_line_is_the_first_line_of_the_card(self):
+        """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
+        line = self.messages.game_score_line(self.GAME)
+        self.assertEqual(line, "🏒 <b>Home 3:2 Away</b>")
+        self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
 
     def test_goals_of_country_skip_shootout_in_game_order(self):
         self.assertEqual(

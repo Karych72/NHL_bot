@@ -18,6 +18,17 @@ import pytest
 from telegram.error import BadRequest
 
 
+@pytest.fixture(autouse=True)
+def no_country_subscriptions(bot_module, monkeypatch):
+    """Карточка матча спрашивает подписки чата ради блока страны (Задача 76); здесь
+    у чата их нет — та же граница с БД, что у ``game_message``. Блок страны
+    подписчику — в tests/test_bot_integration.py."""
+    monkeypatch.setattr(
+        bot_module("stats_handlers"), "get_chat_subscriptions",
+        lambda chat_id: (False, set(), []),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure keyboard builders — callback_data shape and offset math
 # ---------------------------------------------------------------------------

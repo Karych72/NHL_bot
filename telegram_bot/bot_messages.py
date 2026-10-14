@@ -379,6 +379,16 @@ def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
     }
 
 
+def _score_line(header: Dict[str, str]) -> str:
+    """HTML-строка счёта «🏒 <b>Хозяева 4:2 Гости</b> (OT)» из `_game_score_header`:
+    первая строка карточки матча и шапка сообщения подписки на страну."""
+    return (
+        f"🏒 <b>{html.escape(header['home'])} {html.escape(header['home_score'])}:"
+        f"{html.escape(header['away_score'])} {html.escape(header['away'])}</b>"
+        f"{html.escape(header['extra'])}"
+    )
+
+
 def _goals_pre_block(goal_rows: List[List[str]], assists: List[str]) -> str:
     """Голы карточки матча одним `<pre>` в ширину телефона: строка гола —
     время, счёт, автор с позицией и пометками; ассистенты — следующей строкой
@@ -535,17 +545,13 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
 
     to_template = {
-        'team_home': html.escape(header['home']),
-        'team_away': html.escape(header['away']),
-        'home_score': html.escape(header['home_score']),
-        'away_score': html.escape(header['away_score']),
+        'score_line': _score_line(header),
         'home_shots': html.escape(str(game_stats['shots'][0])),
         'away_shots': html.escape(str(game_stats['shots'][1])),
         'home_penalties': html.escape(str(game_stats['pim'][0])),
         'away_penalties': html.escape(str(game_stats['pim'][1])),
         'goals_block': goals_block,
         'goalkeepers': "\n".join(goalie_lines),
-        'extra': html.escape(header['extra']),
         'period_scores': html.escape(header['period_scores']),
         'hat_tricks': hat_tricks,
         'recent_form': recent_form,
@@ -2065,18 +2071,19 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
-# Задача 61: игроки страны в матчах игрового дня (`games.day`); страна — `rosters.nationality`.
-_NIGHT_PLAYERS_FROM = (
+# Задачи 61, 76: игроки страны в матчах игрового дня (`g.day`) или в одном матче
+# (`g.game_id`); страна — `rosters.nationality`.
+_COUNTRY_PLAYERS_FROM = (
     "FROM {stats} s "
     "JOIN games g ON g.game_id = s.game_id "
     "JOIN rosters r ON r.player_id = s.player_id AND r.season_id = g.season_id "
     "LEFT JOIN teams t ON t.team_id = s.team_id AND t.season_id = g.season_id "
-    "WHERE g.day = %s AND r.nationality = %s AND "
+    "WHERE {scope} = %s AND r.nationality = %s AND "
 )
 
 
 def _night_skater_lines(s: Dict, i: int) -> List[str]:
-    """Две строки полевого игрока `i` выборки `country_night_games`: фамилия и
+    """Две строки полевого игрока `i` выборки `_country_blocks`: фамилия и
     команда (у центрального — «ц», у защитника — «защ»), под ними статистика:
     у всех голы+передачи, ±, броски и время; у нападающих — хиты, у центральных
     ещё вбрасывания, у защитников — блоки вместо хитов."""
@@ -2100,30 +2107,28 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
     return [head, " · ".join(parts)]
 
 
-def country_night_games(code: str, night: date) -> List[Tuple[int, str]]:
-    """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
-    (game_id, HTML) по порядку `game_id`. HTML — карточка матча (`game_message`)
-    и под ней блок страны: у игрока две строки — имя и статистика по позиции,
-    между игроками пустая строка; полевые по очкам и голам, затем вратари.
-    Пустой список, если никто из страны не играл. Нужно рассылке подписки на
-    страну (`push_digest_job.run_country_broadcast`, Задача 75): сообщение — матч."""
+def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int, str]:
+    """Блок страны `code` по матчам выборки `scope = value` (`g.day` или `g.game_id`):
+    game_id → HTML. Заголовок — флаг и страна, у игрока две строки — имя и
+    статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
+    затем вратари. Матча, где никто из страны не играл, в словаре нет."""
     skaters = fetch_all(
         "SELECT s.game_id, r.lastname, t.abbreviation, r.position, s.goals, s.assists, s.shots, "
         "s.plus_minus, s.hits, s.blocked, s.face_off_wins, s.face_off_taken, s.time_on_ice "
-        + _NIGHT_PLAYERS_FROM.format(stats="game_player_stats")
+        + _COUNTRY_PLAYERS_FROM.format(stats="game_player_stats", scope=scope)
         + "r.position <> 'G' AND s.time_on_ice IS NOT NULL AND s.time_on_ice <> '00:00' "
         "ORDER BY COALESCE(s.goals, 0) + COALESCE(s.assists, 0) DESC, "
         "COALESCE(s.goals, 0) DESC, r.lastname",
-        (night, code),
+        (value, code),
         columns=["game_id", "lastname", "team", "position", "goals", "assists", "shots",
                  "plus_minus", "hits", "blocked", "fo_wins", "fo_taken", "toi"],
     )
     goalies = fetch_all(
         "SELECT s.game_id, r.lastname, t.abbreviation, s.saves, s.shots, s.save_percentage, "
         "s.timeonice "
-        + _NIGHT_PLAYERS_FROM.format(stats="game_goalie_stats")
+        + _COUNTRY_PLAYERS_FROM.format(stats="game_goalie_stats", scope=scope)
         + "s.timeonice IS NOT NULL AND s.timeonice <> '00:00' ORDER BY r.lastname",
-        (night, code),
+        (value, code),
         columns=["game_id", "lastname", "team", "saves", "shots", "save_percentage", "toi"],
     )
     players: Dict[int, List[str]] = defaultdict(list)
@@ -2140,12 +2145,26 @@ def country_night_games(code: str, night: date) -> List[Tuple[int, str]]:
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
     heading = f"<b>{_country_label(code)}</b>"
-    # Без обрезки: матч заведомо короче 4096 символов (на живых ночах — до ~2000), а обрезка
-    # сырого HTML разрезала бы `<pre>` карточки — Telegram отверг бы сообщение.
-    return [
-        (game_id, "\n".join([game_message(game_id)[0], "", heading] + players[game_id]))
-        for game_id in sorted(players)
-    ]
+    return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
+
+
+def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
+    """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
+    (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
+    Нужно рассылке подписки на страну (`push_digest_job.run_country_broadcast`)."""
+    return sorted(_country_blocks(code, "g.day", night).items())
+
+
+def country_game_block(code: str, game_id: int) -> Optional[str]:
+    """Блок страны `code` в матче `game_id` или `None`, если никто из неё не играл.
+    Зачем: полная карточка матча подписчику страны дополняется этим блоком (Задача 76)."""
+    return _country_blocks(code, "g.game_id", game_id).get(game_id)
+
+
+def game_score_line(game_id: int) -> str:
+    """Строка счёта матча `game_id` — первая строка его карточки (`_score_line`).
+    Нужна короткому сообщению подписки на страну (Задача 76), где полной карточки нет."""
+    return _score_line(_game_score_header(*_fetch_game_score_rows(game_id)))
 
 
 def country_night_goals(code: str, night: date) -> List[Tuple[int, int]]:

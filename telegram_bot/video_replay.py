@@ -60,6 +60,17 @@ def _get_brightcove_clip_id(game_id: int, event_id: int) -> Optional[int]:
     return clip_id
 
 
+def goal_clip_published(game_id: int, event_id: int) -> bool:
+    """Выложила ли NHL клип гола (`highlightClip` в Replay API) — без скачивания.
+
+    Зачем: подписка на страну ждёт клипы матча перед отправкой (Задача 76); через
+    полчаса после матча их может ещё не быть.
+
+    Аргументы: ``game_id``, ``event_id`` — гол.
+    """
+    return bool(_get_brightcove_clip_id(game_id, event_id))
+
+
 def _mp4_sources(sources: List[dict]) -> List[dict]:
     return [
         s

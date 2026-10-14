@@ -257,7 +257,7 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
     nights = []
     before = push_job.night_of(datetime.now(timezone.utc))
 
-    async def record(context, night):
+    async def record(context, night, *final):
         steps.append("broadcast")
         contexts.append(context)
         nights.append(night)
@@ -305,18 +305,19 @@ def _night_slots():
 
 
 async def _run_night(push_job, fake_context, loaded_at):
-    """Прогоняет ``broadcast_if_due`` после каждого слота ночи для трёх видов подписки.
+    """Прогоняет ``broadcast_if_due`` после каждого слота ночи для дайджеста и команды
+    (страна — по матчу, своим прогоном: ``_run_country_night``).
 
-    Чат 111 — дайджест, 222 — команда, 333 — страна; отметка ``last_sent_night``
-    живёт в словаре так же, как в ``bot_subscriptions``. *loaded_at* — с какого
-    слота ночь загружена целиком (``None`` — не загружается до утра).
+    Чат 111 — дайджест, 222 — команда; отметка ``last_sent_night`` живёт в словаре
+    так же, как в ``bot_subscriptions``. *loaded_at* — с какого слота ночь загружена
+    целиком (``None`` — не загружается до утра).
 
     Возвращает ``{chat_id: [моменты МСК, когда чату ушла рассылка]}``.
     """
-    last_sent = {111: None, 222: None, 333: None}
+    last_sent = {111: None, 222: None}
     sent_at = {chat_id: [] for chat_id in last_sent}
 
-    def mark(chat_id, kind, team_id, night, country=None):
+    def mark(chat_id, kind, team_id, night):
         last_sent[chat_id] = night
 
     for slot in _night_slots():
@@ -327,17 +328,13 @@ async def _run_night(push_job, fake_context, loaded_at):
         ), patch.object(
             push_job, "list_active_team_scores_rows", return_value=[(222, 6, last_sent[222])]
         ), patch.object(
-            push_job, "list_active_country_rows", return_value=[(333, "RUS", last_sent[333])]
+            push_job, "list_active_country_rows", return_value=[]
         ), patch.object(push_job, "mark_night_sent", side_effect=mark), patch.object(
             push_job, "day_digest", return_value=ONE_GAME_DAY
         ), patch.object(
             push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
         ), patch.object(
             push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])
-        ), patch.object(
-            push_job, "country_night_games", return_value=[(1, "RUS TEXT")]
-        ), patch.object(
-            push_job, "country_night_goals", return_value=[]
         ), patch.object(push_job, "night_is_loaded", return_value=loaded):
             await push_job.broadcast_if_due(fake_context, slot)
         for message in fake_context.bot.sent_messages[before:]:
@@ -352,8 +349,9 @@ def test_night_of_covers_the_whole_sync_window(push_job):
 
 
 @pytest.mark.asyncio
-async def test_nothing_goes_out_while_the_night_is_not_loaded(push_job, fake_context):
-    """Ночь не загружена, срок не наступил — ни один вид подписки не шлётся."""
+async def test_unloaded_night_holds_digest_and_teams_but_not_country(push_job, fake_context):
+    """Ночь не загружена, срок не наступил — дайджест и команды ждут; страна идёт по
+    готовым матчам на каждом прогоне (Задача 76), крайний срок ещё не наступил."""
     with patch.object(push_job, "night_is_loaded", return_value=False), patch.object(
         push_job, "run_morning_digest_broadcast"
     ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
@@ -363,23 +361,23 @@ async def test_nothing_goes_out_while_the_night_is_not_loaded(push_job, fake_con
 
     digest.assert_not_called()
     team.assert_not_called()
-    country.assert_not_called()
+    country.assert_awaited_once_with(fake_context, NIGHT, False)
 
 
 @pytest.mark.asyncio
-async def test_all_kinds_go_out_once_at_the_first_run_after_the_night_is_loaded(
+async def test_digest_and_teams_go_out_once_at_the_first_run_after_the_night_is_loaded(
     push_job, fake_context
 ):
-    """Ночь загрузилась к 08:30 — все три вида уходят в 08:30 и не повторяются до утра."""
+    """Ночь загрузилась к 08:30 — дайджест и команды уходят в 08:30 и не повторяются до утра."""
     sent_at = await _run_night(push_job, fake_context, loaded_at=_msk(8, 30))
-    assert sent_at == {111: [_msk(8, 30)], 222: [_msk(8, 30)], 333: [_msk(8, 30)]}
+    assert sent_at == {111: [_msk(8, 30)], 222: [_msk(8, 30)]}
 
 
 @pytest.mark.asyncio
 async def test_unloaded_night_goes_out_at_the_deadline(push_job, fake_context):
     """Ночь так и не загрузилась целиком (перенос, сбой) — всё уходит в 11:00 с тем, что есть."""
     sent_at = await _run_night(push_job, fake_context, loaded_at=None)
-    assert sent_at == {111: [_msk(11, 0)], 222: [_msk(11, 0)], 333: [_msk(11, 0)]}
+    assert sent_at == {111: [_msk(11, 0)], 222: [_msk(11, 0)]}
 
 
 @pytest.mark.asyncio
@@ -394,7 +392,7 @@ async def test_deadline_does_not_ask_nhl_api(push_job, fake_context):
 
     digest.assert_awaited_once_with(fake_context, NIGHT)
     team.assert_awaited_once_with(fake_context, NIGHT)
-    country.assert_awaited_once_with(fake_context, NIGHT)
+    country.assert_awaited_once_with(fake_context, NIGHT, True)
 
 
 @pytest.mark.asyncio
@@ -527,13 +525,32 @@ def _goals(game_id, n, first_event=100):
     return [(game_id, first_event + i) for i in range(n)]
 
 
+def _sub(chat_id):
+    """id строки подписки чата в фикстуре — чтобы отметки читались по чату."""
+    return chat_id * 10
+
+
 @pytest.fixture
 def country_env(push_job, monkeypatch, tmp_path):
-    """Рассылка по стране с подменой БД и скачивания: бот, журнал скачиваний,
-    отметки, погашенные подписки и ``run(rows, games, goals)``; ``games`` —
-    (game_id, текст) матчей ночи, ``goals`` — (game_id, event_id) голов страны."""
-    env = SimpleNamespace(bot=CountryBot(), downloads=[], marked=[], deactivated=[], missing=set())
+    """Рассылка по стране с подменой БД, NHL и скачивания: бот, журнал скачиваний и
+    проверок клипов, отметки «матч ушёл» (``sent`` — в БД, ``marked`` — по порядку),
+    погашенные подписки и ``run(chats, games, goals, final)``; ``chats`` — (chat_id,
+    страна), ``games`` — (game_id, блок страны) матчей ночи, ``goals`` — (game_id,
+    event_id) голов страны; ``unpublished`` — голы, клипа которых NHL ещё не выложила,
+    ``missing`` — голы, клип которых не скачался."""
+    env = SimpleNamespace(
+        bot=CountryBot(), downloads=[], clip_checks=[], marked=[], sent=set(), deactivated=[],
+        missing=set(), unpublished=set(),
+    )
     env.context = SimpleNamespace(bot=env.bot)
+
+    def published(game_id, event_id):
+        env.clip_checks.append((game_id, event_id))
+        return (game_id, event_id) not in env.unpublished
+
+    def mark(subscription_id, game_id):
+        env.marked.append((subscription_id, game_id))
+        env.sent.add((subscription_id, game_id))
 
     def download(game_id, event_id):
         env.downloads.append((game_id, event_id))
@@ -546,21 +563,25 @@ def country_env(push_job, monkeypatch, tmp_path):
             path=str(video), width=1280, height=720, duration=9, thumb_path=str(thumb)
         )
 
-    def run(rows, games, goals):
+    def run(chats, games, goals, final=False):
         monkeypatch.setattr(push_job, "list_active_country_rows", lambda: [
-            (chat, country, None) for chat, country in rows
+            (_sub(chat), chat, country) for chat, country in chats
         ])
-        monkeypatch.setattr(push_job, "country_night_games", lambda *a: games)
+        monkeypatch.setattr(push_job, "country_night_blocks", lambda *a: games)
         monkeypatch.setattr(push_job, "country_night_goals", lambda *a: goals)
+        monkeypatch.setattr(push_job, "game_score_line", lambda game_id: f"SCORE {game_id}")
+        monkeypatch.setattr(push_job, "goal_clip_published", published)
         monkeypatch.setattr(push_job, "download_goal_video", download)
         monkeypatch.setattr(
-            push_job, "mark_night_sent", lambda *a, **kw: env.marked.append((a, kw))
+            push_job, "sent_country_games",
+            lambda game_ids: {s for s in env.sent if s[1] in game_ids},
         )
+        monkeypatch.setattr(push_job, "mark_country_game_sent", mark)
         monkeypatch.setattr(
             push_job, "mark_subscription_inactive_by_chat_kind_team",
             lambda *a: env.deactivated.append(a),
         )
-        return push_job.run_country_broadcast(env.context, NIGHT)
+        return push_job.run_country_broadcast(env.context, NIGHT, final)
 
     env.run = run
     env.tmp_path = tmp_path
@@ -568,76 +589,72 @@ def country_env(push_job, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_country_broadcast_sends_one_message_per_game_and_reuses_file_ids(country_env):
-    """Задача 75: матч — одно сообщение. Голы матча — альбомом, подпись у первого клипа —
-    карточка с игроками страны; матч без голов страны — просто текстом."""
+async def test_country_game_is_short_text_with_card_button_then_goal_album(country_env):
+    """Задача 76: матч — короткий текст (счёт и блок страны, без полной карточки) с кнопкой
+    «Карточка матча», за ним голы страны альбомом без подписи; без голов — только текст.
+    Второму чату клипы — по ``file_id``, без повторной загрузки."""
     country_env.missing = {(GAME_A, 101)}
     await country_env.run(
         [(111, "RUS"), (222, "RUS")],
-        [(GAME_A, "CARD A"), (GAME_B, "CARD B")],
+        [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")],
         _goals(GAME_A, 3),
     )
     bot = country_env.bot
 
-    assert bot.order == [("album", 111), ("message", 111), ("album", 222), ("message", 222)]
-    # Гол без клипа пропущен: в альбоме два видео, подпись только у первого.
-    first = bot.albums[0][1]
-    assert [(m.caption, m.parse_mode) for m in first] == [
-        ("CARD A" + FOOTER, "HTML"), (None, "HTML"),
+    assert bot.order == [
+        ("message", 111), ("album", 111), ("message", 111),
+        ("message", 222), ("album", 222), ("message", 222),
     ]
-    assert [m["text"] for m in bot.messages] == ["CARD B" + FOOTER] * 2
+    assert [m["text"] for m in bot.messages[:2]] == [
+        f"SCORE {GAME_A}\n\nBLOCK A" + FOOTER, f"SCORE {GAME_B}\n\nBLOCK B" + FOOTER,
+    ]
     assert {m["parse_mode"] for m in bot.messages} == {"HTML"}
+    buttons = [m["reply_markup"].inline_keyboard for m in bot.messages[:2]]
+    assert [[(b.text, b.callback_data) for row in kb for b in row] for kb in buttons] == [
+        [("Карточка матча", f"dg:{GAME_A}")], [("Карточка матча", f"dg:{GAME_B}")],
+    ]
+    # Гол без клипа пропущен: в альбоме два видео, подписей нет — текст уже выше.
+    first = bot.albums[0][1]
+    assert [m.caption for m in first] == [None, None]
     assert not any(isinstance(m.media, str) for m in first), "первому чату — загрузка"
     # PTB пишет в альбом media/thumbnail только у файлов с attach_uri (attach://…):
     # без него поля выпадают из запроса и Telegram альбом не принимает.
     uris = [f.attach_uri for m in first for f in (m.media, m.thumbnail)]
     assert all(uris) and len(set(uris)) == 4, "у каждого видео и превью свой attach://"
-    # Второму чату — file_id, без повторной загрузки; каждый клип скачан один раз.
     assert [m.media for m in bot.albums[1][1]] == ["fid-1", "fid-2"]
-    assert bot.albums[1][1][0].caption == "CARD A" + FOOTER
     assert sorted(country_env.downloads) == _goals(GAME_A, 3)
     assert list(country_env.tmp_path.iterdir()) == [], "временные файлы удалены"
     assert country_env.marked == [
-        ((111, "country_players", None, NIGHT), {"country": "RUS"}),
-        ((222, "country_players", None, NIGHT), {"country": "RUS"}),
+        (_sub(111), GAME_A), (_sub(111), GAME_B), (_sub(222), GAME_A), (_sub(222), GAME_B),
     ]
 
 
 @pytest.mark.asyncio
-async def test_country_game_over_upload_budget_goes_out_in_several_albums(
-    country_env, push_job, monkeypatch
-):
-    """Задача 75: альбом из 10 клипов по 8–19 МБ Telegram отверг (лимит 50 МБ на запрос).
-    Клипы матча делятся по бюджету загрузки, подпись — у первого альбома, одиночный
-    остаток — ``send_video``. Второму чату клипы идут по ``file_id`` — бюджет не тратят."""
-    monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 25)  # клип с превью — 10 байт
-    await country_env.run([(111, "RUS"), (222, "RUS")], [(GAME_A, "CARD")], _goals(GAME_A, 5))
-    bot = country_env.bot
+async def test_country_game_waits_for_clips_until_the_deadline(country_env):
+    """Задача 76: матч уже в БД, но NHL ещё не выложила клип гола страны — матч ждёт
+    следующего прогона (матч без голов уходит сразу); к крайнему сроку уходит с тем, что
+    есть. NHL спрашивается один раз на гол за прогон, сколько бы ни было подписчиков."""
+    games = [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")]
+    goals = _goals(GAME_A, 2)
+    country_env.unpublished = {(GAME_A, 101)}
+    await country_env.run([(111, "RUS"), (222, "RUS")], games, goals)
 
-    assert bot.order == [("album", 111), ("album", 111), ("video", 111), ("album", 222)]
-    assert [len(media) for _, media in bot.albums] == [2, 2, 5]
-    captions = [m.caption for _, media in bot.albums[:2] for m in media]
-    assert captions == ["CARD" + FOOTER, None, None, None]
-    assert bot.videos[0][2]["caption"] is None
-    assert bot.albums[2][1][0].caption == "CARD" + FOOTER
+    assert country_env.marked == [(_sub(111), GAME_B), (_sub(222), GAME_B)]
+    assert country_env.clip_checks == _goals(GAME_A, 2)
+    assert country_env.bot.albums == []
 
+    # Следующий прогон: клип выложен — матч уходит; ушедший GAME_B не повторяется.
+    country_env.unpublished = set()
+    await country_env.run([(111, "RUS"), (222, "RUS")], games, goals)
+    assert country_env.marked[2:] == [(_sub(111), GAME_A), (_sub(222), GAME_A)]
+    assert [len(media) for _, media in country_env.bot.albums] == [2, 2]
 
-@pytest.mark.asyncio
-async def test_country_game_text_over_caption_limit_goes_before_the_album(country_env):
-    """Подпись длиннее 1024 видимых символов Telegram не примет: текст уходит отдельным
-    сообщением, альбом — без подписи."""
-    long_text = "<b>" + "x" * 1100 + "</b>"
-    await country_env.run([(111, "RUS")], [(GAME_A, long_text)], _goals(GAME_A, 2))
-    bot = country_env.bot
-
-    assert bot.order == [("message", 111), ("album", 111)]
-    assert bot.messages[0]["text"] == long_text + FOOTER
-    assert [m.caption for m in bot.albums[0][1]] == [None, None]
-
-
-def test_caption_length_counts_visible_utf16_characters(push_job):
-    """Разметка не считается, сущности — по символу, эмодзи — два UTF-16-символа."""
-    assert push_job._caption_length("<b>&lt;</b> <pre>ab</pre>🏒") == 1 + 1 + 2 + 2
+    # Крайний срок: клипа так и нет — матч уходит без проверки NHL.
+    country_env.unpublished = {(GAME_B, 200)}
+    country_env.clip_checks.clear()
+    await country_env.run([(333, "RUS")], [(GAME_B, "BLOCK B")], [(GAME_B, 200)], final=True)
+    assert country_env.marked[4:] == [(_sub(333), GAME_B)]
+    assert country_env.clip_checks == []
 
 
 def test_albums_respect_album_size_and_upload_budget(push_job, monkeypatch):
@@ -655,33 +672,50 @@ def test_albums_respect_album_size_and_upload_budget(push_job, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_country_game_over_upload_budget_goes_out_in_several_albums(
+    country_env, push_job, monkeypatch
+):
+    """Задача 75: альбом из 10 клипов по 8–19 МБ Telegram отверг (лимит 50 МБ на запрос).
+    Клипы матча делятся по бюджету загрузки, одиночный остаток — ``send_video``. Второму
+    чату клипы идут по ``file_id`` — бюджет не тратят."""
+    monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 25)  # клип с превью — 10 байт
+    await country_env.run(
+        [(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 5), final=True
+    )
+    bot = country_env.bot
+
+    assert bot.order == [
+        ("message", 111), ("album", 111), ("album", 111), ("video", 111),
+        ("message", 222), ("album", 222),
+    ]
+    assert [len(media) for _, media in bot.albums] == [2, 2, 5]
+
+
+@pytest.mark.asyncio
 async def test_country_broadcast_failed_game_does_not_stop_the_next(country_env):
     """Ночь 2026-10-13: отказ Telegram на альбоме погасил всю рассылку чату. Теперь сбой
-    одного матча логируется, остальные матчи уходят."""
+    одного матча логируется и отмечается (повтора не будет), остальные матчи уходят."""
     async def rejected(chat_id, media):
         raise BadRequest("Request Entity Too Large")
 
     country_env.bot.send_media_group = rejected
     await country_env.run(
         [(111, "RUS")],
-        [(GAME_A, "CARD A"), (GAME_B, "CARD B")],
+        [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")],
         _goals(GAME_A, 2) + _goals(GAME_B, 1, first_event=200),
     )
-    bot = country_env.bot
 
-    assert bot.order == [("video", 111)]
-    assert bot.videos[0][2]["caption"] == "CARD B" + FOOTER
+    assert country_env.bot.order == [("message", 111), ("message", 111), ("video", 111)]
     assert country_env.deactivated == []
-    assert country_env.marked == [((111, "country_players", None, NIGHT), {"country": "RUS"})]
+    assert country_env.marked == [(_sub(111), GAME_A), (_sub(111), GAME_B)]
 
 
 @pytest.mark.asyncio
-async def test_country_broadcast_night_without_players_sends_nothing_but_marks_night(country_env):
+async def test_country_broadcast_night_without_players_sends_nothing(country_env):
     await country_env.run([(111, "RUS")], [], [])
 
     bot = country_env.bot
-    assert (bot.order, country_env.downloads) == ([], [])
-    assert country_env.marked == [((111, "country_players", None, NIGHT), {"country": "RUS"})]
+    assert (bot.order, country_env.downloads, country_env.marked) == ([], [], [])
 
 
 @pytest.mark.asyncio
@@ -696,9 +730,9 @@ async def test_country_broadcast_deactivates_only_the_blocked_subscription(count
 
     country_env.bot.send_message = blocked
     await country_env.run(
-        [(111, "RUS"), (222, "RUS")], [(GAME_A, "CARD A"), (GAME_B, "CARD B")], []
+        [(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")], []
     )
 
     assert country_env.deactivated == [(111, "country_players", None, "RUS")]
     assert country_env.bot.order == [("message", 222), ("message", 222)]
-    assert [a[0][0] for a in country_env.marked] == [111, 222]
+    assert country_env.marked == [(_sub(222), GAME_A), (_sub(222), GAME_B)]
