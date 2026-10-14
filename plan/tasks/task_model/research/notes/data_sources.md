@@ -39,7 +39,7 @@ No single free source covers 2021-22 through 2025-26 with closing ML and totals+
 - Kaggle: the search did not find a maintained Kaggle dataset with NHL closing ML + totals for 2021-26 (Gap).
 
 ### Inferences
-- Practical backfill plan: (a) SBRO 2021-22 for free; (b) The Odds API for 2022-23 → today. Cost estimate: about 1 request per game-day snapshot near puck drop × ~190 game days/season × 5 seasons ≈ 950 requests. For h2h+totals in one region that is 20 credits each ≈ 19K credits, which roughly fits one month of the $30 (20K) plan. This assumes one pre-first-puck snapshot per date, not per game. Multiple start times per day need more snapshots. (c) ESPN core API as a free cross-check or fallback.
+- Practical backfill plan: (a) SBRO 2021-22 for free; (b) The Odds API for 2022-23 → today. Cost estimate: about 1 request per game-day snapshot near puck drop × ~190 game days/season × 5 seasons ≈ 950 requests. For h2h+totals in one region that is 20 credits each ≈ 19K credits, which roughly fits one month of the $30 (20K) plan. This assumes one pre-first-puck snapshot per date, not per game. Multiple start times per day need more snapshots — recounted 2026-10-14 in [`odds_api_backfill.md`](odds_api_backfill.md): closing per start cluster ≈ 69K credits, ~91K with openings ($59 plan). (c) ESPN core API as a free cross-check or fallback.
 - For "closing line" quality, a sharp book (Pinnacle) is preferable. Only The Odds API (region `eu` includes Pinnacle per its bookmaker list; not verified here) and OddsPapi claim Pinnacle.
 - Commercial (premium bot): The Odds API ToS explicitly permits commercial display of derived analytics. ESPN, OddsPortal and SBRO have no grant, so treat them as research-only.
 
