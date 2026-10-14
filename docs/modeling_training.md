@@ -569,11 +569,28 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 код выхода 0. Иначе строки задачи заменяются (delete + insert в одной транзакции), `run_id` берётся
 из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=logreg]`:
 `build-dataset --mode predict` (по `scheduled_games`, манифест берётся из `latest/metadata.json`
-пары; политика cold-start — дефолтная `allow_with_flag`, как при обучении: она входит в `features_hash`,
+пары; политика cold-start — дефолтная `drop`, как при обучении: она входит в `features_hash`,
 и другое значение роняет build-dataset на `features_hash mismatch`) → `predict` → `publish-predictions`. Цель требует `latest`: без него build-dataset/predict
 падают до публикации, поэтому удаление строк при непройденном гейте через make срабатывает, когда
 `latest` указывает на прогон со `status != ok`; при отсутствии `latest` — только прямым вызовом
 `publish-predictions`.
+
+**Прогноз в боте (Задача 73).** В превью `/tonight` выходят вероятность победы хозяев (`home_win`,
+логрег Задачи 68) и тотала больше 5.5 (`over_5_5`, голевая модель Задачи 67 — приёмку не прошла,
+выпущена решением человека 2026-10-14: не оправдается — строку уберём). Обе модели **на проде не
+обучаются**: обучены локально и зафиксированы в репозитории в `deploy/models/` (тот же формат
+`models/<task>/<model>/<run_id>/final/` + `latest`), приезжают в образе. Сервис `predict`
+(`pipeline/scheduled_publish.py`, образ стадии `modeling`) раз в сутки в 12:00 UTC после успешного
+sync: `build-dataset --mode predict --output-dir artifacts/predict` → `predict --artifacts-root deploy`
+→ `publish-predictions` → `publish-goals` (`python -m modeling.cli publish-goals --games CSV
+--predict-dataset CSV --artifacts-root DIR`: прогноз голевой модели по играм того же predict-датасета,
+`model = goals`, без гейта). Правило «у обеих команд ≥ 5 игр в сезоне» — cold-start `drop` датасета:
+раньше игры в датасете нет, нет и строки. Обновить модели: `build-dataset --mode train` →
+`train --task home_win --model logreg` → `fit-goals` (`python -m modeling.cli fit-goals [--config]
+[--games] [--artifacts-root]`: ridge выбирается как в `evaluate-goals` для сезона после последнего,
+затем GLM на всех сыгранных играх; пишет `model.joblib` + `metadata.json` с `alpha`,
+`tie_halflife_days`, `run_id`), затем скопировать `final/` прогонов в `deploy/models/`, переставить
+`latest` и закоммитить — мерж выкатывает их релизом.
 
 **Two config gaps found running this end to end on real data (Задача 15), fixed in
 Задача 39 (`plan/archive/tasks/task_39_modeling_config_gaps.md`):**

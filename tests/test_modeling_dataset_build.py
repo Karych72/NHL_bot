@@ -374,6 +374,11 @@ class TestModelingDatasetBuild(unittest.TestCase):
         self.assertEqual(low_conf[1], 1)
         self.assertEqual(low_conf[2], 0)
 
+        # Задача 73: the bot's rule — no forecast while a team has fewer than 5 games this season.
+        dropped = apply_cold_start_policy(data, mode="predict", min_prior_games=5, cold_start_policy_predict="drop")
+        self.assertEqual(dropped.dropped_rows, 1)
+        self.assertEqual(dropped.data["game_id"].tolist(), [2])
+
     def test_features_hash_detects_cold_start_drift(self):
         train = pd.DataFrame(
             [

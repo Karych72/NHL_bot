@@ -26,7 +26,7 @@ from scheduled_retrain import (  # noqa: E402
     STALE_AFTER,
     build_commands,
     needs_catch_up,
-    run_retrain,
+    run_after_sync,
     seconds_until_next_run,
     should_run,
 )
@@ -188,7 +188,7 @@ class RunRetrainTest(unittest.TestCase):
 
     def _assert_refused(self) -> None:
         first = self._marker_command("first.marker")
-        ok = run_retrain([first], self.status, self.sync_status, NOW)
+        ok = run_after_sync([first], self.status, self.sync_status, NOW)
 
         self.assertFalse(ok)
         self.assertFalse((self.tmp_dir / "first.marker").exists())
@@ -209,7 +209,7 @@ class RunRetrainTest(unittest.TestCase):
 
     def test_fresh_sync_runs_chain_in_order(self) -> None:
         _write_status(self.sync_status, NOW - timedelta(hours=1))
-        ok = run_retrain(
+        ok = run_after_sync(
             [self._marker_command("first.marker"), self._marker_command("second.marker")],
             self.status,
             self.sync_status,
@@ -223,7 +223,7 @@ class RunRetrainTest(unittest.TestCase):
 
     def test_failed_step_stops_chain(self) -> None:
         _write_status(self.sync_status, NOW - timedelta(hours=1))
-        ok = run_retrain(
+        ok = run_after_sync(
             [self._marker_command("first.marker", exit_code=3), self._marker_command("second.marker")],
             self.status,
             self.sync_status,

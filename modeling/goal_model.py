@@ -47,11 +47,20 @@ def prepare_games(games: pd.DataFrame) -> pd.DataFrame:
         games: ``games_train.csv`` rows; needs ``game_id``, ``day``, ``season_id``,
             ``home_team_id``, ``away_team_id``, ``home_reg_goals``, ``away_reg_goals``.
     """
+    if games[["home_reg_goals", "away_reg_goals"]].isna().any().any():
+        raise ValueError("a played game is missing its regulation goals")
+    frame = _with_b2b(games)
+    home, away = frame["home_reg_goals"], frame["away_reg_goals"]
+    frame["reg_tie"] = (home == away).astype(float)
+    frame["over"] = (home + away + frame["reg_tie"] > GATE_LINE).astype(float)
+    return frame
+
+
+def _with_b2b(games: pd.DataFrame) -> pd.DataFrame:
+    """``games`` sorted by ``(day, game_id)`` plus ``home_b2b`` / ``away_b2b`` (the team also played the day before)."""
     frame = games.copy()
     frame["day"] = pd.to_datetime(frame["day"]).dt.normalize()
     frame = frame.sort_values(["day", "game_id"], kind="mergesort").reset_index(drop=True)
-    if frame[["home_reg_goals", "away_reg_goals"]].isna().any().any():
-        raise ValueError("a played game is missing its regulation goals")
     side = pd.concat(
         [
             frame[["game_id", "day", "home_team_id"]].rename(columns={"home_team_id": "team_id"}).assign(home=True),
@@ -62,9 +71,6 @@ def prepare_games(games: pd.DataFrame) -> pd.DataFrame:
     b2b = side.set_index(["game_id", "home"])["b2b"]
     frame["home_b2b"] = b2b.xs(True, level="home").reindex(frame["game_id"]).to_numpy(dtype=float)
     frame["away_b2b"] = b2b.xs(False, level="home").reindex(frame["game_id"]).to_numpy(dtype=float)
-    home, away = frame["home_reg_goals"], frame["away_reg_goals"]
-    frame["reg_tie"] = (home == away).astype(float)
-    frame["over"] = (home + away + frame["reg_tie"] > GATE_LINE).astype(float)
     return frame
 
 
@@ -225,6 +231,60 @@ def _pick_alpha(
         for alpha in alphas
     }
     return min(losses, key=lambda a: losses[a])
+
+
+def fit_for_upcoming(
+    games: pd.DataFrame, *, alphas: Sequence[float], tie_halflife_days: float, epsilon: float
+) -> tuple[GoalModel, float]:
+    """Fit the model the bot publishes (Задача 73): on every played game, ridge picked as in the check.
+
+    The ridge is chosen like :func:`evaluate_goal_model` chooses it for a season after the
+    last one in ``games``, then the GLM is fitted once on all of ``games``.
+
+    Args:
+        games: ``games_train.csv`` rows (every played game).
+        alphas: ridge grid (config ``goals.alpha``).
+        tie_halflife_days: half-life of the tracked tie rate (config ``goals.tie_halflife_days``).
+        epsilon: log-loss clip (config ``evaluation.epsilon_clip``).
+
+    Returns:
+        The fitted model and its ridge.
+    """
+    games = prepare_games(games)
+    tie_rate = tracked_tie_rate(games, tie_halflife_days)
+    alpha = _pick_alpha(games, tie_rate, int(games["season_id"].max()) + 1, alphas, epsilon)
+    return fit_goal_model(games, alpha), alpha
+
+
+def forecast_upcoming(
+    model: GoalModel, played: pd.DataFrame, upcoming: pd.DataFrame, tie_halflife_days: float
+) -> pd.DataFrame:
+    """P(over :data:`GATE_LINE`) of not yet played games.
+
+    Back-to-back flags see the played history and the other upcoming games; the tie rate of
+    an upcoming day is tracked from the played games before it.
+
+    Args:
+        model: fitted :class:`GoalModel` (:func:`fit_for_upcoming`).
+        played: ``games_train.csv`` rows (every played game).
+        upcoming: games to forecast; needs ``game_id``, ``day``, ``home_team_id``, ``away_team_id``.
+        tie_halflife_days: half-life the model was fitted with.
+
+    Returns:
+        ``game_id`` and ``p_over``, one row per upcoming game.
+    """
+    if upcoming.empty:  # sklearn refuses 0 samples
+        return pd.DataFrame({"game_id": pd.Series(dtype="int64"), "p_over": pd.Series(dtype="float64")})
+    keys = ["game_id", "day", "home_team_id", "away_team_id"]
+    frame = _with_b2b(pd.concat([played, upcoming[keys]], ignore_index=True))
+    is_upcoming = frame["game_id"].isin(upcoming["game_id"]).to_numpy()
+    # NaN for upcoming games: their days add nothing to the tracked rate.
+    frame["reg_tie"] = (frame["home_reg_goals"] == frame["away_reg_goals"]).astype(float).where(~is_upcoming)
+    tie_rate = tracked_tie_rate(frame, tie_halflife_days)
+    target = frame[is_upcoming]
+    return pd.DataFrame(
+        {"game_id": target["game_id"], "p_over": forecast(model, target, tie_rate[is_upcoming])["p_over"]}
+    ).reset_index(drop=True)
 
 
 def _lambda_sum_table(checked: pd.DataFrame) -> list[dict[str, Any]]:

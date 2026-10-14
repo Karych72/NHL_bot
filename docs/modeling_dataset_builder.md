@@ -52,16 +52,16 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     - `y_over_5_5`
   - Cold-start policy:
     - train: drop
-    - predict: allow with flag (or drop, from config)
+    - predict: drop by default since Задача 73 (`allow_with_flag` still selectable)
   - Since rolling windows and as-of snapshots reset at each season boundary
-    (`features.py`, Task 30), the first game of every season now has
-    `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Train drops these rows via
-    cold-start; **predict with the default `allow_with_flag` policy does not** — it
-    keeps them and flags `low_history_confidence`, so a predict build for a
-    season's first games fails `validate.py`'s NaN check (`numeric_nan_inf`)
-    unless `--cold-start-policy-predict drop` is used or these games are handled
-    upstream. This is the correct downstream consequence of the season-boundary
-    fix, not a defect in it — see Task 15 in `plan/engineering/work_plan_2026-08-08.md`.
+    (`features.py`, Task 30), the first game of every season has
+    `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Both modes drop
+    games where either team has fewer than `--min-prior-games` (5) games this season — the
+    bot shows a forecast only for such games (Задача 73). `allow_with_flag` keeps them and
+    flags `low_history_confidence`, so a predict build for a season's first games fails
+    `validate.py`'s NaN check (`numeric_nan_inf`). The policy is part of `features_hash`:
+    train and predict must be built with the same one. At the start of a season the
+    predict dataset is legitimately empty (header only); `predict` then writes no rows.
 
 - `modeling/dataset_builder/schema.py`
   - Feature manifest generation (name, dtype, position).
@@ -105,7 +105,7 @@ first real-data train/predict run — see `plan/engineering/work_plan_2026-08-08
 
 ## `games_train.csv`
 
-`build-dataset --mode train` writes, next to `dataset_train.csv`, `games_train.csv`: **every**
+`build-dataset` (both modes; predict — for the goal model's forecast, Задача 73) writes, next to `dataset_{mode}.csv`, `games_train.csv`: **every**
 played game of the loaded seasons — including the games the cold-start policy dropped from the
 dataset — with columns `game_id, day, season_id, home_team_id, away_team_id, home_goals,
 away_goals, decision, home_reg_goals, away_reg_goals` (`decision` ∈ `REG`/`OT`/`SO`, from

@@ -14,7 +14,10 @@ from scipy.stats import poisson
 from modeling.goal_model import (
     MAX_GOALS,
     evaluate_goal_model,
+    fit_for_upcoming,
     fit_goal_model,
+    forecast,
+    forecast_upcoming,
     p_over,
     prepare_games,
     score_grid,
@@ -153,6 +156,41 @@ class TestFit(unittest.TestCase):
         self.assertLess(lam[2, 0], lam[0, 0])
 
 
+class TestUpcoming(unittest.TestCase):
+    """Задача 73: the published fit and the forecast of games without a result."""
+
+    def test_upcoming_forecast_equals_the_forecast_of_the_same_games_once_played(self) -> None:
+        # The last day as "upcoming" (goals dropped) must get the same P(over) as when it is
+        # in the history: b2b and the tie rate look only at earlier days in both cases.
+        games = _synthetic_games()
+        last = games["day"] == games["day"].max()
+        model = fit_goal_model(prepare_games(games[~last]), alpha=0.01)
+        played_all = prepare_games(games)
+        on_last = (played_all["day"] == pd.Timestamp(games["day"].max())).to_numpy()
+        expected = forecast(model, played_all[on_last], tracked_tie_rate(played_all, 100)[on_last])
+
+        upcoming = games.loc[last, ["game_id", "day", "home_team_id", "away_team_id"]]
+        result = forecast_upcoming(model, games[~last], upcoming, 100)
+
+        self.assertEqual(list(result["game_id"]), list(played_all.loc[on_last, "game_id"]))
+        np.testing.assert_allclose(result["p_over"], expected["p_over"])
+        self.assertGreater(played_all.loc[on_last, ["home_b2b", "away_b2b"]].to_numpy().sum(), 0)
+
+    def test_no_upcoming_games_is_an_empty_forecast(self) -> None:
+        games = _synthetic_games()
+        model = fit_goal_model(prepare_games(games), alpha=0.01)
+        result = forecast_upcoming(model, games, games.iloc[:0], 100)
+        self.assertEqual(list(result.columns), ["game_id", "p_over"])
+        self.assertTrue(result.empty)
+
+    def test_published_fit_uses_every_game_and_a_ridge_from_the_grid(self) -> None:
+        games = _synthetic_games()
+        model, alpha = fit_for_upcoming(games, alphas=[0.01, 1.0], tie_halflife_days=100, epsilon=1e-15)
+        self.assertIn(alpha, (0.01, 1.0))
+        probe = prepare_games(games).tail(4)
+        np.testing.assert_allclose(model.lambdas(probe), fit_goal_model(prepare_games(games), alpha).lambdas(probe))
+
+
 class TestEvaluate(unittest.TestCase):
     def _evaluate(self, games: pd.DataFrame) -> dict:
         return evaluate_goal_model(
@@ -205,6 +243,37 @@ class TestEvaluate(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
+    def test_fit_goals_writes_model_metadata_and_latest(self) -> None:
+        import joblib
+
+        from modeling.artifacts import resolve_latest_model_dir
+        from modeling.cli import _handle_fit_goals, build_parser
+
+        with tempfile.TemporaryDirectory() as tmp_name:
+            tmp = Path(tmp_name)
+            _synthetic_games().to_csv(tmp / "games_train.csv", index=False)
+            args = build_parser().parse_args(
+                [
+                    "fit-goals",
+                    "--config",
+                    "configs/modeling_smoke.yaml",
+                    "--games",
+                    str(tmp / "games_train.csv"),
+                    "--artifacts-root",
+                    str(tmp / "artifacts"),
+                ]
+            )
+            self.assertEqual(_handle_fit_goals(args), 0)
+            final = resolve_latest_model_dir(tmp / "artifacts", "over_5_5", "goals")
+            metadata = json.loads((final / "metadata.json").read_text(encoding="utf-8"))
+            model = joblib.load(final / "model.joblib")
+        self.assertEqual(final.parent.name, metadata["run_id"])
+        self.assertTrue(metadata["run_id"].startswith("over_5_5_goals_"))
+        self.assertEqual(metadata["alpha"], 0.01)  # the smoke config's only ridge
+        self.assertEqual(metadata["tie_halflife_days"], 100)
+        self.assertEqual(metadata["n_games"], len(_synthetic_games()))
+        self.assertEqual(model.teams, tuple(range(1, 9)))
+
     def test_evaluate_goals_writes_report_and_exit_code_follows_status(self) -> None:
         from modeling.cli import _handle_evaluate_goals, build_parser
 

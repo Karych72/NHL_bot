@@ -1,0 +1,7 @@
+{
+  "run_id": "over_5_5_goals_20261014T195557Z",
+  "alpha": 0.3,
+  "tie_halflife_days": 100.0,
+  "n_games": 6568,
+  "last_day": "2026-10-07"
+}

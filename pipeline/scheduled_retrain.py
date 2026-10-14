@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import scheduled_sync
 from scheduled_sync import SyncCommand
@@ -130,24 +130,29 @@ def build_commands() -> List[SyncCommand]:
     ]
 
 
-def run_retrain(
-    commands: Sequence[SyncCommand], status_file: Path, sync_status_file: Path, now: datetime
+def run_after_sync(
+    commands: Sequence[SyncCommand],
+    status_file: Path,
+    sync_status_file: Path,
+    now: datetime,
+    name: str = "Retrain",
 ) -> bool:
-    """Один прогон retrain: предусловие sync, затем цепочка *commands*.
+    """Один прогон: предусловие sync, затем цепочка *commands* (retrain и публикация, Задача 73).
 
     Если последний sync не успешен или протух (``scheduled_sync.check`` != 0), цепочка
     не стартует: в *status_file* пишется неуспех с пояснением, в лог — ошибка.
 
     Аргументы:
         commands: цепочка команд (``build_commands()``).
-        status_file: путь статуса retrain.
+        status_file: путь статуса прогона.
         sync_status_file: путь статуса sync (предусловие).
         now: текущий момент (UTC) для проверки свежести sync.
+        name: название прогона в строках лога (``scheduled_publish`` — "Publish").
 
     Возвращает: ``True``, если цепочка завершилась кодом 0.
     """
     if scheduled_sync.check(sync_status_file, now) != 0:
-        logger.error("Retrain not started: last sync run is missing, failed or stale")
+        logger.error("%s not started: last sync run is missing, failed or stale", name)
         scheduled_sync._write_status_atomic(
             status_file,
             {
@@ -160,7 +165,14 @@ def run_retrain(
         )
         return False
 
-    ok = scheduled_sync.run_once(commands, status_file, name="Retrain")
+    return scheduled_sync.run_once(commands, status_file, name=name)
+
+
+def _run_now() -> bool:
+    """Прогон retrain с боевыми путями статусов и текущим временем."""
+    ok = run_after_sync(
+        build_commands(), STATUS_FILE, scheduled_sync.STATUS_FILE, datetime.now(timezone.utc)
+    )
     if ok:
         logger.info(
             "Retrain ok, latest NOT moved. Run ids are in the train lines above "
@@ -171,55 +183,75 @@ def run_retrain(
     return ok
 
 
-def _run_now() -> bool:
-    """Прогон retrain с боевыми путями статусов и текущим временем."""
-    return run_retrain(
-        build_commands(), STATUS_FILE, scheduled_sync.STATUS_FILE, datetime.now(timezone.utc)
-    )
+def serve(
+    argv: Optional[List[str]],
+    *,
+    name: str,
+    status_file: Path,
+    stale_after: timedelta,
+    run_now: Callable[[], bool],
+    catch_up: Callable[[Path, datetime], bool],
+    should_run: Callable[[Path, datetime], bool],
+) -> int:
+    """Общий CLI суточных сервисов после sync (retrain, публикация): ``loop`` / ``once`` / ``check``.
 
-
-def main(argv: Optional[List[str]] = None) -> int:
-    """Точка входа CLI: подкоманды ``loop`` / ``once`` / ``check``.
-
-    - ``loop``: при старте прогон, только если ``needs_catch_up``; затем ежедневно в
-      ``RETRAIN_HOUR_UTC``:00 UTC (после sync) прогоняет, если ``should_run``. Неуспешный
+    - ``loop``: при старте прогон, только если *catch_up*; затем ежедневно в
+      ``RETRAIN_HOUR_UTC``:00 UTC (после sync) прогоняет, если *should_run*. Неуспешный
       прогон цикл не останавливает (отказ виден через статус-файл и ``check``).
     - ``once``: один прогон (предусловие + цепочка), код выхода 0/1.
-    - ``check``: 0, если статус есть, ``ok`` и моложе ``STALE_AFTER``; иначе 1.
+    - ``check``: 0, если статус есть, ``ok`` и моложе *stale_after*; иначе 1.
 
     Аргументы:
         argv: аргументы командной строки без имени программы; ``None`` — ``sys.argv[1:]``.
+        name: название прогона в логах и справке ("Retrain", "Publish").
+        status_file: путь статуса прогона.
+        stale_after: порог устаревания статуса для ``check``.
+        run_now: один прогон с боевыми путями; ``True`` — успех.
+        catch_up: нужен ли прогон при старте ``loop``.
+        should_run: нужен ли прогон в дневное пробуждение.
     """
-    parser = argparse.ArgumentParser(
-        description="Scheduled weekly retrain (pipeline/scheduled_retrain.py).",
-    )
+    parser = argparse.ArgumentParser(description=f"{name} after the nightly sync.")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
-    subparsers.add_parser("loop", help="Run forever: catch-up if due, then weekly.")
+    subparsers.add_parser("loop", help="Run forever: catch-up if due, then on schedule.")
     subparsers.add_parser("once", help="Run once (sync precondition + chain), exit 0/1.")
     subparsers.add_parser("check", help="Healthcheck exit code from the last run's status.")
     args = parser.parse_args(argv)
 
     if args.subcommand == "check":
-        return scheduled_sync.check(
-            STATUS_FILE, datetime.now(timezone.utc), STALE_AFTER, name="Retrain"
-        )
+        return scheduled_sync.check(status_file, datetime.now(timezone.utc), stale_after, name=name)
 
     if args.subcommand == "once":
-        ok = _run_now()
-        return 0 if ok else 1
+        return 0 if run_now() else 1
 
     # loop
-    if needs_catch_up(STATUS_FILE, datetime.now(timezone.utc)):
-        _run_now()
+    if catch_up(status_file, datetime.now(timezone.utc)):
+        run_now()
     target = datetime.now(timezone.utc)
     while True:
         target, sleep_seconds = scheduled_sync._next_target(
             datetime.now(timezone.utc), target, seconds_until_next_run
         )
-        logger.info("Sleeping %.0f seconds until next retrain wake-up", sleep_seconds)
+        logger.info("Sleeping %.0f seconds until next %s wake-up", sleep_seconds, name.lower())
         time.sleep(sleep_seconds)
-        if should_run(STATUS_FILE, datetime.now(timezone.utc)):
-            _run_now()
+        if should_run(status_file, datetime.now(timezone.utc)):
+            run_now()
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Точка входа CLI retrain (:func:`serve`): догон — ``needs_catch_up``, пробуждение — ``should_run``.
+
+    Аргументы:
+        argv: аргументы командной строки без имени программы; ``None`` — ``sys.argv[1:]``.
+    """
+    return serve(
+        argv,
+        name="Retrain",
+        status_file=STATUS_FILE,
+        stale_after=STALE_AFTER,
+        run_now=_run_now,
+        catch_up=needs_catch_up,
+        should_run=should_run,
+    )
 
 
 if __name__ == "__main__":

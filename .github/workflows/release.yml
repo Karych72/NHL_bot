@@ -21,6 +21,9 @@ on:
       - "deploy/**"
       - "Makefile"
       - "requirements.txt"
+      # Сервис predict (Задача 73): образ modeling, модели — в deploy/models/.
+      - "modeling/**"
+      - "requirements-modeling.txt"
 
 # Два деплоя одновременно не идут: идущий не прерывается, но ждать может только один
 # прогон — новый вытесняет (отменяет) ожидающий. Серия быстрых мержей выкатит последний.
@@ -102,6 +105,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Образ сервиса predict (Задача 73): стадия modeling, тот же пакет GHCR с суффиксом тега.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: modeling
+          push: true
+          tags: ${{ env.IMAGE }}:${{ needs.tag.outputs.name }}-modeling
+          # Свой scope: иначе кэш образа бота и modeling перетирали бы друг друга.
+          cache-from: type=gha,scope=modeling
+          cache-to: type=gha,mode=max,scope=modeling
+
   deploy:
     needs: [tag, image]
     runs-on: ubuntu-24.04
@@ -125,9 +139,10 @@ jobs:
           git fetch --tags --force origin
           git checkout --force "${{ needs.tag.outputs.name }}"
           # В .env, а не export: ручной `docker compose ...` на VM видит ту же версию.
-          sed -i '/^NHL_BOT_IMAGE=/d' .env
+          sed -i '/^NHL_BOT_IMAGE=/d;/^NHL_BOT_MODELING_IMAGE=/d' .env
           echo "NHL_BOT_IMAGE=${{ env.IMAGE }}:${{ needs.tag.outputs.name }}" >> .env
-          docker compose pull migrate bot sync
+          echo "NHL_BOT_MODELING_IMAGE=${{ env.IMAGE }}:${{ needs.tag.outputs.name }}-modeling" >> .env
+          docker compose pull migrate bot sync predict
           docker compose up -d --no-build --remove-orphans
           docker compose up --no-build --wait --wait-timeout 180 bot
           docker compose ps
