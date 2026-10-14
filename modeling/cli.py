@@ -129,6 +129,15 @@ def build_parser() -> argparse.ArgumentParser:
     goals.add_argument("--games", default="artifacts/datasets/games_train.csv")
     goals.add_argument("--reports-root", default="artifacts/reports")
 
+    xg = sub.add_parser(
+        "evaluate-xg",
+        help="Check the Fenwick-xG model season by season (fit on earlier seasons; Задача 69)",
+    )
+    xg.add_argument("--config", default="configs/modeling_default.yaml")
+    xg.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    xg.add_argument("--shots", default="artifacts/datasets/shots_train.csv")
+    xg.add_argument("--reports-root", default="artifacts/reports")
+
     promote = sub.add_parser(
         "promote",
         help="Point `latest` of a (task, model) pair at a finished run (also the rollback command)",
@@ -291,6 +300,35 @@ def _handle_evaluate_goals(args: argparse.Namespace) -> int:
     return 0 if metrics["status"] == "ok" else 1
 
 
+def _handle_evaluate_xg(args: argparse.Namespace) -> int:
+    import json
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from modeling.xg_model import compose_xg_summary, evaluate_xg_model
+
+    try:
+        config = load_yaml_config(args.config, overrides=[parse_override(item) for item in args.set])
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    metrics = evaluate_xg_model(
+        # "0651" (home net empty) would lose its leading zero as a number.
+        pd.read_csv(args.shots, dtype={"situation_code": str}),
+        test_seasons=config.split.test_seasons,
+        epsilon=config.evaluation.epsilon_clip,
+    )
+    out_dir = Path(args.reports_root) / f"xg_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    out_dir.mkdir(parents=True)
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    summary = compose_xg_summary(metrics)
+    (out_dir / "summary.md").write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    print(f"report: {out_dir}")
+    return 0 if metrics["status"] == "ok" else 1
+
+
 def _handle_promote(args: argparse.Namespace) -> int:
     from modeling.train_runner import promote_model, resolve_models
 
@@ -397,6 +435,9 @@ def main() -> None:
 
     if args.command == "evaluate-goals":
         raise SystemExit(_handle_evaluate_goals(args))
+
+    if args.command == "evaluate-xg":
+        raise SystemExit(_handle_evaluate_xg(args))
 
     if args.command == "promote":
         raise SystemExit(_handle_promote(args))

@@ -23,6 +23,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Play-by-play ``typeDescKey`` values stored in ``shot_attempts``.
+SHOT_ATTEMPT_TYPES = frozenset({"shot-on-goal", "missed-shot", "blocked-shot", "goal"})
+
 # Disk cache for per-game NHL API responses (play-by-play / boxscore / landing)
 # — see ``ModernNhlLoader.fetch_game_json``. A finished game's payload never
 # changes, so it is cached indefinitely once written; season-wide report
@@ -962,16 +965,23 @@ class ModernNhlLoader:
     def build_game_rows(
         self, games_meta: List[dict]
     ) -> Tuple[
-        List[tuple], List[tuple], List[tuple], List[tuple], List[tuple], List[tuple]
+        List[tuple],
+        List[tuple],
+        List[tuple],
+        List[tuple],
+        List[tuple],
+        List[tuple],
+        List[tuple],
     ]:
-        """Build the six per-game row tuples for ``run()`` to insert.
+        """Build the seven per-game row tuples for ``run()`` to insert.
 
         Iterates *games_meta* (one dict per finished game from
         ``fetch_final_games``) and, for each game, fetches its
         play-by-play/boxscore/landing payloads (via ``fetch_game_json``, which
         caches finished games on disk) and assembles rows for ``games``,
         ``all_goals``, ``game_team_stats``, ``game_player_stats``,
-        ``game_goalie_stats`` and ``game_three_stars`` — in that order.
+        ``game_goalie_stats``, ``game_three_stars`` and ``shot_attempts``
+        (every shot attempt of play-by-play, shootout excluded) — in that order.
 
         A game whose gamecenter payloads are not all ``FINAL_GAME_STATE`` yet
         (the Stats REST list can flip to "finished" before gamecenter does) is
@@ -989,6 +999,7 @@ class ModernNhlLoader:
         game_player_rows: List[tuple] = []
         game_goalie_rows: List[tuple] = []
         game_three_stars_rows: List[tuple] = []
+        shot_attempt_rows: List[tuple] = []
 
         total = len(games_meta)
         for idx, game in enumerate(games_meta, start=1):
@@ -1121,6 +1132,43 @@ class ModernNhlLoader:
                         break
 
             all_goals_rows.extend(tuple(r) for r in game_goals)
+
+            # Every shot attempt of the game; the shootout is not game play.
+            # ``eventOwnerTeamId`` is the shooting team for every type, blocked
+            # shots included (verified against ``rosterSpots``). A field the API
+            # omits (``shotType`` on blocked shots, rare missing coordinates)
+            # becomes NULL.
+            for p in plays:
+                if p.get("typeDescKey") not in SHOT_ATTEMPT_TYPES:
+                    continue
+                period_desc_p = p.get("periodDescriptor") or {}
+                if period_desc_p.get("periodType") == "SO":
+                    continue
+                d = p.get("details") or {}
+                shot_attempt_rows.append(
+                    (
+                        game_id,
+                        int(p["eventId"]),
+                        optional_int(p.get("sortOrder")),
+                        optional_int(period_desc_p.get("number")),
+                        optional_str(period_desc_p.get("periodType")),
+                        optional_str(p.get("timeInPeriod")),
+                        optional_int(d.get("eventOwnerTeamId")),
+                        p["typeDescKey"],
+                        optional_int(d.get("xCoord")),
+                        optional_int(d.get("yCoord")),
+                        optional_str(d.get("zoneCode")),
+                        optional_str(d.get("shotType")),
+                        optional_str(p.get("situationCode")),
+                        optional_str(p.get("homeTeamDefendingSide")),
+                        optional_int(
+                            d.get("scoringPlayerId")
+                            if p["typeDescKey"] == "goal"
+                            else d.get("shootingPlayerId")
+                        ),
+                        optional_int(d.get("goalieInNetId")),
+                    )
+                )
 
             pim_by_team = {home_id: 0, away_id: 0}
             for p in penalties:
@@ -1395,6 +1443,7 @@ class ModernNhlLoader:
             game_player_rows,
             game_goalie_rows,
             game_three_stars_rows,
+            shot_attempt_rows,
         )
 
     def execute_insert(self, conn, table: str, columns: List[str], rows: List[tuple], page_size: int = 1000):
@@ -1522,6 +1571,7 @@ class ModernNhlLoader:
             game_player_rows,
             game_goalie_rows,
             game_three_stars_rows,
+            shot_attempt_rows,
         ) = self.build_game_rows(games_meta)
 
         logger.info("Writing to PostgreSQL...")
@@ -1538,6 +1588,7 @@ class ModernNhlLoader:
                 if game_ids:
                     for tbl in (
                         "game_three_stars",
+                        "shot_attempts",
                         "all_goals",
                         "game_player_stats",
                         "game_team_stats",
@@ -1785,6 +1836,30 @@ class ModernNhlLoader:
                     "event_id",
                 ],
                 all_goals_rows,
+                page_size=5000,
+            )
+            self.execute_insert(
+                conn,
+                "shot_attempts",
+                [
+                    "game_id",
+                    "event_id",
+                    "sort_order",
+                    "period",
+                    "period_type",
+                    "time_in_period",
+                    "team_id",
+                    "event_type",
+                    "x_coord",
+                    "y_coord",
+                    "zone_code",
+                    "shot_type",
+                    "situation_code",
+                    "home_team_defending_side",
+                    "shooter_id",
+                    "goalie_in_net_id",
+                ],
+                shot_attempt_rows,
                 page_size=5000,
             )
             self.execute_insert(

@@ -774,6 +774,36 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         self.assertIn("AS away_reg_goals", query)
 
 
+class TestLoadShotAttempts(unittest.TestCase):
+    """Задача 69: ``shots_train.csv`` — броски сыгранных игр выбранных сезонов, сезоны целиком."""
+
+    def test_query_joins_played_games_of_the_seasons_up_to_the_last_day(self):
+        from pathlib import Path
+        from unittest import mock
+
+        from modeling.dataset_builder.base import DatasetBuildConfig, load_shot_attempts
+
+        config = DatasetBuildConfig(
+            mode="train",
+            output_dir=Path("."),
+            season_ids=[20242025, 20252026],
+            target_day_from="2025-01-01",
+            target_day_to="2026-03-01",
+        )
+        with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
+            load_shot_attempts(object(), config)
+        query = read_sql.call_args.args[0]
+        self.assertIn("FROM shot_attempts s", query)
+        self.assertIn("JOIN games g ON g.game_id = s.game_id", query)
+        self.assertIn("g.winner_id IS NOT NULL", query)
+        self.assertIn("g.season_id IN (20242025,20252026)", query)
+        self.assertIn("g.day <= '2026-03-01'", query)
+        self.assertNotIn("2025-01-01", query)
+        for column in ("season_id", "day", "home_team_id", "away_team_id"):
+            self.assertIn(f"g.{column}", query)
+        self.assertIn("ORDER BY g.day, s.game_id, s.sort_order", query)
+
+
 class TestGamesTrainCsv(unittest.TestCase):
     """Задача 66: ``games_train.csv`` keeps every played game, cold-start rows included."""
 

@@ -3,8 +3,8 @@
 **Блок:** трек B · **Надобность:** 🟡 · **Зависит от:** 67
 **Область:** `pipeline/load_season_modern.py` (разбор PBP), новая таблица бросков
 (`data_tables/` + миграция), `modeling/` (xG-модель, ковариаты), `docs/architecture.md`.
-**Источник:** исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](research/report_model_vs_bookmaker.md),
-раздел «Признаки…»). Реестр — [`../../open_tasks.md`](../../open_tasks.md).
+**Источник:** исследование 2026-10-09 ([`research/report_model_vs_bookmaker.md`](../../../tasks/task_model/research/report_model_vs_bookmaker.md),
+раздел «Признаки…»). Реестр — [`../../closed_tasks.md`](../../closed_tasks.md).
 
 ## Кратко
 
