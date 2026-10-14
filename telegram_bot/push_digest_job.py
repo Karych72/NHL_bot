@@ -7,7 +7,8 @@
 раз в 30 минут ночью — и сам решает, пора ли: всё уходит одной рассылкой, как только
 загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63; времени у
 подписчика нет). Отметка ``last_sent_night`` не даёт отправить ночь дважды. Подписка на
-страну (Задача 61) — сообщение об игроках страны за ночь и альбомы видео их голов.
+страну (Задачи 61, 75) — по сообщению на матч: альбом видео голов страны, подписью к нему
+карточка матча и игроки страны.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
@@ -20,9 +21,12 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 import sys
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -40,8 +44,8 @@ if _HERE not in sys.path:
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MSK,
+    country_night_games,
     country_night_goals,
-    country_night_message,
     day_digest,
     game_message,
 )
@@ -81,6 +85,16 @@ _SCHEDULED_AS_PLANNED = "OK"
 
 # Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
 _ALBUM_SIZE = 10
+
+# Bot API принимает не больше 50 МБ файлов в одном запросе: альбом из 10 клипов по 8–19 МБ
+# Telegram отверг, и голы ночи 2026-10-13 не ушли (Задача 75). Бюджет — с запасом на
+# multipart-обвязку; клип из кэша (``file_id``) не загружается и бюджет не тратит.
+_UPLOAD_BUDGET_BYTES = 45_000_000
+
+# Подпись к видео и альбому — до 1024 символов видимого текста (UTF-16, без HTML-разметки).
+_CAPTION_LIMIT = 1024
+
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 _T = TypeVar("_T")
 
@@ -267,26 +281,30 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
         mark_night_sent(chat_id, "team_scores", team_id, night)
 
 
+# Клип к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры видео).
+_Clip = Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]
+
+
 async def _prepare_goal_clips(
-    goals: List[Tuple[int, int, str]], cache: Dict[Tuple[int, int], Optional[str]]
-) -> List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]]:
+    goals: List[Tuple[int, int]], cache: Dict[Tuple[int, int], Optional[str]]
+) -> List[_Clip]:
     """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры,
-    общие для ``send_video`` и ``InputMediaVideo``, подпись гола).
+    общие для ``send_video`` и ``InputMediaVideo``).
 
     Байты, а не готовый ``InputFile``: так PTB сам ставит ``attach://`` в альбоме —
     без него Telegram альбом не примет.
 
-    Аргументы: ``goals`` — (game_id, event_id, подпись); ``cache`` — (game_id,
-    event_id) → ``file_id`` Telegram, ``None`` — клипа нет (второй раз не качаем).
+    Аргументы: ``goals`` — (game_id, event_id); ``cache`` — (game_id, event_id) →
+    ``file_id`` Telegram, ``None`` — клипа нет (второй раз не качаем).
     Гол без клипа пропускается с записью в лог.
     """
-    clips: List[Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]] = []
-    for game_id, event_id, caption in goals:
-        key = (game_id, event_id)
+    clips: List[_Clip] = []
+    for key in goals:
+        game_id, event_id = key
         if key in cache:
             file_id = cache[key]
             if file_id is not None:
-                clips.append((key, file_id, {}, caption))
+                clips.append((key, file_id, {}))
             continue
         # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
         d = await asyncio.to_thread(download_goal_video, game_id, event_id)
@@ -306,62 +324,103 @@ async def _prepare_goal_clips(
             os.unlink(d.path)
             if d.thumb_path:
                 os.unlink(d.thumb_path)
-        clips.append((key, video, params, caption))
+        clips.append((key, video, params))
     return clips
 
 
-async def _send_goal_videos(
+def _upload_bytes(clip: _Clip) -> int:
+    """Сколько байт клип добавит к запросу: mp4 и превью; ``file_id`` из кэша — ноль."""
+    _, video, params = clip
+    if isinstance(video, str):
+        return 0
+    return len(video) + len(params.get("thumbnail", b""))
+
+
+def _albums(clips: List[_Clip]) -> List[List[_Clip]]:
+    """Клипы по альбомам в исходном порядке: в каждом не больше ``_ALBUM_SIZE`` клипов
+    и ``_UPLOAD_BUDGET_BYTES`` загружаемых байт. Клип тяжелее бюджета уходит один —
+    Telegram его отвергнет, и ошибка всплывёт."""
+    albums: List[List[_Clip]] = []
+    size = 0
+    for clip in clips:
+        clip_size = _upload_bytes(clip)
+        if not albums or len(albums[-1]) == _ALBUM_SIZE or size + clip_size > _UPLOAD_BUDGET_BYTES:
+            albums.append([])
+            size = 0
+        albums[-1].append(clip)
+        size += clip_size
+    return albums
+
+
+def _caption_length(text: str) -> int:
+    """Длина подписи из HTML-текста — видимые символы в UTF-16, не меньше, чем насчитает
+    Telegram (он ещё отбрасывает пробелы по краям)."""
+    return len(html.unescape(_HTML_TAG.sub("", text)).encode("utf-16-le")) // 2
+
+
+async def _send_country_game(
     bot: Bot,
     chat_id: int,
-    goals: List[Tuple[int, int, str]],
+    text: str,
+    goals: List[Tuple[int, int]],
     cache: Dict[Tuple[int, int], Optional[str]],
 ) -> None:
-    """Шлёт видео голов чату альбомами по ``_ALBUM_SIZE`` (хвост из одного видео —
-    ``send_video``: альбом требует минимум два медиа), затем одно сообщение —
-    нумерованный список голов в порядке клипов.
+    """Один матч рассылки по стране (Задача 75): видео голов страны в матче альбомом,
+    подписью к первому клипу — ``text`` (карточка матча и игроки страны).
 
-    Подписи у клипов нет: под альбомом Telegram показывает подпись только первого
-    клипа, и все голы альбома выглядели голами одного игрока (Задача 64).
+    Без клипов уходит только ``text``; текст длиннее ``_CAPTION_LIMIT`` — отдельным
+    сообщением перед видео. Клипы, не влезающие в один запрос (``_albums``), идут
+    несколькими альбомами подряд; одиночный клип — ``send_video``: альбом требует
+    минимум два медиа. ``file_id`` отправленных видео кладётся в ``cache`` —
+    следующим подписчикам клип уходит без повторной загрузки.
 
-    Зачем: ``file_id`` отправленных видео кладётся в ``cache`` — следующим
-    подписчикам клип уходит без повторной загрузки.
+    Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — HTML сообщения;
+    ``goals`` — (game_id, event_id) голов матча; ``cache`` — см. ``_prepare_goal_clips``.
     """
     clips = await _prepare_goal_clips(goals, cache)
-    for start in range(0, len(clips), _ALBUM_SIZE):
-        chunk = clips[start:start + _ALBUM_SIZE]
-        if len(chunk) == 1:
-            _, video, params, _ = chunk[0]
+    caption: Optional[str] = text
+    if not clips or _caption_length(text) > _CAPTION_LIMIT:
+        await _throttled(
+            lambda: bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"), chat_id
+        )
+        caption = None
+    for album in _albums(clips):
+        if len(album) == 1:
+            _, video, params = album[0]
             sent = [
                 await _throttled(
                     lambda: bot.send_video(
-                        chat_id=chat_id, video=video, supports_streaming=True, **params
+                        chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
+                        supports_streaming=True, **params,
                     ),
                     chat_id,
                 )
             ]
         else:
             media = [
-                InputMediaVideo(video, supports_streaming=True, **params)
-                for _, video, params, _ in chunk
+                InputMediaVideo(
+                    video, caption=caption if n == 0 else None, parse_mode="HTML",
+                    supports_streaming=True, **params,
+                )
+                for n, (_, video, params) in enumerate(album)
             ]
             sent = list(
                 await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
             )
-        for (key, _, _, _), message in zip(chunk, sent):
+        caption = None
+        for (key, _, _), message in zip(album, sent):
             assert message.video is not None  # ответ на отправку видео всегда содержит video
             cache[key] = message.video.file_id
-    if clips:
-        # Без parse_mode: подписи — простой текст из БД, не HTML.
-        legend = "\n".join(f"{n}. {caption}" for n, (_, _, _, caption) in enumerate(clips, 1))
-        await _throttled(lambda: bot.send_message(chat_id=chat_id, text=legend), chat_id)
 
 
 async def run_country_broadcast(context: CallbackContext, night: date) -> None:
-    """Игроки страны за ночь *night* и видео их голов — подписчикам ``country_players``.
+    """Матчи ночи *night* с игроками страны — подписчикам ``country_players``.
 
-    Зачем: подписка на страну (Задача 61) — сообщение об игроках страны и альбомы
-    видео голов; ``last_sent_night`` — по каждой паре (чат, страна). Ночь без
-    игроков страны ничего не шлёт, но отмечается отправленной.
+    Зачем: подписка на страну (Задачи 61, 75) — по сообщению на матч
+    (``_send_country_game``); ``last_sent_night`` — по каждой паре (чат, страна).
+    Сбой одного матча не срывает остальные: прежде альбом сверх лимита загрузки
+    гасил всю рассылку чату. Ночь без игроков страны ничего не шлёт, но отмечается
+    отправленной.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
     ``night`` — игровая дата ночи (``night_of``).
@@ -371,32 +430,35 @@ async def run_country_broadcast(context: CallbackContext, night: date) -> None:
         for chat_id, country, last_sent in list_active_country_rows()
         if last_sent != night
     ]
-    texts: Dict[str, Optional[str]] = {}
-    goals: Dict[str, List[Tuple[int, int, str]]] = {}
+    games: Dict[str, List[Tuple[int, str, List[Tuple[int, int]]]]] = {}
     file_ids: Dict[Tuple[int, int], Optional[str]] = {}
     for chat_id, country in due:
-        if country not in texts:
-            texts[country] = country_night_message(country, night)
-            goals[country] = country_night_goals(country, night) if texts[country] else []
-        text = texts[country]
-        if text is None:
+        if country not in games:
+            goals_by_game: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+            for goal in country_night_goals(country, night):
+                goals_by_game[goal[0]].append(goal)
+            games[country] = [
+                (game_id, text, goals_by_game[game_id])
+                for game_id, text in country_night_games(country, night)
+            ]
+        if not games[country]:
             logger.info("No %s players in night %s: nothing sent", country, night)
-        else:
+        for game_id, text, goals in games[country]:
             try:
-                await _throttled(
-                    lambda: context.bot.send_message(
-                        chat_id=chat_id, text=f"{text}\n\n{SUBSCRIPTIONS_FOOTER}", parse_mode="HTML"
-                    ),
-                    chat_id,
+                await _send_country_game(
+                    context.bot, chat_id, f"{text}\n\n{SUBSCRIPTIONS_FOOTER}", goals, file_ids
                 )
-                await _send_goal_videos(context.bot, chat_id, goals[country], file_ids)
             except Forbidden:
                 logger.info("chat_id=%s blocked bot; deactivate country %s", chat_id, country)
                 mark_subscription_inactive_by_chat_kind_team(
                     chat_id, "country_players", None, country
                 )
+                break
             except TelegramError as exc:
-                logger.warning("country send failed chat_id=%s %s: %s", chat_id, country, exc)
+                logger.warning(
+                    "country send failed chat_id=%s %s game_id=%s: %s",
+                    chat_id, country, game_id, exc,
+                )
         mark_night_sent(chat_id, "country_players", None, night, country=country)
 
 

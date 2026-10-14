@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from telegram.error import Forbidden, RetryAfter
+from telegram.error import BadRequest, Forbidden, RetryAfter
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
@@ -335,7 +335,7 @@ async def _run_night(push_job, fake_context, loaded_at):
         ), patch.object(
             push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])
         ), patch.object(
-            push_job, "country_night_message", return_value="RUS TEXT"
+            push_job, "country_night_games", return_value=[(1, "RUS TEXT")]
         ), patch.object(
             push_job, "country_night_goals", return_value=[]
         ), patch.object(push_job, "night_is_loaded", return_value=loaded):
@@ -488,13 +488,14 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
 # ---------------------------------------------------------------------------
 
 class CountryBot:
-    """Bot, запоминающий сообщения, альбомы и одиночные видео; каждому загруженному
-    файлу выдаёт ``file_id``, как Telegram."""
+    """Bot, запоминающий сообщения, альбомы и одиночные видео и их порядок (``order``);
+    каждому загруженному файлу выдаёт ``file_id``, как Telegram."""
 
     def __init__(self) -> None:
         self.messages: list = []
         self.albums: list = []
         self.videos: list = []
+        self.order: list = []
         self.uploads = 0
 
     def _answer(self, media) -> SimpleNamespace:
@@ -505,24 +506,32 @@ class CountryBot:
 
     async def send_message(self, **kwargs):
         self.messages.append(kwargs)
+        self.order.append(("message", kwargs["chat_id"]))
 
     async def send_media_group(self, chat_id, media):
         self.albums.append((chat_id, list(media)))
+        self.order.append(("album", chat_id))
         return tuple(self._answer(m.media) for m in media)
 
     async def send_video(self, chat_id, video, **kwargs):
         self.videos.append((chat_id, video, kwargs))
+        self.order.append(("video", chat_id))
         return self._answer(video)
 
 
-def _country_goals(n):
-    return [(2026020001, 100 + i, f"Игрок{i} (TOR)") for i in range(n)]
+GAME_A, GAME_B = 2026020001, 2026020002
+FOOTER = "\n\nНастроить подписки: /subscriptions"
+
+
+def _goals(game_id, n, first_event=100):
+    return [(game_id, first_event + i) for i in range(n)]
 
 
 @pytest.fixture
 def country_env(push_job, monkeypatch, tmp_path):
     """Рассылка по стране с подменой БД и скачивания: бот, журнал скачиваний,
-    отметки, погашенные подписки и ``run(rows, goals, text)``."""
+    отметки, погашенные подписки и ``run(rows, games, goals)``; ``games`` —
+    (game_id, текст) матчей ночи, ``goals`` — (game_id, event_id) голов страны."""
     env = SimpleNamespace(bot=CountryBot(), downloads=[], marked=[], deactivated=[], missing=set())
     env.context = SimpleNamespace(bot=env.bot)
 
@@ -537,11 +546,11 @@ def country_env(push_job, monkeypatch, tmp_path):
             path=str(video), width=1280, height=720, duration=9, thumb_path=str(thumb)
         )
 
-    def run(rows, goals, text="TEXT"):
+    def run(rows, games, goals):
         monkeypatch.setattr(push_job, "list_active_country_rows", lambda: [
             (chat, country, None) for chat, country in rows
         ])
-        monkeypatch.setattr(push_job, "country_night_message", lambda *a: text)
+        monkeypatch.setattr(push_job, "country_night_games", lambda *a: games)
         monkeypatch.setattr(push_job, "country_night_goals", lambda *a: goals)
         monkeypatch.setattr(push_job, "download_goal_video", download)
         monkeypatch.setattr(
@@ -559,38 +568,34 @@ def country_env(push_job, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_country_broadcast_splits_goals_into_albums_and_reuses_file_ids(country_env):
-    country_env.missing = {(2026020001, 103)}
-    await country_env.run([(111, "RUS"), (222, "RUS")], _country_goals(12))
+async def test_country_broadcast_sends_one_message_per_game_and_reuses_file_ids(country_env):
+    """Задача 75: матч — одно сообщение. Голы матча — альбомом, подпись у первого клипа —
+    карточка с игроками страны; матч без голов страны — просто текстом."""
+    country_env.missing = {(GAME_A, 101)}
+    await country_env.run(
+        [(111, "RUS"), (222, "RUS")],
+        [(GAME_A, "CARD A"), (GAME_B, "CARD B")],
+        _goals(GAME_A, 3),
+    )
     bot = country_env.bot
 
-    assert [m["chat_id"] for m in bot.messages] == [111, 111, 222, 222]
-    assert bot.messages[0]["text"] == "TEXT\n\nНастроить подписки: /subscriptions"
-    assert bot.messages[0]["parse_mode"] == "HTML"
-    # 11 клипов (один недоступен): альбом из 10 и хвост из одного видео — send_video,
-    # потому что в альбоме Telegram 2–10 медиа.
-    assert [(chat, len(media)) for chat, media in bot.albums] == [(111, 10), (222, 10)]
-    assert [chat for chat, _, _ in bot.videos] == [111, 222]
-    # Задача 64: у клипов нет подписи — Telegram показал бы под альбомом только первую;
-    # после видео один список голов в порядке клипов, без гола, у которого нет клипа.
+    assert bot.order == [("album", 111), ("message", 111), ("album", 222), ("message", 222)]
+    # Гол без клипа пропущен: в альбоме два видео, подпись только у первого.
     first = bot.albums[0][1]
-    assert [m.caption for m in first] == [None] * 10
-    assert all("caption" not in kw for _, _, kw in bot.videos)
-    clip_goals = [i for i in range(12) if i != 3]
-    assert bot.messages[1] == {
-        "chat_id": 111,
-        "text": "\n".join(f"{n}. Игрок{i} (TOR)" for n, i in enumerate(clip_goals, 1)),
-    }
-    assert bot.messages[3]["text"] == bot.messages[1]["text"]
+    assert [(m.caption, m.parse_mode) for m in first] == [
+        ("CARD A" + FOOTER, "HTML"), (None, "HTML"),
+    ]
+    assert [m["text"] for m in bot.messages] == ["CARD B" + FOOTER] * 2
+    assert {m["parse_mode"] for m in bot.messages} == {"HTML"}
     assert not any(isinstance(m.media, str) for m in first), "первому чату — загрузка"
     # PTB пишет в альбом media/thumbnail только у файлов с attach_uri (attach://…):
     # без него поля выпадают из запроса и Telegram альбом не принимает.
     uris = [f.attach_uri for m in first for f in (m.media, m.thumbnail)]
-    assert all(uris) and len(set(uris)) == 20, "у каждого видео и превью свой attach://"
+    assert all(uris) and len(set(uris)) == 4, "у каждого видео и превью свой attach://"
     # Второму чату — file_id, без повторной загрузки; каждый клип скачан один раз.
-    assert [m.media for m in bot.albums[1][1]] == [f"fid-{i}" for i in range(1, 11)]
-    assert bot.videos[1][1] == "fid-11"
-    assert sorted(country_env.downloads) == [(2026020001, 100 + i) for i in range(12)]
+    assert [m.media for m in bot.albums[1][1]] == ["fid-1", "fid-2"]
+    assert bot.albums[1][1][0].caption == "CARD A" + FOOTER
+    assert sorted(country_env.downloads) == _goals(GAME_A, 3)
     assert list(country_env.tmp_path.iterdir()) == [], "временные файлы удалены"
     assert country_env.marked == [
         ((111, "country_players", None, NIGHT), {"country": "RUS"}),
@@ -599,25 +604,101 @@ async def test_country_broadcast_splits_goals_into_albums_and_reuses_file_ids(co
 
 
 @pytest.mark.asyncio
+async def test_country_game_over_upload_budget_goes_out_in_several_albums(
+    country_env, push_job, monkeypatch
+):
+    """Задача 75: альбом из 10 клипов по 8–19 МБ Telegram отверг (лимит 50 МБ на запрос).
+    Клипы матча делятся по бюджету загрузки, подпись — у первого альбома, одиночный
+    остаток — ``send_video``. Второму чату клипы идут по ``file_id`` — бюджет не тратят."""
+    monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 25)  # клип с превью — 10 байт
+    await country_env.run([(111, "RUS"), (222, "RUS")], [(GAME_A, "CARD")], _goals(GAME_A, 5))
+    bot = country_env.bot
+
+    assert bot.order == [("album", 111), ("album", 111), ("video", 111), ("album", 222)]
+    assert [len(media) for _, media in bot.albums] == [2, 2, 5]
+    captions = [m.caption for _, media in bot.albums[:2] for m in media]
+    assert captions == ["CARD" + FOOTER, None, None, None]
+    assert bot.videos[0][2]["caption"] is None
+    assert bot.albums[2][1][0].caption == "CARD" + FOOTER
+
+
+@pytest.mark.asyncio
+async def test_country_game_text_over_caption_limit_goes_before_the_album(country_env):
+    """Подпись длиннее 1024 видимых символов Telegram не примет: текст уходит отдельным
+    сообщением, альбом — без подписи."""
+    long_text = "<b>" + "x" * 1100 + "</b>"
+    await country_env.run([(111, "RUS")], [(GAME_A, long_text)], _goals(GAME_A, 2))
+    bot = country_env.bot
+
+    assert bot.order == [("message", 111), ("album", 111)]
+    assert bot.messages[0]["text"] == long_text + FOOTER
+    assert [m.caption for m in bot.albums[0][1]] == [None, None]
+
+
+def test_caption_length_counts_visible_utf16_characters(push_job):
+    """Разметка не считается, сущности — по символу, эмодзи — два UTF-16-символа."""
+    assert push_job._caption_length("<b>&lt;</b> <pre>ab</pre>🏒") == 1 + 1 + 2 + 2
+
+
+def test_albums_respect_album_size_and_upload_budget(push_job, monkeypatch):
+    """Альбом — не больше 10 клипов и не больше бюджета загружаемых байт;
+    клип по ``file_id`` бюджета не тратит, клип тяжелее бюджета уходит один."""
+    monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 100)
+
+    def clip(n, size):
+        return ((GAME_A, n), b"v" * size, {"thumbnail": b""})
+
+    cached = [((GAME_A, n), f"fid-{n}", {}) for n in range(12)]
+    assert [len(a) for a in push_job._albums(cached)] == [10, 2]
+    heavy = [clip(0, 60), clip(1, 40), clip(2, 1), clip(3, 150), clip(4, 10)]
+    assert [[c[0][1] for c in a] for a in push_job._albums(heavy)] == [[0, 1], [2], [3], [4]]
+
+
+@pytest.mark.asyncio
+async def test_country_broadcast_failed_game_does_not_stop_the_next(country_env):
+    """Ночь 2026-10-13: отказ Telegram на альбоме погасил всю рассылку чату. Теперь сбой
+    одного матча логируется, остальные матчи уходят."""
+    async def rejected(chat_id, media):
+        raise BadRequest("Request Entity Too Large")
+
+    country_env.bot.send_media_group = rejected
+    await country_env.run(
+        [(111, "RUS")],
+        [(GAME_A, "CARD A"), (GAME_B, "CARD B")],
+        _goals(GAME_A, 2) + _goals(GAME_B, 1, first_event=200),
+    )
+    bot = country_env.bot
+
+    assert bot.order == [("video", 111)]
+    assert bot.videos[0][2]["caption"] == "CARD B" + FOOTER
+    assert country_env.deactivated == []
+    assert country_env.marked == [((111, "country_players", None, NIGHT), {"country": "RUS"})]
+
+
+@pytest.mark.asyncio
 async def test_country_broadcast_night_without_players_sends_nothing_but_marks_night(country_env):
-    await country_env.run([(111, "RUS")], [], text=None)
+    await country_env.run([(111, "RUS")], [], [])
 
     bot = country_env.bot
-    assert (bot.messages, bot.albums, bot.videos, country_env.downloads) == ([], [], [], [])
+    assert (bot.order, country_env.downloads) == ([], [])
     assert country_env.marked == [((111, "country_players", None, NIGHT), {"country": "RUS"})]
 
 
 @pytest.mark.asyncio
 async def test_country_broadcast_deactivates_only_the_blocked_subscription(country_env):
+    """Заблокировавший бота чат гасится один раз и больше матчей не получает."""
+    send_message = country_env.bot.send_message
+
     async def blocked(**kwargs):
         if kwargs["chat_id"] == 111:
             raise Forbidden("blocked")
-        country_env.bot.messages.append(kwargs)
+        await send_message(**kwargs)
 
     country_env.bot.send_message = blocked
-    await country_env.run([(111, "RUS"), (222, "RUS")], _country_goals(2))
+    await country_env.run(
+        [(111, "RUS"), (222, "RUS")], [(GAME_A, "CARD A"), (GAME_B, "CARD B")], []
+    )
 
     assert country_env.deactivated == [(111, "country_players", None, "RUS")]
-    assert [m["chat_id"] for m in country_env.bot.messages] == [222, 222]
-    assert [chat for chat, _ in country_env.bot.albums] == [222]
+    assert country_env.bot.order == [("message", 222), ("message", 222)]
     assert [a[0][0] for a in country_env.marked] == [111, 222]
