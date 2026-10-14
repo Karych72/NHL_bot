@@ -1,6 +1,7 @@
 # NHL_bot — Telegram bot and tooling (runtime: requirements.txt only).
 # Build from repo root: docker build -t nhl-bot .
-# Stages: base (shared) -> modeling (+ lightgbm/sklearn, service `retrain`, Task 26)
+# Stages: base (shared) -> modeling (+ lightgbm/sklearn, services `retrain` (Task 26)
+# and `predict` (Task 73))
 # -> bot (LAST, so a plain `docker build .` / `build: .` yields the bot image without
 # the modeling stack; the modeling image is `--target modeling`).
 FROM python:3.11-slim-bookworm AS base
@@ -35,9 +36,10 @@ RUN groupadd --gid 1000 appuser \
     && chown -R appuser:appuser /app/all_data /app/artifacts
 USER appuser
 
-# Modeling image for the weekly retrain service (pipeline/scheduled_retrain.py).
+# Modeling image for the weekly retrain service (pipeline/scheduled_retrain.py) and the
+# daily publishing service (pipeline/scheduled_publish.py, models from deploy/models/).
 # libgomp1 is the OpenMP runtime lightgbm needs on slim; /app/artifacts (chowned above)
-# is where the compose bind mount lands. appuser has no home directory, so matplotlib
+# is where retrain's compose bind mount lands and where predict writes its work files. appuser has no home directory, so matplotlib
 # (imported by modeling reports) gets an explicit writable config dir.
 FROM base AS modeling
 ENV MPLCONFIGDIR=/tmp/matplotlib

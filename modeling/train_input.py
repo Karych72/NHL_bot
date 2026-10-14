@@ -154,6 +154,9 @@ def _load_training_csv_validated(csv_path: Path, metadata: Mapping[str, Any]) ->
     feature_names = [item["name"] for item in manifest]
 
     df = pd.read_csv(csv_path)
+    if df.empty:
+        # A header-only CSV (predict with no target games) reads every column as object.
+        df = df.astype({item["name"]: item["dtype"] for item in manifest if item["name"] in df.columns})
     unknown = sorted(set(df.columns) - _allowed_column_union(feature_names))
     if unknown:
         raise TrainSchemaError(

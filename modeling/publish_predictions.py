@@ -1,8 +1,9 @@
-"""Публикация вероятностей predict в таблицу ``game_predictions`` (Задача 22B).
+"""Публикация вероятностей в таблицу ``game_predictions`` (Задачи 22B, 73).
 
-Читает CSV, который записал ``modeling.cli predict``, и заменяет в PostgreSQL строки
-своей задачи — бот в контейнере не имеет стека моделирования и читает только PG.
-Гейт качества не пересчитывается: источник истины — ``metadata.json`` по ``latest``
+Победа: читает CSV, который записал ``modeling.cli predict``; тотал: прогноз голевой модели
+(``modeling.goal_model``) по играм того же ``dataset_predict.csv``. Каждая публикация заменяет
+в PostgreSQL строки своей задачи — бот в контейнере не имеет стека моделирования и читает
+только PG. Гейт победы не пересчитывается: источник истины — ``metadata.json`` по ``latest``
 (``latest`` ставит ``train`` только при ``status: ok``). Отдельный от ``predict_runner``
 модуль, чтобы предсказание оставалось без доступа к БД.
 """
@@ -14,11 +15,16 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import joblib
 import pandas as pd
 
 from modeling.artifacts import resolve_latest_model_dir
+from modeling.goal_model import forecast_upcoming
 
 logger = logging.getLogger(__name__)
+
+# Имя модели тотала в ``game_predictions.model`` и в ``models/over_5_5/<имя>/``.
+GOAL_MODEL = "goals"
 
 _DELETE_SQL = "DELETE FROM game_predictions WHERE task = %s"
 _INSERT_SQL = (
@@ -82,7 +88,50 @@ def publish_predictions(
         ]
     else:
         logger.warning("Гейт не пройден (%s): строки задачи %s удаляются, публикации нет", reason, task)
+    return _replace_task_rows(conn, task, rows)
 
+
+def publish_goal_predictions(
+    conn: Any,
+    *,
+    games_csv: Path,
+    predict_dataset: Path,
+    artifacts_root: Path,
+) -> int:
+    """Заменить строки ``over_5_5`` в ``game_predictions`` прогнозом голевой модели (Задача 73).
+
+    Игры — строки *predict_dataset*: в нём уже только матчи, где у обеих команд не меньше
+    ``min_prior_games`` игр в сезоне, — то же правило, что у победы. Гейта нет: приёмку 67
+    модель не прошла, тотал выходит в бот по решению человека 2026-10-14. Предстоящие игры для
+    флагов b2b — тоже только из датасета: в первые недели сезона игра вчерашнего дня, отброшенная
+    правилом 5 игр, флаг b2b не ставит (неточность принята, к середине октября исчезает).
+
+    Args:
+        conn: соединение psycopg2 (транзакция фиксируется здесь).
+        games_csv: ``games_train.csv`` той же сборки — сыгранные игры для b2b и доли ничьих.
+        predict_dataset: ``dataset_predict.csv``.
+        artifacts_root: корень с ``models/over_5_5/goals/latest`` (``modeling.cli fit-goals``).
+
+    Returns:
+        Число вставленных строк.
+    """
+    model_dir = resolve_latest_model_dir(artifacts_root, "over_5_5", GOAL_MODEL)
+    metadata = json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
+    forecast = forecast_upcoming(
+        joblib.load(model_dir / "model.joblib"),
+        pd.read_csv(games_csv),
+        pd.read_csv(predict_dataset),
+        metadata["tie_halflife_days"],
+    )
+    rows = [
+        (int(game_id), "over_5_5", GOAL_MODEL, metadata["run_id"], float(p))
+        for game_id, p in zip(forecast["game_id"], forecast["p_over"])
+    ]
+    return _replace_task_rows(conn, "over_5_5", rows)
+
+
+def _replace_task_rows(conn: Any, task: str, rows: list[tuple[int, str, str, str, float]]) -> int:
+    """Удалить все строки *task* и вставить *rows* одной транзакцией; вернуть число вставленных."""
     with conn:
         with conn.cursor() as cur:
             cur.execute(_DELETE_SQL, (task,))
@@ -92,4 +141,4 @@ def publish_predictions(
     return len(rows)
 
 
-__all__ = ["publish_predictions"]
+__all__ = ["GOAL_MODEL", "publish_goal_predictions", "publish_predictions"]

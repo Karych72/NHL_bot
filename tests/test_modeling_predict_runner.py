@@ -174,6 +174,32 @@ class TestRunPredictHappyPath(unittest.TestCase):
             on_disk = pd.read_csv(output_path)
             self.assertEqual(list(on_disk["game_id"]), [101, 102, 103])
 
+    def test_no_target_games_gives_empty_predictions(self) -> None:
+        """Задача 73: header-only predict CSV (start of a season) — no rows, no error."""
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            artifacts_root = tmp / "artifacts"
+            _write_latest_model(artifacts_root)
+            csv_path, meta_path = _write_predict_dataset(tmp)
+            pd.read_csv(csv_path).iloc[:0].to_csv(csv_path, index=False)
+            output_path = tmp / "out.csv"
+
+            result = run_predict(
+                task="home_win",
+                model="logreg",
+                predict_dataset=csv_path,
+                predict_metadata=meta_path,
+                artifacts_root=artifacts_root,
+                output_path=output_path,
+            )
+            on_disk = pd.read_csv(output_path)
+
+        self.assertTrue(result.predictions.empty)
+        self.assertEqual(
+            list(on_disk.columns), ["game_id", "day", "season_id", "home_team_id", "away_team_id", "probability"]
+        )
+        self.assertTrue(on_disk.empty)
+
     def test_raises_when_no_latest_model_trained(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

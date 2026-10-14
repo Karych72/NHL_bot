@@ -96,6 +96,38 @@ services:
       start_period: 30m
       retries: 3
 
+  predict:
+    # Ежедневная публикация прогноза (Задача 73): в 12:00 UTC, после успешного ночного sync,
+    # пишет в game_predictions вероятность победы хозяев и тотала > 5.5 по моделям из
+    # deploy/models/ (зафиксированы в репозитории, приезжают в образе; здесь не обучаются).
+    # Образ — стадия modeling; NHL_BOT_MODELING_IMAGE задаёт прод-деплой (release.yml).
+    image: ${NHL_BOT_MODELING_IMAGE:-nhl-bot-modeling:local}
+    build:
+      context: .
+      target: modeling
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: postgres
+      PG_DATABASE: postgres
+    working_dir: /app
+    command: ["python", "-u", "pipeline/scheduled_publish.py", "loop"]
+    volumes:
+      - syncdata:/app/all_data
+    # Здоров = последняя публикация ok и не старше 26 часов (scheduled_publish.py check).
+    healthcheck:
+      test: ["CMD", "python", "pipeline/scheduled_publish.py", "check"]
+      interval: 1h
+      timeout: 30s
+      start_period: 10m
+      retries: 3
+
   retrain:
     # Еженедельный retrain (Задача 26): тот же механизм, что у sync (pipeline/scheduled_retrain.py
     # переиспользует scheduled_sync), но образ со стадией modeling (lightgbm/sklearn — в образ

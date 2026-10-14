@@ -79,7 +79,8 @@ modeling-train: modeling-dev
 # Прогноз ближайших игр -> game_predictions (Задача 22B). Нужны БД и обученный latest пары
 # (без него build-dataset/predict падают до публикации). Если latest указывает на прогон со
 # status != ok, publish-predictions удаляет строки задачи; без latest это же делает прямой
-# вызов publish-predictions. Расписание — Задача 26.
+# вызов publish-predictions. Ручной путь по artifacts/; ежедневно публикует сервис predict
+# (pipeline/scheduled_publish.py, Задача 73) по моделям из deploy/models/.
 TASK ?= home_win
 MODEL ?= logreg
 modeling-publish: modeling-dev

@@ -423,8 +423,8 @@ def _preview_stats_row(home="BBB"):
     }
 
 
-def _render_preview(bot_messages, probability=None, home="BBB", game_id=777):
-    """Превью AAA @ home; `probability` — ответ `game_predictions` (None = записи нет).
+def _render_preview(bot_messages, predictions=None, home="BBB", game_id=777):
+    """Превью AAA @ home; `predictions` — строки `game_predictions` {task: p} (None = записей нет).
 
     Возвращает (текст, mock uncached `fetch_all`).
     """
@@ -439,11 +439,12 @@ def _render_preview(bot_messages, probability=None, home="BBB", game_id=777):
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    pred = (
-        {"count_rows": 0, "probability": []}
-        if probability is None
-        else {"count_rows": 1, "probability": [probability]}
-    )
+    predictions = predictions or {}
+    pred = {
+        "count_rows": len(predictions),
+        "task": list(predictions),
+        "probability": list(predictions.values()),
+    }
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
             patch.object(bot_messages, "fetch_all", return_value=pred) as mock_fetch:
         text = bot_messages.matchup_season_preview(game_id, "AAA", home)
@@ -468,26 +469,34 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
     assert max(len(line) for line in table.split("\n")) <= bot_messages._MOBILE_PRE_WIDTH
     # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
-    assert "Модельная" not in text
+    assert "Оценка модели" not in text
     assert "н/д" not in text
 
 
-def test_matchup_season_preview_appends_model_prediction_as_last_line(bot_module):
+def test_matchup_season_preview_appends_win_and_total_as_last_line(bot_module):
     bot_messages = bot_module("bot_messages")
-    text, mock_fetch = _render_preview(bot_messages, 0.574)
+    text, mock_fetch = _render_preview(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
 
-    assert text.splitlines()[-1] == "🤖 Модельная оценка (не совет): победа BBB — 57%"
-    # Запрос параметризован game_id из кнопки, берёт только home_win, без кэша.
+    assert text.splitlines()[-1] == "🤖 Оценка модели: победа BBB — 57%, тотал больше 5.5 — 47%"
+    # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
     query, params = mock_fetch.call_args.args[:2]
-    assert "game_predictions" in query and "task = 'home_win'" in query
+    assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
     assert params == (777,)
+
+
+def test_matchup_season_preview_shows_total_without_win(bot_module):
+    """Гейт победы не пройден — строки home_win нет, тотал выходит один."""
+    bot_messages = bot_module("bot_messages")
+    text, _ = _render_preview(bot_messages, {"over_5_5": 0.55})
+
+    assert text.splitlines()[-1] == "🤖 Оценка модели: тотал больше 5.5 — 55%"
 
 
 def test_matchup_season_preview_escapes_home_abbrev_in_prediction_line(bot_module):
     bot_messages = bot_module("bot_messages")
-    text, _ = _render_preview(bot_messages, 0.5, home="B&B")
+    text, _ = _render_preview(bot_messages, {"home_win": 0.5}, home="B&B")
 
-    assert text.splitlines()[-1] == "🤖 Модельная оценка (не совет): победа B&amp;B — 50%"
+    assert text.splitlines()[-1] == "🤖 Оценка модели: победа B&amp;B — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
@@ -519,7 +528,7 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
         raise AssertionError(f"unexpected query: {q}")
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
-            patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "probability": []}):
+            patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "task": [], "probability": []}):
         text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
 
     assert "Форма (5 игр) |2-1-0|0-0-0\n" in text

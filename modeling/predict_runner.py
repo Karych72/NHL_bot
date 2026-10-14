@@ -96,13 +96,14 @@ def run_predict(
     check_features_hash_match(model_metadata, dataset_metadata)
 
     X = X[model_metadata["model_features"]]
-    model_family = model  # `train_common.predict_raw_proba`'s first arg is named model_family
-    raw_p = predict_raw_proba(model_family, raw_model, X)
-    calibrator_fit = calibrator_fit_from_metadata(model_metadata, calibrator)
-    calibrated_p = apply_calibrator(calibrator_fit, raw_p)
-
     predictions = keys.copy()
-    predictions[PROBABILITY_COLUMN] = calibrated_p
+    # No target games (start of a season, an empty day): sklearn refuses 0 samples.
+    predictions[PROBABILITY_COLUMN] = pd.Series(dtype="float64")
+    if not X.empty:
+        model_family = model  # `train_common.predict_raw_proba`'s first arg is named model_family
+        raw_p = predict_raw_proba(model_family, raw_model, X)
+        calibrator_fit = calibrator_fit_from_metadata(model_metadata, calibrator)
+        predictions[PROBABILITY_COLUMN] = apply_calibrator(calibrator_fit, raw_p)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

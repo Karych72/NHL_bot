@@ -18,6 +18,7 @@ artifacts/datasets/
 # per-run отчёты — пересобираются локальным прогоном, не коммитятся
 artifacts/models/
 artifacts/predictions/
+artifacts/predict/
 artifacts/reports/*/
 
 # superpowers SDD scratch (ledger, briefs, review packages)
