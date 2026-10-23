@@ -3,8 +3,8 @@
 **Блок:** трек B · **Надобность:** 🟠 · **Зависит от:** 68 ✅ (67 — модель есть, приёмку не ждём)
 **Область:** `modeling/publish_predictions.py`, `game_predictions` (миграция), шаг публикации
 после sync (`docker-compose.yml`), `telegram_bot/bot_messages.py`, `docs/`.
-**Источник:** заменяет Задачи 22 и 43 (архив — [`../../archive/closed_tasks.md`](../../archive/closed_tasks.md));
-номер 72 занят закрытой задачей «Убрать `/game`». Реестр — [`../../open_tasks.md`](../../open_tasks.md).
+**Источник:** заменяет Задачи 22 и 43 (архив — [`../../closed_tasks.md`](../../closed_tasks.md));
+номер 72 занят закрытой задачей «Убрать `/game`». Реестр — [`../../closed_tasks.md`](../../closed_tasks.md).
 
 ## Кратко
 
