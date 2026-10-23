@@ -1180,7 +1180,8 @@ async def callback_leaderboard_page(update: Update, context: CallbackContext) ->
 
 
 async def handle_goal_video(update: Update, context: CallbackContext) -> int:
-    """Download and send goal video when button is pressed."""
+    """Download and send goal video when button is pressed, captioned with
+    ``GoalVideoDelivery.caption`` (кто забил, с чьих передач, когда)."""
     query = update.callback_query
     assert query is not None and query.data is not None and query.message is not None
     await query.answer("Загружаю видео гола...")
@@ -1199,7 +1200,9 @@ async def handle_goal_video(update: Update, context: CallbackContext) -> int:
         return SECOND
 
     try:
-        send_kw: Dict[str, Any] = {"supports_streaming": True}
+        send_kw: Dict[str, Any] = {
+            "supports_streaming": True, "caption": delivery.caption, "parse_mode": "HTML",
+        }
         if delivery.width is not None:
             send_kw["width"] = delivery.width
         if delivery.height is not None:
