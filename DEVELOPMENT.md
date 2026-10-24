@@ -52,14 +52,16 @@
     union all select 'players_advanced_stats', count(*) from players_advanced_stats
     union all select 'players_shot_types', count(*) from players_shot_types
     union all select 'bot_subscriptions', count(*) from bot_subscriptions
+    union all select 'prediction_log', count(*) from prediction_log
     union all select 'schema_migrations', count(*) from schema_migrations
     order by 1;"
     ```
     (список таблиц — по `data_tables/t.*.sql` плюс миграции: `bot_subscriptions`
-    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) — единственные пользовательские
-    данные, не восстановимые повторной загрузкой из NHL API, и служебная `schema_migrations`
-    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — обе переживают `db-drop`/`db-reset`, `pg_dump`
-    снимает обе. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
+    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) и `prediction_log`
+    (`0010_prediction_log.up.sql`, журнал прогнозов) — данные, не восстановимые повторной
+    загрузкой из NHL API, и служебная `schema_migrations`
+    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — все переживают `db-drop`/`db-reset`, `pg_dump`
+    снимает все. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
     подстановка без раскрытия `~` работает как есть.)
   - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает; точное сравнение числа строк по всем таблицам, а не оценка `pg_stat_user_tables`):
     ```
@@ -86,7 +88,9 @@
 
 Прод — одна VM в GCP (Compute Engine, `e2-small`, Debian 12) с тем же `docker-compose.yml`, что и локально. Разницы две: `NHL_BOT_IMAGE` в `.env` на VM указывает на образ из GHCR (`ghcr.io/karych72/nhl_bot:<тег>`), и `bot`/`sync`/`migrate` берут его вместо локальной сборки (`predict` — образ стадии `modeling`, `NHL_BOT_MODELING_IMAGE` = `ghcr.io/karych72/nhl_bot:<тег>-modeling`); токен бота не в `.env`, а в Secret Manager (ниже, «Токен бота»). Порт `db` опубликован только на loopback VM, наружу открыт лишь SSH. `retrain` (профиль `modeling`, трек B) релиз не выкатывает — на проде модели не обучаются, `predict` берёт их из `deploy/models/` в образе.
 
-**Релиз:** мерж PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `deploy/`, `Makefile`, `requirements.txt`, `modeling/`, `requirements-modeling.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образы `ghcr.io/karych72/nhl_bot:<тег>` и `…:<тег>-modeling` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` и `NHL_BOT_MODELING_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
+**Ветки.** `develop` — ветка по умолчанию: PR задач идут в неё, прод она не трогает. `master` — то, что на проде: в него попадает только релизный PR `develop → master`. Обе ветки защищены: мерж только через PR с зелёными `quality` и `db-tests`, без force-push. Релизный PR вливать **merge commit**, не squash: после squash `develop` и `master` расходятся по истории, и следующий релизный PR тянет конфликты. Хотфикс — PR от `master` в `master`, затем `master` вливается обратно в `develop` (тоже PR).
+
+**Релиз:** мерж релизного PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `deploy/`, `Makefile`, `requirements.txt`, `modeling/`, `requirements-modeling.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образы `ghcr.io/karych72/nhl_bot:<тег>` и `…:<тег>-modeling` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` и `NHL_BOT_MODELING_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
 
 **Разовая настройка.**
 
