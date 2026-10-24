@@ -871,7 +871,8 @@ async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
     thumb_path = tmp_path / "thumb.jpg"
     thumb_path.write_bytes(b"fake-jpg")
     delivery = video_replay.GoalVideoDelivery(
-        path=str(video_path), width=640, height=360, duration=5, thumb_path=str(thumb_path)
+        path=str(video_path), caption="🚨 <b>W. Borgen</b>",
+        width=640, height=360, duration=5, thumb_path=str(thumb_path),
     )
     update = make_callback_update("gv:100:200")
 
@@ -885,6 +886,8 @@ async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
     assert sent["height"] == 360
     assert sent["duration"] == 5
     assert "thumbnail" in sent
+    assert sent["caption"] == "🚨 <b>W. Borgen</b>"
+    assert sent["parse_mode"] == "HTML"
     assert not video_path.exists(), "clip must be deleted after sending"
     assert not thumb_path.exists(), "thumbnail must be deleted after sending"
 
@@ -897,7 +900,7 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
     video_replay = bot_module("video_replay")
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"fake-mp4")
-    delivery = video_replay.GoalVideoDelivery(path=str(video_path))
+    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="")
     update = make_callback_update("gv:100:200")
 
     async def raise_send(**kwargs):
@@ -911,6 +914,74 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
     assert result == stats_handlers.SECOND
     assert fake_context.bot.sent_messages[-1]["text"] == "Ошибка при отправке видео."
     assert not video_path.exists(), "clip must be deleted even when send_video() raises"
+
+
+def _replay(**goal):
+    """Ответ /v1/ppt-replay в форме NHL API (гол Borgen, BOS@SJS 2026-10-13), поля
+    гола переопределяются аргументами."""
+    base = {
+        "periodDescriptor": {"number": 3, "periodType": "REG", "maxRegulationPeriods": 3},
+        "strength": "ev",
+        "name": {"default": "W. Borgen"},
+        "teamAbbrev": {"default": "BOS"},
+        "highlightClip": 6406828806112,
+        "goalsToDate": 1,
+        "awayScore": 6,
+        "homeScore": 3,
+        "timeInPeriod": "18:18",
+        "goalModifier": "empty-net",
+        "assists": [],
+    }
+    return {
+        "awayTeam": {"abbrev": "BOS"}, "homeTeam": {"abbrev": "SJS"},
+        "goal": {**base, **goal},
+    }
+
+
+def test_goal_caption_scorer_season_goal_time_score_and_empty_net(bot_module):
+    video_replay = bot_module("video_replay")
+
+    assert video_replay.goal_caption(_replay()) == (
+        "🚨 <b>W. Borgen</b> (BOS) — 1-й гол в сезоне\n"
+        "Без передач\n"
+        "3-й период, 18:18 · BOS 6:3 SJS · в пустые ворота"
+    )
+
+
+def test_goal_caption_assists_with_season_totals_overtime_power_play(bot_module):
+    video_replay = bot_module("video_replay")
+    replay = _replay(
+        periodDescriptor={"number": 4, "periodType": "OT", "maxRegulationPeriods": 3},
+        strength="pp",
+        goalModifier="none",
+        goalsToDate=3,
+        assists=[
+            {"name": {"default": "C. Mittelstadt"}, "assistsToDate": 1},
+            {"name": {"default": "N. Zadorov"}, "assistsToDate": 3},
+        ],
+    )
+
+    assert video_replay.goal_caption(replay) == (
+        "🚨 <b>W. Borgen</b> (BOS) — 3-й гол в сезоне\n"
+        "Передачи: C. Mittelstadt (1), N. Zadorov (3)\n"
+        "овертайм, 18:18 · BOS 6:3 SJS · в большинстве"
+    )
+
+
+def test_goal_caption_shootout_goal_without_season_number(bot_module):
+    """У гола серии буллитов (BUF@MTL 2026020092/804) нет ``goalsToDate``."""
+    video_replay = bot_module("video_replay")
+    replay = _replay(
+        periodDescriptor={"number": 5, "periodType": "SO", "maxRegulationPeriods": 3},
+        name={"default": "C. Caufield"},
+        teamAbbrev={"default": "MTL"},
+        goalModifier="none",
+    )
+    del replay["goal"]["goalsToDate"]
+
+    assert video_replay.goal_caption(replay) == (
+        "🚨 <b>C. Caufield</b> (MTL) — гол в серии буллитов, BOS–SJS"
+    )
 
 
 def test_download_goal_video_fails_loudly_without_ffmpeg_before_any_network(
