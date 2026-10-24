@@ -871,8 +871,8 @@ async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
     thumb_path = tmp_path / "thumb.jpg"
     thumb_path.write_bytes(b"fake-jpg")
     delivery = video_replay.GoalVideoDelivery(
-        path=str(video_path), width=640, height=360, duration=5, thumb_path=str(thumb_path),
-        caption="🚨 <b>W. Borgen</b>",
+        path=str(video_path), caption="🚨 <b>W. Borgen</b>",
+        width=640, height=360, duration=5, thumb_path=str(thumb_path),
     )
     update = make_callback_update("gv:100:200")
 
@@ -900,7 +900,7 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
     video_replay = bot_module("video_replay")
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"fake-mp4")
-    delivery = video_replay.GoalVideoDelivery(path=str(video_path))
+    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="")
     update = make_callback_update("gv:100:200")
 
     async def raise_send(**kwargs):

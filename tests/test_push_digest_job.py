@@ -560,7 +560,8 @@ def country_env(push_job, monkeypatch, tmp_path):
         video.write_bytes(b"video")
         thumb.write_bytes(b"thumb")
         return SimpleNamespace(
-            path=str(video), width=1280, height=720, duration=9, thumb_path=str(thumb)
+            path=str(video), caption=f"<b>GOAL</b> {event_id}",
+            width=1280, height=720, duration=9, thumb_path=str(thumb),
         )
 
     def run(chats, games, goals, final=False):
@@ -591,8 +592,9 @@ def country_env(push_job, monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_country_game_is_short_text_with_card_button_then_goal_album(country_env):
     """Задача 76: матч — короткий текст (счёт и блок страны, без полной карточки) с кнопкой
-    «Карточка матча», за ним голы страны альбомом без подписи; без голов — только текст.
-    Второму чату клипы — по ``file_id``, без повторной загрузки."""
+    «Карточка матча», за ним голы страны альбомом с общей подписью — описаниями всех его
+    голов; без голов — только текст. Второму чату клипы — по ``file_id``, без повторной
+    загрузки, с той же подписью."""
     country_env.missing = {(GAME_A, 101)}
     await country_env.run(
         [(111, "RUS"), (222, "RUS")],
@@ -613,9 +615,12 @@ async def test_country_game_is_short_text_with_card_button_then_goal_album(count
     assert [[(b.text, b.callback_data) for row in kb for b in row] for kb in buttons] == [
         [("Карточка матча", f"dg:{GAME_A}")], [("Карточка матча", f"dg:{GAME_B}")],
     ]
-    # Гол без клипа пропущен: в альбоме два видео, подписей нет — текст уже выше.
+    # Гол без клипа пропущен: в альбоме два видео; Telegram показывает одну подпись
+    # альбома, поэтому описания обоих голов — у первого видео.
     first = bot.albums[0][1]
-    assert [m.caption for m in first] == [None, None]
+    assert [m.caption for m in first] == ["<b>GOAL</b> 100\n\n<b>GOAL</b> 102", None]
+    assert first[0].parse_mode == "HTML"
+    assert [m.caption for m in bot.albums[1][1]] == [first[0].caption, None]
     assert not any(isinstance(m.media, str) for m in first), "первому чату — загрузка"
     # PTB пишет в альбом media/thumbnail только у файлов с attach_uri (attach://…):
     # без него поля выпадают из запроса и Telegram альбом не принимает.
@@ -663,12 +668,24 @@ def test_albums_respect_album_size_and_upload_budget(push_job, monkeypatch):
     monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 100)
 
     def clip(n, size):
-        return ((GAME_A, n), b"v" * size, {"thumbnail": b""})
+        return ((GAME_A, n), b"v" * size, {"thumbnail": b""}, "")
 
-    cached = [((GAME_A, n), f"fid-{n}", {}) for n in range(12)]
+    cached = [((GAME_A, n), f"fid-{n}", {}, "") for n in range(12)]
     assert [len(a) for a in push_job._albums(cached)] == [10, 2]
     heavy = [clip(0, 60), clip(1, 40), clip(2, 1), clip(3, 150), clip(4, 10)]
     assert [[c[0][1] for c in a] for a in push_job._albums(heavy)] == [[0, 1], [2], [3], [4]]
+
+
+def test_albums_split_when_common_caption_exceeds_telegram_limit(push_job):
+    """Общая подпись альбома — до 1024 видимых символов: HTML-теги не считаются,
+    описания разделяет пустая строка (2 символа); лишний гол — в следующий альбом."""
+    def clip(n, visible):
+        return ((GAME_A, n), f"fid-{n}", {}, "<b>" + "x" * visible + "</b>")
+
+    fits = [clip(0, 500), clip(1, 522)]  # 500 + 2 + 522 = 1024
+    assert [len(a) for a in push_job._albums(fits)] == [2]
+    over = [clip(0, 500), clip(1, 523), clip(2, 10)]
+    assert [[c[0][1] for c in a] for a in push_job._albums(over)] == [[0], [1, 2]]
 
 
 @pytest.mark.asyncio
@@ -689,6 +706,8 @@ async def test_country_game_over_upload_budget_goes_out_in_several_albums(
         ("message", 222), ("album", 222),
     ]
     assert [len(media) for _, media in bot.albums] == [2, 2, 5]
+    assert bot.videos[0][2]["caption"] == "<b>GOAL</b> 104", "одиночный клип — со своей подписью"
+    assert bot.videos[0][2]["parse_mode"] == "HTML"
 
 
 @pytest.mark.asyncio

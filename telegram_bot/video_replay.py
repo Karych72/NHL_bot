@@ -40,11 +40,11 @@ class GoalVideoDelivery:
     caller deletes path / thumb_path."""
 
     path: str
+    caption: str
     width: Optional[int] = None
     height: Optional[int] = None
     duration: Optional[int] = None
     thumb_path: Optional[str] = None
-    caption: Optional[str] = None
 
 
 # Пометки гола в подписи: ``strength`` и ``goalModifier`` Replay API.
