@@ -68,10 +68,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-modeling.txt
 
-      - name: Install dependencies (venv via make setup)
-        run: make setup
+      - name: Install dependencies (venv via make modeling-dev — tests/test_db_nhl.py импортирует modeling)
+        run: make modeling-dev
 
       - name: Apply DDL and SQL functions (DDL_TABLES, then queries) — same order as make db-init
         run: make db-sync

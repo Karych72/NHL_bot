@@ -52,14 +52,16 @@
     union all select 'players_advanced_stats', count(*) from players_advanced_stats
     union all select 'players_shot_types', count(*) from players_shot_types
     union all select 'bot_subscriptions', count(*) from bot_subscriptions
+    union all select 'prediction_log', count(*) from prediction_log
     union all select 'schema_migrations', count(*) from schema_migrations
     order by 1;"
     ```
     (список таблиц — по `data_tables/t.*.sql` плюс миграции: `bot_subscriptions`
-    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) — единственные пользовательские
-    данные, не восстановимые повторной загрузкой из NHL API, и служебная `schema_migrations`
-    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — обе переживают `db-drop`/`db-reset`, `pg_dump`
-    снимает обе. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
+    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) и `prediction_log`
+    (`0010_prediction_log.up.sql`, журнал прогнозов) — данные, не восстановимые повторной
+    загрузкой из NHL API, и служебная `schema_migrations`
+    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — все переживают `db-drop`/`db-reset`, `pg_dump`
+    снимает все. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
     подстановка без раскрытия `~` работает как есть.)
   - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает; точное сравнение числа строк по всем таблицам, а не оценка `pg_stat_user_tables`):
     ```
