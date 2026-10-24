@@ -6,7 +6,10 @@
 карточки — в [`archive/tasks/`](./archive/tasks/) (трека B — в [`archive/tasks/task_model/`](./archive/tasks/task_model/)); задачи 1–32 исходного плана — в
 [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md).
 
-**Срез на 2026-10-24.** `origin/master` = `3cd2569` (merge PR #98, карточка 78); мерж
+**Срез на 2026-10-24.** С 2026-10-24 PR задач идут в `develop` (ветка по умолчанию), в `master` —
+только релизный PR `develop → master` (`DEVELOPMENT.md` §«Прод-деплой»); `origin/develop` =
+`1801bc3` (merge PR #97, Задача 77), `origin/master` = `3cd2569` (merge PR #98, карточка 78) —
+Задача 77 на прод ещё не выкатывалась. Мерж
 прод-кода в `master` сам ставит следующий patch-тег и деплоит (с PR #55). Задача 77 закрыта
 2026-10-24 (ветка `task-77-prediction-log`, PR #97): журнал `prediction_log` — каждая публикация
 прогноза, на следующий день голы основного времени и победитель матча; метрик и `evaluate-live`
