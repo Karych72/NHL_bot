@@ -15,11 +15,14 @@ Requires: psycopg2, .env or env vars PG_* matching the loader.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import closing
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -142,6 +145,9 @@ class TestNhlSchema(unittest.TestCase):
             self.assertEqual(_pk_columns(cur, "games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "scheduled_games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "game_predictions"), ["game_id", "task"])
+            self.assertEqual(
+                _pk_columns(cur, "prediction_log"), ["game_id", "task", "run_id", "published_on"]
+            )
             self.assertEqual(_pk_columns(cur, "shot_attempts"), ["game_id", "event_id"])
 
     def test_games_has_season_id(self):
@@ -697,6 +703,130 @@ class TestCountryNightSql(unittest.TestCase):
             self.messages.country_night_goals("ZZZ", self.NIGHT),
             [(self.GAME, 5), (self.GAME, 10), (self.GAME, 30)],
         )
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestPredictionLogSql(unittest.TestCase):
+    """Журнал прогнозов (Задача 77): настоящая ``publish_predictions`` на настоящем PG.
+
+    Задача ``task_77_test`` вымышлена, поэтому публикация не трогает боевые строки
+    ``game_predictions``; сезон, команды и игры — вымышленные, строки удаляются до и после.
+    """
+
+    TASK = "task_77_test"
+    RUN_ID = "run_77"
+    SEASON = 99999977
+    HOME = 900071
+    AWAY = 900072
+    PLAYED = 2099990071
+    UNPLAYED = 2099990072
+    OLD_DAY = date(2000, 1, 1)
+
+    def setUp(self):
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        base = self.tmp / "artifacts" / "models" / self.TASK / "m"
+        final = base / self.RUN_ID / "final"
+        final.mkdir(parents=True)
+        (final / "metadata.json").write_text(
+            json.dumps({"run_id": self.RUN_ID, "status": "ok"}), encoding="utf-8"
+        )
+        os.symlink(Path(self.RUN_ID) / "final", base / "latest")
+        self.csv = self.tmp / "preds.csv"
+        self.csv.write_text(
+            f"game_id,probability\n{self.PLAYED},0.6\n{self.UNPLAYED},0.4\n", encoding="utf-8"
+        )
+
+    def _games(self):
+        return [self.PLAYED, self.UNPLAYED]
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_log WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM game_predictions WHERE task = %s", (self.TASK,))
+            cur.execute("DELETE FROM game_team_stats WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM games WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def _publish(self):
+        from modeling.publish_predictions import publish_predictions
+
+        with closing(_connect()) as conn:
+            return publish_predictions(
+                conn,
+                task=self.TASK,
+                model="m",
+                predictions_csv=self.csv,
+                artifacts_root=self.tmp / "artifacts",
+            )
+
+    def _log(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT game_id, published_on, probability, home_goals, away_goals, settled_at "
+                "FROM prediction_log WHERE game_id = ANY(%s) ORDER BY game_id, published_on",
+                (self._games(),),
+            )
+            return cur.fetchall()
+
+    def test_journal_dedups_keeps_history_and_settles_played_games(self):
+        self.assertEqual(self._publish(), 2)
+        self.csv.write_text(
+            f"game_id,probability\n{self.PLAYED},0.7\n{self.UNPLAYED},0.3\n", encoding="utf-8"
+        )
+        self.assertEqual(self._publish(), 2)
+        rows = self._log()
+        # Повтор в тот же день не множит строки, но обновляет вероятность; исхода пока нет.
+        self.assertEqual([(r[0], r[2], r[3], r[4], r[5]) for r in rows],
+                         [(self.PLAYED, 0.7, None, None, None), (self.UNPLAYED, 0.3, None, None, None)])
+        today = rows[0][1]
+
+        # Старая строка с ручным исходом (9:9) — «уже рассчитанная».
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_log (game_id, task, model, run_id, probability, "
+                "published_on, home_goals, away_goals, settled_at) "
+                "VALUES (%s, %s, 'm', %s, 0.5, %s, 9, 9, now())",
+                (self.PLAYED, self.TASK, self.RUN_ID, self.OLD_DAY),
+            )
+            # Игра сыграна: хозяева выиграли в овертайме, goals = 3 + 1 и 3.
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, short_name) "
+                "VALUES (%s, %s, 'HOM', 'Home'), (%s, %s, 'AWY', 'Away')",
+                (self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            cur.execute(
+                "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                "is_overtime, season_id) VALUES (%s, %s, %s, %s, %s, TRUE, %s), "
+                "(%s, %s, %s, %s, NULL, FALSE, %s)",
+                (self.PLAYED, today, self.HOME, self.AWAY, self.HOME, self.SEASON,
+                 self.UNPLAYED, today, self.HOME, self.AWAY, self.SEASON),
+            )
+            cur.execute(
+                "INSERT INTO game_team_stats (game_id, team_id, field, goals) "
+                "VALUES (%s, %s, 'home', 4), (%s, %s, 'away', 3)",
+                (self.PLAYED, self.HOME, self.PLAYED, self.AWAY),
+            )
+
+        self._publish()
+        rows = {(r[0], r[1]): r for r in self._log()}
+        self.assertEqual(len(rows), 3)
+        settled = rows[(self.PLAYED, today)]
+        self.assertEqual((settled[3], settled[4]), (4, 3))
+        self.assertIsNotNone(settled[5])
+        # Старая рассчитанная строка пережила публикацию и не перезаписана.
+        old = rows[(self.PLAYED, self.OLD_DAY)]
+        self.assertEqual((old[2], old[3], old[4]), (0.5, 9, 9))
+        # Игра без победителя остаётся без исхода.
+        unplayed = rows[(self.UNPLAYED, today)]
+        self.assertEqual((unplayed[3], unplayed[4], unplayed[5]), (None, None, None))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

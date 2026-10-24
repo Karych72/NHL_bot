@@ -592,6 +592,21 @@ sync: `build-dataset --mode predict --output-dir artifacts/predict` → `predict
 `tie_halflife_days`, `run_id`), затем скопировать `final/` прогонов в `deploy/models/`, переставить
 `latest` и закоммитить — мерж выкатывает их релизом.
 
+**Журнал прогнозов (Задача 77).** Каждая публикация, помимо `game_predictions`, дописывает
+строки в `prediction_log` — простой журнал фактов без метрик: вероятность события задачи
+(`home_win` — P(победа хозяев), `over_5_5` — P(тотал > 5.5)), модель, `run_id`, день публикации.
+Повтор в тот же день обновляет вероятность, строки прошлых дней не трогаются, ничего не удаляется.
+Исход (`home_goals`, `away_goals`) пуст, пока игра не сыграна; первая же публикация после игры
+(следующий день) заполняет его из `game_team_stats.goals` — итоговый счёт, победителю овертайма
+или буллитов засчитан +1 гол. Игры, для которых прогноз не публиковался (гейт, cold-start), в
+журнале отсутствуют, история до запуска не восстанавливается. Посмотреть:
+
+```sql
+SELECT p.game_id, p.published_on, p.task, p.probability, p.home_goals, p.away_goals
+FROM prediction_log p
+ORDER BY p.published_on DESC, p.game_id, p.task;
+```
+
 **Two config gaps found running this end to end on real data (Задача 15), fixed in
 Задача 39 (`plan/archive/tasks/task_39_modeling_config_gaps.md`):**
 
