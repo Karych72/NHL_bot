@@ -18,7 +18,12 @@ import pandas as pd
 
 from modeling.dataset_builder.base import _load_train_metadata
 from modeling.goal_model import fit_goal_model, forecast_upcoming, prepare_games
-from modeling.publish_predictions import GOAL_MODEL, publish_goal_predictions, publish_predictions
+from modeling.publish_predictions import (
+    _SETTLE_SQL,
+    GOAL_MODEL,
+    publish_goal_predictions,
+    publish_predictions,
+)
 from tests.test_modeling_goal_model import _synthetic_games
 from tests.test_modeling_predict_runner import (
     FEATURE_SET_VERSION,
@@ -41,7 +46,7 @@ class _Cursor:
     def __exit__(self, *exc: object) -> None:
         return None
 
-    def execute(self, sql: str, params: object) -> None:
+    def execute(self, sql: str, params: object = None) -> None:
         self._log.append(("execute", sql, params))
 
     def executemany(self, sql: str, rows: object) -> None:
@@ -103,7 +108,7 @@ class TestPublishPredictions(unittest.TestCase):
             conn = _Conn()
             inserted = self._publish(Path(tmp_str), conn)
         self.assertEqual(inserted, 0)
-        self.assertEqual(conn.log, [("execute", DELETE, ("home_win",))])
+        self.assertEqual(conn.log, [("execute", _SETTLE_SQL, None), ("execute", DELETE, ("home_win",))])
         self.assertEqual(conn.outcome, "commit")
 
     def test_status_not_ok_deletes_task_rows_and_inserts_nothing(self) -> None:
@@ -113,7 +118,7 @@ class TestPublishPredictions(unittest.TestCase):
             conn = _Conn()
             inserted = self._publish(tmp, conn)
         self.assertEqual(inserted, 0)
-        self.assertEqual(conn.log, [("execute", DELETE, ("home_win",))])
+        self.assertEqual(conn.log, [("execute", _SETTLE_SQL, None), ("execute", DELETE, ("home_win",))])
         self.assertEqual(conn.outcome, "commit")
 
     def test_ok_replaces_task_rows_in_one_transaction(self) -> None:
@@ -123,9 +128,10 @@ class TestPublishPredictions(unittest.TestCase):
             conn = _Conn()
             inserted = self._publish(tmp, conn)
         self.assertEqual(inserted, 2)
-        self.assertEqual(len(conn.log), 2)
-        self.assertEqual(conn.log[0], ("execute", DELETE, ("home_win",)))
-        kind, sql, rows = conn.log[1]
+        self.assertEqual(len(conn.log), 4)
+        self.assertEqual(conn.log[0], ("execute", _SETTLE_SQL, None))
+        self.assertEqual(conn.log[1], ("execute", DELETE, ("home_win",)))
+        kind, sql, rows = conn.log[2]
         self.assertEqual(kind, "executemany")
         self.assertIn("INSERT INTO game_predictions (game_id, task, model, run_id, probability)", sql)
         self.assertEqual(
@@ -135,6 +141,10 @@ class TestPublishPredictions(unittest.TestCase):
                 (102, "home_win", "logreg", RUN_ID, 0.42),
             ],
         )
+        log_kind, log_sql, log_rows = conn.log[3]
+        self.assertEqual(log_kind, "executemany")
+        self.assertIn("INSERT INTO prediction_log (game_id, task, model, run_id, probability)", log_sql)
+        self.assertEqual(log_rows, rows)
         self.assertEqual(conn.outcome, "commit")
 
     def test_ok_without_csv_fails_loudly_before_touching_db(self) -> None:
@@ -183,8 +193,10 @@ class TestPublishGoalPredictions(unittest.TestCase):
             )
         expected = forecast_upcoming(model, games, upcoming, 100)
         self.assertEqual(inserted, 2)
-        self.assertEqual(conn.log[0], ("execute", DELETE, ("over_5_5",)))
-        _, _, rows = conn.log[1]
+        self.assertEqual(conn.log[0], ("execute", _SETTLE_SQL, None))
+        self.assertEqual(conn.log[1], ("execute", DELETE, ("over_5_5",)))
+        _, _, rows = conn.log[2]
+        self.assertEqual(conn.log[3][2], rows)
         self.assertEqual([row[:4] for row in rows], [(901, "over_5_5", "goals", "goals_run"), (902, "over_5_5", "goals", "goals_run")])
         np.testing.assert_allclose([row[4] for row in rows], expected["p_over"])
         self.assertEqual(conn.outcome, "commit")

@@ -55,7 +55,9 @@ NHL_bot/
 │       ├── 0008_shot_attempts.up.sql   # Попытки бросков из play-by-play (Задача 69A)
 │       ├── 0008_shot_attempts.down.sql
 │       ├── 0009_country_game_sent.up.sql   # Подписка на страну по матчу: отметка «матч ушёл» (Задача 76)
-│       └── 0009_country_game_sent.down.sql
+│       ├── 0009_country_game_sent.down.sql
+│       ├── 0010_prediction_log.up.sql   # Журнал прогнозов и исходов (Задача 77)
+│       └── 0010_prediction_log.down.sql
 │
 ├── deploy/                             # Только прод-VM: токен бота из Secret Manager (Задача 65, DEVELOPMENT.md §«Прод-деплой»)
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
@@ -131,7 +133,7 @@ NHL_bot/
 │   ├── goal_model.py                    # Задача 67: Poisson GLM голов основного времени → сетка счёта → P(тотал > L) по правилу букмекеров; проверка по сезонам против константы (`evaluate-goals`, читает games_train.csv)
 │   ├── xg_model.py                      # Задача 69: Fenwick-xG — логрег P(гол) по расстоянию, углу, типу броска, составу, подбору; нормировка сторон по home_team_defending_side; fit_xg/predict_xg, проверка по сезонам (`evaluate-xg`, читает shots_train.csv)
 │   ├── predict_runner.py                # Задача 15: грузит latest-модель, скорит dataset_predict.csv, пишет CSV с probability
-│   ├── publish_predictions.py           # Задачи 22B, 73: CSV predict → game_predictions (гейт по status latest); прогноз тотала голевой моделью
+│   ├── publish_predictions.py           # Задачи 22B, 73, 77: CSV predict → game_predictions (гейт по status latest); прогноз тотала голевой моделью; журнал prediction_log
 │   └── …                                # train_runner.py, train_logreg.py, train_lgbm.py, splits.py (прогоны по сезонам), config.py, artifacts.py, и др.
 │
 └── artifacts/                           # datasets/, models/, predictions/, reports/*/ — в .gitignore (см. .gitignore)
@@ -738,6 +740,31 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 | `run_id` | text | NOT NULL. Прогон обучения, давший вероятность (из `metadata.json`) |
 | `probability` | double precision | NOT NULL, CHECK 0..1 |
 | `computed_at` | timestamptz | NOT NULL, default `now()` |
+
+#### `prediction_log` — Журнал прогнозов и исходов (Задача 77)
+
+Простой журнал фактов: что модель показала и чем кончилась игра. Каждая публикация
+(`modeling/publish_predictions.py`, та же транзакция, что и `game_predictions`) сперва дописывает
+исход в строки журнала, чьи игры уже сыграны (`games.winner_id IS NOT NULL`, есть обе строки
+`game_team_stats`): голы основного времени (сумма трёх периодов — рынок считает тотал без овертайма и
+буллитов) и `home_won` (победа хозяев с овертаймом/буллитами), затем добавляет опубликованные строки. Повтор
+в тот же день обновляет вероятность (в журнале — последнее показанное), строка за более ранний день
+остаётся. Строки не удаляются; метрик и вердиктов нет. FK на `games` нет — игра ещё не сыграна.
+Таблица создаётся только миграцией 0010 (без `data_tables/t.*.sql`), как `bot_subscriptions`:
+журнал не восстановить повторной загрузкой, поэтому `db-drop`/`db-reset` его не стирают.
+
+| Колонка | Тип | Описание |
+|---|---|---|
+| `game_id` | bigint | PK. NHL game ID |
+| `task` | text | PK. `home_win` / `over_5_5` |
+| `model` | text | NOT NULL |
+| `run_id` | text | PK. Прогон обучения |
+| `probability` | double precision | NOT NULL, CHECK 0..1. `home_win` — P(победа хозяев), `over_5_5` — P(тотал > 5.5) |
+| `published_on` | date | PK. День публикации (UTC), default |
+| `published_at` | timestamptz | NOT NULL. Время последней публикации за день |
+| `home_goals`, `away_goals` | int | Голы основного времени; NULL, пока игра не сыграна |
+| `home_won` | boolean | Победа хозяев с учётом овертайма/буллитов; NULL, пока игра не сыграна |
+| `settled_at` | timestamptz | Когда дописан исход (NULL — исхода ещё нет) |
 
 #### `all_goals` — Все голы
 

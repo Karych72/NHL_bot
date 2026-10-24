@@ -6,6 +6,9 @@
 только PG. Гейт победы не пересчитывается: источник истины — ``metadata.json`` по ``latest``
 (``latest`` ставит ``train`` только при ``status: ok``). Отдельный от ``predict_runner``
 модуль, чтобы предсказание оставалось без доступа к БД.
+
+Задача 77: та же транзакция ведёт журнал ``prediction_log`` — дописывает исход (голы основного
+времени и ``home_won``) сыгранных игр, затем кладёт туда опубликованные строки. Журнал только растёт, ничего не удаляется.
 """
 
 from __future__ import annotations
@@ -31,6 +34,28 @@ _INSERT_SQL = (
     "INSERT INTO game_predictions (game_id, task, model, run_id, probability) "
     "VALUES (%s, %s, %s, %s, %s)"
 )
+# Журнал (Задача 77): повтор в тот же день обновляет вероятность — в журнале то, что бот показал последним.
+_LOG_INSERT_SQL = (
+    "INSERT INTO prediction_log (game_id, task, model, run_id, probability) "
+    "VALUES (%s, %s, %s, %s, %s) "
+    "ON CONFLICT (game_id, task, run_id, published_on) "
+    "DO UPDATE SET probability = EXCLUDED.probability, published_at = now()"
+)
+# Исход: голы основного времени (сумма периодов; ``game_team_stats.goals`` не годится — в нём +1
+# победителю овертайма/буллитов) и ``home_won`` — победа хозяев с овертаймом.
+_SETTLE_SQL = """
+UPDATE prediction_log p
+SET home_goals = hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals,
+    away_goals = aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals,
+    home_won = (g.winner_id = g.home_team_id),
+    settled_at = now()
+FROM games g
+JOIN game_team_stats hs ON hs.game_id = g.game_id AND hs.team_id::bigint = g.home_team_id
+JOIN game_team_stats aws ON aws.game_id = g.game_id AND aws.team_id::bigint = g.away_team_id
+WHERE p.game_id = g.game_id
+  AND p.settled_at IS NULL
+  AND g.winner_id IS NOT NULL
+"""
 
 
 def _gate_failure_reason(artifacts_root: Path, task: str, model: str) -> tuple[str | None, str | None]:
@@ -131,12 +156,18 @@ def publish_goal_predictions(
 
 
 def _replace_task_rows(conn: Any, task: str, rows: list[tuple[int, str, str, str, float]]) -> int:
-    """Удалить все строки *task* и вставить *rows* одной транзакцией; вернуть число вставленных."""
+    """Одной транзакцией: дописать исходы в журнал, заменить строки *task*, добавить *rows* в журнал.
+
+    Исходы дописываются при каждой публикации независимо от гейта (идемпотентно).
+    Возвращает число вставленных в ``game_predictions`` строк.
+    """
     with conn:
         with conn.cursor() as cur:
+            cur.execute(_SETTLE_SQL)
             cur.execute(_DELETE_SQL, (task,))
             if rows:
                 cur.executemany(_INSERT_SQL, rows)
+                cur.executemany(_LOG_INSERT_SQL, rows)
     logger.info("game_predictions: task=%s вставлено %d строк", task, len(rows))
     return len(rows)
 
