@@ -6,7 +6,9 @@
 карточки — в [`archive/tasks/`](./archive/tasks/) (трека B — в [`archive/tasks/task_model/`](./archive/tasks/task_model/)); задачи 1–32 исходного плана — в
 [`engineering/work_plan_2026-08-08.md`](./engineering/work_plan_2026-08-08.md).
 
-**Срез на 2026-10-23.** `origin/master` = `a224410` (merge PR #93, карточки 77–78); мерж
+**Срез на 2026-10-24.** С 2026-10-24 PR задач идут в `develop` (ветка по умолчанию), в `master` —
+только релизный PR `develop → master` (`DEVELOPMENT.md` §«Прод-деплой»); `origin/develop` =
+`3cd2569` (merge PR #98, карточка 78). Мерж
 прод-кода в `master` сам ставит следующий patch-тег и деплоит (с PR #55). Задача 73 закрыта
 2026-10-23 (ветка `task-73-bot-probability`, PR #92): прогноз победы и тотала в превью `/tonight`,
 сервис `predict` публикует ежедневно, живая проверка пройдена. Заведены 77 (журнал прогнозов)
