@@ -745,8 +745,9 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 Простой журнал фактов: что модель показала и чем кончилась игра. Каждая публикация
 (`modeling/publish_predictions.py`, та же транзакция, что и `game_predictions`) сперва дописывает
-голы в строки журнала, чьи игры уже сыграны (`games.winner_id IS NOT NULL`; счёт — `game_team_stats.goals`,
-то есть итоговый, +1 победителю овертайма/буллитов), затем добавляет опубликованные строки. Повтор
+исход в строки журнала, чьи игры уже сыграны (`games.winner_id IS NOT NULL`, есть обе строки
+`game_team_stats`): голы основного времени (сумма трёх периодов — рынок считает тотал без овертайма и
+буллитов) и `home_won` (победа хозяев с овертаймом/буллитами), затем добавляет опубликованные строки. Повтор
 в тот же день обновляет вероятность (в журнале — последнее показанное), строка за более ранний день
 остаётся. Строки не удаляются; метрик и вердиктов нет. FK на `games` нет — игра ещё не сыграна.
 Таблица создаётся только миграцией 0010 (без `data_tables/t.*.sql`), как `bot_subscriptions`:
@@ -761,8 +762,9 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 | `probability` | double precision | NOT NULL, CHECK 0..1. `home_win` — P(победа хозяев), `over_5_5` — P(тотал > 5.5) |
 | `published_on` | date | PK. День публикации (UTC), default |
 | `published_at` | timestamptz | NOT NULL. Время последней публикации за день |
-| `home_goals`, `away_goals` | int | NULL, пока игра не сыграна |
-| `settled_at` | timestamptz | Когда дописан исход |
+| `home_goals`, `away_goals` | int | Голы основного времени; NULL, пока игра не сыграна |
+| `home_won` | boolean | Победа хозяев с учётом овертайма/буллитов; NULL, пока игра не сыграна |
+| `settled_at` | timestamptz | Когда дописан исход (NULL — исхода ещё нет) |
 
 #### `all_goals` — Все голы
 

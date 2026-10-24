@@ -10,8 +10,11 @@ CREATE TABLE prediction_log(
     probability             double precision NOT NULL CHECK (probability BETWEEN 0 AND 1),
     published_on            date NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')::date,
     published_at            timestamptz NOT NULL DEFAULT now(),
+    -- Голы основного времени (сумма трёх периодов): без гола овертайма и без +1 за буллиты.
     home_goals              int,
     away_goals              int,
+    -- Итог игры с овертаймом/буллитами: победа хозяев (исход задачи home_win).
+    home_won                boolean,
     settled_at              timestamptz,
     PRIMARY KEY (game_id, task, run_id, published_on)
 );

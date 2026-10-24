@@ -596,13 +596,14 @@ sync: `build-dataset --mode predict --output-dir artifacts/predict` → `predict
 строки в `prediction_log` — простой журнал фактов без метрик: вероятность события задачи
 (`home_win` — P(победа хозяев), `over_5_5` — P(тотал > 5.5)), модель, `run_id`, день публикации.
 Повтор в тот же день обновляет вероятность, строки прошлых дней не трогаются, ничего не удаляется.
-Исход (`home_goals`, `away_goals`) пуст, пока игра не сыграна; первая же публикация после игры
-(следующий день) заполняет его из `game_team_stats.goals` — итоговый счёт, победителю овертайма
-или буллитов засчитан +1 гол. Игры, для которых прогноз не публиковался (гейт, cold-start), в
+Исход пуст, пока игра не сыграна; первая же публикация после игры (следующий день) заполняет его:
+`home_goals`/`away_goals` — голы основного времени (сумма `fst/snd/trd_period_goals`, без гола
+овертайма и без +1 за буллиты — тотал на рынке считается так), `home_won` — победа хозяев с учётом
+овертайма/буллитов (исход задачи `home_win`). Игры, для которых прогноз не публиковался (гейт, cold-start), в
 журнале отсутствуют, история до запуска не восстанавливается. Посмотреть:
 
 ```sql
-SELECT p.game_id, p.published_on, p.task, p.probability, p.home_goals, p.away_goals
+SELECT p.game_id, p.published_on, p.task, p.probability, p.home_goals, p.away_goals, p.home_won
 FROM prediction_log p
 ORDER BY p.published_on DESC, p.game_id, p.task;
 ```

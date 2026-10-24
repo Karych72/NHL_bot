@@ -7,8 +7,8 @@
 (``latest`` ставит ``train`` только при ``status: ok``). Отдельный от ``predict_runner``
 модуль, чтобы предсказание оставалось без доступа к БД.
 
-Задача 77: та же транзакция ведёт журнал ``prediction_log`` — дописывает исход (голы) сыгранных
-игр, затем кладёт туда опубликованные строки. Журнал только растёт, ничего не удаляется.
+Задача 77: та же транзакция ведёт журнал ``prediction_log`` — дописывает исход (голы основного
+времени и ``home_won``) сыгранных игр, затем кладёт туда опубликованные строки. Журнал только растёт, ничего не удаляется.
 """
 
 from __future__ import annotations
@@ -41,15 +41,19 @@ _LOG_INSERT_SQL = (
     "ON CONFLICT (game_id, task, run_id, published_on) "
     "DO UPDATE SET probability = EXCLUDED.probability, published_at = now()"
 )
-# Исход: ``goals`` — итоговый счёт с +1 победителю овертайма/буллитов (правило букмекеров).
+# Исход: голы основного времени (сумма периодов; ``game_team_stats.goals`` не годится — в нём +1
+# победителю овертайма/буллитов) и ``home_won`` — победа хозяев с овертаймом.
 _SETTLE_SQL = """
 UPDATE prediction_log p
-SET home_goals = hs.goals, away_goals = aws.goals, settled_at = now()
+SET home_goals = hs.fst_period_goals + hs.snd_period_goals + hs.trd_period_goals,
+    away_goals = aws.fst_period_goals + aws.snd_period_goals + aws.trd_period_goals,
+    home_won = (g.winner_id = g.home_team_id),
+    settled_at = now()
 FROM games g
 JOIN game_team_stats hs ON hs.game_id = g.game_id AND hs.team_id::bigint = g.home_team_id
 JOIN game_team_stats aws ON aws.game_id = g.game_id AND aws.team_id::bigint = g.away_team_id
 WHERE p.game_id = g.game_id
-  AND p.home_goals IS NULL
+  AND p.settled_at IS NULL
   AND g.winner_id IS NOT NULL
 """
 

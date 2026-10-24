@@ -770,8 +770,8 @@ class TestPredictionLogSql(unittest.TestCase):
     def _log(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT game_id, published_on, probability, home_goals, away_goals, settled_at "
-                "FROM prediction_log WHERE game_id = ANY(%s) ORDER BY game_id, published_on",
+                "SELECT game_id, published_on, probability, home_goals, away_goals, settled_at, "
+                "home_won FROM prediction_log WHERE game_id = ANY(%s) ORDER BY game_id, published_on",
                 (self._games(),),
             )
             return cur.fetchall()
@@ -796,7 +796,7 @@ class TestPredictionLogSql(unittest.TestCase):
                 "VALUES (%s, %s, 'm', %s, 0.5, %s, 9, 9, now())",
                 (self.PLAYED, self.TASK, self.RUN_ID, self.OLD_DAY),
             )
-            # Игра сыграна: хозяева выиграли в овертайме, goals = 3 + 1 и 3.
+            # Игра сыграна: хозяева выиграли в овертайме, итог 4:3 (goals с +1), основное время 3:3.
             cur.execute(
                 "INSERT INTO teams (team_id, season_id, abbreviation, short_name) "
                 "VALUES (%s, %s, 'HOM', 'Home'), (%s, %s, 'AWY', 'Away')",
@@ -810,8 +810,9 @@ class TestPredictionLogSql(unittest.TestCase):
                  self.UNPLAYED, today, self.HOME, self.AWAY, self.SEASON),
             )
             cur.execute(
-                "INSERT INTO game_team_stats (game_id, team_id, field, goals) "
-                "VALUES (%s, %s, 'home', 4), (%s, %s, 'away', 3)",
+                "INSERT INTO game_team_stats (game_id, team_id, field, goals, fst_period_goals, "
+                "snd_period_goals, trd_period_goals) "
+                "VALUES (%s, %s, 'home', 4, 1, 1, 1), (%s, %s, 'away', 3, 1, 1, 1)",
                 (self.PLAYED, self.HOME, self.PLAYED, self.AWAY),
             )
 
@@ -819,14 +820,14 @@ class TestPredictionLogSql(unittest.TestCase):
         rows = {(r[0], r[1]): r for r in self._log()}
         self.assertEqual(len(rows), 3)
         settled = rows[(self.PLAYED, today)]
-        self.assertEqual((settled[3], settled[4]), (4, 3))
+        self.assertEqual((settled[3], settled[4], settled[6]), (3, 3, True))
         self.assertIsNotNone(settled[5])
         # Старая рассчитанная строка пережила публикацию и не перезаписана.
         old = rows[(self.PLAYED, self.OLD_DAY)]
         self.assertEqual((old[2], old[3], old[4]), (0.5, 9, 9))
         # Игра без победителя остаётся без исхода.
         unplayed = rows[(self.UNPLAYED, today)]
-        self.assertEqual((unplayed[3], unplayed[4], unplayed[5]), (None, None, None))
+        self.assertEqual((unplayed[3], unplayed[4], unplayed[5], unplayed[6]), (None, None, None, None))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
