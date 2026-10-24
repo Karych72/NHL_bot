@@ -2,10 +2,12 @@
 NHL Goal Video Replay service.
 
 Chain: game_id + event_id → NHL Replay API → Brightcove → MP4 file.
+Подпись к видео (автор, передачи, номер гола в сезоне, время) — из того же ответа Replay API.
 """
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import shutil
@@ -34,17 +36,24 @@ _THUMB_MAX_BYTES = 190_000
 
 @dataclass
 class GoalVideoDelivery:
-    """Local MP4 path and Telegram send_video hints (caller deletes path / thumb_path)."""
+    """Local MP4 path, Telegram send_video hints and HTML caption (``goal_caption``);
+    caller deletes path / thumb_path."""
 
     path: str
+    caption: str
     width: Optional[int] = None
     height: Optional[int] = None
     duration: Optional[int] = None
     thumb_path: Optional[str] = None
 
 
-def _get_brightcove_clip_id(game_id: int, event_id: int) -> Optional[int]:
-    """Fetch highlightClip (Brightcove video ID) from NHL Replay API."""
+# Пометки гола в подписи: ``strength`` и ``goalModifier`` Replay API.
+_STRENGTH_RU = {"pp": "в большинстве", "sh": "в меньшинстве"}
+_MODIFIER_RU = {"empty-net": "в пустые ворота"}
+
+
+def _get_replay(game_id: int, event_id: int) -> Optional[dict]:
+    """Ответ NHL Replay API по голу; ``None`` — запрос не удался или в ответе нет клипа."""
     url = f"{NHL_BASE}/v1/ppt-replay/{game_id}/{event_id}"
     try:
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT)
@@ -53,11 +62,50 @@ def _get_brightcove_clip_id(game_id: int, event_id: int) -> Optional[int]:
         logger.exception("NHL Replay API failed for game=%s event=%s", game_id, event_id)
         return None
 
-    goal = resp.json().get("goal", {})
-    clip_id = goal.get("highlightClip")
-    if not clip_id:
+    replay = resp.json()
+    if not replay.get("goal", {}).get("highlightClip"):
         logger.warning("No highlightClip for game=%s event=%s", game_id, event_id)
-    return clip_id
+        return None
+    return replay
+
+
+def _period_ru(descriptor: dict) -> str:
+    """Период гола по-русски: «2-й период» или «овертайм»."""
+    if descriptor["periodType"] == "OT":
+        return "овертайм"
+    return f"{descriptor['number']}-й период"
+
+
+def goal_caption(replay: dict) -> str:
+    """HTML-подпись к видео гола: автор и его номер гола в сезоне, передачи
+    с числом передач в сезоне, период, время, счёт после гола и пометки
+    (большинство, меньшинство, пустые ворота). Гол в серии буллитов — одна строка:
+    у него в API нет номера гола в сезоне, передач и времени.
+
+    Зачем: видео из кнопки карточки приходило без подписи — по клипу не понять,
+    чей гол.
+
+    Аргументы: ``replay`` — ответ ``/v1/ppt-replay/{game_id}/{event_id}``.
+    """
+    goal = replay["goal"]
+    away, home = replay["awayTeam"]["abbrev"], replay["homeTeam"]["abbrev"]
+    scorer = f"🚨 <b>{html.escape(goal['name']['default'])}</b> ({goal['teamAbbrev']['default']})"
+    if goal["periodDescriptor"]["periodType"] == "SO":
+        return f"{scorer} — гол в серии буллитов, {away}–{home}"
+    lines = [f"{scorer} — {goal['goalsToDate']}-й гол в сезоне"]
+    assists = [
+        f"{html.escape(a['name']['default'])} ({a['assistsToDate']})" for a in goal["assists"]
+    ]
+    lines.append("Передачи: " + ", ".join(assists) if assists else "Без передач")
+    details = [
+        f"{_period_ru(goal['periodDescriptor'])}, {goal['timeInPeriod']}",
+        f"{away} {goal['awayScore']}:{goal['homeScore']} {home}",
+    ]
+    for mark in (_STRENGTH_RU.get(goal["strength"]), _MODIFIER_RU.get(goal["goalModifier"])):
+        if mark:
+            details.append(mark)
+    lines.append(" · ".join(details))
+    return "\n".join(lines)
 
 
 def goal_clip_published(game_id: int, event_id: int) -> bool:
@@ -68,7 +116,7 @@ def goal_clip_published(game_id: int, event_id: int) -> bool:
 
     Аргументы: ``game_id``, ``event_id`` — гол.
     """
-    return bool(_get_brightcove_clip_id(game_id, event_id))
+    return _get_replay(game_id, event_id) is not None
 
 
 def _mp4_sources(sources: List[dict]) -> List[dict]:
@@ -245,11 +293,13 @@ def download_goal_video(game_id: int, event_id: int) -> Optional[GoalVideoDelive
     """
     ffmpeg = _ffmpeg_bin()
 
-    clip_id = _get_brightcove_clip_id(game_id, event_id)
-    if clip_id is None:
+    replay = _get_replay(game_id, event_id)
+    if replay is None:
         return None
+    # До записи файлов: ошибка в подписи не должна оставлять временные mp4.
+    caption = goal_caption(replay)
 
-    rend = _brightcove_rendition(clip_id)
+    rend = _brightcove_rendition(replay["goal"]["highlightClip"])
     if rend is None:
         return None
     mp4_url, width, height, duration_sec = rend
@@ -285,4 +335,5 @@ def download_goal_video(game_id: int, event_id: int) -> Optional[GoalVideoDelive
         height=height,
         duration=duration_sec,
         thumb_path=thumb_path,
+        caption=caption,
     )

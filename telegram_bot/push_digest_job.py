@@ -21,8 +21,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
@@ -95,6 +97,11 @@ _ALBUM_SIZE = 10
 # Telegram отверг, и голы ночи 2026-10-13 не ушли (Задача 75). Бюджет — с запасом на
 # multipart-обвязку; клип из кэша (``file_id``) не загружается и бюджет не тратит.
 _UPLOAD_BUDGET_BYTES = 45_000_000
+
+# Подпись к видео и альбому — до 1024 символов видимого текста (UTF-16, без HTML-разметки).
+_CAPTION_LIMIT = 1024
+
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 _T = TypeVar("_T")
 
@@ -281,30 +288,33 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
         mark_night_sent(chat_id, "team_scores", team_id, night)
 
 
-# Клип к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры видео).
-_Clip = Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any]]
+# Клип к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры видео,
+# HTML-описание гола ``goal_caption``).
+_Clip = Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]
+
+# Кэш клипов на прогон: (game_id, event_id) → (``file_id`` Telegram, описание гола);
+# ``None`` — клипа нет.
+_ClipCache = Dict[Tuple[int, int], Optional[Tuple[str, str]]]
 
 
-async def _prepare_goal_clips(
-    goals: List[Tuple[int, int]], cache: Dict[Tuple[int, int], Optional[str]]
-) -> List[_Clip]:
+async def _prepare_goal_clips(goals: List[Tuple[int, int]], cache: _ClipCache) -> List[_Clip]:
     """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры,
-    общие для ``send_video`` и ``InputMediaVideo``).
+    общие для ``send_video`` и ``InputMediaVideo``, описание гола).
 
     Байты, а не готовый ``InputFile``: так PTB сам ставит ``attach://`` в альбоме —
     без него Telegram альбом не примет.
 
-    Аргументы: ``goals`` — (game_id, event_id); ``cache`` — (game_id, event_id) →
-    ``file_id`` Telegram, ``None`` — клипа нет (второй раз не качаем).
+    Аргументы: ``goals`` — (game_id, event_id); ``cache`` — см. ``_ClipCache``
+    (гол без клипа второй раз не качаем).
     Гол без клипа пропускается с записью в лог.
     """
     clips: List[_Clip] = []
     for key in goals:
         game_id, event_id = key
         if key in cache:
-            file_id = cache[key]
-            if file_id is not None:
-                clips.append((key, file_id, {}))
+            cached = cache[key]
+            if cached is not None:
+                clips.append((key, cached[0], {}, cached[1]))
             continue
         # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
         d = await asyncio.to_thread(download_goal_video, game_id, event_id)
@@ -324,27 +334,43 @@ async def _prepare_goal_clips(
             os.unlink(d.path)
             if d.thumb_path:
                 os.unlink(d.thumb_path)
-        clips.append((key, video, params))
+        clips.append((key, video, params, d.caption))
     return clips
 
 
 def _upload_bytes(clip: _Clip) -> int:
     """Сколько байт клип добавит к запросу: mp4 и превью; ``file_id`` из кэша — ноль."""
-    _, video, params = clip
+    _, video, params, _ = clip
     if isinstance(video, str):
         return 0
     return len(video) + len(params.get("thumbnail", b""))
 
 
+def _caption_length(text: str) -> int:
+    """Длина подписи из HTML-текста — видимые символы в UTF-16, как считает Telegram."""
+    return len(html.unescape(_HTML_TAG.sub("", text)).encode("utf-16-le")) // 2
+
+
+def _album_caption(album: List[_Clip]) -> str:
+    """Общая подпись альбома — описания его голов через пустую строку: в альбоме
+    Telegram показывает только одну подпись."""
+    return "\n\n".join(caption for _, _, _, caption in album)
+
+
 def _albums(clips: List[_Clip]) -> List[List[_Clip]]:
-    """Клипы по альбомам в исходном порядке: в каждом не больше ``_ALBUM_SIZE`` клипов
-    и ``_UPLOAD_BUDGET_BYTES`` загружаемых байт. Клип тяжелее бюджета уходит один —
-    Telegram его отвергнет, и ошибка всплывёт."""
+    """Клипы по альбомам в исходном порядке: в каждом не больше ``_ALBUM_SIZE`` клипов,
+    ``_UPLOAD_BUDGET_BYTES`` загружаемых байт и ``_CAPTION_LIMIT`` символов общей подписи.
+    Клип тяжелее бюджета уходит один — Telegram его отвергнет, и ошибка всплывёт."""
     albums: List[List[_Clip]] = []
     size = 0
     for clip in clips:
         clip_size = _upload_bytes(clip)
-        if not albums or len(albums[-1]) == _ALBUM_SIZE or size + clip_size > _UPLOAD_BUDGET_BYTES:
+        if (
+            not albums
+            or len(albums[-1]) == _ALBUM_SIZE
+            or size + clip_size > _UPLOAD_BUDGET_BYTES
+            or _caption_length(_album_caption(albums[-1] + [clip])) > _CAPTION_LIMIT
+        ):
             albums.append([])
             size = 0
         albums[-1].append(clip)
@@ -358,12 +384,13 @@ async def _send_country_game(
     text: str,
     game_id: int,
     goals: List[Tuple[int, int]],
-    cache: Dict[Tuple[int, int], Optional[str]],
+    cache: _ClipCache,
 ) -> None:
     """Один матч рассылки по стране (Задача 76): короткое сообщение ``text`` (счёт и
     игроки страны) с кнопкой полной карточки матча, за ним видео голов страны альбомом.
 
-    Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет. Клипы, не
+    Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет. Подпись альбома —
+    описания всех его голов (``_album_caption``): кто забил, с чьих передач, когда. Клипы, не
     влезающие в один запрос (``_albums``), идут несколькими альбомами подряд;
     одиночный клип — ``send_video``: альбом требует минимум два медиа. ``file_id``
     отправленных видео кладётся в ``cache`` — следующим подписчикам клип уходит без
@@ -383,27 +410,32 @@ async def _send_country_game(
         chat_id,
     )
     for album in _albums(await _prepare_goal_clips(goals, cache)):
+        caption = _album_caption(album)
         if len(album) == 1:
-            _, video, params = album[0]
+            _, video, params, _ = album[0]
             sent = [
                 await _throttled(
                     lambda: bot.send_video(
-                        chat_id=chat_id, video=video, supports_streaming=True, **params
+                        chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
+                        supports_streaming=True, **params,
                     ),
                     chat_id,
                 )
             ]
         else:
             media = [
-                InputMediaVideo(video, supports_streaming=True, **params)
-                for _, video, params in album
+                InputMediaVideo(
+                    video, caption=caption if n == 0 else None, parse_mode="HTML",
+                    supports_streaming=True, **params,
+                )
+                for n, (_, video, params, _) in enumerate(album)
             ]
             sent = list(
                 await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
             )
-        for (key, _, _), message in zip(album, sent):
+        for (key, _, _, goal_text), message in zip(album, sent):
             assert message.video is not None  # ответ на отправку видео всегда содержит video
-            cache[key] = message.video.file_id
+            cache[key] = (message.video.file_id, goal_text)
 
 
 async def _clips_published(
@@ -447,7 +479,7 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
     sent = sent_country_games(game_ids)
     published: Dict[Tuple[int, int], bool] = {}
     score_lines: Dict[int, str] = {}
-    file_ids: Dict[Tuple[int, int], Optional[str]] = {}
+    file_ids: _ClipCache = {}
     for subscription_id, chat_id, country in rows:
         for game_id, block, goals in games[country]:
             if (subscription_id, game_id) in sent:
