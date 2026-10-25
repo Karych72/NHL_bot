@@ -5,7 +5,7 @@
 `telegram_bot/push_digest_job.py` (`_send_goal_videos`), их тесты, `docs/telegram_bot.md` §7.
 **Зависит от:** ничего. Задачи 61 и 63 смержены (PR #64, #66).
 **Источник:** отзыв человека 2026-10-08 на живую рассылку «🇷🇺 Россия — ночь 2026-10-07»;
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
