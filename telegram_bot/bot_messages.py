@@ -389,44 +389,33 @@ def _score_line(header: Dict[str, str]) -> str:
     )
 
 
-def _goals_pre_block(goal_rows: List[List[str]], assists: List[str]) -> str:
-    """Голы карточки матча одним `<pre>` в ширину телефона: строка гола —
-    время, счёт, автор с позицией и пометками; ассистенты — следующей строкой
-    под автором (в одну строку с ними гол на телефоне переносится).
+def _period_names(period: int, shootout: bool) -> Tuple[str, str]:
+    """Название периода гола в карточке матча: (заголовок блока голов, коротко
+    для кнопки видео) — «2-й период»/«2п», «Овертайм»/«ОТ», «2-й овертайм»/«2ОТ»,
+    «Буллиты»/«Б».
 
     Аргументы:
-        goal_rows: [время, счёт, автор] по голу, сырые строки без HTML.
-        assists: ассистенты того же гола через запятую; пусто — строки нет.
+        period: номер периода из `get_goals_game`; в регулярке 4 — овертайм,
+            5 — серия буллитов (победный буллит лежит голом с временем 00:00).
+        shootout: матч решён буллитами — иначе период 5 значит второй овертайм
+            (плей-офф).
     """
-    indent = " " * (max(len(r[0]) for r in goal_rows) + max(len(r[1]) for r in goal_rows) + 2)
-    lines: List[str] = []
-    for line, names in zip(_aligned_columns(goal_rows, "rll"), assists):
-        lines.append(line)
-        if names:
-            lines.append(indent + names)
-    return _pre_block(lines)
+    if shootout and period == 5:
+        return "Буллиты", "Б"
+    if period <= 3:
+        return f"{period}-й период", f"{period}п"
+    overtime = period - 3
+    if overtime == 1:
+        return "Овертайм", "ОТ"
+    return f"{overtime}-й овертайм", f"{overtime}ОТ"
 
 
 def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     """Return (rendered_text, goal_video_metadata)."""
     game_stats, game_goals = _fetch_game_score_rows(game_id)
     header = _game_score_header(game_stats, game_goals)
-    teams_row = fetch_all(
-        "SELECT home_team_id, away_team_id, day::text FROM games WHERE game_id = %s LIMIT 1",
-        (game_id,),
-        columns=["home_team_id", "away_team_id", "day"],
-    )
-    game_day = teams_row["day"][0] if teams_row["count_rows"] else None
-    away_tid = (
-        int(teams_row["away_team_id"][0])
-        if teams_row["count_rows"] and teams_row["away_team_id"][0] is not None
-        else None
-    )
-    home_tid = (
-        int(teams_row["home_team_id"][0])
-        if teams_row["count_rows"] and teams_row["home_team_id"][0] is not None
-        else None
-    )
+    # is_shootouts читается только при is_overtime — как в `_game_score_header`.
+    shootout = bool(game_stats['is_overtime'][0] and game_stats['is_shootouts'][0])
     game_goalies = fetch_all(
         "SELECT * FROM get_goalies_game(%s)", (game_id,),
         ['shots', 'saves', 'timeonice', 'lastname',
@@ -438,12 +427,21 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
          'goals', 'assists', 'saves', 'shots', 'save_percentage'],
     )
 
-    goal_rows: List[List[str]] = []
-    goal_assists: List[str] = []
+    # Голы обычным текстом по периодам: заголовок периода, строка гола со временем
+    # внутри периода, ассистенты строкой ниже. Не `<pre>`: моноширинные колонки
+    # на телефоне разъезжались от длинной фамилии или крупного шрифта.
+    goal_lines: List[str] = []
     goals_meta = []
     scorer_counts: Dict[str, int] = defaultdict(int)
+    prev_period = None
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
+        title, short = _period_names(p, shootout)
+        if p != prev_period:
+            if goal_lines:
+                goal_lines.append("")
+            goal_lines.append(f"<b>{title}</b>")
+            prev_period = p
         scorer = _goal_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
         pos_raw = game_goals['scorer_position'][i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
@@ -455,30 +453,30 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             game_goals['winner_goal'][i],
         )
 
-        # Время от начала матча; период в строке не пишется — он виден по минуте.
-        time_str = game_goals['goal_time'][i]
-        if p is not None and time_str:
-            t_m = str((p - 1) * 20 + int(time_str.split(':')[0]))
-            t_all = t_m + ':' + time_str.split(':')[1]
-        else:
-            t_all = '?:??'
+        # Время внутри периода; у буллита (всегда 00:00) его нет.
+        time_str = "" if shootout and p == 5 else game_goals['goal_time'][i]
         assist_names = [
             _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
             for key in ("assist_1", "assist_2")
             if game_goals[key][i] is not None
         ]
         score = f"{h}:{a}"
-        goal_rows.append([t_all, score, scorer + (f" [{pos}]" if pos else "") + situation])
-        goal_assists.append(", ".join(assist_names))
+        time_prefix = f"{time_str} · " if time_str else ""
+        goal_lines.append(
+            f"{time_prefix}{score} — "
+            f"{html.escape(scorer + (f' [{pos}]' if pos else '') + situation)}"
+        )
+        if assist_names:
+            goal_lines.append(html.escape(", ".join(assist_names)))
 
         evt = game_goals['goal_event_id'][i]
         if evt is not None:
             goals_meta.append({
                 'game_id': game_goals['goal_game_id'][i],
                 'event_id': evt,
-                'label': f"▶ {score} {scorer} {t_all}",
+                'label': f"▶ {score} {scorer} {short} {time_str}".rstrip(),
             })
-    goals_block = _goals_pre_block(goal_rows, goal_assists) if goal_rows else ""
+    goals_block = "\n".join(goal_lines)
 
     hat_lines = [
         f"<b>Хет-трик</b>: {html.escape(name)} (×{n})"
@@ -486,24 +484,6 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         if n >= 3
     ]
     hat_tricks = "\n".join(hat_lines) if hat_lines else ""
-
-    away_abbr = (game_stats['team_name'][1] or "").strip()
-    home_abbr = (game_stats['team_name'][0] or "").strip()
-    # Форма — до этого матча: игры строго раньше его игрового дня.
-    form_away = (
-        _last_n_form_record(away_tid, 5, before_day=game_day) if away_tid is not None else "—"
-    )
-    form_home = (
-        _last_n_form_record(home_tid, 5, before_day=game_day) if home_tid is not None else "—"
-    )
-    # Порядок команд — как в шапке карточки (хозяева первыми).
-    recent_form = (
-        "<i>Форма (5 игр, W-L-OTL)</i>:\n"
-        f"{html.escape(home_abbr)} {html.escape(form_home)} · "
-        f"{html.escape(away_abbr)} {html.escape(form_away)}"
-        if away_abbr and home_abbr
-        else ""
-    )
 
     # Вратарь — своей строкой (хозяева первыми): в одну строку двое не влезают
     # в ширину телефона.
@@ -554,7 +534,6 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         'goalkeepers': "\n".join(goalie_lines),
         'period_scores': html.escape(header['period_scores']),
         'hat_tricks': hat_tricks,
-        'recent_form': recent_form,
         'three_stars': three_stars,
     }
     return output_text('messages/game_message.txt', to_template), goals_meta
@@ -663,9 +642,7 @@ def _team_game_outcome(
     return "L"
 
 
-def _recent_team_outcomes(
-    team_id: int, limit: int, before_day: Optional[str] = None
-) -> List[str]:
+def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
     сезона команды `team_id`, от новой игры к старой.
 
@@ -679,8 +656,6 @@ def _recent_team_outcomes(
     Аргументы:
         team_id: команда, для которой отбираются игры.
         limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
-        before_day: только игры раньше этого игрового дня (`YYYY-MM-DD`) —
-            форма «до матча» в его карточке; None — все игры сезона.
 
     Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
     пустой список, если в текущем сезоне у команды нет завершённых игр.
@@ -691,9 +666,8 @@ def _recent_team_outcomes(
         "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
         "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
-        "AND (%s::date IS NULL OR day < %s::date) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
-        (config.SEASON_ID, team_id, team_id, before_day, before_day, limit),
+        (config.SEASON_ID, team_id, team_id, limit),
         columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
     return [
@@ -708,16 +682,15 @@ def _recent_team_outcomes(
     ]
 
 
-def _last_n_form_record(team_id: int, n: int = 5, before_day: Optional[str] = None) -> str:
+def _last_n_form_record(team_id: int, n: int = 5) -> str:
     """Формат W-L-OTL по последним n завершённым играм (как в таблице очков);
-    без игр — `0-0-0` (первый матч сезона в карточке).
+    без игр — `0-0-0` (команда ещё не играла в сезоне).
 
     Игры и их разряды берёт `_recent_team_outcomes()` (правило NHL 84.2 —
     см. `_team_game_outcome()`), чтобы форма и текущая серия
-    (`_current_streak()`) не могли разойтись в подсчёте ПО. `before_day` —
-    см. `_recent_team_outcomes()`.
+    (`_current_streak()`) не могли разойтись в подсчёте ПО.
     """
-    outcomes = _recent_team_outcomes(team_id, n, before_day)
+    outcomes = _recent_team_outcomes(team_id, n)
     w = outcomes.count("W")
     losses = outcomes.count("L")
     otl = outcomes.count("OTL")
