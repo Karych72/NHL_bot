@@ -13,6 +13,7 @@ x-prod-db: &prod-db
     db:
       condition: service_healthy
       required: false
+  # Литерал, а не из .env: файл только для dev, и имя базы здесь видно рядом с причиной.
   environment:
     PG_DATABASE: nhl_dev
   networks: [prod]

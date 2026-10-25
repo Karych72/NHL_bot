@@ -163,11 +163,11 @@ Dev-стек — тот же `docker-compose.yml` в отдельном compose-
 
 **Выкатка.** Мерж в `develop` → `release.yml`: `ci.yml` → образы `ghcr.io/karych72/nhl_bot:dev-<sha7>` и `…-modeling` (git-тег не ставится) → `deploy` в `/opt/nhl_bot_dev` на коммит `develop`. Своя группа `concurrency`: dev-деплой не вытесняет ожидающий деплой прода. Секреты `DEPLOY_*` — те же, environment `production`. Миграция из `develop` применяется к `nhl_dev`; на `postgres` она попадёт только релизом в `master`. Откат `develop` без мержа — `make db-migrate-down` на `nhl_dev` или пересборка базы (ниже).
 
-**Разовая настройка** (на VM, `gcloud compute ssh nhl-bot`; секрет `nhl-bot-telegram-token-dev` — «Боты и секреты» выше):
+**Разовая настройка** (на VM, `gcloud compute ssh nhl-bot`; секрет `nhl-bot-telegram-token-dev` — «Боты и секреты» выше). Нужен Docker Compose ≥ 2.20 (`depends_on.required`), на VM 2026-10-25 — v5.5.1. Настройка — **до** первого деплоя `develop`: иначе он упадёт на `cd /opt/nhl_bot_dev` (тогда — настроить и «Re-run jobs»):
 ```
 # чекаут и .env dev-стека: .env прода без образов и COMPOSE_FILE, плюс проект и оверрайды dev
 sudo install -d -o deploy /opt/nhl_bot_dev
-sudo -u deploy git clone https://github.com/Karych72/NHL_bot.git /opt/nhl_bot_dev
+sudo -u deploy git clone -b develop https://github.com/Karych72/NHL_bot.git /opt/nhl_bot_dev
 sudo -u deploy sh -c 'grep -vE "^(COMPOSE_FILE|COMPOSE_PROJECT_NAME|NHL_BOT_IMAGE|NHL_BOT_MODELING_IMAGE)=" /opt/nhl_bot/.env > /opt/nhl_bot_dev/.env \
   && printf "COMPOSE_PROJECT_NAME=nhl_bot_dev\nCOMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml:deploy/compose.dev.yml\n" >> /opt/nhl_bot_dev/.env \
   && chmod 600 /opt/nhl_bot_dev/.env'
@@ -184,7 +184,9 @@ sudo install -m 644 /opt/nhl_bot_dev/deploy/systemd/nhl-bot-secrets.service /etc
 sudo systemctl daemon-reload && sudo systemctl restart nhl-bot-secrets
 sudo test -s /run/nhl_bot_dev/telegram_bot_token && echo dev-token-ok
 ```
-Чекаут `/opt/nhl_bot_dev` должен содержать `deploy/compose.dev.yml` и новый `fetch-secrets.sh` (с этой задачи — `develop`); первый деплой dev-стека делает мерж в `develop`. Пересборка `nhl_dev` — `dropdb` и те же три команды базы, затем `docker compose up -d` в `/opt/nhl_bot_dev`.
+Чекаут должен содержать `deploy/compose.dev.yml` и `fetch-secrets.sh` с аргументами — они в `develop` с Задачи 80 (до её мержа клон брался с `-b task-80-dev-stand`). Дальше чекаут ведёт деплой. Пересборка `nhl_dev` — `docker compose stop` в `/opt/nhl_bot_dev`, `dropdb -U postgres --force nhl_dev` и те же три команды базы, затем `docker compose up -d` там же.
+
+Dev-контейнеры подключены к сети прод-стека `nhl_bot_default`: `docker compose down` в `/opt/nhl_bot` её не удалит (`has active endpoints`), а пересоздание сети прода отрывает от неё dev — после него `docker compose up -d --force-recreate` в `/opt/nhl_bot_dev`.
 
 Память `e2-small` (2 ГБ) — замер `docker stats --no-stream` до и после подъёма dev-стека: Задача 80 в `plan/archive/`. `predict` обоих стеков стартует в 12:00 UTC.
 
