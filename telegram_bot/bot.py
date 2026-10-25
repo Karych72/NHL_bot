@@ -779,6 +779,9 @@ def main() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
     )
+    # httpx на INFO пишет URL каждого запроса, а в URL Bot API — токен бота: он оседал в
+    # логах docker на диске VM. WARNING оставляет ошибки сети, но не адреса.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     logger.info("Starting bot")
     build_application(config.TOKEN).run_polling()
 

@@ -83,6 +83,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Токен бота — в URL каждого запроса httpx на INFO (как в bot.py main).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("push_digest_job")
 
 # Крайний срок ночи — последний ночной прогон sync (08:00 UTC). Прогонов позже нет, поэтому
