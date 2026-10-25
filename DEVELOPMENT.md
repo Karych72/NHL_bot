@@ -113,6 +113,16 @@
 5. Первая БД — до первого тега, образом, собранным на VM (в GHCR его ещё нет): `docker compose up -d db`, `docker compose build migrate`, `docker compose run --rm migrate make db-sync`, затем полная загрузка сезона `docker compose run --rm --no-deps -w /app/pipeline sync python -u load_season_modern.py`.
 6. Первый тег. После первой публикации пакет `nhl_bot` в GHCR сделать публичным (Package settings → Change visibility) — VM тянет образ без логина; секретов в образе нет (`.dockerignore`).
 
+**Боты и секреты (Задача 79, 2026-10-25).** Секреты — в Secret Manager проекта `nhl-bot-prod`, у каждого роль `roles/secretmanager.secretAccessor` для сервисного аккаунта VM. Значения не выводить и не вставлять в чаты; ввод — `gcloud secrets versions add <секрет> --data-file=- --project nhl-bot-prod`, затем Ctrl-D дважды без Enter (Enter допишет перевод строки в значение).
+
+| Секрет | Что | Кто читает |
+|---|---|---|
+| `nhl-bot-telegram-token` | токен продового бота @IcePulseNHLBot (ветка `master`) | `fetch-secrets.sh` → `bot`, `sync` прод-стека |
+| `nhl-bot-telegram-token-dev` | токен dev-бота @auto_karych_test_bot (ветка `develop`, бывший продовый) | dev-стек — подключает Задача 80; до неё dev-бот не запущен нигде |
+| `nhl-bot-anthropic-key` | ключ Anthropic API, один на dev и прод | бот — подключает Задача 81 |
+
+Локально — свой `.env` (`TELEGRAM_BOT_TOKEN`, позже `ANTHROPIC_API_KEY`). Локальный `make bot` с продовым или dev-токеном не запускать, пока тот же бот работает на VM: второй polling-клиент на один токен получает `Conflict`. Для локальной отладки — отдельный личный бот.
+
 **Токен бота (Задача 65).** Хранится в Secret Manager проекта `nhl-bot-prod`, секрет `nhl-bot-telegram-token`; на диске VM его нет. При загрузке VM юнит `nhl-bot-secrets.service` (`deploy/systemd/`, до `docker.service`) запускает `deploy/fetch-secrets.sh`: тот читает последнюю версию секрета и пишет `/run/nhl_bot/telegram_bot_token` (tmpfs; каталог `0700 root`, файл `0444` — его читает `appuser` контейнера). `deploy/compose.prod.yml` монтирует файл в `bot` и `sync` как compose secret, а entrypoint-обёртка на `sh` кладёт его в окружение и `exec`-ом запускает `command` — и сервиса, и `docker compose run`. Через `env_file` нельзя: Docker хранит `Config.Env` открытым текстом в `config.v2.json` на диске и показывает в `docker inspect`. Оверрайд включает `COMPOSE_FILE` в `.env` на VM, поэтому его видят и `release.yml`, и ручной `docker compose`. Нет файла — контейнер не стартует (`bind source path does not exist`), и при перезагрузке VM тоже. Локально оверрайд не подключён, токен — в локальном `.env`. `release.yml` секрет не читает: после перезагрузки VM его восстанавливает юнит. Чекаут тега старше Задачи 65 (откат «Re-run») не содержит `deploy/compose.prod.yml`, и compose на нём упадёт; такой откат — сначала вернуть токен в `.env` и убрать `COMPOSE_FILE`.
 
 На VM пользователь из `gcloud compute ssh` не в группе `docker`, а `.env` принадлежит `deploy`: команды `docker compose` и правка `.env` — через `sudo -u deploy` (ниже).
