@@ -658,7 +658,7 @@ async def send_game_card_message(
             parse_mode="HTML",
         )
     text, goals_meta = game_message(game_id)
-    for country in get_chat_subscriptions(chat_id)[2]:
+    for country in get_chat_subscriptions(chat_id).countries:
         block = country_game_block(country, game_id)
         if block is not None:
             text += f"\n\n{block}"

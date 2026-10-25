@@ -4,8 +4,9 @@
 человека: ночью, каждые ``SYNC_STEP`` с ``NIGHT_START_HOUR_UTC`` до ``NIGHT_END_HOUR_UTC``,
 прогоняет загрузчик за скользящее окно дат — завершённые матчи появляются в БД по ходу
 ночи; после каждого прогона зовёт ``push_digest_job.py``, который сам решает, кому из
-подписчиков пора (Задача 60). Пишет статус
-последнего прогона на диск для docker-healthcheck (``check``). Только stdlib —
+подписчиков пора (Задача 60). Днём, с ``PREVIEW_START_UTC``, слоты идут без
+загрузчика — только рассылка превью предстоящих матчей (Задача 78). Пишет статус
+последнего прогона загрузчика на диск для docker-healthcheck (``check``). Только stdlib —
 новых зависимостей нет.
 """
 
@@ -31,6 +32,14 @@ logger = logging.getLogger(__name__)
 NIGHT_START_HOUR_UTC = 18
 NIGHT_END_HOUR_UTC = 8
 SYNC_STEP = timedelta(minutes=30)
+
+# Дневные слоты без загрузчика (Задача 78): с 12:30 UTC (15:30 МСК) до ночного окна только
+# рассылка — на каждом слоте подписчику одно превью предстоящего матча дня
+# (push_digest_job.UPCOMING_START_MSK — тот же момент по МСК). Загрузчику днём грузить
+# нечего, и в 12:00 UTC по окну, разнесённому с sync, работают retrain и publish
+# (scheduled_retrain.RETRAIN_HOUR_UTC) — их не трогаем. Первый слот — через полчаса после
+# них, чтобы в первом превью дня уже была строка прогноза (решение человека 2026-10-25).
+PREVIEW_START_UTC = (12, 30)
 
 # Окно загрузки [сегодня − WINDOW_DAYS_BACK, сегодня] (UTC-дата): захватывает
 # поздние финалы вчерашнего дня, которые NHL API мог доотдать после полуночи.
@@ -68,17 +77,28 @@ def sync_window(today: date) -> Tuple[str, str]:
     return start.isoformat(), today.isoformat()
 
 
-def _in_night(slot: datetime) -> bool:
-    """Лежит ли точка сетки ``SYNC_STEP`` в ночном окне ``NIGHT_START_HOUR_UTC``–``NIGHT_END_HOUR_UTC``:00."""
-    return slot.hour >= NIGHT_START_HOUR_UTC or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
+def _from(slot: datetime, start: Tuple[int, int]) -> bool:
+    """Лежит ли точка сетки ``SYNC_STEP`` в окне *start* (час, минута) – ``NIGHT_END_HOUR_UTC``:00."""
+    return (slot.hour, slot.minute) >= start or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
+
+
+def loads_data(slot: datetime) -> bool:
+    """Идёт ли в слоте *slot* загрузчик: только в ночном окне ``NIGHT_START_HOUR_UTC``–
+    ``NIGHT_END_HOUR_UTC``:00; дневные слоты (``PREVIEW_START_UTC``) — только рассылка.
+
+    Аргументы:
+        slot: момент слота (UTC).
+    """
+    return _from(slot, (NIGHT_START_HOUR_UTC, 0))
 
 
 def seconds_until_next_run(now: datetime) -> float:
     """Секунд до ближайшего слота прогона строго после *now*.
 
-    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) внутри ночного окна; днём, после
-    ``NIGHT_END_HOUR_UTC``:00, следующий слот — ``NIGHT_START_HOUR_UTC``:00. Если *now*
-    ровно на слоте — возвращает время до следующего, а не 0.
+    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) с ``PREVIEW_START_UTC`` до
+    ``NIGHT_END_HOUR_UTC``:00; после ``NIGHT_END_HOUR_UTC``:00 следующий слот —
+    ``PREVIEW_START_UTC``. Если *now* ровно на слоте — возвращает время до
+    следующего, а не 0.
 
     Аргументы:
         now: текущий момент (ожидается UTC; tzinfo сохраняется в сравнении).
@@ -86,7 +106,7 @@ def seconds_until_next_run(now: datetime) -> float:
     step_minutes = int(SYNC_STEP.total_seconds() // 60)
     slot = now.replace(minute=now.minute - now.minute % step_minutes, second=0, microsecond=0)
     slot += SYNC_STEP
-    while not _in_night(slot):
+    while not _from(slot, PREVIEW_START_UTC):
         slot += SYNC_STEP
     return (slot - now).total_seconds()
 
@@ -144,7 +164,7 @@ def _write_status_atomic(status_file: Path, status: dict) -> None:
 
 def run_once(
     commands: Sequence[SyncCommand],
-    status_file: Path,
+    status_file: Optional[Path],
     window: Optional[Tuple[str, str]] = None,
     name: str = "Sync",
 ) -> bool:
@@ -157,7 +177,9 @@ def run_once(
 
     Аргументы:
         commands: команды в порядке выполнения (см. ``build_commands``).
-        status_file: путь JSON-файла статуса для healthcheck (``check``).
+        status_file: путь JSON-файла статуса для healthcheck (``check``); ``None`` — у
+            дневного прогона без загрузчика: healthcheck следит за свежестью данных, и
+            успешная рассылка не должна скрыть упавшую ночную загрузку.
         window: ``(date_from, date_to)`` — сохраняется в статусе как контекст
             прогона, на выполнение команд не влияет; ``None`` — у прогонов без окна дат.
         name: название прогона в строках лога (``scheduled_retrain`` — "Retrain").
@@ -176,14 +198,15 @@ def run_once(
             returncode = result.returncode
             break
 
-    status = {
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "ok": ok,
-        "failed_command": failed_command,
-        "returncode": returncode,
-        "window": list(window) if window else None,
-    }
-    _write_status_atomic(status_file, status)
+    if status_file is not None:
+        status = {
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "ok": ok,
+            "failed_command": failed_command,
+            "returncode": returncode,
+            "window": list(window) if window else None,
+        }
+        _write_status_atomic(status_file, status)
 
     if ok:
         logger.info("%s run succeeded (window=%s)", name, window)
@@ -198,7 +221,12 @@ def run_once(
     return ok
 
 
-def build_commands(window: Tuple[str, str]) -> List[SyncCommand]:
+def _push_command(*args: str) -> SyncCommand:
+    """Запуск ``push_digest_job.py`` с аргументами *args*."""
+    return SyncCommand(argv=[sys.executable, "-u", "push_digest_job.py", *args], cwd=_TELEGRAM_BOT_DIR)
+
+
+def build_commands(window: Optional[Tuple[str, str]]) -> List[SyncCommand]:
     """Строит команды одного прогона: загрузчик, затем рассылка.
 
     Рассылка идёт после каждого прогона: ``push_digest_job.py`` сам решает, кому
@@ -206,8 +234,12 @@ def build_commands(window: Tuple[str, str]) -> List[SyncCommand]:
     ``ENABLE_PUSH_DIGEST`` выключен — здесь эти проверки не дублируются.
 
     Аргументы:
-        window: ``(date_from, date_to)`` для ``--date-from``/``--date-to`` загрузчика.
+        window: ``(date_from, date_to)`` для ``--date-from``/``--date-to`` загрузчика;
+            ``None`` — дневной слот (``loads_data``): только превью предстоящих матчей
+            (``--upcoming-only``).
     """
+    if window is None:
+        return [_push_command("--upcoming-only")]
     date_from, date_to = window
     return [
         SyncCommand(
@@ -222,7 +254,7 @@ def build_commands(window: Tuple[str, str]) -> List[SyncCommand]:
             ],
             cwd=_PIPELINE_DIR,
         ),
-        SyncCommand(argv=[sys.executable, "-u", "push_digest_job.py"], cwd=_TELEGRAM_BOT_DIR),
+        _push_command(),
     ]
 
 
@@ -268,7 +300,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     - ``loop``: сразу при старте — прогон (догнать данные после перезапуска;
       повторной рассылки нет — ночь отмечается отправленной в БД), затем
-      бесконечно спит до следующего ночного слота и прогоняет. Неуспешный прогон не
+      бесконечно спит до следующего слота и прогоняет: ночью — загрузчик и рассылку,
+      днём (``loads_data``) — только рассылку. Неуспешный прогон не
       роняет цикл (отказ виден через статус-файл и ``check``), но исключения
       самого цикла (не команд) не глушатся.
     - ``once``: один прогон, код выхода 0/1.
@@ -303,8 +336,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         target, sleep_seconds = _next_target(datetime.now(timezone.utc), target)
         logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
         time.sleep(sleep_seconds)
-        window = sync_window(datetime.now(timezone.utc).date())
-        run_once(build_commands(window), STATUS_FILE, window)
+        if loads_data(target):
+            window = sync_window(datetime.now(timezone.utc).date())
+            run_once(build_commands(window), STATUS_FILE, window)
+        else:
+            run_once(build_commands(None), None)
 
 
 if __name__ == "__main__":

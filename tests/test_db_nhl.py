@@ -290,20 +290,20 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
     def test_digest_lifecycle(self):
         repo = self.repo
-        repo.upsert_morning_digest(self.CHAT)
-        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
         self.assertEqual(self._digest_rows(), [(self.CHAT, None)], "повторный вызов не плодит строки")
 
-        repo.deactivate_morning_digest(self.CHAT)
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "morning_digest")
         self.assertEqual(self._digest_rows(), [], "погашенная подписка в рассылке")
         # Повторная подписка реактивирует ту же строку.
-        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
         self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
     def test_mark_night_sent_touches_only_its_subscription(self):
         repo = self.repo
         for chat_id in (self.CHAT, self.OTHER_CHAT):
-            repo.upsert_morning_digest(chat_id)
+            repo.upsert_chat_kind(chat_id, "morning_digest")
             repo.upsert_team_scores(chat_id, self.TEAM)
 
         repo.mark_night_sent(self.CHAT, "morning_digest", None, self.NIGHT)
@@ -323,7 +323,7 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.upsert_country(self.CHAT, "RUS")
         repo.upsert_country(self.CHAT, "FIN")
         repo.upsert_country(self.OTHER_CHAT, "RUS")
-        repo.upsert_morning_digest(self.CHAT)
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
         (fin, _, _), (rus, _, _) = self._country_rows()
         ((other_rus, _, _),) = self._country_rows(self.OTHER_CHAT)
         self.assertEqual(
@@ -332,34 +332,72 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
         # Задача 76: отметка матча — только у своей подписки; повторная — no-op.
         game, other_game = 2099990001, 2099990002
-        repo.mark_country_game_sent(rus, game)
-        repo.mark_country_game_sent(rus, game)
-        repo.mark_country_game_sent(other_rus, other_game)
-        self.assertEqual(repo.sent_country_games([game]), {(rus, game)})
+        repo.mark_game_sent(rus, game)
+        repo.mark_game_sent(rus, game)
+        repo.mark_game_sent(other_rus, other_game)
+        self.assertEqual(repo.sent_games([game]), {(rus, game)})
         self.assertEqual(
-            repo.sent_country_games([game, other_game]), {(rus, game), (other_rus, other_game)}
+            repo.sent_games([game, other_game]), {(rus, game), (other_rus, other_game)}
         )
-        self.assertNotIn((fin, game), repo.sent_country_games([game]))
+        self.assertNotIn((fin, game), repo.sent_games([game]))
         self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
         # Отписка от одной страны; переподписка реактивирует ту же строку.
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, set(), ["FIN"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, set(), ["FIN"]))
         repo.upsert_country(self.CHAT, "RUS")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, set(), ["FIN", "RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, set(), ["FIN", "RUS"]))
 
     def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
         repo = self.repo
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, set(), []))
-        repo.upsert_morning_digest(self.CHAT)
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
         repo.upsert_team_scores(self.CHAT, self.TEAM)
         repo.upsert_team_scores(self.CHAT, self.TEAM + 1)
         repo.upsert_country(self.CHAT, "RUS")
-        repo.upsert_morning_digest(self.OTHER_CHAT)
+        repo.upsert_chat_kind(self.OTHER_CHAT, "morning_digest")
         repo.deactivate_team_scores(self.CHAT, self.TEAM + 1)
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, {self.TEAM}, ["RUS"]))
-        repo.deactivate_morning_digest(self.CHAT)
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, {self.TEAM}, ["RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["RUS"]))
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "morning_digest")
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, {self.TEAM}, ["RUS"]))
+
+    def test_upcoming_games_subscription(self):
+        """Задача 78: подписка на чат — одна строка, переподписка реактивирует её; в
+        рассылку идут только активные; отметка матча — в общей ``bot_game_sent``, своя у
+        каждой подписки (страна того же чата превью не помечает)."""
+        repo = self.repo
+        repo.upsert_chat_kind(self.CHAT, "upcoming_games")
+        repo.upsert_chat_kind(self.CHAT, "upcoming_games")
+        repo.upsert_chat_kind(self.OTHER_CHAT, "upcoming_games")
+        repo.upsert_country(self.CHAT, "RUS")
+        ((upcoming, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT]
+        ((rus, _, _),) = self._country_rows()
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, True, set(), ["RUS"]))
+
+        game = 2099990003
+        repo.mark_game_sent(upcoming, game)
+        self.assertEqual(repo.sent_games([game]), {(upcoming, game)})
+        self.assertNotIn((rus, game), repo.sent_games([game]))
+
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "upcoming_games")
+        self.assertEqual([r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT], [])
+        self.assertEqual(
+            [r[1] for r in repo.list_active_upcoming_rows() if r[1] == self.OTHER_CHAT],
+            [self.OTHER_CHAT],
+            "отписка чата не гасит чужую подписку",
+        )
+        repo.upsert_chat_kind(self.CHAT, "upcoming_games")
+        self.assertEqual(
+            [r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT],
+            [(upcoming, self.CHAT)],
+            "переподписка — та же строка, отметки матчей сохраняются",
+        )
+        with closing(_connect()) as conn, conn:
+            with self.assertRaises(psycopg2.errors.UniqueViolation), conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bot_subscriptions (chat_id, kind) VALUES (%s, 'upcoming_games')",
+                    (self.CHAT,),
+                )
 
     def test_country_constraints(self):
         """CHECK и уникальность миграции 0006: страна — ровно у ``country_players``."""
@@ -466,10 +504,13 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         await self.bot.cmd_subscriptions(update, None)
         [(text, markup)] = replies
         self.assertIn("Пока ничего нет.", text)
+        self.assertIn("Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.", text)
+        # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
+        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1])
         self.assertEqual(
             [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
-            [("➕ Дайджест", "sub:d"), ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
-             ("Готово", "sub:x")],
+            [("➕ Дайджест", "sub:d"), ("➕ Предстоящие матчи", "sub:u"),
+             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"), ("Готово", "sub:x")],
         )
         self.assertEqual(self._rows(), [])
 
@@ -488,6 +529,31 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
         await self._press("sub:d")
         self.assertEqual(self._rows(), [("morning_digest", None, None, True)], "одна строка")
+
+    async def test_upcoming_toggle_writes_row_and_summary_line(self):
+        """Задача 78: «Предстоящие матчи» — переключатель как у дайджеста, строка сводки
+        «⏰ Предстоящие матчи» только у включённой подписки; дайджест не задевает."""
+        self.assertRegex("sub:u", self.bot.SUBSCRIPTIONS_CALLBACK_PATTERN)
+        hint, text, buttons = await self._press("sub:u")
+        self.assertEqual(hint, "Предстоящие матчи включены")
+        self.assertIn("⏰ Предстоящие матчи", text)
+        self.assertNotIn("Утренний дайджест", text)
+        self.assertEqual(buttons[:2], [("➕ Дайджест", "sub:d"), ("✅ Предстоящие матчи", "sub:u")])
+        self.assertEqual(self._rows(), [("upcoming_games", None, None, True)])
+
+        await self._press("sub:d")
+        hint, text, buttons = await self._press("sub:u")
+        self.assertEqual(hint, "Предстоящие матчи выключены")
+        self.assertNotIn("⏰", text)
+        self.assertIn("✅ Утренний дайджест", text)
+        self.assertEqual(buttons[1], ("➕ Предстоящие матчи", "sub:u"))
+        self.assertEqual(
+            self._rows(),
+            [("morning_digest", None, None, True), ("upcoming_games", None, None, False)],
+        )
+
+        await self._press("sub:u")
+        self.assertEqual(self._rows()[1], ("upcoming_games", None, None, True), "одна строка")
 
     async def test_team_toggle_by_division_updates_summary_and_counts(self):
         _, _, buttons = await self._press("sub:T")
@@ -551,7 +617,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
     async def test_failed_write_shows_error_and_no_checkmark(self):
         from unittest import mock
 
-        with mock.patch.object(self.repo, "upsert_morning_digest", side_effect=psycopg2.Error("boom")):
+        with mock.patch.object(self.repo, "upsert_chat_kind", side_effect=psycopg2.Error("boom")):
             with self.assertLogs(self.bot.logger, level="ERROR"):
                 _, text, buttons = await self._press("sub:d")
         self.assertEqual(text, self.bot._SUBSCRIPTIONS_DB_ERROR)

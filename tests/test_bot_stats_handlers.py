@@ -25,7 +25,7 @@ def no_country_subscriptions(bot_module, monkeypatch):
     подписчику — в tests/test_bot_integration.py."""
     monkeypatch.setattr(
         bot_module("stats_handlers"), "get_chat_subscriptions",
-        lambda chat_id: (False, set(), []),
+        lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(False, False, set(), []),
     )
 
 

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Рассылка утреннего дайджеста, итогов по команде и игроков страны подписчикам.
+"""Рассылка утреннего дайджеста, итогов по команде, игроков страны и превью матчей подписчикам.
 
 Отдельный скрипт вне процесса бота: поднимает собственный ``Application``
 (без polling и без ``JobQueue``), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
-раз в 30 минут ночью — и сам решает, пора ли: дайджест и команды уходят одной рассылкой,
+раз в 30 минут с 12:00 до 08:00 UTC — и сам решает, пора ли: дайджест и команды уходят одной рассылкой,
 как только загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63;
 времени у подписчика нет); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Подписка на страну (Задачи 61, 75, 76) — по матчу, на первом прогоне после его конца,
 когда выложены клипы голов: счёт и игроки страны с кнопкой карточки, за ними видео голов.
+Предстоящие матчи (Задача 78) — на каждом прогоне с 15:30 МСК одно превью: ближайший ещё
+не начавшийся матч дня, которого подписчик не получал; каждый матч — один раз. Дневные
+слоты sync (с 12:30 UTC) зовут скрипт с ``--upcoming-only``: тогда идёт только превью.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
@@ -49,9 +52,15 @@ from bot_messages import (  # noqa: E402
     day_digest,
     game_message,
     game_score_line,
+    matchup_season_preview,
 )
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
-from nhl_scoreboard import fetch_score  # noqa: E402
+from nhl_scoreboard import (  # noqa: E402
+    fetch_score,
+    league_today,
+    parse_start_utc,
+    slate_games_sorted,
+)
 from stats_handlers import (  # noqa: E402
     DIGEST_EXPAND_PREFIX,
     dispatch_day_digest_messages,
@@ -61,10 +70,11 @@ from subscription_repo import (  # noqa: E402
     list_active_country_rows,
     list_active_morning_digest_rows,
     list_active_team_scores_rows,
-    mark_country_game_sent,
+    list_active_upcoming_rows,
+    mark_game_sent,
     mark_night_sent,
     mark_subscription_inactive_by_chat_kind_team,
-    sent_country_games,
+    sent_games,
 )
 from database import fetch_all  # noqa: E402
 from video_replay import download_goal_video, goal_clip_published  # noqa: E402
@@ -79,6 +89,11 @@ logger = logging.getLogger("push_digest_job")
 # недозагруженная ночь (перенос матча) уходит в этот момент с тем, что есть в БД. Если сам
 # этот прогон упал на загрузчике, рассылка не запускается и ночь не уходит вовсе.
 NIGHT_DEADLINE_MSK = time(11, 0)
+
+# Превью матчей дня лиги — не раньше первого дневного слота sync, через полчаса после
+# публикации прогноза в 12:00 UTC (решение человека, Задача 78; scheduled_sync.PREVIEW_START_UTC
+# — тот же момент по UTC).
+UPCOMING_START_MSK = time(15, 30)
 
 # Сдвиг, переводящий момент ночи в игровую дату лиги: матчи даты D (ET) идут
 # с 16:00 UTC D до ~08:00 UTC D+1, и любой момент ночного окна sync минус 12 часов
@@ -457,7 +472,7 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
     Зачем: подписка на страну (Задача 76) — сообщение о матче через полчаса после его
     конца, а не утром. Матч уходит на первом прогоне sync, когда он уже в ``games`` и у
     всех голов страны в нём NHL выложила клипы; ``final`` (крайний срок ночи) — с тем,
-    что есть. Отметка — по паре (подписка, матч) в ``bot_country_game_sent``, ставится
+    что есть. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится
     после попытки: сбой одного матча логируется и не повторяется, остальные уходят.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
@@ -476,7 +491,7 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
     game_ids = sorted({game_id for country_games in games.values() for game_id, _, _ in country_games})
     if not game_ids:
         return
-    sent = sent_country_games(game_ids)
+    sent = sent_games(game_ids)
     published: Dict[Tuple[int, int], bool] = {}
     score_lines: Dict[int, str] = {}
     file_ids: _ClipCache = {}
@@ -503,7 +518,74 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
                     "country send failed chat_id=%s %s game_id=%s: %s",
                     chat_id, country, game_id, exc,
                 )
-            mark_country_game_sent(subscription_id, game_id)
+            mark_game_sent(subscription_id, game_id)
+
+
+def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
+    """Ещё не начавшиеся к *now* матчи игрового дня лиги: (game_id, начало UTC, гости,
+    хозяева) по времени начала.
+
+    Зачем: превью подписки «Предстоящие матчи» (Задача 78). Слейт и время начала — из
+    ``score/{день лиги}`` NHL API, тем же разбором, что ``/tonight``: в БД времени начала
+    нет. Перенесённые и отменённые матчи (``gameScheduleState`` не OK) не берутся. До
+    ``UPCOMING_START_MSK`` дня лиги — пусто: игровой день меняется в 03:00 ET, и утренние
+    ночные слоты sync (до 11:00 МСК) иначе слали бы превью нового дня раньше времени.
+
+    Аргументы:
+        now: aware-момент прогона.
+    """
+    day = league_today(now)
+    if now < datetime.combine(day, UPCOMING_START_MSK, tzinfo=MSK):
+        return []
+    return [
+        (int(g["id"]), start, g["awayTeam"]["abbrev"], g["homeTeam"]["abbrev"])
+        for g in slate_games_sorted(fetch_score(day))
+        if g["gameScheduleState"] == _SCHEDULED_AS_PLANNED
+        and now < (start := parse_start_utc(g.get("startTimeUTC"))[0])
+    ]
+
+
+async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> None:
+    """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
+
+    Зачем: бот на виду у подписчика весь день — с 15:30 МСК на каждом прогоне (раз в
+    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд и строка
+    оценки модели, если прогноз опубликован): ближайший по началу ещё не начавшийся матч
+    дня, которого он не получал (решение человека 2026-10-25). Превью собирается раз на
+    матч, а не на подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
+    ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
+    следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
+
+    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
+    ``now`` — текущий момент (aware).
+    """
+    games = upcoming_games(now)
+    if not games:
+        return
+    sent = sent_games([game[0] for game in games])
+    previews: Dict[int, str] = {}
+    for subscription_id, chat_id in list_active_upcoming_rows():
+        nxt = next((g for g in games if (subscription_id, g[0]) not in sent), None)
+        if nxt is None:
+            continue
+        game_id, start, away, home = nxt
+        if game_id not in previews:
+            previews[game_id] = (
+                f"⏰ <b>Начало в {start.astimezone(MSK):%H:%M} МСК</b>\n"
+                + matchup_season_preview(game_id, away, home)
+            )
+        text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
+        try:
+            await _throttled(
+                partial(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
+                chat_id,
+            )
+        except Forbidden:
+            logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
+            mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
+        except TelegramError as exc:
+            logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
+        mark_game_sent(subscription_id, game_id)
 
 
 async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
@@ -511,9 +593,12 @@ async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
 
     Дайджест и команды — когда ночь загружена целиком (``night_is_loaded``) или
     наступил крайний срок ``NIGHT_DEADLINE_MSK``. Страна — на каждом прогоне, по
-    готовым матчам (``run_country_broadcast``), и последней: её сбой (NHL, ffmpeg) не
-    срывает дайджест на крайнем сроке, у которого следующей попытки нет. После
-    крайнего срока NHL API о готовности ночи не спрашивается.
+    готовым матчам (``run_country_broadcast``): её сбой (NHL, ffmpeg) не срывает дайджест
+    на крайнем сроке, у которого следующей попытки нет. После крайнего срока NHL API о
+    готовности ночи не спрашивается. Превью предстоящих матчей — на каждом прогоне, с
+    моментом на свой старт (страна с видео идёт минутами). Страна и превью независимы:
+    сбой одной (NHL API, ffmpeg) логируется и не срывает другую, а после обеих
+    пробрасывается — прогон красный в статусе sync, ошибка не глушится.
 
     Аргументы: ``context`` — контекст PTB; ``now`` — текущий момент (aware).
     """
@@ -524,11 +609,24 @@ async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
         await run_team_scores_broadcast(context, night)
     else:
         logger.info("Ночь %s загружена не целиком: дайджест и команды отложены.", night)
-    await run_country_broadcast(context, night, final)
+    errors: List[Exception] = []
+    for name, broadcast in (
+        ("country", lambda: run_country_broadcast(context, night, final)),
+        ("upcoming", lambda: run_upcoming_broadcast(context, datetime.now(timezone.utc))),
+    ):
+        try:
+            await broadcast()
+        except Exception as exc:  # noqa: BLE001 — изоляция рассылок, ошибка пробрасывается ниже
+            logger.exception("%s broadcast failed", name)
+            errors.append(exc)
+    if errors:
+        raise errors[0]
 
 
-async def main() -> None:
-    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и вызывает ``broadcast_if_due``.
+async def main(upcoming_only: bool) -> None:
+    """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и вызывает
+    ``broadcast_if_due`` или, в дневном слоте (``upcoming_only``, флаг ``--upcoming-only``),
+    только ``run_upcoming_broadcast`` — днём ночи нет, и NHL API о ней не спрашивается.
 
     Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
     принимает ``CallbackContext``, а построить его можно только от ``Application``.
@@ -549,9 +647,14 @@ async def main() -> None:
         .build()
     )
     async with application:
-        await broadcast_if_due(CallbackContext(application), datetime.now(timezone.utc))
+        context = CallbackContext(application)
+        if upcoming_only:
+            await run_upcoming_broadcast(context, datetime.now(timezone.utc))
+        else:
+            await broadcast_if_due(context, datetime.now(timezone.utc))
     logger.info("Рассылка завершена.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    assert sys.argv[1:] in ([], ["--upcoming-only"]), f"неизвестные аргументы: {sys.argv[1:]}"
+    asyncio.run(main(sys.argv[1:] == ["--upcoming-only"]))

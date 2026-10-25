@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, Forbidden, RetryAfter
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
@@ -212,7 +212,7 @@ async def test_main_raises_and_never_builds_application_without_token(
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
-        await push_job.main()
+        await push_job.main(False)
 
 
 @pytest.mark.asyncio
@@ -224,7 +224,7 @@ async def test_main_does_nothing_while_enable_push_digest_is_off(
     monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", False)
     monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
 
-    await push_job.main()
+    await push_job.main(False)
 
 
 @pytest.mark.asyncio
@@ -267,18 +267,25 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
     monkeypatch.setattr(push_job, "run_team_scores_broadcast", record)
     monkeypatch.setattr(push_job, "run_country_broadcast", record)
 
-    await push_job.main()
+    async def record_upcoming(context, now):
+        steps.append("upcoming")
+        contexts.append(context)
+
+    monkeypatch.setattr(push_job, "run_upcoming_broadcast", record_upcoming)
+
+    await push_job.main(False)
 
     # Рассылки идут строго между initialize и shutdown — иначе HTTP-клиент бота
     # либо не поднят, либо уже погашен.
-    assert steps == ["initialize", "broadcast", "broadcast", "broadcast", "shutdown"]
+    assert steps == ["initialize", "broadcast", "broadcast", "broadcast", "upcoming", "shutdown"]
 
     after = push_job.night_of(datetime.now(timezone.utc))
     assert len(nights) == 3 and len(set(nights)) == 1 and nights[0] in (before, after)
-    morning_context, team_context, country_context = contexts
+    morning_context, team_context, country_context, upcoming_context = contexts
     application = morning_context.application
     assert team_context.application is application
     assert country_context.application is application
+    assert upcoming_context.application is application
     assert morning_context.bot is application.bot
     assert application.bot.token == FAKE_TOKEN
     # Скрипт ничего не принимает и ничего не планирует.
@@ -335,7 +342,9 @@ async def _run_night(push_job, fake_context, loaded_at):
             push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
         ), patch.object(
             push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])
-        ), patch.object(push_job, "night_is_loaded", return_value=loaded):
+        ), patch.object(push_job, "night_is_loaded", return_value=loaded), patch.object(
+            push_job, "upcoming_games", return_value=[]
+        ):
             await push_job.broadcast_if_due(fake_context, slot)
         for message in fake_context.bot.sent_messages[before:]:
             if not message["text"].startswith("Ещё:"):
@@ -356,12 +365,14 @@ async def test_unloaded_night_holds_digest_and_teams_but_not_country(push_job, f
         push_job, "run_morning_digest_broadcast"
     ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
         push_job, "run_country_broadcast"
-    ) as country:
+    ) as country, patch.object(push_job, "run_upcoming_broadcast") as upcoming:
         await push_job.broadcast_if_due(fake_context, _msk(10, 30))
 
     digest.assert_not_called()
     team.assert_not_called()
     country.assert_awaited_once_with(fake_context, NIGHT, False)
+    upcoming.assert_awaited_once()
+    assert upcoming.await_args.args[0] is fake_context
 
 
 @pytest.mark.asyncio
@@ -387,12 +398,13 @@ async def test_deadline_does_not_ask_nhl_api(push_job, fake_context):
         push_job, "run_morning_digest_broadcast"
     ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
         push_job, "run_country_broadcast"
-    ) as country:
+    ) as country, patch.object(push_job, "run_upcoming_broadcast") as upcoming:
         await push_job.broadcast_if_due(fake_context, _msk(11, 0))
 
     digest.assert_awaited_once_with(fake_context, NIGHT)
     team.assert_awaited_once_with(fake_context, NIGHT)
     country.assert_awaited_once_with(fake_context, NIGHT, True)
+    upcoming.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -574,10 +586,10 @@ def country_env(push_job, monkeypatch, tmp_path):
         monkeypatch.setattr(push_job, "goal_clip_published", published)
         monkeypatch.setattr(push_job, "download_goal_video", download)
         monkeypatch.setattr(
-            push_job, "sent_country_games",
+            push_job, "sent_games",
             lambda game_ids: {s for s in env.sent if s[1] in game_ids},
         )
-        monkeypatch.setattr(push_job, "mark_country_game_sent", mark)
+        monkeypatch.setattr(push_job, "mark_game_sent", mark)
         monkeypatch.setattr(
             push_job, "mark_subscription_inactive_by_chat_kind_team",
             lambda *a: env.deactivated.append(a),
@@ -755,3 +767,229 @@ async def test_country_broadcast_deactivates_only_the_blocked_subscription(count
     assert country_env.deactivated == [(111, "country_players", None, "RUS")]
     assert country_env.bot.order == [("message", 222), ("message", 222)]
     assert country_env.marked == [(_sub(222), GAME_A), (_sub(222), GAME_B)]
+
+
+# ---------------------------------------------------------------------------
+# Предстоящие матчи (Задача 78): с 15:30 МСК по превью на прогон, каждый матч один раз
+# ---------------------------------------------------------------------------
+
+UTC = timezone.utc
+
+
+def _slate_game(game_id, start, away="BOS", home="TOR", state="OK"):
+    """Матч из ``score/{день}`` NHL API — только поля, которые читает рассылка."""
+    return {
+        "id": game_id, "gameDate": "2026-10-24", "startTimeUTC": start,
+        "gameScheduleState": state,
+        "awayTeam": {"abbrev": away}, "homeTeam": {"abbrev": home},
+    }
+
+
+SLATE = {
+    "currentDate": "2026-10-24",
+    "games": [
+        _slate_game(GAME_B, "2026-10-24T23:30:00Z", "NYR", "MTL"),
+        _slate_game(GAME_A, "2026-10-24T23:00:00Z"),
+        _slate_game(2026020003, "2026-10-24T23:00:00Z", "PIT", "WSH", state="PPD"),
+        _slate_game(2026020004, "2026-10-25T02:00:00Z", "VAN", "SEA"),
+    ],
+}
+
+
+@pytest.fixture
+def upcoming_env(push_job, monkeypatch):
+    """Рассылка превью с подменой NHL API, превью и БД: ``days`` — дни лиги, за которыми
+    ходили в NHL, ``previews`` — матчи, для которых собиралось превью, ``sent`` — отметки
+    (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` — (id подписки,
+    chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
+    ``run(context, now)`` — один прогон."""
+    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0)
+
+    def fetch(day):
+        env.days.append(day)
+        return SLATE
+
+    def preview(game_id, away, home):
+        env.previews.append(game_id)
+        return f"PREVIEW {away} @ {home}"
+
+    def rows():
+        env.read_subs += 1
+        return env.chats
+
+    monkeypatch.setattr(push_job, "fetch_score", fetch)
+    monkeypatch.setattr(push_job, "matchup_season_preview", preview)
+    monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
+    monkeypatch.setattr(
+        push_job, "sent_games", lambda game_ids: {s for s in env.sent if s[1] in game_ids}
+    )
+    monkeypatch.setattr(push_job, "mark_game_sent", lambda sub, game: env.sent.add((sub, game)))
+    monkeypatch.setattr(
+        push_job, "mark_subscription_inactive_by_chat_kind_team",
+        lambda *a: env.deactivated.append(a),
+    )
+    env.run = push_job.run_upcoming_broadcast
+    return env
+
+
+def test_upcoming_games_are_not_started_games_of_the_day(push_job, upcoming_env):
+    """Предстоящие — ещё не начавшиеся матчи игрового дня лиги (ET), по времени начала;
+    перенесённый (``PPD``) — нет; матч, начинающийся ровно сейчас, уже не предстоящий."""
+    games = push_job.upcoming_games(datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert [(g[0], g[1].strftime("%H:%M"), g[2], g[3]) for g in games] == [
+        (GAME_A, "23:00", "BOS", "TOR"), (GAME_B, "23:30", "NYR", "MTL"),
+        (2026020004, "02:00", "VAN", "SEA"),
+    ]
+    assert upcoming_env.days == [date(2026, 10, 24)]
+    assert [g[0] for g in push_job.upcoming_games(datetime(2026, 10, 24, 23, 0, tzinfo=UTC))] == [
+        GAME_B, 2026020004
+    ]
+    assert push_job.upcoming_games(datetime(2026, 10, 25, 2, 0, tzinfo=UTC)) == []
+
+
+def test_upcoming_games_wait_for_preview_start_of_the_league_day(push_job, upcoming_env):
+    """Игровой день меняется в 03:00 ET (07:00 UTC летом), а ночные слоты sync идут до
+    08:00 UTC: утром весь вечерний слейт «ещё не начался», но превью — только с 15:30 МСК
+    дня лиги; до этого NHL API не спрашивается."""
+    for hour, minute in ((7, 30), (8, 0), (12, 0), (12, 29)):
+        assert push_job.upcoming_games(datetime(2026, 10, 24, hour, minute, tzinfo=UTC)) == []
+    assert upcoming_env.days == []
+    assert push_job.upcoming_games(datetime(2026, 10, 24, 12, 30, tzinfo=UTC)) != []
+
+
+@pytest.mark.asyncio
+async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_context):
+    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне (раз в полчаса)
+    подписчику одно превью — следующий по началу матч дня, каждый матч один раз; когда
+    матчи кончились, прогон ничего не шлёт. Шапка — время начала по МСК; превью
+    собирается раз на матч, а не на подписчика."""
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    by_slot = []
+    for hour, minute in ((12, 30), (13, 0), (13, 30), (14, 0)):
+        before = len(fake_context.bot.sent_messages)
+        await upcoming_env.run(fake_context, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
+        by_slot.append([(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages[before:]])
+
+    a = "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER
+    b = "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
+    c = "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER
+    assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
+    assert all(m["parse_mode"] == "HTML" for m in fake_context.bot.sent_messages)
+    assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
+
+
+@pytest.mark.asyncio
+async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake_context):
+    """Следующий матч — свой у каждого подписчика: кому первый уже ушёл, получает второй;
+    уже начавшиеся пропускаются."""
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    upcoming_env.sent = {(20, GAME_A)}
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages] == [
+        (111, "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER),
+        (222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
+    ]
+
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 23, 40, tzinfo=UTC))
+    assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages[2:]] == [
+        (111, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
+        (222, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_without_upcoming_games_sends_nothing(push_job, upcoming_env, fake_context):
+    """Прогон без предстоящих матчей ничего не шлёт и подписчиков из БД не читает."""
+    upcoming_env.chats = [(10, 111)]
+    await upcoming_env.run(fake_context, datetime(2026, 10, 25, 2, 30, tzinfo=UTC))
+    assert fake_context.bot.sent_messages == []
+    assert upcoming_env.read_subs == 0
+    assert upcoming_env.sent == set()
+
+
+@pytest.mark.asyncio
+async def test_upcoming_blocked_chat_is_deactivated_and_others_still_get_it(
+    push_job, upcoming_env, fake_context
+):
+    """Заблокировавший бота чат гасится (``upcoming_games``), матч ему отмечается;
+    следующий подписчик превью получает."""
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    fake_context.bot.send_message_errors = [Forbidden("blocked")]
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+
+    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [222]
+    assert upcoming_env.deactivated == [(111, "upcoming_games")]
+    assert upcoming_env.sent == {(10, GAME_A), (20, GAME_A)}
+
+
+@pytest.mark.asyncio
+async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env, fake_context):
+    """Сбой отправки (не блокировка) логируется и не повторяется: матч отмечен, следующий
+    прогон шлёт следующий матч, подписка жива."""
+    upcoming_env.chats = [(10, 111)]
+    fake_context.bot.send_message_errors = [TelegramError("flood")]
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert fake_context.bot.sent_messages == []
+    assert upcoming_env.sent == {(10, GAME_A)}
+
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
+    assert [m["text"] for m in fake_context.bot.sent_messages] == [
+        "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
+    ]
+    assert upcoming_env.deactivated == []
+
+
+@pytest.mark.asyncio
+async def test_country_failure_does_not_stop_upcoming_and_still_fails_the_run(
+    push_job, fake_context
+):
+    """Страна и превью независимы (ревью Задачи 78): постоянный сбой страны (ffmpeg,
+    Replay API) не отключает превью на всю ночь, но прогон всё равно падает — ошибка
+    пробрасывается после обеих рассылок. Превью — с моментом своего старта, а не прогона."""
+    calls = []
+
+    async def country(*args):
+        calls.append("country")
+        raise RuntimeError("ffmpeg")
+
+    async def upcoming(context, now):
+        calls.append(("upcoming", now))
+
+    started = _msk(1, 0)
+    with patch.object(push_job, "night_is_loaded", return_value=False), patch.object(
+        push_job, "run_country_broadcast", country
+    ), patch.object(push_job, "run_upcoming_broadcast", upcoming):
+        with pytest.raises(RuntimeError, match="ffmpeg"):
+            await push_job.broadcast_if_due(fake_context, started)
+
+    assert calls[0] == "country"
+    assert calls[1][0] == "upcoming" and calls[1][1] > started
+
+
+@pytest.mark.asyncio
+async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypatch, set_required_bot_env):
+    """Дневной слот (``--upcoming-only``): только превью, ночь и NHL API о ней не трогаются."""
+    config = bot_module("config")
+    set_required_bot_env()
+    monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
+    monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", True)
+
+    async def noop(self):
+        return None
+
+    monkeypatch.setattr(Application, "initialize", noop)
+    monkeypatch.setattr(Application, "shutdown", noop)
+    calls = []
+
+    async def upcoming(context, now):
+        calls.append(context.application.bot.token)
+
+    async def night(*args):
+        raise AssertionError("ночь днём не рассылается")
+
+    monkeypatch.setattr(push_job, "run_upcoming_broadcast", upcoming)
+    monkeypatch.setattr(push_job, "broadcast_if_due", night)
+
+    await push_job.main(True)
+
+    assert calls == [FAKE_TOKEN]
