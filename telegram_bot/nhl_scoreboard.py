@@ -49,8 +49,13 @@ def fetch_score(day: date) -> dict:
         raise ScoreboardFetchError("invalid JSON") from e
 
 
-def _parse_start_utc(raw: Optional[str]) -> Tuple[datetime, str]:
-    """Возвращает aware UTC и строку времени в ET; при ошибке — минимальный ключ сортировки."""
+def parse_start_utc(raw: Optional[str]) -> Tuple[datetime, str]:
+    """Время начала матча из `startTimeUTC`: aware UTC и строка «HH:MM ET».
+
+    Зачем: один разбор для `/tonight` (сортировка, подписи кнопок) и превью рассылки
+    `push_digest_job` (Задача 78). При пустом или битом значении — `datetime.min` (UTC),
+    минимальный ключ сортировки, и «—».
+    """
     if not raw:
         return (datetime.min.replace(tzinfo=ZoneInfo("UTC")), "—")
     try:
@@ -80,7 +85,7 @@ def slate_games_sorted(payload: dict) -> List[Dict[str, Any]]:
             continue
         filtered.append(g)
 
-    filtered.sort(key=lambda g: _parse_start_utc(g.get("startTimeUTC"))[0])
+    filtered.sort(key=lambda g: parse_start_utc(g.get("startTimeUTC"))[0])
     return filtered
 
 
@@ -133,5 +138,5 @@ def tonight_match_button_label(game: Dict[str, Any]) -> str:
     """Подпись кнопки: AWAY @ HOME · HH:MM ET (лимит Telegram 64 символа)."""
     away = ((game.get("awayTeam") or {}).get("abbrev") or "?").strip()
     home = ((game.get("homeTeam") or {}).get("abbrev") or "?").strip()
-    _, time_et = _parse_start_utc(game.get("startTimeUTC"))
+    _, time_et = parse_start_utc(game.get("startTimeUTC"))
     return f"{away} @ {home} · {time_et}"

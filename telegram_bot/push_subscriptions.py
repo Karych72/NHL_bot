@@ -6,13 +6,14 @@
 
     chat_id        BIGINT NOT NULL,       -- Telegram chat_id получателя
     kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores' | 'country_players'
+                                          -- | 'upcoming_games' (Задача 78)
     team_id        BIGINT,                -- для kind='team_scores'; иначе NULL
     country        TEXT,                  -- код страны; только у country_players (Задача 61)
     last_sent_night DATE,                 -- ночь, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,
     created_at     TIMESTAMPTZ DEFAULT now()
 
-Уникальность строки: пара (chat_id, kind) для дайджеста; для команды —
+Уникальность строки: пара (chat_id, kind) для дайджеста и предстоящих матчей; для команды —
 (chat_id, kind, team_id); для страны — (chat_id, country). Реализуйте через UNIQUE-индекс или составной PRIMARY KEY.
 
 Хранить нужно минимум ``chat_id``: без активного диалога пользователь не получит

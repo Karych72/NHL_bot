@@ -28,6 +28,7 @@ from scheduled_sync import (  # noqa: E402
     _next_target,
     build_commands,
     check,
+    loads_data,
     run_once,
     seconds_until_next_run,
     sync_window,
@@ -66,24 +67,29 @@ class SecondsUntilNextRunTest(unittest.TestCase):
     def test_last_night_slot_is_night_end_hour(self) -> None:
         self.assertEqual(seconds_until_next_run(_utc(7, 30)), 30 * 60.0)
 
-    def test_exactly_at_last_slot_skips_the_day_to_evening(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(8, 0)), 10 * 3600.0)
+    def test_exactly_at_last_slot_skips_the_morning_to_preview_start(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(8, 0)), 4 * 3600.0)
 
-    def test_daytime_waits_for_evening_start(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(12, 5)), (5 * 60 + 55) * 60.0)
+    def test_morning_waits_for_preview_start(self) -> None:
+        self.assertEqual(seconds_until_next_run(_utc(10, 5)), (60 + 55) * 60.0)
 
-    def test_just_before_evening_start(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(17, 59)), 60.0)
+    def test_afternoon_steps_every_half_hour(self) -> None:
+        """Задача 78: превью дневных матчей выходных (с 16:00 UTC) — слоты и днём."""
+        self.assertEqual(seconds_until_next_run(_utc(15, 10)), 20 * 60.0)
 
-    def test_night_has_29_slots_from_18_to_08_inclusive(self) -> None:
-        """Сутки по сетке: 18:00…23:30 (12) + 00:00…08:00 (17) = 29 прогонов."""
+    def test_day_has_41_slots_and_29_of_them_load_data(self) -> None:
+        """Сутки по сетке: 12:00…23:30 (24) + 00:00…08:00 (17) = 41 слот; загрузчик —
+        в ночных 18:00…08:00 (12 + 17 = 29), как до Задачи 78."""
         moment, slots = _utc(8, 0), []
         while moment < _utc(8, 0, day=16):
             moment += timedelta(seconds=seconds_until_next_run(moment))
             slots.append(moment)
-        self.assertEqual(len(slots), 29)
-        self.assertEqual(slots[0], _utc(18, 0))
+        self.assertEqual(len(slots), 41)
+        self.assertEqual(slots[0], _utc(12, 0))
         self.assertEqual(slots[-1], _utc(8, 0, day=16))
+        loading = [slot for slot in slots if loads_data(slot)]
+        self.assertEqual(len(loading), 29)
+        self.assertEqual(loading[0], _utc(18, 0))
 
 
 class NextTargetTest(unittest.TestCase):
@@ -106,14 +112,14 @@ class NextTargetTest(unittest.TestCase):
 
     def test_early_wake_just_before_target_does_not_double_fire(self) -> None:
         """``now`` reads a hair before ``target`` (the last slot that just ran) —
-        must advance to the evening slot, not fire almost immediately again."""
+        must advance to the next window's first slot, not fire almost immediately again."""
         target = _utc(8, 0)
         now = target - timedelta(microseconds=1)
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 10 * 3600.0)
-        self.assertEqual(next_target, _utc(18, 0))
+        self.assertEqual(sleep_seconds, 4 * 3600.0)
+        self.assertEqual(next_target, _utc(12, 0))
 
     def test_now_exactly_at_target_does_not_double_fire(self) -> None:
         target = _utc(2, 30)
@@ -131,8 +137,8 @@ class NextTargetTest(unittest.TestCase):
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 8 * 3600.0)
-        self.assertEqual(next_target, _utc(18, 0, day=18))
+        self.assertEqual(sleep_seconds, 2 * 3600.0)
+        self.assertEqual(next_target, _utc(12, 0, day=18))
 
 
 class RunOnceTest(unittest.TestCase):
@@ -169,6 +175,17 @@ class RunOnceTest(unittest.TestCase):
         self.assertEqual(status["window"], list(self.window))
         # finished_at parses back as a valid ISO UTC timestamp.
         datetime.fromisoformat(status["finished_at"])
+
+    def test_run_without_status_file_keeps_last_loader_status(self) -> None:
+        """Дневной прогон без загрузчика (Задача 78) статус не пишет: упавшая ночная
+        загрузка остаётся видна healthcheck'у."""
+        self.status_file.write_text('{"ok": false}', encoding="utf-8")
+
+        ok = run_once([self._marker_command("push.marker")], None)
+
+        self.assertTrue(ok)
+        self.assertTrue((self.tmp_dir / "push.marker").exists())
+        self.assertEqual(self.status_file.read_text(encoding="utf-8"), '{"ok": false}')
 
     def test_first_command_fails_stops_chain(self) -> None:
         cmd1 = self._marker_command("first.marker", exit_code=3)
@@ -208,6 +225,15 @@ class BuildCommandsTest(unittest.TestCase):
         )
         self.assertEqual(loader_cmd.cwd.name, "pipeline")
         self.assertEqual(digest_cmd.argv, [sys.executable, "-u", "push_digest_job.py"])
+        self.assertEqual(digest_cmd.cwd.name, "telegram_bot")
+
+    def test_daytime_slot_is_digest_job_only(self) -> None:
+        """Дневной слот (Задача 78): без загрузчика, только рассылка превью."""
+        (digest_cmd,) = build_commands(None)
+
+        self.assertEqual(
+            digest_cmd.argv, [sys.executable, "-u", "push_digest_job.py", "--upcoming-only"]
+        )
         self.assertEqual(digest_cmd.cwd.name, "telegram_bot")
 
 

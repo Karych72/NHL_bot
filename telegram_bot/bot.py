@@ -388,16 +388,16 @@ async def cmd_cancel_outside_conversation(update: Update, context: CallbackConte
 
 
 _DELIVERY_NOTE = (
-    "Рассылка приходит, когда загружены все матчи ночи (проверка раз в 30 минут), "
-    "не позже 11:00 МСК."
+    "Итоги ночи приходят, когда загружены все её матчи, не позже 11:00 МСК.\n"
+    "Превью — примерно за час до начала матча, с 15:00 МСК."
 )
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
 
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
-# `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
+# `sub:u` предстоящие матчи (Задача 78), `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
 # (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
 # `sub:x` «Готово». Самая длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
-SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|T|C|x|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3})$"
+SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|u|T|C|x|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3})$"
 _DIVISION_BUTTON_COLUMNS = 2
 _TEAM_BUTTON_COLUMNS = 4
 _COUNTRY_BUTTON_COLUMNS = 3
@@ -415,12 +415,15 @@ def _sub_button(
 
 
 def _subscriptions_main_screen(
-    digest: bool, team_abbrevs: List[str], countries: List[str]
+    digest: bool, upcoming: bool, team_abbrevs: List[str], countries: List[str]
 ) -> _Screen:
-    """Главный экран: сводка подписок, переключатель дайджеста, переходы в подменю."""
+    """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
+    (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю."""
     lines = ["Ваши подписки"]
     if digest:
         lines.append("✅ Утренний дайджест")
+    if upcoming:
+        lines.append("⏰ Предстоящие матчи")
     if team_abbrevs:
         lines.append("🏒 Команды: " + ", ".join(team_abbrevs))
     if countries:
@@ -430,6 +433,7 @@ def _subscriptions_main_screen(
     lines.append(_DELIVERY_NOTE)
     markup = InlineKeyboardMarkup([
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
+        [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
         [
             InlineKeyboardButton(f"🏒 Команды ({len(team_abbrevs)})", callback_data="sub:T"),
             InlineKeyboardButton(f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
@@ -481,18 +485,19 @@ def _subscriptions_countries_screen(codes: List[str], chosen: List[str]) -> _Scr
 
 def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
     """Главный экран по текущим подпискам чата; читает БД."""
-    digest, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
+    subs = subscription_repo.get_chat_subscriptions(chat_id)
     abbrevs = sorted(
         abbrev
         for teams in season_teams_by_division().values()
         for team_id, abbrev in teams
-        if team_id in team_ids
+        if team_id in subs.team_ids
     )
-    return _subscriptions_main_screen(digest, abbrevs, countries)
+    return _subscriptions_main_screen(subs.digest, subs.upcoming, abbrevs, subs.countries)
 
 
 async def cmd_subscriptions(update: Update, context: CallbackContext) -> None:
-    """`/subscriptions`: меню подписок — сводка, дайджест, команды и страны (Задача 63)."""
+    """`/subscriptions`: меню подписок — сводка, дайджест, предстоящие матчи, команды и
+    страны (Задачи 63, 78)."""
     try:
         text, markup = _subscriptions_main_screen_for(_chat_id(update))
     except psycopg2.Error:
@@ -503,15 +508,18 @@ async def cmd_subscriptions(update: Update, context: CallbackContext) -> None:
 
 
 def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
-    """Переключает подписку по нажатой кнопке (`sub:d`, `sub:t:…`, `sub:c:…`), пишет в БД
-    и возвращает подсказку для `answer_callback_query`."""
-    digest, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
-    if action == "d":
-        if digest:
-            subscription_repo.deactivate_morning_digest(chat_id)
+    """Переключает подписку по нажатой кнопке (`sub:d`, `sub:u`, `sub:t:…`, `sub:c:…`), пишет
+    в БД и возвращает подсказку для `answer_callback_query`."""
+    digest, upcoming, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
+    if action in ("d", "u"):
+        kind, on = ("morning_digest", digest) if action == "d" else ("upcoming_games", upcoming)
+        if on:
+            subscription_repo.mark_subscription_inactive_by_chat_kind_team(chat_id, kind)
         else:
-            subscription_repo.upsert_morning_digest(chat_id)
-        return "Дайджест " + ("выключен" if digest else "включён")
+            subscription_repo.upsert_chat_kind(chat_id, kind)
+        if action == "d":
+            return "Дайджест " + ("выключен" if on else "включён")
+        return "Предстоящие матчи " + ("выключены" if on else "включены")
     if action == "t":
         team_id = int(args[1])
         abbrev = next(
@@ -542,13 +550,13 @@ async def callback_subscriptions(update: Update, context: CallbackContext) -> No
     _, action, *args = query.data.split(":")
     hint = None
     try:
-        if action in ("d", "t", "c"):
+        if action in ("d", "u", "t", "c"):
             hint = _toggle_subscription(chat_id, action, args)
-        if action in ("m", "d", "x"):
+        if action in ("m", "d", "u", "x"):
             text, markup = _subscriptions_main_screen_for(chat_id)
         elif action in ("T", "D", "t"):
             teams_by_division = season_teams_by_division()
-            _, team_ids, _ = subscription_repo.get_chat_subscriptions(chat_id)
+            team_ids = subscription_repo.get_chat_subscriptions(chat_id).team_ids
             if not any(teams_by_division.values()):
                 text, markup = "В базе нет списка команд для этого сезона.", InlineKeyboardMarkup(
                     [[InlineKeyboardButton("« Назад", callback_data="sub:m")]]
@@ -561,7 +569,7 @@ async def callback_subscriptions(update: Update, context: CallbackContext) -> No
                 )
         else:
             rankings_text, codes = country_rankings()
-            _, _, chosen = subscription_repo.get_chat_subscriptions(chat_id)
+            chosen = subscription_repo.get_chat_subscriptions(chat_id).countries
             if codes or chosen:
                 text, markup = _subscriptions_countries_screen(codes, chosen)
             else:
