@@ -6,7 +6,7 @@
 (`is_due`), миграция `data_tables/migrations/0007_*`, `telegram_bot/push_subscriptions.py`
 (шапка), `docs/telegram_bot.md` §7.
 **Зависит от:** ничего. Задачи 60 и 61 смержены (PR #62–#64), здесь их интерфейс упрощается.
-**Источник:** просьба человека 2026-10-08; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-10-08; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
