@@ -59,12 +59,14 @@ NHL_bot/
 │       ├── 0010_prediction_log.up.sql   # Журнал прогнозов и исходов (Задача 77)
 │       ├── 0010_prediction_log.down.sql
 │       ├── 0011_upcoming_games.up.sql   # Подписка «Предстоящие матчи»; отметка матча — общая bot_game_sent (Задача 78)
-│       └── 0011_upcoming_games.down.sql
+│       ├── 0011_upcoming_games.down.sql
+│       ├── 0012_ai_questions.up.sql     # Журнал вопросов к модели и список текущих пользователей для лимита (Задача 81)
+│       └── 0012_ai_questions.down.sql
 │
-├── deploy/                             # Только VM: токены ботов из Secret Manager (Задача 65), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
-│   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
+├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
+│   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
 │   ├── compose.dev.yml                 # Dev-стек ветки develop (Задача 80): без db/backup, база nhl_dev в Postgres прода, токен dev-бота
-│   ├── fetch-secrets.sh                # Secret Manager → /run/<стек>/telegram_bot_token (tmpfs), прод и dev
+│   ├── fetch-secrets.sh                # Secret Manager → /run/<стек>/telegram_bot_token и /run/<стек>/anthropic/anthropic_api_key (tmpfs)
 │   ├── models/                         # Задача 73: модели прода в образе — home_win/logreg и over_5_5/goals (<run_id>/final + latest)
 │   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
 │
@@ -94,6 +96,8 @@ NHL_bot/
 │   └── scheduled_publish.py            # Задача 73: ежедневная публикация прогноза (сервис `predict`)
 │
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
+│   ├── ai_router_eval.py               # `make ai-eval`: контрольный набор свободного текста против Claude API (Задача 81)
+│   ├── ai_router_eval.jsonl            # Фразы набора с ожидаемым экраном или текстовым ответом
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
 │   └── verify_skater_reports_schema.sql
@@ -112,6 +116,7 @@ NHL_bot/
 ├── telegram_bot/                       # Telegram-бот
 │   ├── bot.py                          # Точка входа: Application + ConversationHandler
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
+│   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит в сутки, журнал ai_questions (Задача 81)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
 │   ├── dialog_states.py                # FSM-состояния и callback ID
@@ -372,8 +377,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 Использует `python-telegram-bot` 21.x (asyncio). `build_application(token)` создаёт `Application`,
 первым делом регистрирует троттлинг callback-кнопок (`throttle.py`) в группе
 `THROTTLE_GROUP = STANDALONE_GROUP - 1 = -2`, затем standalone-команды и inline-кнопки в группе
-`STANDALONE_GROUP = -1`, затем `ConversationHandler` меню `/stats` и `/cancel` вне диалога в
-группе 0; `main()` запускает `run_polling()`. Состав и порядок регистрации закреплены в
+`STANDALONE_GROUP = -1`, затем `ConversationHandler` меню `/stats`, `/cancel` вне диалога и
+свободный текст (`on_free_text`, Задача 81) в группе 0; `main()` запускает `run_polling()`. Состав и порядок регистрации закреплены в
 `tests/test_bot_application.py`. Основной механизм диалога — `ConversationHandler` с состояниями FSM.
 Подписки (Задача 63) — не часть диалога: одна команда `/subscriptions` и кнопки `sub:…` в
 `bot.py` правят одно сообщение через `edit_message_text`, а читают и пишут `bot_subscriptions`
@@ -415,6 +420,22 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 процесса (module-level `dict`, без Redis); истёкшие записи вычищаются по ходу вызова, без
 отдельного планировщика. Тесты — `tests/test_bot_throttle.py` (поведение окна) и
 `tests/test_bot_application.py` (регистрация, группа).
+
+### Свободный текст: `ai_router.py` (Задача 81)
+
+Текст в личке вне команд ловит `on_free_text` в группе 0 после `ConversationHandler`: в
+группе срабатывает первый подошедший хендлер, поэтому ввод даты в `THIRD` забирает диалог.
+`ai_router.ask` — один вызов `claude-sonnet-5-5` (effort `low`) с инструментами-экранами
+(`build_tools`: строгие схемы, `enum` из `BOT_COMMANDS`, `COUNTRY_LABELS`,
+`leaderboard_specs`, команд сезона); модель либо выбирает экран, либо пишет короткий отказ
+или уточнение, фактов не сообщает. Экран рисует `bot.AI_SCREENS` тем же кодом, что команда или
+кнопка, но новым сообщением; хендлер `block=False`, чтобы ожидание модели не держало
+остальные апдейты. Системный промпт и инструменты стабильны и кэшируются, дата —
+в вопросе. Лимит в сутки по МСК — 20 вопросов чатам из `ai_existing_users` (подписчики на
+момент миграции 0012), 5 — остальным, сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
+или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
+командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
+`tests/test_bot_ai_router.py`.
 
 ### FSM (Finite State Machine)
 
