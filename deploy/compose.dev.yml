@@ -1,0 +1,37 @@
+# Dev-оверрайд (Задача 80): стек ветки develop на той же VM, что и прод. Подключается в
+# /opt/nhl_bot_dev строкой COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml:deploy/compose.dev.yml
+# и COMPOSE_PROJECT_NAME=nhl_bot_dev в .env (DEVELOPMENT.md §«Dev-стенд»).
+#
+# Своих db и backup у dev нет: профиль, который никто не включает, убирает их из `up`, а
+# migrate, bot, sync и predict ходят в Postgres прод-стека по его сети, в базу nhl_dev.
+# Общая база с продом нельзя: dev-рассылка по продовым chat_id деактивировала бы подписки
+# прода на Forbidden, а migrate develop менял бы схему под продовым кодом.
+# Токен — тот же механизм, что в compose.prod.yml, только файл dev-бота.
+
+x-prod-db: &prod-db
+  depends_on:
+    db:
+      condition: service_healthy
+      required: false
+  environment:
+    PG_DATABASE: nhl_dev
+  networks: [prod]
+
+services:
+  db:
+    profiles: ["prod-only"]
+  backup:
+    profiles: ["prod-only"]
+  migrate: *prod-db
+  bot: *prod-db
+  sync: *prod-db
+  predict: *prod-db
+
+networks:
+  prod:
+    name: nhl_bot_default
+    external: true
+
+secrets:
+  telegram_bot_token:
+    file: /run/nhl_bot_dev/telegram_bot_token
