@@ -61,9 +61,10 @@ NHL_bot/
 │       ├── 0011_upcoming_games.up.sql   # Подписка «Предстоящие матчи»; отметка матча — общая bot_game_sent (Задача 78)
 │       └── 0011_upcoming_games.down.sql
 │
-├── deploy/                             # Только прод-VM: токен бота из Secret Manager (Задача 65, DEVELOPMENT.md §«Прод-деплой»)
+├── deploy/                             # Только VM: токены ботов из Secret Manager (Задача 65), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен файлом-секретом (COMPOSE_FILE в .env на VM)
-│   ├── fetch-secrets.sh                # Secret Manager → /run/nhl_bot/telegram_bot_token (tmpfs)
+│   ├── compose.dev.yml                 # Dev-стек ветки develop (Задача 80): без db/backup, база nhl_dev в Postgres прода, токен dev-бота
+│   ├── fetch-secrets.sh                # Secret Manager → /run/<стек>/telegram_bot_token (tmpfs), прод и dev
 │   ├── models/                         # Задача 73: модели прода в образе — home_win/logreg и over_5_5/goals (<run_id>/final + latest)
 │   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
 │

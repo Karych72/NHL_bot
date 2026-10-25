@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Токен бота из Secret Manager -> /run/nhl_bot/telegram_bot_token (Задача 65). Запускается
+# Токен бота из Secret Manager -> <каталог>/telegram_bot_token (Задачи 65, 80). Запускается
 # при загрузке VM юнитом nhl-bot-secrets.service до docker.service и вручную при ротации.
+# Аргументы — секрет и каталог: прод-бот (nhl-bot-telegram-token, /run/nhl_bot) и dev-бот
+# (nhl-bot-telegram-token-dev, /run/nhl_bot_dev); юнит вызывает скрипт для обоих.
 # /run — tmpfs: токен только в RAM, не на диске VM, не в снапшотах и не в бэкапах.
-# bot и sync получают файл как compose secret (deploy/compose.prod.yml).
+# bot и sync получают файл как compose secret (deploy/compose.prod.yml, compose.dev.yml).
 
 set -euo pipefail
 
-SECRET=nhl-bot-telegram-token
-DIR=/run/nhl_bot
+SECRET=${1:?использование: fetch-secrets.sh <секрет> <каталог>}
+DIR=${2:?использование: fetch-secrets.sh <секрет> <каталог>}
 
 # Как в argus: на хосте в каталог 0700 заходит только root (bind-монтирует демон), а сам
 # файл 0444 — его читает appuser контейнера (uid 1000, Dockerfile) через точку монтирования.
