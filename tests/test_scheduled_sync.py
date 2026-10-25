@@ -68,24 +68,26 @@ class SecondsUntilNextRunTest(unittest.TestCase):
         self.assertEqual(seconds_until_next_run(_utc(7, 30)), 30 * 60.0)
 
     def test_exactly_at_last_slot_skips_the_morning_to_preview_start(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(8, 0)), 4 * 3600.0)
+        self.assertEqual(seconds_until_next_run(_utc(8, 0)), 4.5 * 3600.0)
 
     def test_morning_waits_for_preview_start(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(10, 5)), (60 + 55) * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(10, 5)), (2 * 60 + 25) * 60.0)
+        # 12:00 UTC — retrain и publish; первый дневной слот — 12:30 (15:30 МСК).
+        self.assertEqual(seconds_until_next_run(_utc(12, 0)), 30 * 60.0)
 
     def test_afternoon_steps_every_half_hour(self) -> None:
         """Задача 78: превью дневных матчей выходных (с 16:00 UTC) — слоты и днём."""
         self.assertEqual(seconds_until_next_run(_utc(15, 10)), 20 * 60.0)
 
-    def test_day_has_41_slots_and_29_of_them_load_data(self) -> None:
-        """Сутки по сетке: 12:00…23:30 (24) + 00:00…08:00 (17) = 41 слот; загрузчик —
+    def test_day_has_40_slots_and_29_of_them_load_data(self) -> None:
+        """Сутки по сетке: 12:30…23:30 (23) + 00:00…08:00 (17) = 40 слотов; загрузчик —
         в ночных 18:00…08:00 (12 + 17 = 29), как до Задачи 78."""
         moment, slots = _utc(8, 0), []
         while moment < _utc(8, 0, day=16):
             moment += timedelta(seconds=seconds_until_next_run(moment))
             slots.append(moment)
-        self.assertEqual(len(slots), 41)
-        self.assertEqual(slots[0], _utc(12, 0))
+        self.assertEqual(len(slots), 40)
+        self.assertEqual(slots[0], _utc(12, 30))
         self.assertEqual(slots[-1], _utc(8, 0, day=16))
         loading = [slot for slot in slots if loads_data(slot)]
         self.assertEqual(len(loading), 29)
@@ -118,8 +120,8 @@ class NextTargetTest(unittest.TestCase):
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 4 * 3600.0)
-        self.assertEqual(next_target, _utc(12, 0))
+        self.assertEqual(sleep_seconds, 4.5 * 3600.0)
+        self.assertEqual(next_target, _utc(12, 30))
 
     def test_now_exactly_at_target_does_not_double_fire(self) -> None:
         target = _utc(2, 30)
@@ -137,8 +139,8 @@ class NextTargetTest(unittest.TestCase):
 
         next_target, sleep_seconds = _next_target(now, target)
 
-        self.assertEqual(sleep_seconds, 2 * 3600.0)
-        self.assertEqual(next_target, _utc(12, 0, day=18))
+        self.assertEqual(sleep_seconds, 2.5 * 3600.0)
+        self.assertEqual(next_target, _utc(12, 30, day=18))
 
 
 class RunOnceTest(unittest.TestCase):

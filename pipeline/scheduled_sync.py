@@ -4,7 +4,7 @@
 человека: ночью, каждые ``SYNC_STEP`` с ``NIGHT_START_HOUR_UTC`` до ``NIGHT_END_HOUR_UTC``,
 прогоняет загрузчик за скользящее окно дат — завершённые матчи появляются в БД по ходу
 ночи; после каждого прогона зовёт ``push_digest_job.py``, который сам решает, кому из
-подписчиков пора (Задача 60). Днём, с ``PREVIEW_START_HOUR_UTC``, слоты идут без
+подписчиков пора (Задача 60). Днём, с ``PREVIEW_START_UTC``, слоты идут без
 загрузчика — только рассылка превью предстоящих матчей (Задача 78). Пишет статус
 последнего прогона загрузчика на диск для docker-healthcheck (``check``). Только stdlib —
 новых зависимостей нет.
@@ -33,12 +33,13 @@ NIGHT_START_HOUR_UTC = 18
 NIGHT_END_HOUR_UTC = 8
 SYNC_STEP = timedelta(minutes=30)
 
-# Дневные слоты без загрузчика (Задача 78): с 12:00 UTC (15:00 МСК) до ночного окна только
+# Дневные слоты без загрузчика (Задача 78): с 12:30 UTC (15:30 МСК) до ночного окна только
 # рассылка — на каждом слоте подписчику одно превью предстоящего матча дня
 # (push_digest_job.UPCOMING_START_MSK — тот же момент по МСК). Загрузчику днём грузить
 # нечего, и в 12:00 UTC по окну, разнесённому с sync, работают retrain и publish
-# (scheduled_retrain.RETRAIN_HOUR_UTC) — их не трогаем.
-PREVIEW_START_HOUR_UTC = 12
+# (scheduled_retrain.RETRAIN_HOUR_UTC) — их не трогаем. Первый слот — через полчаса после
+# них, чтобы в первом превью дня уже была строка прогноза (решение человека 2026-10-25).
+PREVIEW_START_UTC = (12, 30)
 
 # Окно загрузки [сегодня − WINDOW_DAYS_BACK, сегодня] (UTC-дата): захватывает
 # поздние финалы вчерашнего дня, которые NHL API мог доотдать после полуночи.
@@ -76,27 +77,27 @@ def sync_window(today: date) -> Tuple[str, str]:
     return start.isoformat(), today.isoformat()
 
 
-def _from_hour(slot: datetime, start_hour: int) -> bool:
-    """Лежит ли точка сетки ``SYNC_STEP`` в окне ``start_hour``:00–``NIGHT_END_HOUR_UTC``:00."""
-    return slot.hour >= start_hour or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
+def _from(slot: datetime, start: Tuple[int, int]) -> bool:
+    """Лежит ли точка сетки ``SYNC_STEP`` в окне *start* (час, минута) – ``NIGHT_END_HOUR_UTC``:00."""
+    return (slot.hour, slot.minute) >= start or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
 
 
 def loads_data(slot: datetime) -> bool:
     """Идёт ли в слоте *slot* загрузчик: только в ночном окне ``NIGHT_START_HOUR_UTC``–
-    ``NIGHT_END_HOUR_UTC``:00; дневные слоты (``PREVIEW_START_HOUR_UTC``) — только рассылка.
+    ``NIGHT_END_HOUR_UTC``:00; дневные слоты (``PREVIEW_START_UTC``) — только рассылка.
 
     Аргументы:
         slot: момент слота (UTC).
     """
-    return _from_hour(slot, NIGHT_START_HOUR_UTC)
+    return _from(slot, (NIGHT_START_HOUR_UTC, 0))
 
 
 def seconds_until_next_run(now: datetime) -> float:
     """Секунд до ближайшего слота прогона строго после *now*.
 
-    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) с ``PREVIEW_START_HOUR_UTC``:00 до
+    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) с ``PREVIEW_START_UTC`` до
     ``NIGHT_END_HOUR_UTC``:00; после ``NIGHT_END_HOUR_UTC``:00 следующий слот —
-    ``PREVIEW_START_HOUR_UTC``:00. Если *now* ровно на слоте — возвращает время до
+    ``PREVIEW_START_UTC``. Если *now* ровно на слоте — возвращает время до
     следующего, а не 0.
 
     Аргументы:
@@ -105,7 +106,7 @@ def seconds_until_next_run(now: datetime) -> float:
     step_minutes = int(SYNC_STEP.total_seconds() // 60)
     slot = now.replace(minute=now.minute - now.minute % step_minutes, second=0, microsecond=0)
     slot += SYNC_STEP
-    while not _from_hour(slot, PREVIEW_START_HOUR_UTC):
+    while not _from(slot, PREVIEW_START_UTC):
         slot += SYNC_STEP
     return (slot - now).total_seconds()
 

@@ -770,7 +770,7 @@ async def test_country_broadcast_deactivates_only_the_blocked_subscription(count
 
 
 # ---------------------------------------------------------------------------
-# Предстоящие матчи (Задача 78): с 15:00 МСК по превью на прогон, каждый матч один раз
+# Предстоящие матчи (Задача 78): с 15:30 МСК по превью на прогон, каждый матч один раз
 # ---------------------------------------------------------------------------
 
 UTC = timezone.utc
@@ -835,7 +835,7 @@ def upcoming_env(push_job, monkeypatch):
 def test_upcoming_games_are_not_started_games_of_the_day(push_job, upcoming_env):
     """Предстоящие — ещё не начавшиеся матчи игрового дня лиги (ET), по времени начала;
     перенесённый (``PPD``) — нет; матч, начинающийся ровно сейчас, уже не предстоящий."""
-    games = push_job.upcoming_games(datetime(2026, 10, 24, 12, 0, tzinfo=UTC))
+    games = push_job.upcoming_games(datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     assert [(g[0], g[1].strftime("%H:%M"), g[2], g[3]) for g in games] == [
         (GAME_A, "23:00", "BOS", "TOR"), (GAME_B, "23:30", "NYR", "MTL"),
         (2026020004, "02:00", "VAN", "SEA"),
@@ -847,25 +847,25 @@ def test_upcoming_games_are_not_started_games_of_the_day(push_job, upcoming_env)
     assert push_job.upcoming_games(datetime(2026, 10, 25, 2, 0, tzinfo=UTC)) == []
 
 
-def test_upcoming_games_wait_for_15_msk_of_the_league_day(push_job, upcoming_env):
+def test_upcoming_games_wait_for_preview_start_of_the_league_day(push_job, upcoming_env):
     """Игровой день меняется в 03:00 ET (07:00 UTC летом), а ночные слоты sync идут до
-    08:00 UTC: утром весь вечерний слейт «ещё не начался», но превью — только с 15:00 МСК
+    08:00 UTC: утром весь вечерний слейт «ещё не начался», но превью — только с 15:30 МСК
     дня лиги; до этого NHL API не спрашивается."""
-    for hour, minute in ((7, 30), (8, 0), (11, 59)):
+    for hour, minute in ((7, 30), (8, 0), (12, 0), (12, 29)):
         assert push_job.upcoming_games(datetime(2026, 10, 24, hour, minute, tzinfo=UTC)) == []
     assert upcoming_env.days == []
-    assert push_job.upcoming_games(datetime(2026, 10, 24, 12, 0, tzinfo=UTC)) != []
+    assert push_job.upcoming_games(datetime(2026, 10, 24, 12, 30, tzinfo=UTC)) != []
 
 
 @pytest.mark.asyncio
 async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_context):
-    """Решение человека (2026-10-25): с 15:00 МСК на каждом прогоне (раз в полчаса)
+    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне (раз в полчаса)
     подписчику одно превью — следующий по началу матч дня, каждый матч один раз; когда
     матчи кончились, прогон ничего не шлёт. Шапка — время начала по МСК; превью
     собирается раз на матч, а не на подписчика."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     by_slot = []
-    for hour, minute in ((12, 0), (12, 30), (13, 0), (13, 30)):
+    for hour, minute in ((12, 30), (13, 0), (13, 30), (14, 0)):
         before = len(fake_context.bot.sent_messages)
         await upcoming_env.run(fake_context, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
         by_slot.append([(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages[before:]])
@@ -884,7 +884,7 @@ async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake
     уже начавшиеся пропускаются."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     upcoming_env.sent = {(20, GAME_A)}
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 0, tzinfo=UTC))
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages] == [
         (111, "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER),
         (222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
@@ -915,7 +915,7 @@ async def test_upcoming_blocked_chat_is_deactivated_and_others_still_get_it(
     следующий подписчик превью получает."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     fake_context.bot.send_message_errors = [Forbidden("blocked")]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 0, tzinfo=UTC))
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
 
     assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [222]
     assert upcoming_env.deactivated == [(111, "upcoming_games")]
@@ -928,11 +928,11 @@ async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env,
     прогон шлёт следующий матч, подписка жива."""
     upcoming_env.chats = [(10, 111)]
     fake_context.bot.send_message_errors = [TelegramError("flood")]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 0, tzinfo=UTC))
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     assert fake_context.bot.sent_messages == []
     assert upcoming_env.sent == {(10, GAME_A)}
 
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
     assert [m["text"] for m in fake_context.bot.sent_messages] == [
         "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
     ]
