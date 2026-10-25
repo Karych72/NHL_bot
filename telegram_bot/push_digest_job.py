@@ -9,9 +9,9 @@
 времени у подписчика нет); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Подписка на страну (Задачи 61, 75, 76) — по матчу, на первом прогоне после его конца,
 когда выложены клипы голов: счёт и игроки страны с кнопкой карточки, за ними видео голов.
-Предстоящие матчи (Задача 78) — превью матчей, до начала которых не больше часа, каждое
-своим сообщением; каждый матч — один раз. Дневные слоты sync (с 12:00 UTC) зовут скрипт
-с ``--upcoming-only``: тогда идёт только превью.
+Предстоящие матчи (Задача 78) — на каждом прогоне с 15:00 МСК одно превью: ближайший ещё
+не начавшийся матч дня, которого подписчик не получал; каждый матч — один раз. Дневные
+слоты sync (с 12:00 UTC) зовут скрипт с ``--upcoming-only``: тогда идёт только превью.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
@@ -90,6 +90,10 @@ logger = logging.getLogger("push_digest_job")
 # этот прогон упал на загрузчике, рассылка не запускается и ночь не уходит вовсе.
 NIGHT_DEADLINE_MSK = time(11, 0)
 
+# Превью матчей дня лиги — не раньше первого дневного слота sync (решение человека, Задача 78;
+# scheduled_sync.PREVIEW_START_HOUR_UTC — тот же момент по UTC).
+UPCOMING_START_MSK = time(15, 0)
+
 # Сдвиг, переводящий момент ночи в игровую дату лиги: матчи даты D (ET) идут
 # с 16:00 UTC D до ~08:00 UTC D+1, и любой момент ночного окна sync минус 12 часов
 # попадает в D.
@@ -112,11 +116,6 @@ _UPLOAD_BUDGET_BYTES = 45_000_000
 _CAPTION_LIMIT = 1024
 
 _HTML_TAG = re.compile(r"<[^>]+>")
-
-# Превью уходит на прогоне, где до начала матча не больше часа (решение человека, Задача 78):
-# прогоны идут раз в 30 минут, поэтому матч попадает ровно в один-два прогона, а отметка
-# по паре (подписка, матч) оставляет только первый.
-UPCOMING_LEAD = timedelta(minutes=60)
 
 _T = TypeVar("_T")
 
@@ -522,34 +521,39 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
 
 
 def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
-    """Матчи, до начала которых от *now* не больше ``UPCOMING_LEAD``: (game_id, начало UTC,
-    гости, хозяева) по времени начала.
+    """Ещё не начавшиеся к *now* матчи игрового дня лиги: (game_id, начало UTC, гости,
+    хозяева) по времени начала.
 
     Зачем: превью подписки «Предстоящие матчи» (Задача 78). Слейт и время начала — из
     ``score/{день лиги}`` NHL API, тем же разбором, что ``/tonight``: в БД времени начала
-    нет. Перенесённые и отменённые матчи (``gameScheduleState`` не OK) не берутся.
+    нет. Перенесённые и отменённые матчи (``gameScheduleState`` не OK) не берутся. До
+    ``UPCOMING_START_MSK`` дня лиги — пусто: игровой день меняется в 03:00 ET, и утренние
+    ночные слоты sync (до 11:00 МСК) иначе слали бы превью нового дня раньше времени.
 
     Аргументы:
         now: aware-момент прогона.
     """
+    day = league_today(now)
+    if now < datetime.combine(day, UPCOMING_START_MSK, tzinfo=MSK):
+        return []
     return [
         (int(g["id"]), start, g["awayTeam"]["abbrev"], g["homeTeam"]["abbrev"])
-        for g in slate_games_sorted(fetch_score(league_today(now)))
+        for g in slate_games_sorted(fetch_score(day))
         if g["gameScheduleState"] == _SCHEDULED_AS_PLANNED
-        and now < (start := parse_start_utc(g.get("startTimeUTC"))[0]) <= now + UPCOMING_LEAD
+        and now < (start := parse_start_utc(g.get("startTimeUTC"))[0])
     ]
 
 
 async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> None:
-    """Превью матчей, которые скоро начнутся, — подписчикам ``upcoming_games`` (Задача 78).
+    """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
-    Зачем: превью из ``/tonight`` (сравнение команд и строка оценки модели, если прогноз
-    опубликован) приходит само примерно за час до начала. Один матч — одно сообщение
-    (решение человека), в порядке начала; превью собирается раз на матч, а не на
-    подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после
-    попытки, как у страны: сбой логируется и не повторяется; заблокировавшему бота чату
-    остальные матчи прогона не шлются. Прогон без матчей ничего не шлёт и подписчиков не
-    читает.
+    Зачем: бот на виду у подписчика весь день — с 15:00 МСК на каждом прогоне (раз в
+    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд и строка
+    оценки модели, если прогноз опубликован): ближайший по началу ещё не начавшийся матч
+    дня, которого он не получал (решение человека 2026-10-25). Превью собирается раз на
+    матч, а не на подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
+    ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
+    следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
     ``now`` — текущий момент (aware).
@@ -557,29 +561,30 @@ async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> Non
     games = upcoming_games(now)
     if not games:
         return
-    previews = {
-        game_id: f"⏰ <b>Начало в {start.astimezone(MSK):%H:%M} МСК</b>\n"
-        + matchup_season_preview(game_id, away, home)
-        for game_id, start, away, home in games
-    }
-    sent = sent_games(list(previews))
+    sent = sent_games([game[0] for game in games])
+    previews: Dict[int, str] = {}
     for subscription_id, chat_id in list_active_upcoming_rows():
-        due = [game_id for game_id in previews if (subscription_id, game_id) not in sent]
-        for game_id in due:
-            text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
-            try:
-                await _throttled(
-                    partial(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
-                    chat_id,
-                )
-            except Forbidden:
-                logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
-                mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
-                break
-            except TelegramError as exc:
-                logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
-        for game_id in due:
-            mark_game_sent(subscription_id, game_id)
+        nxt = next((g for g in games if (subscription_id, g[0]) not in sent), None)
+        if nxt is None:
+            continue
+        game_id, start, away, home = nxt
+        if game_id not in previews:
+            previews[game_id] = (
+                f"⏰ <b>Начало в {start.astimezone(MSK):%H:%M} МСК</b>\n"
+                + matchup_season_preview(game_id, away, home)
+            )
+        text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
+        try:
+            await _throttled(
+                partial(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
+                chat_id,
+            )
+        except Forbidden:
+            logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
+            mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
+        except TelegramError as exc:
+            logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
+        mark_game_sent(subscription_id, game_id)
 
 
 async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:

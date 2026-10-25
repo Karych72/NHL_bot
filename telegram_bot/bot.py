@@ -389,7 +389,7 @@ async def cmd_cancel_outside_conversation(update: Update, context: CallbackConte
 
 _DELIVERY_NOTE = (
     "Итоги ночи приходят, когда загружены все её матчи, не позже 11:00 МСК.\n"
-    "Превью — примерно за час до начала матча, с 15:00 МСК."
+    "Превью матчей дня — с 15:00 МСК, по одному раз в полчаса."
 )
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
 

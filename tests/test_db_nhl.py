@@ -504,7 +504,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         await self.bot.cmd_subscriptions(update, None)
         [(text, markup)] = replies
         self.assertIn("Пока ничего нет.", text)
-        self.assertIn("Превью — примерно за час до начала матча, с 15:00 МСК.", text)
+        self.assertIn("Превью матчей дня — с 15:00 МСК, по одному раз в полчаса.", text)
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
         self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1])
         self.assertEqual(
