@@ -192,9 +192,10 @@ GAME_TWO = 2026020002
 
 # get_game_stats: goals, pim, blocks, hits, shots, is_overtime, is_shootouts,
 # field, team_name — первая строка домашняя, вторая гостевая. Пара
-# (is_overtime=False, is_shootouts=True) — то, что лежит в БД сегодня, см.
-# комментарий к _FORM_BY_TEAM; на карточку матча она не влияет, потому что
-# game_message читает is_shootouts только при is_overtime.
+# (is_overtime=False, is_shootouts=True) — то, что лежит в БД сегодня (дефект Д1
+# Задачи 28: загрузчик пишет туда `shootoutInUse`, флаг регламента сезона); на
+# карточку матча она не влияет, потому что game_message читает is_shootouts
+# только при is_overtime.
 # get_goals_game: scorer, scorer_position, scorer_nationality, assist_1,
 # assist_1_nationality, assist_2, assist_2_nationality, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
@@ -207,7 +208,6 @@ _GAMES = {
             (3, 8, 12, 20, 31, False, True, "home", "NYR"),
             (2, 6, 10, 18, 27, False, True, "away", "BOS"),
         ],
-        "teams": [(1, 2, "2026-04-01")],
         "goals": [
             ("Panarin", "LW", "RUS", "Fox", None, None, None, 1, "05:12", 1, 0, True, False, False, False, GAME_ONE, 101),
             ("Marchand", "LW", None, None, None, None, None, 2, "11:40", 1, 1, False, False, False, False, GAME_ONE, 102),
@@ -230,7 +230,6 @@ _GAMES = {
             (1, 4, 9, 15, 24, False, True, "home", "TOR"),
             (0, 2, 11, 19, 30, False, True, "away", "MTL"),
         ],
-        "teams": [(11, 12, "2026-04-01")],
         "goals": [
             ("Matthews", "C", None, "Nylander", None, None, None, 1, "12:00", 1, 0, False, False, False, True, GAME_TWO, 201),
         ],
@@ -246,60 +245,10 @@ _GAMES = {
     },
 }
 
-# Выборка формы: winner_id, is_overtime, is_shootouts, ot_empty_net_win
-# (Задача 24 — признак правила NHL 84.2 из EXISTS-подзапроса по all_goals;
-# здесь всегда False и на исход не влияет, см. ниже). Запрос уходит по
-# одному разу на команду и фильтруется по её team_id (`WHERE home_team_id
-# = %s OR away_team_id = %s`), поэтому маршрут отвечает по team_id из
-# параметров: иначе команде засчитывались бы игры, которых она не играла.
-#
-# is_shootouts = True у всех строк — это НЕ произвол фикстуры, а текущее
-# состояние БД (дефект Д1 Задачи 28: загрузчик пишет туда `shootoutInUse`,
-# флаг регламента сезона, истинный и для игры, доигранной в основное время).
-# Из-за него `_team_game_outcome()` (Задача 24) уходит в ветку `is_shootouts`
-# на каждом незачётном исходе, и форма читается как «В-0-ПО»: ожидания ниже
-# фиксируют то, что видит пользователь сегодня. При исправлении Д1 править
-# здесь же — см. «Область» Задачи 28 в плане.
-_FORM_BY_TEAM = {
-    1: [  # NYR — 3 победы, 2 поражения; рендерится как 3-0-2
-        ("2026-03-31", (1, False, True, False)),
-        ("2026-03-31", (1, False, True, False)),
-        ("2026-03-31", (1, False, True, False)),
-        ("2026-03-31", (6, False, True, False)),
-        ("2026-03-31", (7, True, True, False)),
-    ],
-    2: [  # BOS — 1 победа, 4 поражения; рендерится как 1-0-4
-        ("2026-03-31", (2, False, True, False)),
-        ("2026-03-31", (9, False, True, False)),
-        ("2026-03-31", (10, False, True, False)),
-        ("2026-03-31", (11, False, True, False)),
-        ("2026-03-31", (12, False, True, False)),
-    ],
-    11: [("2026-03-31", (11, False, True, False))],  # TOR — 1-0-0
-    12: [("2026-03-31", (14, False, True, False))],  # MTL — 0-0-1
-}
-
-
-def _form_route(form_by_team):
-    """Маршрут «форма команды» (`ORDER BY day DESC NULLS LAST`) по `team_id`
-    из параметров — параметризован по словарю формы (не копировать под
-    каждый сценарий). Значения словаря — пары (игровой день, строка выборки):
-    маршрут, как и SQL, отбрасывает игры не раньше `before_day` карточки."""
-    def rows(params):
-        _season_id, team_id, _same_team_id, before_day, _before_day, _limit = params
-        return [
-            row for day, row in form_by_team[team_id]
-            if before_day is None or day < before_day
-        ]
-
-    return rows
-
-
-def _game_card_routes(games_by_id, form_by_team):
-    """Восемь общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
-    игр `games_by_id` (`game_id` → ответы формы `_GAMES`) и форме
-    `form_by_team` — общий строитель для любого сценария (не копировать
-    построчно под каждый)."""
+def _game_card_routes(games_by_id):
+    """Шесть общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
+    игр `games_by_id` (`game_id` → ответы формы `_GAMES`) — общий строитель для
+    любого сценария (не копировать построчно под каждый)."""
     def by_game(key):
         def rows(params):
             return games_by_id[params[0]][key]
@@ -309,17 +258,15 @@ def _game_card_routes(games_by_id, form_by_team):
     return [
         ("SELECT 1 AS o FROM games", [(1,)]),
         ("SELECT * FROM get_game_stats", by_game("stats")),
-        ("SELECT home_team_id, away_team_id, day", by_game("teams")),
         ("SELECT * FROM get_goals_game", by_game("goals")),
         ("SELECT * FROM get_goalies_game", by_game("goalies")),
         ("SELECT * FROM get_three_stars_game", by_game("three_stars")),
-        ("ORDER BY day DESC NULLS LAST", _form_route(form_by_team)),
         # Подписки чата — блок страны под карточкой (Задача 76); у чата сценария их нет.
         ("FROM bot_subscriptions", []),
     ]
 
 
-_GAME_CARD_ROUTES = _game_card_routes(_GAMES, _FORM_BY_TEAM)
+_GAME_CARD_ROUTES = _game_card_routes(_GAMES)
 
 # `/today` берёт игровой день не из БД, а у `bot.last_night_day()` — тесты
 # фиксируют его (сам расчёт — в tests/test_bot_messages.py).
@@ -349,27 +296,33 @@ async def test_game_card_renders_full_card(
 
     (sent,) = fake_context.bot.sent_messages
     text = sent["text"]
-    # Восемь разных запросов, девять обращений: форма спрашивается на каждую карточку,
-    # подписки чата — ради блока страны (Задача 76).
-    assert len(cursor.executed) == 9
+    # Шесть разных запросов, по разу; подписки чата — ради блока страны (Задача 76).
+    assert len(cursor.executed) == 6
     assert sent["parse_mode"] == "HTML"
-    assert "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>" in text
-    # 3-0-2 / 1-0-4, а не 3-1-1 / 1-3-1: см. комментарий к _FORM_BY_TEAM (Д1).
-    # Хозяева первыми, как в шапке карточки.
-    assert "<i>Форма (5 игр, W-L-OTL)</i>:\nNYR 3-0-2 · BOS 1-0-4" in text
+    # Формы до матча в итоге матча нет (Задача 84) — голы сразу под периодами.
+    assert "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>\n\n<b>1-й период</b>" in text
+    assert "Форма" not in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
-    # Голы — выровненный <pre> в ширину телефона: время без номера периода,
-    # счёт, автор; ассистенты — строкой ниже. Российский игрок (в том числе в
-    # передачах) капсом; победная шайба — «ПШ», а не «★».
+    # Голы — обычным текстом по периодам, без <pre>: время внутри периода, счёт
+    # после гола, автор; ассистенты — строкой ниже. Российский игрок (в том числе
+    # в передачах) капсом; победная шайба — «ПШ», а не «★».
+    assert "<pre>" not in text
     assert (
-        "<pre> 5:12 1:0 PANARIN [LW] (ББ)\n"
-        "          Fox\n"
-        "31:40 1:1 Marchand [LW]\n"
-        "35:20 2:1 Zibanejad [C] (МБ)\n"
-        "          PANARIN, Fox\n"
-        "44:10 2:2 Pastrnak [RW]\n"
-        "          Marchand\n"
-        "58:03 3:2 PANARIN [LW] (ПШ)</pre>"
+        "<b>1-й период</b>\n"
+        "05:12 · 1:0 — PANARIN [LW] (ББ)\n"
+        "Fox\n"
+        "\n"
+        "<b>2-й период</b>\n"
+        "11:40 · 1:1 — Marchand [LW]\n"
+        "15:20 · 2:1 — Zibanejad [C] (МБ)\n"
+        "PANARIN, Fox\n"
+        "\n"
+        "<b>3-й период</b>\n"
+        "04:10 · 2:2 — Pastrnak [RW]\n"
+        "Marchand\n"
+        "18:03 · 3:2 — PANARIN [LW] (ПШ)\n"
+        "\n"
+        "<b>Броски</b>"
     ) in text
     assert "<b>Броски</b>: 31 - 27" in text
     assert "<b>Штрафное время</b>: 8 - 6" in text
@@ -430,7 +383,9 @@ async def test_game_card_attaches_one_video_button_per_goal(
     assert _callback_data(sent["reply_markup"]) == [
         f"gv:{GAME_ONE}:{event_id}" for event_id in (101, 102, 103, 104, 105)
     ]
-    assert buttons[0].text == "▶ 1:0 PANARIN 5:12"
+    # Время кнопки — как в строке гола: внутри периода, с периодом коротко.
+    assert buttons[0].text == "▶ 1:0 PANARIN 1п 05:12"
+    assert buttons[4].text == "▶ 3:2 PANARIN 3п 18:03"
     # Два столбца: столбик на всю ширину сливался со следующей карточкой.
     assert [len(row) for row in sent["reply_markup"].inline_keyboard] == [2, 2, 1]
 
@@ -505,7 +460,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
     card = fake_context.bot.sent_messages[-1]
     assert "<b>TOR 1:0 MTL</b>" in card["text"]
-    assert "<pre>12:00 1:0 Matthews [C] (ПШ)\n          Nylander</pre>" in card["text"]
+    assert "<b>1-й период</b>\n12:00 · 1:0 — Matthews [C] (ПШ)\nNylander\n" in card["text"]
     assert _callback_data(card["reply_markup"]) == [f"gv:{GAME_TWO}:201"]
 
 
@@ -745,10 +700,8 @@ async def test_advanced_pick_on_partial_season_reports_no_data_below_games_thres
     assert "LEAST(20, (SELECT CEIL(MAX(ts.games_played) / 2.0)" in cursor.executed[-1][0]
 
 
-# Игры сезона: NYR обыгрывает BOS 2026-10-01 (в фикстуре не нужна отдельно —
-# участвует только как первая игра NYR в её форме, `_PARTIAL_FORM_BY_TEAM`),
-# затем TOR — 2026-10-03 (первая игра сезона у TOR). /today в тесте показывает
-# ночь, закреплённую на 2026-10-03, — вторую игру.
+# Вторая игра сезона — TOR 2026-10-03 (первая у TOR). /today в тесте показывает
+# ночь, закреплённую на 2026-10-03.
 PARTIAL_GAME_B = 2026020102  # TOR (home) 1 : 3 NYR (away) — 2026-10-03
 
 _PARTIAL_GAME_B_DATA = {
@@ -756,7 +709,6 @@ _PARTIAL_GAME_B_DATA = {
         (1, 4, 8, 15, 22, False, False, "home", "TOR"),
         (3, 6, 9, 24, 30, False, False, "away", "NYR"),
     ],
-    "teams": [(3, 1, "2026-10-03")],  # home_team_id=TOR(3), away_team_id=NYR(1), day
     "goals": [
         ("Matthews", "C", None, "Marner", None, None, None, 1, "05:00", 1, 0, False, False, False, False, PARTIAL_GAME_B, 301),
         ("Panarin", "LW", "RUS", "Zibanejad", None, None, None, 2, "10:00", 1, 1, False, False, False, False, PARTIAL_GAME_B, 302),
@@ -774,43 +726,9 @@ _PARTIAL_GAME_B_DATA = {
     ],
 }
 
-# winner_id, is_overtime, is_shootouts, ot_empty_net_win — форма читает
-# games ещё раз, независимо от карточки; TOR играет свой первый матч сезона
-# (одна строка вместо «—»), NYR — уже вторую подряд победу.
-_PARTIAL_FORM_BY_TEAM = {
-    # TOR: 0-0-0 — в выборке только эта же игра, а форма считается до неё.
-    3: [("2026-10-03", (1, False, False, False))],
-    # NYR: 1-0-0 — победа 2026-10-01; эта игра в форму до неё не входит.
-    1: [("2026-10-03", (1, False, False, False)), ("2026-10-01", (1, False, False, False))],
-}
-
-
-_PARTIAL_GAME_CARD_ROUTES = _game_card_routes(
-    {PARTIAL_GAME_B: _PARTIAL_GAME_B_DATA}, _PARTIAL_FORM_BY_TEAM
-)
-
 _PARTIAL_DIGEST_ROUTES = [
     ("SELECT DISTINCT game_id FROM games", [(PARTIAL_GAME_B,)]),
-] + _PARTIAL_GAME_CARD_ROUTES
-
-
-@pytest.mark.asyncio
-async def test_game_card_on_partial_season_renders_card_with_low_game_count_form(
-    bot_module, fake_db_router, make_message_update, fake_context
-):
-    bot = bot_module("bot")
-    fake_db_router(_PARTIAL_GAME_CARD_ROUTES)
-    update = make_message_update(f"/start game_{PARTIAL_GAME_B}")
-    fake_context.args = [f"game_{PARTIAL_GAME_B}"]
-
-    await bot.cmd_start(update, fake_context)
-
-    (sent,) = fake_context.bot.sent_messages
-    text = sent["text"]
-    assert "<b>TOR 1:3 NYR</b>\n<i>Периоды: 1:0, 0:1, 0:2</i>" in text
-    # Форма до матча: у TOR это первая игра сезона (0-0-0, не «—» и не
-    # засчитанное поражение в этой же игре), у NYR — одна победа до неё.
-    assert "<i>Форма (5 игр, W-L-OTL)</i>:\nTOR 0-0-0 · NYR 1-0-0" in text
+] + _game_card_routes({PARTIAL_GAME_B: _PARTIAL_GAME_B_DATA})
 
 
 @pytest.mark.asyncio

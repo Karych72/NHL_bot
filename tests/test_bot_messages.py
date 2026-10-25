@@ -74,8 +74,6 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "team_name": ["BOS", "TOR<script>alert(1)</script>"],
             "count_rows": 2,
         }
-    if "home_team_id, away_team_id" in q:
-        return {"count_rows": 0}
     if "get_goals_game" in q:
         return {
             "scorer": [_EVIL_SCORER, _EVIL_SCORER, _EVIL_SCORER],
@@ -131,11 +129,10 @@ _THREE_STARS_ROWS = {
 
 @pytest.fixture
 def game_message_text(bot_module):
-    """game_message() itself only calls fetch_all (:106,111,126,145), but it
-    also calls _last_n_form_record() (:236-237), which since Task 9 goes
-    through cached_fetch_all — patch both to the same stub, so an unmocked
-    query fails loudly (the stub's terminal AssertionError) instead of
-    silently escaping to the real database.get_connection()."""
+    """game_message() calls only fetch_all; cached_fetch_all is patched to the
+    same stub too, so a query that sneaks in through the cache fails loudly
+    (the stub's terminal AssertionError) instead of silently escaping to the
+    real database.get_connection()."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
@@ -183,6 +180,93 @@ def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
     _, goals_meta = game_message_text
     assert [g["event_id"] for g in goals_meta] == [10, 11, 12]
     assert all(g["game_id"] == 555 for g in goals_meta)
+
+
+# ---------------------------------------------------------------------------
+# game_message() — голы по периодам (Задача 84)
+# ---------------------------------------------------------------------------
+
+def test_game_message_groups_goals_by_period_and_skips_period_without_goals(
+    game_message_text,
+):
+    """Голы фикстуры — в 1-м и 2-м периодах: заголовка 3-го нет, время внутри периода."""
+    text, _ = game_message_text
+    scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
+    assert (
+        "<b>1-й период</b>\n"
+        f"05:30 · 1:0 — {scorer} [C]\n"
+        "Sm&#x27;th\n"
+        f"10:15 · 2:0 — {scorer} [C] (ББ)\n"
+        "\n"
+        "<b>2-й период</b>\n"
+        f"02:00 · 3:0 — {scorer} [C] (ПВ, ПШ)\n"
+    ) in text
+    assert "3-й период" not in text
+    assert "<pre>" not in text and "Форма" not in text
+
+
+def _overtime_fetch_all(shootout: bool):
+    """Заглушка матча 2:2 после основного времени, решённого в овертайме
+    (`shootout=False`, гол в периоде 4) или буллитами (гол в периоде 5, 00:00)."""
+    def fetch_all(query, params=None, columns=None):
+        q = str(query)
+        if "get_game_stats" in q:
+            stats = _game_message_fetch_all(query, params, columns)
+            return {
+                **stats,
+                "goals": [3, 2],
+                "is_overtime": [True, True],
+                "is_shootouts": [shootout, shootout],
+            }
+        if "get_goals_game" in q:
+            goals = _game_message_fetch_all(query, params, columns)
+            return {
+                **goals,
+                "scorer": ["Kaprizov", "Hughes", "Boldy"],
+                "period": [1, 3, 5 if shootout else 4],
+                "goal_time": ["06:09", "19:39", "00:00" if shootout else "03:12"],
+                "home_score": [1, 1, 2],
+                "away_score": [0, 1, 1],
+                "is_ppg": [False, False, False],
+                "empty_net": [False, False, False],
+                "winner_goal": [False, False, True],
+            }
+        return _game_message_fetch_all(query, params, columns)
+
+    return fetch_all
+
+
+@pytest.mark.parametrize(
+    "shootout, expected_block, expected_label",
+    [
+        (False, "<b>Овертайм</b>\n03:12 · 2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy ОТ 03:12"),
+        # Время буллита (всегда 00:00) не выводится — ни в строке, ни в кнопке.
+        (True, "<b>Буллиты</b>\n2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy Б"),
+    ],
+)
+def test_game_message_titles_overtime_and_shootout_goal(
+    bot_module, shootout, expected_block, expected_label
+):
+    bot_messages = bot_module("bot_messages")
+    stub = _overtime_fetch_all(shootout)
+    with patch.object(bot_messages, "fetch_all", side_effect=stub), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
+        text, goals_meta = bot_messages.game_message(555)
+
+    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
+    assert "2-й период" not in text
+    assert [g["label"] for g in goals_meta] == [
+        "▶ 1:0 Kaprizov 1п 06:09", "▶ 1:1 Hughes 3п 19:39", expected_label,
+    ]
+
+
+def test_period_names_count_playoff_overtimes_from_period_number(bot_module):
+    """Плей-офф (Задача 37C): период 5 без буллитов — второй овертайм, а не «Буллиты»."""
+    bot_messages = bot_module("bot_messages")
+    assert bot_messages._period_names(4, False) == ("Овертайм", "ОТ")
+    assert bot_messages._period_names(5, False) == ("2-й овертайм", "2ОТ")
+    assert bot_messages._period_names(6, False) == ("3-й овертайм", "3ОТ")
+    assert bot_messages._period_names(5, True) == ("Буллиты", "Б")
 
 
 # ---------------------------------------------------------------------------
