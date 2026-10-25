@@ -454,7 +454,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         )
 
         # Время внутри периода; у буллита (всегда 00:00) его нет.
-        time_str = "" if title == "Буллиты" else game_goals['goal_time'][i]
+        time_str = "" if shootout and p == 5 else game_goals['goal_time'][i]
         assist_names = [
             _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
             for key in ("assist_1", "assist_2")
@@ -642,9 +642,7 @@ def _team_game_outcome(
     return "L"
 
 
-def _recent_team_outcomes(
-    team_id: int, limit: int, before_day: Optional[str] = None
-) -> List[str]:
+def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
     сезона команды `team_id`, от новой игры к старой.
 
@@ -658,8 +656,6 @@ def _recent_team_outcomes(
     Аргументы:
         team_id: команда, для которой отбираются игры.
         limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
-        before_day: только игры раньше этого игрового дня (`YYYY-MM-DD`) —
-            форма «до матча» в его карточке; None — все игры сезона.
 
     Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
     пустой список, если в текущем сезоне у команды нет завершённых игр.
@@ -670,9 +666,8 @@ def _recent_team_outcomes(
         "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
         "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
-        "AND (%s::date IS NULL OR day < %s::date) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
-        (config.SEASON_ID, team_id, team_id, before_day, before_day, limit),
+        (config.SEASON_ID, team_id, team_id, limit),
         columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
     return [
@@ -687,16 +682,15 @@ def _recent_team_outcomes(
     ]
 
 
-def _last_n_form_record(team_id: int, n: int = 5, before_day: Optional[str] = None) -> str:
+def _last_n_form_record(team_id: int, n: int = 5) -> str:
     """Формат W-L-OTL по последним n завершённым играм (как в таблице очков);
-    без игр — `0-0-0` (первый матч сезона в карточке).
+    без игр — `0-0-0` (команда ещё не играла в сезоне).
 
     Игры и их разряды берёт `_recent_team_outcomes()` (правило NHL 84.2 —
     см. `_team_game_outcome()`), чтобы форма и текущая серия
-    (`_current_streak()`) не могли разойтись в подсчёте ПО. `before_day` —
-    см. `_recent_team_outcomes()`.
+    (`_current_streak()`) не могли разойтись в подсчёте ПО.
     """
-    outcomes = _recent_team_outcomes(team_id, n, before_day)
+    outcomes = _recent_team_outcomes(team_id, n)
     w = outcomes.count("W")
     losses = outcomes.count("L")
     otl = outcomes.count("OTL")
