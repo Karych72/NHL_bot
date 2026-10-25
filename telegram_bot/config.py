@@ -25,8 +25,12 @@ _REQUIRED_ENV_VARS = (
 )
 
 
-def validate_env() -> None:
+def validate_env(*extra: str) -> None:
     """Проверяет, что боту заданы все обязательные переменные окружения.
+
+    `extra` — переменные, нужные только этой точке входа: ключ Claude API
+    (`ANTHROPIC_API_KEY`, Задача 81) нужен процессу бота, но не рассылке
+    `push_digest_job.py`, которая тоже зовёт эту проверку.
 
     Зачем: `TOKEN` и `PG_*` ниже по файлу тихо подставляют дефолты — это нужно
     лоадеру и тестам, у которых токена нет и быть не должно, но для самого
@@ -38,9 +42,9 @@ def validate_env() -> None:
     Raises:
         RuntimeError: названа первая отсутствующая или пустая переменная из
             `TELEGRAM_BOT_TOKEN`/`PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`/
-            `SEASON_ID`. Значение переменной в сообщение не попадает.
+            `SEASON_ID` и `extra`. Значение переменной в сообщение не попадает.
     """
-    for name in _REQUIRED_ENV_VARS:
+    for name in _REQUIRED_ENV_VARS + extra:
         if not os.getenv(name, "").strip():
             raise RuntimeError(
                 f"Не задана обязательная переменная окружения: {name}. "

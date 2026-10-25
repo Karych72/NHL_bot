@@ -63,9 +63,8 @@ from dialog_states import (
 from help_text import ADVANCED_COMMAND_INTRO, SUBSCRIPTIONS_FOOTER
 from subscription_repo import get_chat_subscriptions
 from leaderboard_specs import (
-    ADV_STANDALONE_TO_STAT,
+    ADVANCED_METRICS,
     PLAYER_STAT_TITLES,
-    SHOT_STANDALONE_TO_STAT,
     TEAM_STAT_TITLES,
 )
 from video_replay import download_goal_video
@@ -343,6 +342,24 @@ def country_rankings_reply() -> Tuple[str, InlineKeyboardMarkup]:
     return text, InlineKeyboardMarkup(build_menu(buttons, n_cols=2))
 
 
+def country_page_reply(code: str, group: str, offset: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Экран страны `/countries`: страница группы игроков (`country_page`), листание,
+    переключатель групп (нападающие / защитники / вратари) и «« Страны».
+
+    Аргументы: `code` — код страны, `group` — ключ `PLAYER_GROUPS`, `offset` — сдвиг страницы.
+    """
+    text, has_prev, has_next = country_page(code, group, offset)
+    rows = _page_nav_rows(f"cn:{code}:{group}", offset, has_prev, has_next)
+    rows.append([
+        InlineKeyboardButton(
+            ("• " if key == group else "") + label, callback_data=f"cn:{code}:{key}:0"
+        )
+        for key, (label, _cond) in PLAYER_GROUPS.items()
+    ])
+    rows.append([InlineKeyboardButton("« Страны", callback_data="cn:list")])
+    return text, InlineKeyboardMarkup(rows)
+
+
 async def callback_country(update: Update, context: CallbackContext) -> None:
     """Кнопки /countries: `cn:list` — снова рейтинг стран, `cn:<CODE>:<G>:<off>` —
     страница группы игроков страны с листанием, переключателем групп
@@ -357,17 +374,7 @@ async def callback_country(update: Update, context: CallbackContext) -> None:
     if m.group(1) is None:
         text, markup = country_rankings_reply()
     else:
-        code, group, offset = m.group(1), m.group(2), int(m.group(3))
-        text, has_prev, has_next = country_page(code, group, offset)
-        rows = _page_nav_rows(f"cn:{code}:{group}", offset, has_prev, has_next)
-        rows.append([
-            InlineKeyboardButton(
-                ("• " if key == group else "") + label, callback_data=f"cn:{code}:{key}:0"
-            )
-            for key, (label, _cond) in PLAYER_GROUPS.items()
-        ])
-        rows.append([InlineKeyboardButton("« Страны", callback_data="cn:list")])
-        markup = InlineKeyboardMarkup(rows)
+        text, markup = country_page_reply(m.group(1), m.group(2), int(m.group(3)))
     try:
         await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
@@ -465,6 +472,17 @@ def standalone_player_stat_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def standalone_stat_reply(table: str, column: str, offset: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Страница статистики меню `/advanced` с клавиатурой `standalone_player_stat_keyboard`.
+
+    Аргументы: `(table, column)` — ключ `PLAYER_STAT_TITLES`, `offset` — сдвиг страницы.
+    """
+    text, has_prev, has_next = player_stat_leaderboard_page(
+        PLAYER_STAT_TITLES[(table, column)], table, column, offset
+    )
+    return text, standalone_player_stat_keyboard(table, column, offset, has_prev, has_next)
+
+
 async def callback_standalone_sa(update: Update, context: CallbackContext) -> None:
     """Обрабатывает нажатия кнопок `sa:...` вне диалога `/stats`:
     `sa:menu` — меню `/advanced` на месте страницы; `sa:save` — страница
@@ -501,15 +519,11 @@ async def callback_standalone_sa(update: Update, context: CallbackContext) -> No
         await query.answer()
         return
     table, col, off_s = m.group(1), m.group(2), m.group(3)
-    key = (table, col)
-    if key not in PLAYER_STAT_TITLES:
+    if (table, col) not in PLAYER_STAT_TITLES:
         await query.answer()
         return
-    title = PLAYER_STAT_TITLES[key]
-    offset = int(off_s)
     await query.answer()
-    text, hp, hn = player_stat_leaderboard_page(title, table, col, offset)
-    markup = standalone_player_stat_keyboard(table, col, offset, hp, hn)
+    text, markup = standalone_stat_reply(table, col, int(off_s))
     try:
         await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
     except BadRequest as exc:
@@ -910,8 +924,7 @@ async def callback_expand_digest_game(update: Update, context: CallbackContext) 
 
 async def callback_standalone_adv(update: Update, context: CallbackContext) -> None:
     """Обрабатывает нажатие кнопки меню `/advanced` (`adv:<key>`): `adv:close`
-    снимает клавиатуру, иначе ключ ищется в `ADV_STANDALONE_TO_STAT`/
-    `SHOT_STANDALONE_TO_STAT` и открывается первая страница этой статистики —
+    снимает клавиатуру, иначе ключ ищется в `ADVANCED_METRICS` и открывается первая страница этой статистики —
     дальше она листается уже как `sa:...` (см. `standalone_player_stat_keyboard`).
     """
     query = update.callback_query
@@ -922,14 +935,11 @@ async def callback_standalone_adv(update: Update, context: CallbackContext) -> N
         await query.answer()
         await query.edit_message_reply_markup(reply_markup=None)
         return
-    pair = ADV_STANDALONE_TO_STAT.get(key) or SHOT_STANDALONE_TO_STAT.get(key)
+    pair = ADVANCED_METRICS.get(key)
     if not pair:
         return
-    table, col = pair
     await query.answer()
-    title = PLAYER_STAT_TITLES[(table, col)]
-    text, hp, hn = player_stat_leaderboard_page(title, table, col, 0)
-    kb = standalone_player_stat_keyboard(table, col, 0, hp, hn)
+    text, kb = standalone_stat_reply(*pair, 0)
     await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=kb)
 
 
@@ -1128,6 +1138,13 @@ def leaderboard_nav_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def leaders_reply(kind: str, offset: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Страница лидерборда `/leaders` категории `kind` (points / goals / assists) со сдвигом
+    `offset` и её клавиатура `leaderboard_nav_keyboard`."""
+    text, has_prev, has_next = stat_leaderboard_for_kind(kind, offset)
+    return text, leaderboard_nav_keyboard(kind, offset, has_prev, has_next)
+
+
 async def callback_leaders_pick(update: Update, context: CallbackContext) -> None:
     """Обрабатывает выбор категории `/leaders` (`pl:pick:<kind>`) — открывает
     первую страницу соответствующего лидерборда на месте (`edit_message_text`).
@@ -1138,10 +1155,8 @@ async def callback_leaders_pick(update: Update, context: CallbackContext) -> Non
     m = re.match(LEADERS_PICK_CALLBACK_PATTERN, query.data)
     if not m:
         return
-    kind = m.group(1)
     await query.answer()
-    text, hp, hn = stat_leaderboard_for_kind(kind, 0)
-    markup = leaderboard_nav_keyboard(kind, 0, hp, hn)
+    text, markup = leaders_reply(m.group(1), 0)
     try:
         await query.edit_message_text(
             text=text,
@@ -1163,11 +1178,8 @@ async def callback_leaderboard_page(update: Update, context: CallbackContext) ->
     m = re.match(LEADERBOARD_PAGE_CALLBACK_PATTERN, query.data)
     if not m:
         return
-    kind, off_s = m.group(1), m.group(2)
-    offset = int(off_s)
     await query.answer()
-    text, hp, hn = stat_leaderboard_for_kind(kind, offset)
-    markup = leaderboard_nav_keyboard(kind, offset, hp, hn)
+    text, markup = leaders_reply(m.group(1), int(m.group(2)))
     try:
         await query.edit_message_text(
             text=text,

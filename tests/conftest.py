@@ -75,6 +75,8 @@ _REQUIRED_BOT_ENV = {
     "PG_USER": "nhl_bot_test",
     "PG_DATABASE": "nhl_bot_test",
     "SEASON_ID": "20262027",
+    # Только бот (`validate_env("ANTHROPIC_API_KEY")`, Задача 81); рассылке не нужен.
+    "ANTHROPIC_API_KEY": "sk-ant-TEST-NOT-A-REAL-KEY",
 }
 
 
@@ -129,6 +131,9 @@ class FakeConnection:
 
     def cursor(self) -> FakeCursor:
         return self._cursor
+
+    def commit(self) -> None:
+        """Запись (журнал `ai_questions`) коммитит транзакцию; фейку фиксировать нечего."""
 
 
 @pytest.fixture

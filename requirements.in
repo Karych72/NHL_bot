@@ -7,3 +7,7 @@ requests
 psycopg2-binary
 jinja2
 python-telegram-bot==21.11.1
+# Claude API: свободный текст в боте (Задача 81, разрешение человека 2026-10-25). Тянет
+# pydantic — тот же пин, что в requirements-modeling.in, по той же причине, что у pandas.
+anthropic==2.3.0
+pydantic==2.10.6

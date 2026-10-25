@@ -9,7 +9,7 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -25,8 +25,10 @@ from telegram.ext import (
     filters,
 )
 
+import ai_router
 import config
 import subscription_repo
+from leaderboard_specs import ADVANCED_METRICS
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
     country_rankings,
@@ -170,10 +172,13 @@ from stats_handlers import (
     callback_stats_player_page,
     callback_stats_team_page,
     callback_tonight_game,
+    country_page_reply,
     leaders_category_keyboard,
+    leaders_reply,
     dispatch_day_digest_messages,
     handle_goal_video,
     send_game_card_message,
+    standalone_stat_reply,
 )
 
 logger = logging.getLogger(__name__)
@@ -320,16 +325,19 @@ async def cmd_team(update: Update, context: CallbackContext) -> None:
     await _message(update).reply_text(team_list_text(), parse_mode="HTML")
 
 
+def team_profile_text(abbrev: str, full: bool) -> str:
+    """Ответ `/BOS` — статистика клуба (`team_profile()`), при `full` (`/BOS_FULL`) — все
+    его игроки (`team_full_stats()`); неизвестную аббревиатуру обе функции сами
+    превращают в текст с причиной."""
+    body = team_full_stats(abbrev) if full else team_profile(abbrev)
+    return truncate_telegram_text(body + "\n\nВсе команды: /team")
+
+
 async def cmd_team_profile(update: Update, context: CallbackContext) -> None:
-    """`/BOS` и т.п.: статистика клуба (`team_profile()`), `/BOS_FULL` — все
-    его игроки (`team_full_stats()`); неизвестную аббревиатуру обе функции
-    сами превращают в текст с причиной."""
-    message = _message(update)
+    """`/BOS` и т.п.: профиль клуба, `/BOS_FULL` — все его игроки (`team_profile_text`)."""
     assert context.matches
     abbrev, full = context.matches[0].group(1), context.matches[0].group(2)
-    body = team_full_stats(abbrev) if full else team_profile(abbrev)
-    text = truncate_telegram_text(body + "\n\nВсе команды: /team")
-    await message.reply_text(text, parse_mode="HTML")
+    await _message(update).reply_text(team_profile_text(abbrev, bool(full)), parse_mode="HTML")
 
 
 async def cmd_leaders(update: Update, context: CallbackContext) -> None:
@@ -585,6 +593,76 @@ async def callback_subscriptions(update: Update, context: CallbackContext) -> No
     await query.edit_message_text(text, reply_markup=None if action == "x" else markup)
 
 
+# Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
+# кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
+AI_COMMANDS: Dict[str, Callable[[Update, CallbackContext], Awaitable[None]]] = {
+    "today": cmd_today,
+    "tonight": cmd_tonight,
+    "standings": cmd_standings,
+    "team": cmd_team,
+    "leaders": cmd_leaders,
+    "countries": cmd_countries,
+    "advanced": cmd_advanced,
+    "subscriptions": cmd_subscriptions,
+    "help": cmd_help,
+}
+
+
+async def _ai_digest_for_date(update: Update, context: CallbackContext, params: Dict[str, Any]) -> None:
+    """Дайджест игрового дня `params["date"]` — как ввод даты в `/stats`, но без кнопок меню."""
+    day_label, games = day_digest(params["date"])
+    await dispatch_day_digest_messages(
+        context, _chat_id(update), day_label, games, attach_conv_nav_on_last=False
+    )
+
+
+async def _ai_team_profile(update: Update, context: CallbackContext, params: Dict[str, Any]) -> None:
+    """Профиль клуба, как `/WSH` (`all_players=false`) или `/WSH_FULL` (`true`)."""
+    text = team_profile_text(params["team"], params["all_players"])
+    await _message(update).reply_text(text, parse_mode="HTML")
+
+
+def _ai_reply(screen: Callable[[Dict[str, Any]], Tuple[str, InlineKeyboardMarkup]]):
+    """Экран из функции «параметры → (текст, кнопки)» ответом на вопрос пользователя."""
+    async def _send(update: Update, context: CallbackContext, params: Dict[str, Any]) -> None:
+        text, markup = screen(params)
+        await _message(update).reply_text(text, parse_mode="HTML", reply_markup=markup)
+    return _send
+
+
+# Инструмент модели (`ai_router.build_tools`) → функция экрана.
+AI_SCREENS: Dict[str, Callable[[Update, CallbackContext, Dict[str, Any]], Awaitable[None]]] = {
+    "open_command": lambda update, context, p: AI_COMMANDS[p["command"]](update, context),
+    "digest_for_date": _ai_digest_for_date,
+    "team_profile": _ai_team_profile,
+    "leaders": _ai_reply(lambda p: leaders_reply(p["category"], 0)),
+    "country_players": _ai_reply(lambda p: country_page_reply(p["country"], "F", 0)),
+    "advanced_metric": _ai_reply(lambda p: standalone_stat_reply(*ADVANCED_METRICS[p["metric"]], 0)),
+}
+
+
+async def on_free_text(update: Update, context: CallbackContext) -> None:
+    """Текст в личке вне команд и вне ввода даты `/stats`: вопрос модели (`ai_router.ask`).
+
+    Лимит исчерпан — ответ без вызова модели; модель выбрала экран — бот показывает его
+    (`AI_SCREENS`); иначе — её текст: отказ, уточнение или сообщение о сбое API.
+    """
+    message = _message(update)
+    chat_id = _chat_id(update)
+    if ai_router.questions_left(chat_id) <= 0:
+        await message.reply_text(ai_router.LIMIT_TEXT)
+        return
+    reply = await ai_router.ask(chat_id, message.text or "")
+    if reply.tool is None:
+        await message.reply_text(reply.text or ai_router.UNSUPPORTED_TEXT)
+        return
+    await AI_SCREENS[reply.tool](update, context, reply.params)
+
+
+# Свободный текст: только новые текстовые сообщения в личке, не команды.
+FREE_TEXT_FILTER = filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND
+
+
 def build_conversation_handler() -> ConversationHandler:
     """Собирает `ConversationHandler` меню `/stats`.
 
@@ -761,6 +839,12 @@ def build_application(token: str) -> Application:
     остальных и при превышении лимита обрывает его через
     `ApplicationHandlerStop`, не давая дойти до standalone-хендлеров и
     `ConversationHandler`.
+
+    Свободный текст (`on_free_text`) — в той же группе, что `ConversationHandler`, и после
+    него: в группе срабатывает только первый подошедший хендлер, поэтому ввод даты в
+    состоянии `THIRD` забирает диалог, а ИИ видит лишь текст, который диалогу не нужен.
+    `block=False`: апдейты обрабатываются по одному, и ожидание ответа модели (секунды,
+    при сбое API — до ~30 с) иначе остановило бы кнопки и команды всех пользователей.
     """
     application = Application.builder().token(token).post_init(_publish_command_menu).build()
     application.add_handler(TypeHandler(Update, enforce_callback_rate_limit), group=THROTTLE_GROUP)
@@ -768,13 +852,14 @@ def build_application(token: str) -> Application:
         application.add_handler(handler, group=STANDALONE_GROUP)
     application.add_handler(build_conversation_handler())
     application.add_handler(CommandHandler('cancel', cmd_cancel_outside_conversation))
+    application.add_handler(MessageHandler(FREE_TEXT_FILTER, on_free_text, block=False))
     return application
 
 
 def main() -> None:
     """Точка входа `python bot.py`: проверка окружения, затем long polling
     до сигнала остановки."""
-    config.validate_env()
+    config.validate_env("ANTHROPIC_API_KEY")
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
