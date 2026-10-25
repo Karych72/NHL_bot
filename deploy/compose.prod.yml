@@ -1,5 +1,6 @@
-# Прод-оверрайд к docker-compose.yml (Задача 65): токен бота на VM — не в .env, а файлом
-# /run/nhl_bot/telegram_bot_token (tmpfs), его пишет deploy/fetch-secrets.sh при загрузке VM.
+# Прод-оверрайд к docker-compose.yml (Задачи 65, 81): токен бота и ключ Claude API на VM — не
+# в .env, а файлами /run/nhl_bot/telegram_bot_token и /run/nhl_bot/anthropic/anthropic_api_key (tmpfs), их
+# пишет deploy/fetch-secrets.sh при загрузке VM. Ключ нужен только bot (свободный текст).
 # Подключается только на VM строкой COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml
 # в .env — её видят и release.yml, и ручной `docker compose`.
 #
@@ -13,8 +14,9 @@ x-token-entrypoint: &token-entrypoint
 
 services:
   bot:
-    secrets: [telegram_bot_token]
-    entrypoint: *token-entrypoint
+    secrets: [telegram_bot_token, anthropic_api_key]
+    entrypoint:
+      ["sh", "-c", "TELEGRAM_BOT_TOKEN=$$(cat /run/secrets/telegram_bot_token) && ANTHROPIC_API_KEY=$$(cat /run/secrets/anthropic_api_key) && export TELEGRAM_BOT_TOKEN ANTHROPIC_API_KEY && exec \"$$@\"", "sh"]
   sync:
     secrets: [telegram_bot_token]
     entrypoint: *token-entrypoint
@@ -22,3 +24,5 @@ services:
 secrets:
   telegram_bot_token:
     file: /run/nhl_bot/telegram_bot_token
+  anthropic_api_key:
+    file: /run/nhl_bot/anthropic/anthropic_api_key

@@ -97,11 +97,13 @@ def test_throttle_group_registers_single_type_handler(bot_module, application) -
     assert handler.callback is throttle.enforce_callback_rate_limit
 
 
-def test_default_group_is_conversation_then_cancel(bot_module, application) -> None:
+def test_default_group_is_conversation_then_cancel_then_free_text(bot_module, application) -> None:
     bot = bot_module("bot")
-    conversation, cancel = application.handlers[0]
+    conversation, cancel, free_text = application.handlers[0]
     assert isinstance(conversation, ConversationHandler)
     assert _describe(cancel) == ("command", ["cancel"], bot.cmd_cancel_outside_conversation)
+    assert _describe(free_text) == ("message", bot.on_free_text)
+    assert free_text.filters is bot.FREE_TEXT_FILTER
 
 
 def test_build_application_binds_the_given_token(application) -> None:
@@ -353,6 +355,39 @@ def test_state_third_message_handler_takes_text_but_not_commands(bot_module, app
     assert date_input_handler.filters is not filters.TEXT
 
 
+def _first_default_group_handler(application, update):
+    """Хендлер группы 0, который получит апдейт: в группе срабатывает первый подошедший."""
+    return next((h for h in application.handlers[0] if h.check_update(update)), None)
+
+
+def test_date_input_in_third_goes_to_dialog_not_to_ai(bot_module, application) -> None:
+    """Задача 81: пока диалог `/stats` ждёт дату (THIRD), текст забирает он, а вне диалога —
+    хендлер свободного текста."""
+    bot = bot_module("bot")
+    ds = bot_module("dialog_states")
+    conversation = application.handlers[0][0]
+    update = _text_update("2026-01-01")
+
+    assert _first_default_group_handler(application, update).callback is bot.on_free_text
+    # Ключ разговора PTB — (chat_id, user_id) апдейта `_text_update`; публичного способа
+    # поставить состояние без прогона polling нет.
+    conversation._conversations[(1, 2)] = ds.THIRD
+    assert _first_default_group_handler(application, update) is conversation
+    conversation._conversations[(1, 2)] = ds.FIRST
+    assert _first_default_group_handler(application, update).callback is bot.on_free_text
+
+
+def test_free_text_filter_takes_private_text_only(bot_module) -> None:
+    bot = bot_module("bot")
+    command = (MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=7),)
+    assert bot.FREE_TEXT_FILTER.check_update(_text_update("как сыграл Колорадо"))
+    assert not bot.FREE_TEXT_FILTER.check_update(_text_update("/leader", command))
+    group = _text_update("таблица Востока")
+    group.message._unfreeze()
+    group.message.chat = Chat(id=-5, type=Chat.GROUP)
+    assert not bot.FREE_TEXT_FILTER.check_update(group)
+
+
 # ---------------------------------------------------------------------------
 # Запись id сообщения меню — источник данных для /cancel ниже. stats()/
 # stats_over() пишут его инлайн (не через stats_handlers._record_menu_message),
@@ -471,6 +506,25 @@ def test_main_raises_and_never_polls_when_token_missing(
         bot.main()
 
     assert polled == []
+
+
+def test_main_raises_and_never_polls_without_anthropic_key(
+    bot_module, monkeypatch: pytest.MonkeyPatch, set_required_bot_env
+) -> None:
+    """Задача 81: без ключа Claude API бот не стартует, рассылка — да (ей ключ не нужен)."""
+    bot = bot_module("bot")
+    config = bot_module("config")
+    set_required_bot_env(ANTHROPIC_API_KEY="")
+    polled: List[Application] = []
+    monkeypatch.setattr(
+        Application, "run_polling", lambda self, *args, **kwargs: polled.append(self)
+    )
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        bot.main()
+
+    assert polled == []
+    config.validate_env()
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +667,8 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
         callback = handler.callback
         assert asyncio.iscoroutinefunction(callback), f"{callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: в сумме 84 регистрации — bot.py: 14,
+    # Страховка от «проверили пустой список»: в сумме 85 регистраций — bot.py: 15
+    # (с Задачи 81 — хендлер свободного текста),
     # script_bot.py: 22, stats_handlers.py: 48. Подробности по script_bot.py
     # (12 функций — stats/stats_root_edit по 2 раза; в SECOND дополнительно
     # висят «« Назад»» на родительские подменю: bot_player_field/
@@ -623,7 +678,7 @@ def test_every_registered_callback_is_a_coroutine_function(bot_module, applicati
     # bot_team_division_stats — Задача 41, Фаза B, по одной в FIRST;
     # bot_team_profile_pick/bot_team_profile_show — Задача 41, Фаза D;
     # standalone callback_country — /countries, Задача 49).
-    assert len(registered) == 84
+    assert len(registered) == 85
     assert {h.callback.__module__ for h in registered} == {
         "bot",
         "script_bot",

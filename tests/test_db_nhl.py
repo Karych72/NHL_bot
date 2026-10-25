@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -894,6 +895,65 @@ class TestPredictionLogSql(unittest.TestCase):
         # Игра без победителя остаётся без исхода.
         unplayed = rows[(self.UNPLAYED, today)]
         self.assertEqual((unplayed[3], unplayed[4], unplayed[5], unplayed[6]), (None, None, None, None))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiQuestionsSql(unittest.TestCase):
+    """Суточный лимит и журнал свободного текста (Задача 81) на настоящих ``ai_questions`` и
+    ``ai_existing_users``. Юнит-тесты подменяют ответ БД, здесь проверяется сам SQL: граница
+    суток по МСК и лимит текущего пользователя. Чаты — отрицательные, как в
+    ``TestSubscriptionRepoSql``; строки удаляются до и после."""
+
+    NEW_CHAT = -999000081
+    EXISTING_CHAT = -999000082
+
+    def setUp(self):
+        import ai_router
+
+        self.ai = ai_router
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO ai_existing_users (chat_id) VALUES (%s)", (self.EXISTING_CHAT,))
+
+    def _cleanup(self):
+        chats = [self.NEW_CHAT, self.EXISTING_CHAT]
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM ai_questions WHERE chat_id = ANY(%s)", (chats,))
+            cur.execute("DELETE FROM ai_existing_users WHERE chat_id = ANY(%s)", (chats,))
+
+    def test_limit_counts_todays_questions_by_moscow_day(self):
+        ai = self.ai
+        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW)
+        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING)
+
+        ai._log_question(self.NEW_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"}, cost_usd=0.004)
+        ai._log_question(self.NEW_CHAT, "погода", "error", 30000, error="APITimeoutError")
+        ai._log_question(self.EXISTING_CHAT, "таблица", "text", 700, answer="Пока не умею")
+        # Минута до полуночи по Москве — вчерашний вопрос, в сегодняшний лимит не входит.
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ai_questions (chat_id, question, outcome, latency_ms, asked_at) "
+                "VALUES (%s, 'вчера', 'text', 1, (date_trunc('day', now() AT TIME ZONE "
+                "'Europe/Moscow') - interval '1 minute') AT TIME ZONE 'Europe/Moscow')",
+                (self.NEW_CHAT,),
+            )
+
+        # Сбой API лимит не списывает: из трёх строк NEW_CHAT в счёт — только сегодняшний экран.
+        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 1)
+        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING - 1)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT tool, tool_input, cost_usd FROM ai_questions "
+                "WHERE chat_id = %s AND outcome = 'screen'",
+                (self.NEW_CHAT,),
+            )
+            self.assertEqual(cur.fetchall(), [("leaders", {"category": "goals"}, Decimal("0.004000"))])
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

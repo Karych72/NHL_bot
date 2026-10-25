@@ -6,7 +6,7 @@
 # migrate, bot, sync и predict ходят в Postgres прод-стека по его сети, в базу nhl_dev.
 # Общая база с продом нельзя: dev-рассылка по продовым chat_id деактивировала бы подписки
 # прода на Forbidden, а migrate develop менял бы схему под продовым кодом.
-# Токен — тот же механизм, что в compose.prod.yml, только файл dev-бота.
+# Токен и ключ Claude API — тот же механизм, что в compose.prod.yml, только файлы dev-стека.
 
 x-prod-db: &prod-db
   depends_on:
@@ -36,3 +36,5 @@ networks:
 secrets:
   telegram_bot_token:
     file: /run/nhl_bot_dev/telegram_bot_token
+  anthropic_api_key:
+    file: /run/nhl_bot_dev/anthropic/anthropic_api_key
