@@ -9,8 +9,8 @@
 времени у подписчика нет); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Подписка на страну (Задачи 61, 75, 76) — по матчу, на первом прогоне после его конца,
 когда выложены клипы голов: счёт и игроки страны с кнопкой карточки, за ними видео голов.
-Предстоящие матчи (Задача 78) — превью матчей, до начала которых не больше часа, одним
-сообщением на прогон; каждый матч — один раз. Дневные слоты sync (с 12:00 UTC) зовут скрипт
+Предстоящие матчи (Задача 78) — превью матчей, до начала которых не больше часа, каждое
+своим сообщением; каждый матч — один раз. Дневные слоты sync (с 12:00 UTC) зовут скрипт
 с ``--upcoming-only``: тогда идёт только превью.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
@@ -47,7 +47,6 @@ if _HERE not in sys.path:
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MSK,
-    TELEGRAM_MAX_MESSAGE_LENGTH,
     country_night_blocks,
     country_night_goals,
     day_digest,
@@ -541,32 +540,16 @@ def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
     ]
 
 
-def _pack_messages(blocks: List[str]) -> List[str]:
-    """Блоки превью по сообщениям в исходном порядке: в каждом — сколько влезет в лимит
-    Telegram вместе со строкой ``SUBSCRIPTIONS_FOOTER``. Все превью слота должны уйти
-    одним сообщением (решение человека), но 6–8 матчей в одно время в 4096 символов не
-    помещаются — тогда сообщений несколько. Одно превью — до ~1,5 тыс. символов, поэтому
-    блок длиннее лимита считается ошибкой, а не режется."""
-    assert all(len(block) < TELEGRAM_MAX_MESSAGE_LENGTH // 2 for block in blocks), "превью слишком длинное"
-    limit = TELEGRAM_MAX_MESSAGE_LENGTH - len(SUBSCRIPTIONS_FOOTER) - 2
-    messages: List[List[str]] = []
-    for block in blocks:
-        if messages and len("\n\n".join(messages[-1] + [block])) <= limit:
-            messages[-1].append(block)
-        else:
-            messages.append([block])
-    return ["\n\n".join(m) + f"\n\n{SUBSCRIPTIONS_FOOTER}" for m in messages]
-
-
 async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> None:
     """Превью матчей, которые скоро начнутся, — подписчикам ``upcoming_games`` (Задача 78).
 
     Зачем: превью из ``/tonight`` (сравнение команд и строка оценки модели, если прогноз
-    опубликован) приходит само примерно за час до начала. Матчи прогона, ещё не
-    ушедшие подписчику, идут одним сообщением (``_pack_messages``); превью собирается раз
-    на матч, а не на подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
-    ставится после попытки, как у страны: сбой логируется и не повторяется. Прогон без
-    матчей ничего не шлёт и подписчиков не читает.
+    опубликован) приходит само примерно за час до начала. Один матч — одно сообщение
+    (решение человека), в порядке начала; превью собирается раз на матч, а не на
+    подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после
+    попытки, как у страны: сбой логируется и не повторяется; заблокировавшему бота чату
+    остальные матчи прогона не шлются. Прогон без матчей ничего не шлёт и подписчиков не
+    читает.
 
     Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
     ``now`` — текущий момент (aware).
@@ -582,19 +565,19 @@ async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> Non
     sent = sent_games(list(previews))
     for subscription_id, chat_id in list_active_upcoming_rows():
         due = [game_id for game_id in previews if (subscription_id, game_id) not in sent]
-        if not due:
-            continue
-        try:
-            for text in _pack_messages([previews[game_id] for game_id in due]):
+        for game_id in due:
+            text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
+            try:
                 await _throttled(
                     partial(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
                     chat_id,
                 )
-        except Forbidden:
-            logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
-            mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
-        except TelegramError as exc:
-            logger.warning("upcoming send failed chat_id=%s: %s", chat_id, exc)
+            except Forbidden:
+                logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
+                mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
+                break
+            except TelegramError as exc:
+                logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
         for game_id in due:
             mark_game_sent(subscription_id, game_id)
 

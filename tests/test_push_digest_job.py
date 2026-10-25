@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, Forbidden, RetryAfter
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
@@ -878,22 +878,18 @@ async def test_upcoming_preview_goes_out_once_per_subscriber_and_game(
 
 
 @pytest.mark.asyncio
-async def test_upcoming_games_of_one_run_share_one_message(push_job, upcoming_env, fake_context):
-    """Решение человека: все матчи прогона — одним сообщением; подписчик, которому один
-    из них уже ушёл, получает только остальные."""
+async def test_upcoming_one_message_per_game(push_job, upcoming_env, fake_context):
+    """Решение человека (2026-10-25): один матч — одно сообщение, в порядке начала;
+    подписчик, которому один из матчей уже ушёл, получает только остальные."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     upcoming_env.sent = {(20, GAME_A)}
     await upcoming_env.run(fake_context, datetime(2026, 10, 24, 22, 30, tzinfo=UTC))
 
-    first, second = fake_context.bot.sent_messages
-    assert first["chat_id"] == 111
-    assert first["text"] == (
-        "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR\n\n"
-        "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
-    )
-    assert (second["chat_id"], second["text"]) == (
-        222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
-    )
+    assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages] == [
+        (111, "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER),
+        (111, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
+        (222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
+    ]
 
 
 @pytest.mark.asyncio
@@ -911,24 +907,29 @@ async def test_upcoming_blocked_chat_is_deactivated_and_others_still_get_it(
     push_job, upcoming_env, fake_context
 ):
     """Заблокировавший бота чат гасится (``upcoming_games``), матч ему отмечается — не
-    долбимся каждые полчаса; следующий подписчик превью получает."""
+    долбимся каждые полчаса; второй матч прогона ему уже не шлётся; следующий подписчик
+    превью получает."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     fake_context.bot.send_message_errors = [Forbidden("blocked")]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 22, 0, tzinfo=UTC))
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 22, 30, tzinfo=UTC))
 
-    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [222]
+    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [222, 222]
     assert upcoming_env.deactivated == [(111, "upcoming_games")]
-    assert upcoming_env.sent == {(10, GAME_A), (20, GAME_A)}
+    assert upcoming_env.sent == {(10, GAME_A), (10, GAME_B), (20, GAME_A), (20, GAME_B)}
 
 
-def test_pack_messages_splits_only_over_telegram_limit(push_job):
-    """Превью прогона — одним сообщением, пока оно влезает в 4096 символов с подписью
-    «Настроить подписки»; не влезающее переносится в следующее, порядок сохраняется."""
-    block = "x" * 1500
-    messages = push_job._pack_messages([block, block, block])
-    assert messages == [f"{block}\n\n{block}{FOOTER}", f"{block}{FOOTER}"]
-    assert all(len(m) <= push_job.TELEGRAM_MAX_MESSAGE_LENGTH for m in messages)
-    assert push_job._pack_messages(["a", "b"]) == [f"a\n\nb{FOOTER}"]
+@pytest.mark.asyncio
+async def test_upcoming_send_error_does_not_skip_next_game(push_job, upcoming_env, fake_context):
+    """Сбой отправки одного превью (не блокировка) логируется, следующий матч уходит."""
+    upcoming_env.chats = [(10, 111)]
+    fake_context.bot.send_message_errors = [TelegramError("flood")]
+    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 22, 30, tzinfo=UTC))
+
+    assert [m["text"] for m in fake_context.bot.sent_messages] == [
+        "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
+    ]
+    assert upcoming_env.deactivated == []
+    assert upcoming_env.sent == {(10, GAME_A), (10, GAME_B)}
 
 
 @pytest.mark.asyncio
