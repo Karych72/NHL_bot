@@ -416,14 +416,16 @@ def fsm_state(fake_bot: Bot) -> FSMContext:
     )
 
 
-def _message_data(text: Optional[str], chat_id: int, chat_type: str = "private") -> Dict[str, Any]:
+def _message_data(
+    text: Optional[str], chat_id: int, chat_type: str = "private", user_id: int = USER_ID
+) -> Dict[str, Any]:
     """A user's message as Telegram sends it; a leading `/word` carries the bot_command
     entity, like a real client sets."""
     data: Dict[str, Any] = {
         "message_id": 1,
         "date": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "chat": {"id": chat_id, "type": chat_type},
-        "from": {"id": USER_ID, "is_bot": False, "first_name": "Test"},
+        "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
         "text": text,
     }
     if text and text.startswith("/"):
@@ -490,7 +492,7 @@ def make_update() -> Callable[..., Any]:
                 {"update_id": counter["id"], "callback_query": _callback_data(data, chat_id, user_id)}
             )
         return Update.model_validate(
-            {"update_id": counter["id"], "message": _message_data(text, chat_id, chat_type)}
+            {"update_id": counter["id"], "message": _message_data(text, chat_id, chat_type, user_id)}
         )
 
     return _make

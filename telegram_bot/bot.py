@@ -18,6 +18,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.magic_filter import MagicFilter
 
@@ -333,13 +334,15 @@ async def cmd_cancel_in_conversation(message: Message, state: FSMContext, bot: B
     штатный случай (`/cancel` без открытого меню), не ошибка.
     """
     menu_message_id = (await state.get_data()).get(LAST_MENU_MESSAGE_ID_KEY)
+    # Сначала закрыть диалог: если меню уже удалено и правка упадёт, пользователь не
+    # останется запертым в диалоге — следующий /cancel придёт уже вне его.
+    await state.clear()
     if menu_message_id is not None:
         await bot.edit_message_reply_markup(
             chat_id=message.chat.id,
             message_id=menu_message_id,
             reply_markup=None,
         )
-    await state.clear()
     await message.answer("Вы вышли из меню. Снова: /stats")
 
 
@@ -814,11 +817,14 @@ def build_dispatcher() -> Dispatcher:
     давая дойти ни до standalone-кнопок, ни до диалога. Роутеры проверяются по
     порядку: standalone → диалог `/stats` → хвост (`build_tail_router`).
 
-    Апдейты обрабатываются конкурентно (polling aiogram запускает каждый задачей):
-    ожидание ответа модели на свободный текст (секунды, при сбое API — до ~30 с) не
-    останавливает кнопки и команды остальных пользователей.
+    Апдейты разных пользователей обрабатываются конкурентно (polling aiogram запускает
+    каждый задачей): ожидание ответа модели на свободный текст (секунды, при сбое API —
+    до ~30 с) не останавливает остальных. Апдейты одного пользователя в чате — по одному
+    (`SimpleEventIsolation`, как было в python-telegram-bot): иначе двойной тап обгоняет
+    запись состояния диалога и реестра `/tonight`, и кнопки меню «умирают», а карточка
+    уходит дважды.
     """
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
     dispatcher.callback_query.outer_middleware(enforce_callback_rate_limit)
     dispatcher.startup.register(_publish_command_menu)
     dispatcher.include_routers(build_standalone_router(), build_stats_router(), build_tail_router())

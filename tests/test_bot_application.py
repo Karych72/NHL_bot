@@ -439,6 +439,60 @@ async def test_spam_presses_are_stopped_before_any_handler(
     assert api.answers[-1] == throttle.RATE_LIMIT_ANSWER_TEXT
 
 
+@pytest.mark.asyncio
+async def test_double_tap_of_one_user_is_handled_one_after_another(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch
+) -> None:
+    """Ревью переезда: апдейты одного пользователя — по одному (`SimpleEventIsolation`,
+    как в python-telegram-bot). Без изоляции второй тап по матчу `/tonight` начинался,
+    пока первый ещё слал карточку, и карточка уходила дважды вместо ссылки на неё."""
+    sh = bot_module("stats_handlers")
+    monkeypatch.setattr(sh, "_tonight_sent", {})
+    monkeypatch.setattr(sh, "game_exists", lambda game_id: True)
+    send_card = sh.send_game_card_message
+
+    async def slow_card(bot: Any, chat_id: int, game_id: int) -> Any:
+        await asyncio.sleep(0.05)  # отправка тяжёлой карточки: второй тап приходит раньше её конца
+        return await send_card(bot, chat_id, game_id)
+
+    monkeypatch.setattr(sh, "send_game_card_message", slow_card)
+    monkeypatch.setattr(sh, "game_message", lambda game_id: ("CARD", []))
+    monkeypatch.setattr(sh, "get_chat_subscriptions", lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(
+        False, False, set(), []
+    ))
+
+    await asyncio.gather(*(
+        _feed(dispatcher, fake_bot, make_update(data="tn:555:DET:NYR")) for _ in range(2)
+    ))
+
+    assert len(api.sent_rich) == 1, "карточка — одна"
+    [pointer] = api.sent_messages
+    assert pointer.reply_parameters.message_id == 1, "второй тап — ссылка на неё"
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_dialog_even_when_menu_message_is_gone(
+    bot_module, dispatcher, fake_bot, api, make_update
+) -> None:
+    """Ревью переезда: меню удалено — снять с него клавиатуру нельзя, но диалог всё равно
+    закрыт, и следующий /cancel отвечает уже как вне диалога, а не падает снова."""
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageReplyMarkup
+
+    await _feed(dispatcher, fake_bot, make_update("/stats"))
+    api.fail_next(EditMessageReplyMarkup, TelegramBadRequest(
+        method=EditMessageReplyMarkup(chat_id=CHAT_ID, message_id=1),
+        message="Bad Request: message to edit not found",
+    ))
+
+    with pytest.raises(TelegramBadRequest, match="message to edit not found"):
+        await _feed(dispatcher, fake_bot, make_update("/cancel"))
+    assert await _state(dispatcher, fake_bot) is None
+
+    await _feed(dispatcher, fake_bot, make_update("/cancel"))
+    assert api.sent_messages[-1].text == "Меню /stats сейчас не открыто. Справка: /help"
+
+
 # ---------------------------------------------------------------------------
 # Запись id сообщения меню — источник данных для /cancel ниже. stats()/
 # stats_over() пишут его сами (как и страницы дайджеста в stats_handlers), и
