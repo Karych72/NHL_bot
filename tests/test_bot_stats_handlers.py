@@ -21,7 +21,7 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendVideo
 
-from tests.conftest import MENU_MESSAGE_ID, body, rich_html
+from tests._telegram_fakes import MENU_MESSAGE_ID, body, rich_html
 
 
 def _bad_request(message: str) -> TelegramBadRequest:

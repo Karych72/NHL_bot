@@ -5,7 +5,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from tests.conftest import rich_html
+from tests._telegram_fakes import rich_html
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -214,10 +214,10 @@ def _load_stats_handlers():
 
 
 def _fake_bot():
-    """aiogram ``Bot`` на записывающей сессии (``tests/conftest.py``) — запросы к Bot API без сети."""
+    """aiogram ``Bot`` на записывающей сессии (``tests/_telegram_fakes.py``) — запросы к Bot API без сети."""
     from aiogram import Bot
 
-    from tests.conftest import FAKE_TOKEN, FakeSession
+    from tests._telegram_fakes import FAKE_TOKEN, FakeSession
 
     return Bot(FAKE_TOKEN, session=FakeSession())
 

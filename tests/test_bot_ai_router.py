@@ -17,7 +17,7 @@ import anthropic
 import httpx2
 import pytest
 
-from tests.conftest import body, rich_html
+from tests._telegram_fakes import body, rich_html
 
 TEAMS = [("BOS",), ("WSH",)]
 

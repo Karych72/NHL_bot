@@ -20,7 +20,7 @@ from aiogram import Dispatcher
 from aiogram.filters import Command, CommandStart
 from aiogram.methods import SetMyCommands
 
-from tests.conftest import CHAT_ID, FAKE_TOKEN, USER_ID, body, rich_html
+from tests._telegram_fakes import CHAT_ID, FAKE_TOKEN, USER_ID, body, rich_html
 
 
 def _router(dispatcher: Dispatcher, name: str) -> Any:

@@ -29,7 +29,7 @@ from aiogram.exceptions import (
 from aiogram.methods import SendMediaGroup, SendMessage, SendRichMessage, SendVideo
 from aiogram.types import BufferedInputFile
 
-from tests.conftest import FAKE_TOKEN, body, rich_html
+from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
 # Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
 # а следом, без ``dialog``, подсказку «Ещё: …».
