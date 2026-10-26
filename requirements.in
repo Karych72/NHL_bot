@@ -6,7 +6,9 @@ pandas==2.2.3
 requests
 psycopg2-binary
 jinja2
-python-telegram-bot==21.11.1
+# Telegram-фреймворк: aiogram вместо python-telegram-bot — Bot API 10.3 (Rich Messages,
+# компактные таблицы) типизированно; разрешение человека 2026-10-26 (GC 5).
+aiogram==3.31.0
 # Claude API: свободный текст в боте (Задача 81, разрешение человека 2026-10-25). Тянет
 # pydantic — тот же пин, что в requirements-modeling.in, по той же причине, что у pandas.
 anthropic==2.3.0

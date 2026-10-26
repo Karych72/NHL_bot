@@ -21,10 +21,9 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -469,41 +468,53 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             )
             return cur.fetchall()
 
+    def _fake_bot(self):
+        """aiogram ``Bot`` на записывающей сессии (``tests/conftest.py``) — без сети."""
+        from aiogram import Bot
+
+        from tests.conftest import FAKE_TOKEN, FakeSession
+
+        return Bot(FAKE_TOKEN, session=FakeSession())
+
     async def _press(self, data):
         """Нажатие кнопки `data`: (подсказка, текст экрана, [(подпись, callback_data)])."""
-        answers, edits = [], []
+        from aiogram.types import CallbackQuery
 
-        async def answer(text=None):
-            answers.append(text)
-
-        async def edit_message_text(text, reply_markup=None):
-            edits.append((text, reply_markup))
-
-        update = SimpleNamespace(
-            callback_query=SimpleNamespace(
-                data=data, answer=answer, edit_message_text=edit_message_text
-            ),
-            effective_chat=SimpleNamespace(id=self.CHAT),
+        fake_bot = self._fake_bot()
+        callback = CallbackQuery.model_validate(
+            {
+                "id": "1",
+                "from": {"id": 1, "is_bot": False, "first_name": "Test"},
+                "chat_instance": "ci",
+                "data": data,
+                "message": {
+                    "message_id": 900, "date": datetime.now(timezone.utc),
+                    "chat": {"id": self.CHAT, "type": "private"}, "text": "меню",
+                },
+            },
+            context={"bot": fake_bot},
         )
-        await self.bot.callback_subscriptions(update, None)
-        [(text, markup)] = edits
-        buttons = [] if markup is None else [
-            (b.text, b.callback_data) for row in markup.inline_keyboard for b in row
+        await self.bot.callback_subscriptions(callback)
+        [edit] = fake_bot.session.edited_texts
+        buttons = [] if edit.reply_markup is None else [
+            (b.text, b.callback_data) for row in edit.reply_markup.inline_keyboard for b in row
         ]
-        return answers[0], text, buttons
+        return fake_bot.session.answers[0], edit.text, buttons
 
     async def test_open_menu_on_empty_chat(self):
-        replies = []
+        from aiogram.types import Message
 
-        async def reply_text(text, **kwargs):
-            replies.append((text, kwargs["reply_markup"]))
-
-        update = SimpleNamespace(
-            message=SimpleNamespace(reply_text=reply_text),
-            effective_chat=SimpleNamespace(id=self.CHAT),
+        fake_bot = self._fake_bot()
+        message = Message.model_validate(
+            {
+                "message_id": 1, "date": datetime.now(timezone.utc),
+                "chat": {"id": self.CHAT, "type": "private"}, "text": "/subscriptions",
+            },
+            context={"bot": fake_bot},
         )
-        await self.bot.cmd_subscriptions(update, None)
-        [(text, markup)] = replies
+        await self.bot.cmd_subscriptions(message, fake_bot)
+        [reply] = fake_bot.session.sent_messages
+        text, markup = reply.text, reply.reply_markup
         self.assertIn("Пока ничего нет.", text)
         self.assertIn("Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.", text)
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.

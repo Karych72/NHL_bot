@@ -1,14 +1,25 @@
-"""Состояния FSM диалога `/stats` (числовые константы `ConversationHandler`)
-и сборка сеток inline-клавиатур.
+"""Состояния FSM диалога `/stats`, callback_data его кнопок и сборка сеток inline-клавиатур.
 
-Числа отсюда — контракт между `script_bot.py` (рисует меню),
-`stats_handlers.py` (обрабатывает callback'и) и `build_conversation_handler`
-в `bot.py`, который строит из них карту «состояние → хендлеры».
+`StatsMenu` — состояния диалога (aiogram FSM), числа ниже — callback_data кнопок меню.
+Это контракт между `script_bot.py` (рисует меню), `stats_handlers.py` (обрабатывает
+callback'и) и `build_stats_router` в `bot.py`, который строит из них карту
+«состояние → хендлеры».
 """
 
 from typing import List, Optional
 
-FIRST, SECOND, THIRD = range(3)
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
+
+
+class StatsMenu(StatesGroup):
+    """Состояния диалога `/stats`: `first` — меню и подменю, `second` — страница
+    статистики или дайджеста, `third` — ожидание даты дайджеста текстом."""
+
+    first = State()
+    second = State()
+    third = State()
+
 
 CHOOSE_STATS, TEAM_STATS, PLAYER_STATS, DAY_DIGEST, PLAYER_FIELD, PLAYER_GOALIE, TEAM_PROCENT_WINS, \
     TEAM_POWER_PLAY, TEAM_POWER_KILL, PLAYER_POINTS, PLAYER_GOALS, PLAYER_ASSISTS, \
@@ -20,15 +31,27 @@ CHOOSE_STATS, TEAM_STATS, PLAYER_STATS, DAY_DIGEST, PLAYER_FIELD, PLAYER_GOALIE,
     LEAGUE_STANDINGS, DIGEST_CALENDAR_TODAY, DIGEST_CALENDAR_YESTERDAY, DIGEST_PICK_DATE, \
     TEAM_CONFERENCE_STATS, TEAM_DIVISION_STATS, TEAM_PROFILE_PICK = range(41)
 
-# Ключ context.user_data: id последнего сообщения, созданного НОВЫМ
-# send_message()/reply_text() (а не edit_message_text(), который message_id
-# не меняет) и несущего актуальную FSM-клавиатуру меню /stats. Записывается
-# в script_bot.py (stats(), stats_over()) и stats_handlers.py
-# (bot_league_standings(), bot_digest_custom_date() при ошибке формата даты,
-# dispatch_day_digest_messages() при attach_conv_nav_on_last=True), читается
-# в bot.py (cmd_cancel_in_conversation()), чтобы /cancel мог снять клавиатуру
-# с этого сообщения — иначе она виснет «мёртвой» после конца диалога.
+# Ключ данных FSM (`FSMContext`) диалога: id последнего сообщения, созданного НОВЫМ
+# send_message()/answer() (а не edit_text(), который message_id не меняет) и несущего
+# актуальную клавиатуру меню /stats. Записывается в script_bot.py (stats(), stats_over())
+# и stats_handlers.py (bot_league_standings(), bot_digest_custom_date() при ошибке формата
+# даты, dispatch_day_digest_messages() внутри диалога), читается в bot.py
+# (cmd_cancel_in_conversation()), чтобы /cancel мог снять клавиатуру с этого сообщения —
+# иначе она виснет «мёртвой» после конца диалога.
 LAST_MENU_MESSAGE_ID_KEY = "stats_last_menu_message_id"
+
+
+def callback_message(callback: CallbackQuery) -> Message:
+    """Сообщение с нажатой кнопкой — то, которое хендлер правит на месте.
+
+    Зачем: у `CallbackQuery.message` тип `Message | InaccessibleMessage | None`; кнопки
+    бота висят только на его сообщениях, а недоступное (удалённое) сообщение править
+    нельзя — распаковываем один раз и громко падаем, если инвариант нарушен.
+    `callback` — нажатие, пришедшее в хендлер.
+    """
+    message = callback.message
+    assert isinstance(message, Message)
+    return message
 
 
 def build_menu(

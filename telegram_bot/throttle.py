@@ -1,17 +1,16 @@
-"""Троттлинг callback-кнопок: один перехватчик апдейтов ниже STANDALONE_GROUP.
+"""Троттлинг callback-кнопок: outer-middleware перед всеми хендлерами нажатий.
 
 Гасит N+1 нагрузку на PostgreSQL от спама кнопками пагинации (Задача 10,
 после Задачи 9 — кэш TTL уже снял часть нагрузки, лимит калибруется по
 остатку). Per-user скользящее окно; состояние — только в памяти процесса.
-`bot.py` лишь импортирует `enforce_callback_rate_limit` и регистрирует его
-как `TypeHandler(Update, ...)`.
+`bot.py` лишь импортирует `enforce_callback_rate_limit` и вешает его на
+`Dispatcher.callback_query.outer_middleware`.
 """
 
 import time
-from typing import Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
-from telegram import Update
-from telegram.ext import ApplicationHandlerStop, CallbackContext
+from aiogram.types import CallbackQuery, TelegramObject
 
 # 8 нажатий за 3 секунды: ручная пагинация (человек тапает кнопку не чаще
 # нескольких раз в секунду) укладывается с запасом, а автоматический спам
@@ -41,36 +40,38 @@ def _prune_expired(cutoff: float) -> None:
         del _hits[user_id]
 
 
-async def enforce_callback_rate_limit(update: Update, context: CallbackContext) -> None:
-    """Перехватчик апдейтов PTB: троттлит callback-кнопки per-user.
+async def enforce_callback_rate_limit(
+    handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+    event: TelegramObject,
+    data: Dict[str, Any],
+) -> Any:
+    """Outer-middleware aiogram: троттлит нажатия inline-кнопок per-user.
 
-    Зачем: регистрируется как `TypeHandler(Update, ...)` в группе строго
-    раньше `bot.STANDALONE_GROUP`, поэтому видит апдейт раньше
-    `ConversationHandler` и standalone-хендлеров и может остановить его до
-    того, как тот дойдёт до адресата.
+    Зачем: outer-middleware видит нажатие раньше фильтров и хендлеров —
+    standalone-кнопок и диалога `/stats` — и может остановить его до того, как
+    оно дойдёт до адресата и до БД. Команды и текст сюда не попадают: middleware
+    висит только на `callback_query` (Ruling 4 задачи 10).
 
-    Апдейты без `callback_query` (команды, текст) или без `effective_user`
-    пропускаются без изменений — троттлятся только нажатия инлайн-кнопок
-    (Ruling 4 задачи 10). При превышении лимита в текущем окне пользователю
-    уходит короткий `callback_query.answer()`, и поднимается
-    `ApplicationHandlerStop`: апдейт не доходит ни до `ConversationHandler`,
-    ни до standalone-хендлеров, состояние диалога не меняется.
+    При превышении лимита в текущем окне пользователю уходит короткий
+    `answer()`, а `handler` не вызывается: нажатие не доходит ни до одного
+    хендлера, состояние диалога не меняется.
+
+    Аргументы: `handler` — следующий шаг цепочки aiogram, `event` — нажатие,
+    `data` — контекст апдейта (передаётся дальше без изменений).
     """
-    query = update.callback_query
-    if query is None or update.effective_user is None:
-        return
-
+    assert isinstance(event, CallbackQuery)
     now = time.monotonic()
     cutoff = now - CALLBACK_RATE_WINDOW_SEC
     _prune_expired(cutoff)
 
-    user_id = update.effective_user.id
+    user_id = event.from_user.id
     hits = [hit for hit in _hits.get(user_id, []) if hit > cutoff]
 
     if len(hits) >= CALLBACK_RATE_LIMIT:
         _hits[user_id] = hits
-        await query.answer(text=RATE_LIMIT_ANSWER_TEXT)
-        raise ApplicationHandlerStop
+        await event.answer(text=RATE_LIMIT_ANSWER_TEXT)
+        return None
 
     hits.append(now)
     _hits[user_id] = hits
+    return await handler(event, data)
