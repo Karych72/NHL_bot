@@ -7,7 +7,7 @@ NHL Bot — это Telegram-бот для просмотра статистик�
 1. **Pipeline** (`pipeline/`) — ETL-загрузчик, который забирает данные из официального NHL API и записывает их в PostgreSQL.
 2. **Telegram Bot** (`telegram_bot/`) — интерактивный бот с многоуровневым inline-меню, который читает данные из PostgreSQL и отображает статистику через Jinja2-шаблоны.
 
-Стек: Python 3, PostgreSQL, python-telegram-bot 21.11.1 (asyncio), psycopg2, requests, Jinja2.
+Стек: Python 3, PostgreSQL, aiogram 3.31 (asyncio, Bot API 10.3), psycopg2, requests, Jinja2.
 
 ---
 
@@ -114,7 +114,7 @@ NHL_bot/
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Application + ConversationHandler
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, FSM-карта диалога /stats
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит в сутки, журнал ai_questions (Задача 81)
 │   ├── config.py                       # Чтение .env-переменных
@@ -199,7 +199,7 @@ NHL_bot/
 
 | Пакет | Назначение |
 |---|---|
-| `python-telegram-bot==21.11.1` | Telegram Bot API (asyncio), ConversationHandler, InlineKeyboard |
+| `aiogram==3.31.0` | Telegram Bot API 10.3 (asyncio): роутеры, FSM, InlineKeyboard, Rich Messages |
 | `psycopg2-binary` | Драйвер PostgreSQL |
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
@@ -374,31 +374,37 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
 ### Точка входа: `bot.py`
 
-Использует `python-telegram-bot` 21.x (asyncio). `build_application(token)` создаёт `Application`,
-первым делом регистрирует троттлинг callback-кнопок (`throttle.py`) в группе
-`THROTTLE_GROUP = STANDALONE_GROUP - 1 = -2`, затем standalone-команды и inline-кнопки в группе
-`STANDALONE_GROUP = -1`, затем `ConversationHandler` меню `/stats`, `/cancel` вне диалога и
-свободный текст (`on_free_text`, Задача 81) в группе 0; `main()` запускает `run_polling()`. Состав и порядок регистрации закреплены в
-`tests/test_bot_application.py`. Основной механизм диалога — `ConversationHandler` с состояниями FSM.
-Подписки (Задача 63) — не часть диалога: одна команда `/subscriptions` и кнопки `sub:…` в
-`bot.py` правят одно сообщение через `edit_message_text`, а читают и пишут `bot_subscriptions`
-через `subscription_repo.py`.
+Использует aiogram 3 (asyncio). `build_dispatcher()` собирает `Dispatcher`: троттлинг
+callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, затем три роутера по
+порядку — `standalone` (команды верхнего уровня и inline-кнопки, без фильтра состояния),
+`stats` (диалог `/stats` по карте `STATS_DIALOG`: состояние FSM `dialog_states.StatsMenu` →
+кнопки и их хендлеры; плюс `/stats`, `/cancel` в диалоге и ввод даты) и `tail` (`/cancel` вне
+диалога и свободный текст `on_free_text`, Задача 81). Апдейт берёт первый подошедший хендлер.
+`main()` запускает `start_polling()`; при старте `set_my_commands` публикует меню команд.
+Хендлеры получают зависимости по имени параметра (DI aiogram): `bot`, `state` (`FSMContext`),
+`match` — совпадение regex фильтра callback_data, `command` — аргументы `/start`. Переход
+диалога — `await state.set_state(...)`, конец — `state.clear()`. Состав регистрации и
+маршрутизация настоящих апдейтов (`Dispatcher.feed_update`) закреплены в
+`tests/test_bot_application.py`. Подписки (Задача 63) — не часть диалога: одна команда
+`/subscriptions` и кнопки `sub:…` в `bot.py` правят одно сообщение через `edit_text`, а читают
+и пишут `bot_subscriptions` через `subscription_repo.py`.
 
 Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
-подменяется только граница БД (фикстура `fake_db_router` в `tests/conftest.py` —
-соединение psycopg2 и TTL-обёртка над ним), остальной стек — от разбора
-`callback_data` до сборки клавиатур — работает по-настоящему.
+подменяются только границы БД (фикстура `fake_db_router` в `tests/conftest.py` —
+соединение psycopg2 и TTL-обёртка над ним) и сети (`FakeSession` — HTTP-сессия aiogram,
+записывающая каждый запрос к Bot API), остальной стек — от разбора `callback_data` до
+сборки клавиатур и сериализации запросов aiogram — работает по-настоящему.
 
-Все колбэки в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
-вызовы Bot API идут под `await`: в 21.x PTB делает `await callback(update, context)`.
-`Optional`-поля `Update` (`update.message`, `update.callback_query`, `query.message`)
-распаковываются через `assert` там, где инвариант гарантирован типом хендлера;
-данные от пользователя (`query.data`) по-прежнему проверяются обычными гардами.
-Асинхронен и скрипт рассылки `push_digest_job.py` (запускается сервисом `sync` после
+Все хендлеры в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
+вызовы Bot API идут под `await`. Сообщение с нажатой кнопкой распаковывает
+`dialog_states.callback_message` (у `CallbackQuery.message` тип `Message | InaccessibleMessage |
+None`); форму callback_data проверяет regex фильтра регистрации, хендлер получает готовое
+совпадение `match`. Апдейты обрабатываются конкурентно (polling aiogram запускает каждый
+задачей). Асинхронен и скрипт рассылки `push_digest_job.py` (запускается сервисом `sync` после
 каждого прогона, ночью — после загрузчика, см. «Модуль: `pipeline/scheduled_sync.py`» выше): он не часть
-процесса бота, а отдельный запуск, который поднимает собственный `Application` (без
-polling и без `JobQueue`), строит от него `CallbackContext` и переиспользует
+процесса бота, а отдельный запуск, который поднимает собственный `Bot` (без `Dispatcher` и
+polling, таймаут сессии 300 с ради альбомов видео) и переиспользует
 `dispatch_day_digest_messages`; точка входа — `asyncio.run(main())`.
 
 Единственный event loop обслуживает и polling, и обработчики, поэтому блокирующая
@@ -410,27 +416,27 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 ### Троттлинг callback-кнопок: `throttle.py`
 
 Задача 10: гасит N+1 нагрузку на PostgreSQL от спама кнопками пагинации — последний слой
-после TTL-кэша Задачи 9 (`database.cached_fetch_all`). Один `TypeHandler(Update, ...)`
-(`enforce_callback_rate_limit`), зарегистрированный в `THROTTLE_GROUP`, видит апдейт раньше
-любого адресного хендлера. Per-user скользящее окно: `CALLBACK_RATE_LIMIT = 8` нажатий за
-`CALLBACK_RATE_WINDOW_SEC = 3.0` секунд, ключ — `update.effective_user.id`. При превышении —
-`callback_query.answer()` с текстом и `ApplicationHandlerStop`: апдейт не доходит ни до
-`ConversationHandler`, ни до standalone-хендлеров. Троттлятся только апдейты с
-`callback_query`; команды и текст проходят без ограничений. Состояние — только в памяти
+после TTL-кэша Задачи 9 (`database.cached_fetch_all`). Outer-middleware
+`enforce_callback_rate_limit` на `Dispatcher.callback_query` видит нажатие раньше фильтров
+любого роутера. Per-user скользящее окно: `CALLBACK_RATE_LIMIT = 8` нажатий за
+`CALLBACK_RATE_WINDOW_SEC = 3.0` секунд, ключ — `callback.from_user.id`. При превышении —
+`answer()` с текстом, а следующий шаг цепочки не вызывается: нажатие не доходит ни до
+диалога, ни до standalone-хендлеров. Троттлятся только нажатия кнопок; команды и текст
+проходят без ограничений. Состояние — только в памяти
 процесса (module-level `dict`, без Redis); истёкшие записи вычищаются по ходу вызова, без
 отдельного планировщика. Тесты — `tests/test_bot_throttle.py` (поведение окна) и
-`tests/test_bot_application.py` (регистрация, группа).
+`tests/test_bot_application.py` (регистрация и остановка спама в `Dispatcher`).
 
 ### Свободный текст: `ai_router.py` (Задача 81)
 
-Текст в личке вне команд ловит `on_free_text` в группе 0 после `ConversationHandler`: в
-группе срабатывает первый подошедший хендлер, поэтому ввод даты в `THIRD` забирает диалог.
+Текст в личке вне команд ловит `on_free_text` в роутере `tail`, после роутера диалога:
+срабатывает первый подошедший хендлер, поэтому ввод даты в `StatsMenu.third` забирает диалог.
 `ai_router.ask` — один вызов `claude-sonnet-5-5` (effort `low`) с инструментами-экранами
 (`build_tools`: строгие схемы, `enum` из `BOT_COMMANDS`, `COUNTRY_LABELS`,
 `leaderboard_specs`, команд сезона); модель либо выбирает экран, либо пишет короткий отказ
 или уточнение, фактов не сообщает. Экран рисует `bot.AI_SCREENS` тем же кодом, что команда или
-кнопка, но новым сообщением; хендлер `block=False`, чтобы ожидание модели не держало
-остальные апдейты. Системный промпт и инструменты стабильны и кэшируются, дата —
+кнопка, но новым сообщением; апдейты обрабатываются конкурентно, и ожидание модели не держит
+остальные. Системный промпт и инструменты стабильны и кэшируются, дата —
 в вопросе. Лимит в сутки по МСК — 20 вопросов чатам из `ai_existing_users` (подписчики на
 момент миграции 0012), 5 — остальным, сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
 или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
@@ -438,6 +444,9 @@ polling и без `JobQueue`), строит от него `CallbackContext` и �
 `tests/test_bot_ai_router.py`.
 
 ### FSM (Finite State Machine)
+
+На схеме FIRST / SECOND / THIRD — состояния `dialog_states.StatsMenu.first / second / third`
+(aiogram FSM); какие кнопки в каком состоянии работают — карта `bot.STATS_DIALOG`.
 
 ```
                     /stats
@@ -939,7 +948,7 @@ Vasilevskiy — 29/32, 90.63%, 65:00
 
 Кнопка матча `/tonight` (`callback_tonight_game`) шлёт карточку или превью один раз: повторное
 нажатие отвечает коротким reply на уже отправленный ответ (тап по цитате прокручивает к нему),
-предыдущая такая ссылка удаляется. Отправленные ответы — `chat_data["tonight_sent"]`, в памяти
+предыдущая такая ссылка удаляется. Отправленные ответы — `stats_handlers._tonight_sent` по чатам, в памяти
 процесса: после перезапуска бота первое нажатие снова шлёт ответ.
 
 ### `league_table.txt` — Турнирная таблица
@@ -1035,7 +1044,7 @@ TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STAT
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        Telegram Bot                                  │
 │                                                                      │
-│  bot.py → ConversationHandler (FSM: FIRST / SECOND)                 │
+│  bot.py → Dispatcher, FSM StatsMenu (first / second / third)        │
 │     │                                                                │
 │     ├── script_bot.py      Inline-меню навигации                    │
 │     ├── stats_handlers.py  Фабрика: _make_stats_handler()           │
@@ -1132,6 +1141,6 @@ make season-sync-month    # обновить данные за последни�
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
 2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals|game_three_stars|shot_attempts.game_id → games.game_id` (`shot_attempts` — Задача 69A: удаляется вместе с `all_goals` до `games`, вставляется после `all_goals`). `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), а фактическая вставка в загрузчике — в порядке «родители раньше детей» (`teams → teams_stats → rosters → players_season_stats → players_advanced_stats → players_shot_types → goalies_season_stats → games → all_goals → game_team_stats → game_player_stats → game_goalie_stats`); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). `game_three_stars` (Задача 23.2) встроена в загрузчике в тот же порядок — первой при удалении, последней при вставке — и проверена на живой БД отдельно (прогон по всем 5 сезонам, 6560 игр, 2026-09-15…09-18): 0 строк с `game_id`, отсутствующим в `games`. FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`, `game_three_stars`, `shot_attempts`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна. `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
-4. **python-telegram-bot 21.11.1:** asyncio-API (`Application`, async-колбэки). `JobQueue` не используется: рассылка живёт вне процесса бота, в отдельном скрипте `push_digest_job.py` (запускается сервисом `sync`, Задача 34), — поэтому extra `[job-queue]` (APScheduler) не ставится.
+4. **aiogram 3.31:** asyncio-API (`Dispatcher`, роутеры, FSM, DI зависимостей хендлеров), Bot API 10.3 — Rich Messages и компактные таблицы доступны типизированно. Переезд с python-telegram-bot 21.11.1 — решение человека 2026-10-26 (PTB отстал на Bot API 8.3–10.0, план — `plan/rich_messages/`). Планировщик не нужен: рассылка живёт вне процесса бота, в отдельном скрипте `push_digest_job.py` (запускается сервисом `sync`, Задача 34).
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.
 6. **Датасет-билдер — мультисезонная сборка (Задача 30, 2026-09-12):** `python -m modeling.cli build-dataset` кладёт `dataset_{train,predict}.csv` и `metadata_*.json` плоско в `artifacts/datasets/` (дефолт CLI) — не коммитятся, `--season-ids` фиксирует, какие сезоны вошли, в `data_snapshot_id` метаданных (пустое значение пишет `seasons=all` и не восстанавливается из артефакта, поэтому прогон всегда с явным списком). Rolling-окна (`features.py::compute_team_rolling_features`) и as-of снэпшоты (`features.py::_snapshot_side`, `merge_asof`) группируются по `(team_id, season_id)`, а не только по `team_id` — без этого признаки первой игры нового сезона утекали статистику из прошлого. Из-за сброса окон на границе каждого сезона `apply_cold_start_policy` (train, `min_prior_games=5`) отбрасывает больше строк, чем при однолетней сборке: на 5 сезонах/6560 играх — 6049 строк (511 отброшено, а не только в начале первого сезона). Подробности и контракт — `docs/modeling_dataset_builder.md`.

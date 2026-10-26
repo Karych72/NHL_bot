@@ -4,31 +4,52 @@
 ``telegram.error.Forbidden``, затем несделанные ``await`` после перехода на
 PTB 21.x) ровно потому, что ни один тест его не импортировал. Здесь он
 именно **вызывается**: рассылка прогоняется через настоящий
-``dispatch_day_digest_messages`` на фальшивом ``CallbackContext`` из conftest,
-поэтому забытый ``await`` виден как «сообщение не отправлено», а не как тихо
-брошенная корутина. Границы — БД (``subscription_repo``, ``bot_messages``)
-и Telegram (``FakeBot``) — подменяются, сеть не используется.
+``dispatch_day_digest_messages`` на настоящем aiogram ``Bot`` из conftest
+(``fake_bot`` на ``FakeSession``), поэтому забытый ``await`` виден как «сообщение
+не отправлено», а не как тихо брошенная корутина. Границы — БД
+(``subscription_repo``, ``bot_messages``) и HTTP-сессия Telegram — подменяются,
+сеть не используется.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
-from telegram.ext import Application
-from telegram.warnings import PTBUserWarning
+from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
+from aiogram.methods import SendMediaGroup, SendMessage, SendVideo
+from aiogram.types import BufferedInputFile
+
+from tests.conftest import FAKE_TOKEN
 
 # Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
-# а следом, при attach_conv_nav_on_last=False, подсказку «Ещё: …».
+# а следом, без ``dialog``, подсказку «Ещё: …».
 ONE_GAME_DAY = ("2026-01-15", [(2026020001, "<b>BOS 3 : 2 TOR</b>", [])])
 
 # Ночь игровой даты 2026-10-06: прогоны sync — с 18:00 UTC 06.10 до 08:00 UTC 07.10.
 NIGHT = date(2026, 10, 6)
 
-# Синтаксически валидный, но заведомо несуществующий токен: никуда не ходим.
-FAKE_TOKEN = "123456789:TEST-TOKEN-NOT-A-REAL-SECRET"
+
+def _method() -> SendMessage:
+    """Запрос, на котором «споткнулась» отправка: aiogram-ошибки без него не строятся."""
+    return SendMessage(chat_id=1, text="x")
+
+
+def _forbidden() -> TelegramForbiddenError:
+    return TelegramForbiddenError(method=_method(), message="Forbidden: bot was blocked by the user")
+
+
+def _retry_after() -> TelegramRetryAfter:
+    return TelegramRetryAfter(method=_method(), message="Too Many Requests", retry_after=0)
 
 
 @pytest.fixture
@@ -47,25 +68,25 @@ def _rows(*chat_ids, last_sent=None):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_context):
+async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_bot, api):
     with patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111, 222)
     ), patch.object(push_job, "mark_night_sent"):
-        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
+        await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
-    sent = fake_context.bot.sent_messages
-    assert [m["chat_id"] for m in sent] == [111, 111, 222, 222]
-    assert sent[0]["text"] == "<b>BOS 3 : 2 TOR</b>"
-    assert sent[1]["text"].startswith("Ещё:")
-    assert sent[1]["text"].endswith("Настроить подписки: /subscriptions")
+    sent = api.sent_messages
+    assert [m.chat_id for m in sent] == [111, 111, 222, 222]
+    assert sent[0].text == "<b>BOS 3 : 2 TOR</b>"
+    assert sent[1].text.startswith("Ещё:")
+    assert sent[1].text.endswith("Настроить подписки: /subscriptions")
 
 
 @pytest.mark.asyncio
-async def test_morning_digest_deactivates_chat_that_blocked_the_bot(push_job, fake_context):
-    """``Forbidden`` ловится, только если корутина рассылки действительно ждётся."""
+async def test_morning_digest_deactivates_chat_that_blocked_the_bot(push_job, fake_bot):
+    """``TelegramForbiddenError`` ловится, только если корутина рассылки действительно ждётся."""
 
     async def blocked(*args, **kwargs):
-        raise Forbidden("bot was blocked by the user")
+        raise _forbidden()
 
     with patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111)
@@ -74,31 +95,31 @@ async def test_morning_digest_deactivates_chat_that_blocked_the_bot(push_job, fa
     ), patch.object(
         push_job, "mark_subscription_inactive_by_chat_kind_team"
     ) as mark_inactive, patch.object(push_job, "mark_night_sent"):
-        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
+        await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
     mark_inactive.assert_called_once_with(111, "morning_digest", None)
 
 
 @pytest.mark.asyncio
-async def test_morning_digest_retries_once_after_retry_after(push_job, fake_context):
+async def test_morning_digest_retries_once_after_retry_after(push_job, fake_bot, api):
     """429 означает «не доставлено» — рассылка обязана повторить попытку."""
     attempts = []
 
-    async def flaky(context, chat_id, *args, **kwargs):
+    async def flaky(bot, chat_id, *args, **kwargs):
         attempts.append(chat_id)
         if len(attempts) == 1:
-            raise RetryAfter(0)
-        await context.bot.send_message(chat_id=chat_id, text="ok")
+            raise _retry_after()
+        await bot.send_message(chat_id=chat_id, text="ok")
 
     with patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111)
     ), patch.object(push_job, "dispatch_day_digest_messages", side_effect=flaky), patch.object(
         push_job, "mark_night_sent"
     ):
-        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
+        await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
     assert attempts == [111, 111]
-    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [111]
+    assert [m.chat_id for m in api.sent_messages] == [111]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +127,7 @@ async def test_morning_digest_retries_once_after_retry_after(push_job, fake_cont
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_team_scores_sends_full_card_of_every_game_of_the_night(push_job, fake_context):
+async def test_team_scores_sends_full_card_of_every_game_of_the_night(push_job, fake_bot, api):
     """Отзыв 2026-10-09: подписчику — вся карточка матча с кнопками видео голов,
     а не одна строка счёта."""
     goal = {"label": "▶ 1:0 Pastrnak 6:33", "game_id": 1, "event_id": 55}
@@ -119,62 +140,50 @@ async def test_team_scores_sends_full_card_of_every_game_of_the_night(push_job, 
         "game_message",
         side_effect=[("BOS 3 : 2 TOR\nподробности", [goal]), ("BOS 1 : 4 MTL\nещё", [])],
     ):
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
-    first, second = fake_context.bot.sent_messages
-    assert [m["chat_id"] for m in (first, second)] == [111, 111]
-    assert first["parse_mode"] == "HTML"
-    assert first["text"] == (
+    first, second = api.sent_messages
+    assert [m.chat_id for m in (first, second)] == [111, 111]
+    assert first.parse_mode == "HTML"
+    assert first.text == (
         "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\nподробности"
         "\n\nНастроить подписки: /subscriptions"
     )
-    [[button]] = first["reply_markup"].inline_keyboard
+    [[button]] = first.reply_markup.inline_keyboard
     assert (button.text, button.callback_data) == ("▶ 1:0 Pastrnak 6:33", "gv:1:55")
-    assert "BOS 1 : 4 MTL\nещё" in second["text"]
-    assert second["reply_markup"] is None
+    assert "BOS 1 : 4 MTL\nещё" in second.text
+    assert second.reply_markup is None
 
 
 @pytest.mark.asyncio
-async def test_team_scores_skips_chat_without_games_that_night(push_job, fake_context):
+async def test_team_scores_skips_chat_without_games_that_night(push_job, fake_bot, api):
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[]):
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
-    assert fake_context.bot.sent_messages == []
+    assert api.sent_messages == []
 
 
 @pytest.mark.asyncio
-async def test_team_scores_resends_once_after_retry_after(push_job, fake_context):
+async def test_team_scores_resends_once_after_retry_after(push_job, fake_bot, api):
     """``_throttled`` повторяет отправку; без ``await`` 429 вообще не всплывёт."""
-    calls = []
-    real_send = fake_context.bot.send_message
-
-    async def flaky_send(**kwargs):
-        calls.append(kwargs)
-        if len(calls) == 1:
-            raise RetryAfter(0)
-        return await real_send(**kwargs)
-
-    fake_context.bot.send_message = flaky_send
+    api.fail_next(SendMessage, _retry_after())
 
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(
         push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]
     ), patch.object(push_job, "game_message", return_value=("BOS 3 : 2 TOR", [])):
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
-    assert len(calls) == 2
-    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [111]
+    # Первая попытка упала на 429 и не записана; без повтора сообщения не было бы вовсе.
+    assert [m.chat_id for m in api.sent_messages] == [111]
 
 
 @pytest.mark.asyncio
-async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_context):
-    async def blocked(**kwargs):
-        raise Forbidden("bot was blocked by the user")
-
-    fake_context.bot.send_message = blocked
+async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_bot, api):
+    api.fail_next(SendMessage, _forbidden())
 
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
@@ -185,7 +194,7 @@ async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_
     ), patch.object(
         push_job, "mark_subscription_inactive_by_chat_kind_team"
     ) as mark_inactive:
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
     mark_inactive.assert_called_once_with(111, "team_scores", 6)
 
@@ -194,22 +203,21 @@ async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_
 # Точка входа cron-скрипта
 # ---------------------------------------------------------------------------
 
-class _ForbiddenApplication:
-    """Заглушка ``Application``: обращение к ней означает лишний выход в сеть."""
+class _ForbiddenBot:
+    """Заглушка ``Bot``: создание бота означает лишний выход в сеть."""
 
-    @staticmethod
-    def builder():
-        raise AssertionError("Application must not be built when the job is a no-op")
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("Bot must not be created when the job is a no-op")
 
 
 @pytest.mark.asyncio
-async def test_main_raises_and_never_builds_application_without_token(
+async def test_main_raises_and_never_creates_bot_without_token(
     push_job, monkeypatch, set_required_bot_env
 ):
-    """``main()`` падает на ``validate_env()`` до сборки ``Application``, если
-    токена нет — раньше это было мягкое ``sys.exit(1)`` внутри самого скрипта."""
+    """``main()`` падает на ``validate_env()`` до создания ``Bot``, если токена нет —
+    раньше это было мягкое ``sys.exit(1)`` внутри самого скрипта."""
     set_required_bot_env(TELEGRAM_BOT_TOKEN="")
-    monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
+    monkeypatch.setattr(push_job, "Bot", _ForbiddenBot)
 
     with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
         await push_job.main(False)
@@ -222,20 +230,20 @@ async def test_main_does_nothing_while_enable_push_digest_is_off(
     config = bot_module("config")
     set_required_bot_env()
     monkeypatch.setattr(config, "ENABLE_PUSH_DIGEST", False)
-    monkeypatch.setattr(push_job, "Application", _ForbiddenApplication)
+    monkeypatch.setattr(push_job, "Bot", _ForbiddenBot)
 
     await push_job.main(False)
 
 
 @pytest.mark.asyncio
-async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
+async def test_main_runs_all_broadcasts_on_one_bot_with_long_timeout_and_closes_it(
     push_job, bot_module, monkeypatch, set_required_bot_env
 ):
-    """Обвязка ``main()``: builder → ``Application`` → ``CallbackContext``.
+    """Обвязка ``main()``: настоящий ``Bot`` на ``AiohttpSession`` с таймаутом 300 с,
+    все рассылки получают один и тот же бот, сессия закрывается после них.
 
-    ``Application`` собирается настоящий, подменены только ``initialize`` /
-    ``shutdown``: единственный сетевой шаг PTB — ``get_me()`` внутри
-    ``initialize()`` — так не выполняется, и тест не ходит в api.telegram.org.
+    Бот и сессия настоящие, подменён только ``AiohttpSession.close`` (он нужен, чтобы
+    увидеть порядок): запросов к Telegram тест не делает — рассылки подменены.
     """
     config = bot_module("config")
     set_required_bot_env()
@@ -244,22 +252,18 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
 
     steps = []
 
-    async def fake_initialize(self):
-        steps.append("initialize")
+    async def fake_close(self):
+        steps.append("close")
 
-    async def fake_shutdown(self):
-        steps.append("shutdown")
+    monkeypatch.setattr(AiohttpSession, "close", fake_close)
 
-    monkeypatch.setattr(Application, "initialize", fake_initialize)
-    monkeypatch.setattr(Application, "shutdown", fake_shutdown)
-
-    contexts = []
+    bots = []
     nights = []
     before = push_job.night_of(datetime.now(timezone.utc))
 
-    async def record(context, night, *final):
+    async def record(bot, night, *final):
         steps.append("broadcast")
-        contexts.append(context)
+        bots.append(bot)
         nights.append(night)
 
     monkeypatch.setattr(push_job, "night_is_loaded", lambda night: True)
@@ -267,31 +271,25 @@ async def test_main_runs_all_broadcasts_on_a_context_bound_to_its_application(
     monkeypatch.setattr(push_job, "run_team_scores_broadcast", record)
     monkeypatch.setattr(push_job, "run_country_broadcast", record)
 
-    async def record_upcoming(context, now):
+    async def record_upcoming(bot, now):
         steps.append("upcoming")
-        contexts.append(context)
+        bots.append(bot)
 
     monkeypatch.setattr(push_job, "run_upcoming_broadcast", record_upcoming)
 
     await push_job.main(False)
 
-    # Рассылки идут строго между initialize и shutdown — иначе HTTP-клиент бота
-    # либо не поднят, либо уже погашен.
-    assert steps == ["initialize", "broadcast", "broadcast", "broadcast", "upcoming", "shutdown"]
+    # Рассылки идут строго до закрытия сессии — иначе HTTP-клиент бота уже погашен,
+    # а после них сессия обязана закрыться.
+    assert steps == ["broadcast", "broadcast", "broadcast", "upcoming", "close"]
 
     after = push_job.night_of(datetime.now(timezone.utc))
     assert len(nights) == 3 and len(set(nights)) == 1 and nights[0] in (before, after)
-    morning_context, team_context, country_context, upcoming_context = contexts
-    application = morning_context.application
-    assert team_context.application is application
-    assert country_context.application is application
-    assert upcoming_context.application is application
-    assert morning_context.bot is application.bot
-    assert application.bot.token == FAKE_TOKEN
-    # Скрипт ничего не принимает и ничего не планирует.
-    assert application.updater is None
-    with pytest.warns(PTBUserWarning, match="No `JobQueue` set up"):
-        assert application.job_queue is None
+    bot = bots[0]
+    assert isinstance(bot, Bot) and all(b is bot for b in bots)
+    assert bot.token == FAKE_TOKEN
+    # Альбом из 10 клипов не загрузится за 60 с по умолчанию.
+    assert isinstance(bot.session, AiohttpSession) and bot.session.timeout == 300
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +309,7 @@ def _night_slots():
         slot += timedelta(minutes=30)
 
 
-async def _run_night(push_job, fake_context, loaded_at):
+async def _run_night(push_job, fake_bot, api, loaded_at):
     """Прогоняет ``broadcast_if_due`` после каждого слота ночи для дайджеста и команды
     (страна — по матчу, своим прогоном: ``_run_country_night``).
 
@@ -328,7 +326,7 @@ async def _run_night(push_job, fake_context, loaded_at):
         last_sent[chat_id] = night
 
     for slot in _night_slots():
-        before = len(fake_context.bot.sent_messages)
+        before = len(api.sent_messages)
         loaded = loaded_at is not None and slot >= loaded_at
         with patch.object(
             push_job, "list_active_morning_digest_rows", return_value=[(111, last_sent[111])]
@@ -345,10 +343,10 @@ async def _run_night(push_job, fake_context, loaded_at):
         ), patch.object(push_job, "night_is_loaded", return_value=loaded), patch.object(
             push_job, "upcoming_games", return_value=[]
         ):
-            await push_job.broadcast_if_due(fake_context, slot)
-        for message in fake_context.bot.sent_messages[before:]:
-            if not message["text"].startswith("Ещё:"):
-                sent_at[message["chat_id"]].append(slot)
+            await push_job.broadcast_if_due(fake_bot, slot)
+        for message in api.sent_messages[before:]:
+            if not message.text.startswith("Ещё:"):
+                sent_at[message.chat_id].append(slot)
     return sent_at
 
 
@@ -358,7 +356,7 @@ def test_night_of_covers_the_whole_sync_window(push_job):
 
 
 @pytest.mark.asyncio
-async def test_unloaded_night_holds_digest_and_teams_but_not_country(push_job, fake_context):
+async def test_unloaded_night_holds_digest_and_teams_but_not_country(push_job, fake_bot):
     """Ночь не загружена, срок не наступил — дайджест и команды ждут; страна идёт по
     готовым матчам на каждом прогоне (Задача 76), крайний срок ещё не наступил."""
     with patch.object(push_job, "night_is_loaded", return_value=False), patch.object(
@@ -366,63 +364,63 @@ async def test_unloaded_night_holds_digest_and_teams_but_not_country(push_job, f
     ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
         push_job, "run_country_broadcast"
     ) as country, patch.object(push_job, "run_upcoming_broadcast") as upcoming:
-        await push_job.broadcast_if_due(fake_context, _msk(10, 30))
+        await push_job.broadcast_if_due(fake_bot, _msk(10, 30))
 
     digest.assert_not_called()
     team.assert_not_called()
-    country.assert_awaited_once_with(fake_context, NIGHT, False)
+    country.assert_awaited_once_with(fake_bot, NIGHT, False)
     upcoming.assert_awaited_once()
-    assert upcoming.await_args.args[0] is fake_context
+    assert upcoming.await_args.args[0] is fake_bot
 
 
 @pytest.mark.asyncio
 async def test_digest_and_teams_go_out_once_at_the_first_run_after_the_night_is_loaded(
-    push_job, fake_context
+    push_job, fake_bot, api
 ):
     """Ночь загрузилась к 08:30 — дайджест и команды уходят в 08:30 и не повторяются до утра."""
-    sent_at = await _run_night(push_job, fake_context, loaded_at=_msk(8, 30))
+    sent_at = await _run_night(push_job, fake_bot, api, loaded_at=_msk(8, 30))
     assert sent_at == {111: [_msk(8, 30)], 222: [_msk(8, 30)]}
 
 
 @pytest.mark.asyncio
-async def test_unloaded_night_goes_out_at_the_deadline(push_job, fake_context):
+async def test_unloaded_night_goes_out_at_the_deadline(push_job, fake_bot, api):
     """Ночь так и не загрузилась целиком (перенос, сбой) — всё уходит в 11:00 с тем, что есть."""
-    sent_at = await _run_night(push_job, fake_context, loaded_at=None)
+    sent_at = await _run_night(push_job, fake_bot, api, loaded_at=None)
     assert sent_at == {111: [_msk(11, 0)], 222: [_msk(11, 0)]}
 
 
 @pytest.mark.asyncio
-async def test_deadline_does_not_ask_nhl_api(push_job, fake_context):
+async def test_deadline_does_not_ask_nhl_api(push_job, fake_bot):
     """После крайнего срока готовность не нужна: сбой NHL API не срывает отправку."""
     with patch.object(push_job, "night_is_loaded", side_effect=AssertionError("API")), patch.object(
         push_job, "run_morning_digest_broadcast"
     ) as digest, patch.object(push_job, "run_team_scores_broadcast") as team, patch.object(
         push_job, "run_country_broadcast"
     ) as country, patch.object(push_job, "run_upcoming_broadcast") as upcoming:
-        await push_job.broadcast_if_due(fake_context, _msk(11, 0))
+        await push_job.broadcast_if_due(fake_bot, _msk(11, 0))
 
-    digest.assert_awaited_once_with(fake_context, NIGHT)
-    team.assert_awaited_once_with(fake_context, NIGHT)
-    country.assert_awaited_once_with(fake_context, NIGHT, True)
+    digest.assert_awaited_once_with(fake_bot, NIGHT)
+    team.assert_awaited_once_with(fake_bot, NIGHT)
+    country.assert_awaited_once_with(fake_bot, NIGHT, True)
     upcoming.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_repeated_tick_after_sending_sends_nothing(push_job, fake_context):
+async def test_repeated_tick_after_sending_sends_nothing(push_job, fake_bot, api):
     """Ночь уже отмечена отправленной — повторный тик (рестарт, ручной once) молчит."""
     with patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111, last_sent=NIGHT)
     ), patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "mark_night_sent"
     ) as mark:
-        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
+        await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
-    assert fake_context.bot.sent_messages == []
+    assert api.sent_messages == []
     mark.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_night_without_games_is_not_sent(push_job, fake_context):
+async def test_night_without_games_is_not_sent(push_job, fake_bot, api):
     """Ночь без матчей в БД не рассылается — раньше уходил дайджест прошлого игрового дня."""
     no_games = ("2026-10-06", [(0, "За 2026-10-06 завершенных матчей не найдено.", [])])
     with patch.object(
@@ -430,14 +428,14 @@ async def test_night_without_games_is_not_sent(push_job, fake_context):
     ), patch.object(push_job, "day_digest", return_value=no_games) as digest, patch.object(
         push_job, "mark_night_sent"
     ):
-        await push_job.run_morning_digest_broadcast(fake_context, NIGHT)
+        await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
     digest.assert_called_once_with(NIGHT)
-    assert fake_context.bot.sent_messages == []
+    assert api.sent_messages == []
 
 
 @pytest.mark.asyncio
-async def test_team_scores_are_not_repeated(push_job, fake_context):
+async def test_team_scores_are_not_repeated(push_job, fake_bot, api):
     """``team_scores`` не повторяется: ночь с отметкой ``last_sent_night`` молчит."""
     patches = (
         patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[1]),
@@ -446,17 +444,17 @@ async def test_team_scores_are_not_repeated(push_job, fake_context):
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
     ), patch.object(push_job, "mark_night_sent") as mark:
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
     mark.assert_called_once_with(111, "team_scores", 6, NIGHT)
-    assert [m["text"] for m in fake_context.bot.sent_messages] == [
+    assert [m.text for m in api.sent_messages] == [
         "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions"
     ]
 
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, NIGHT)]
     ), patch.object(push_job, "mark_night_sent"):
-        await push_job.run_team_scores_broadcast(fake_context, NIGHT)
-    assert len(fake_context.bot.sent_messages) == 1
+        await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
+    assert len(api.sent_messages) == 1
 
 
 def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job):
@@ -497,36 +495,12 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
 # Подписка на страну (Задача 61): сообщение, альбомы видео, кэш file_id
 # ---------------------------------------------------------------------------
 
-class CountryBot:
-    """Bot, запоминающий сообщения, альбомы и одиночные видео и их порядок (``order``);
-    каждому загруженному файлу выдаёт ``file_id``, как Telegram."""
+_SEND_KIND = {SendMessage: "message", SendMediaGroup: "album", SendVideo: "video"}
 
-    def __init__(self) -> None:
-        self.messages: list = []
-        self.albums: list = []
-        self.videos: list = []
-        self.order: list = []
-        self.uploads = 0
 
-    def _answer(self, media) -> SimpleNamespace:
-        if isinstance(media, str):
-            return SimpleNamespace(video=SimpleNamespace(file_id=media))
-        self.uploads += 1
-        return SimpleNamespace(video=SimpleNamespace(file_id=f"fid-{self.uploads}"))
-
-    async def send_message(self, **kwargs):
-        self.messages.append(kwargs)
-        self.order.append(("message", kwargs["chat_id"]))
-
-    async def send_media_group(self, chat_id, media):
-        self.albums.append((chat_id, list(media)))
-        self.order.append(("album", chat_id))
-        return tuple(self._answer(m.media) for m in media)
-
-    async def send_video(self, chat_id, video, **kwargs):
-        self.videos.append((chat_id, video, kwargs))
-        self.order.append(("video", chat_id))
-        return self._answer(video)
+def _order(api):
+    """Порядок отправок рассылки: ("message" | "album" | "video", chat_id)."""
+    return [(_SEND_KIND[type(r)], r.chat_id) for r in api.requests if type(r) in _SEND_KIND]
 
 
 GAME_A, GAME_B = 2026020001, 2026020002
@@ -543,18 +517,17 @@ def _sub(chat_id):
 
 
 @pytest.fixture
-def country_env(push_job, monkeypatch, tmp_path):
-    """Рассылка по стране с подменой БД, NHL и скачивания: бот, журнал скачиваний и
-    проверок клипов, отметки «матч ушёл» (``sent`` — в БД, ``marked`` — по порядку),
-    погашенные подписки и ``run(chats, games, goals, final)``; ``chats`` — (chat_id,
-    страна), ``games`` — (game_id, блок страны) матчей ночи, ``goals`` — (game_id,
-    event_id) голов страны; ``unpublished`` — голы, клипа которых NHL ещё не выложила,
-    ``missing`` — голы, клип которых не скачался."""
+def country_env(push_job, monkeypatch, tmp_path, fake_bot, api):
+    """Рассылка по стране с подменой БД, NHL и скачивания: бот (``fake_bot``, запросы —
+    в ``api``), журнал скачиваний и проверок клипов, отметки «матч ушёл» (``sent`` — в БД,
+    ``marked`` — по порядку), погашенные подписки и ``run(chats, games, goals, final)``;
+    ``chats`` — (chat_id, страна), ``games`` — (game_id, блок страны) матчей ночи,
+    ``goals`` — (game_id, event_id) голов страны; ``unpublished`` — голы, клипа которых
+    NHL ещё не выложила, ``missing`` — голы, клип которых не скачался."""
     env = SimpleNamespace(
-        bot=CountryBot(), downloads=[], clip_checks=[], marked=[], sent=set(), deactivated=[],
-        missing=set(), unpublished=set(),
+        bot=fake_bot, api=api, downloads=[], clip_checks=[], marked=[], sent=set(),
+        deactivated=[], missing=set(), unpublished=set(),
     )
-    env.context = SimpleNamespace(bot=env.bot)
 
     def published(game_id, event_id):
         env.clip_checks.append((game_id, event_id))
@@ -594,15 +567,29 @@ def country_env(push_job, monkeypatch, tmp_path):
             push_job, "mark_subscription_inactive_by_chat_kind_team",
             lambda *a: env.deactivated.append(a),
         )
-        return push_job.run_country_broadcast(env.context, NIGHT, final)
+        return push_job.run_country_broadcast(env.bot, NIGHT, final)
 
     env.run = run
     env.tmp_path = tmp_path
     return env
 
 
+def _attached_parts(fake_bot, album_request):
+    """Multipart-форма, как её соберёт aiogram для альбома: ({имя части → имя файла},
+    поле ``media`` как JSON). Telegram принимает файл альбома, только если он есть
+    отдельной частью формы и в ``media`` на него указывает ``attach://<имя части>``."""
+    form = AiohttpSession().build_form_data(fake_bot, album_request)
+    parts, media_json = {}, None
+    for options, _headers, value in form._fields:
+        if options["name"] == "media":
+            media_json = json.loads(value)
+        elif "filename" in options:
+            parts[options["name"]] = options["filename"]
+    return parts, media_json
+
+
 @pytest.mark.asyncio
-async def test_country_game_is_short_text_with_card_button_then_goal_album(country_env):
+async def test_country_game_is_short_text_with_card_button_then_goal_album(country_env, fake_bot):
     """Задача 76: матч — короткий текст (счёт и блок страны, без полной карточки) с кнопкой
     «Карточка матча», за ним голы страны альбомом с общей подписью — описаниями всех его
     голов; без голов — только текст. Второму чату клипы — по ``file_id``, без повторной
@@ -613,32 +600,40 @@ async def test_country_game_is_short_text_with_card_button_then_goal_album(count
         [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")],
         _goals(GAME_A, 3),
     )
-    bot = country_env.bot
+    api = country_env.api
 
-    assert bot.order == [
+    assert _order(api) == [
         ("message", 111), ("album", 111), ("message", 111),
         ("message", 222), ("album", 222), ("message", 222),
     ]
-    assert [m["text"] for m in bot.messages[:2]] == [
+    messages = api.sent_messages
+    assert [m.text for m in messages[:2]] == [
         f"SCORE {GAME_A}\n\nBLOCK A" + FOOTER, f"SCORE {GAME_B}\n\nBLOCK B" + FOOTER,
     ]
-    assert {m["parse_mode"] for m in bot.messages} == {"HTML"}
-    buttons = [m["reply_markup"].inline_keyboard for m in bot.messages[:2]]
+    assert {m.parse_mode for m in messages} == {"HTML"}
+    buttons = [m.reply_markup.inline_keyboard for m in messages[:2]]
     assert [[(b.text, b.callback_data) for row in kb for b in row] for kb in buttons] == [
         [("Карточка матча", f"dg:{GAME_A}")], [("Карточка матча", f"dg:{GAME_B}")],
     ]
     # Гол без клипа пропущен: в альбоме два видео; Telegram показывает одну подпись
     # альбома, поэтому описания обоих голов — у первого видео.
-    first = bot.albums[0][1]
+    first_request, second_request = api.sent(SendMediaGroup)
+    first, second = first_request.media, second_request.media
     assert [m.caption for m in first] == ["<b>GOAL</b> 100\n\n<b>GOAL</b> 102", None]
     assert first[0].parse_mode == "HTML"
-    assert [m.caption for m in bot.albums[1][1]] == [first[0].caption, None]
-    assert not any(isinstance(m.media, str) for m in first), "первому чату — загрузка"
-    # PTB пишет в альбом media/thumbnail только у файлов с attach_uri (attach://…):
-    # без него поля выпадают из запроса и Telegram альбом не принимает.
-    uris = [f.attach_uri for m in first for f in (m.media, m.thumbnail)]
-    assert all(uris) and len(set(uris)) == 4, "у каждого видео и превью свой attach://"
-    assert [m.media for m in bot.albums[1][1]] == ["fid-1", "fid-2"]
+    assert [m.caption for m in second] == [first[0].caption, None]
+    files = [f for m in first for f in (m.media, m.thumbnail)]
+    assert all(isinstance(f, BufferedInputFile) for f in files), "первому чату — загрузка"
+    assert len({id(f) for f in files}) == 4, "у каждого видео и превью свой файл"
+    assert [m.media for m in second] == ["fid-1", "fid-2"]
+    # Форма запроса: каждый файл — отдельная часть, а ``media`` ссылается на них через
+    # attach://; иначе поля выпадают из запроса и Telegram альбом не принимает.
+    parts, media_json = _attached_parts(fake_bot, first_request)
+    attached = [item[field] for item in media_json for field in ("media", "thumbnail")]
+    assert all(ref.startswith("attach://") for ref in attached)
+    assert [ref.removeprefix("attach://") for ref in attached] == list(parts)
+    assert len(set(attached)) == 4, "у каждого видео и превью свой attach://"
+    assert sorted(parts.values()) == ["100.jpg", "100.mp4", "102.jpg", "102.mp4"]
     assert sorted(country_env.downloads) == _goals(GAME_A, 3)
     assert list(country_env.tmp_path.iterdir()) == [], "временные файлы удалены"
     assert country_env.marked == [
@@ -658,13 +653,13 @@ async def test_country_game_waits_for_clips_until_the_deadline(country_env):
 
     assert country_env.marked == [(_sub(111), GAME_B), (_sub(222), GAME_B)]
     assert country_env.clip_checks == _goals(GAME_A, 2)
-    assert country_env.bot.albums == []
+    assert country_env.api.sent(SendMediaGroup) == []
 
     # Следующий прогон: клип выложен — матч уходит; ушедший GAME_B не повторяется.
     country_env.unpublished = set()
     await country_env.run([(111, "RUS"), (222, "RUS")], games, goals)
     assert country_env.marked[2:] == [(_sub(111), GAME_A), (_sub(222), GAME_A)]
-    assert [len(media) for _, media in country_env.bot.albums] == [2, 2]
+    assert [len(r.media) for r in country_env.api.sent(SendMediaGroup)] == [2, 2]
 
     # Крайний срок: клипа так и нет — матч уходит без проверки NHL.
     country_env.unpublished = {(GAME_B, 200)}
@@ -680,12 +675,22 @@ def test_albums_respect_album_size_and_upload_budget(push_job, monkeypatch):
     monkeypatch.setattr(push_job, "_UPLOAD_BUDGET_BYTES", 100)
 
     def clip(n, size):
-        return ((GAME_A, n), b"v" * size, {"thumbnail": b""}, "")
+        video = BufferedInputFile(b"v" * size, filename=f"{n}.mp4")
+        return ((GAME_A, n), video, {"thumbnail": BufferedInputFile(b"", filename=f"{n}.jpg")}, "")
 
     cached = [((GAME_A, n), f"fid-{n}", {}, "") for n in range(12)]
     assert [len(a) for a in push_job._albums(cached)] == [10, 2]
     heavy = [clip(0, 60), clip(1, 40), clip(2, 1), clip(3, 150), clip(4, 10)]
     assert [[c[0][1] for c in a] for a in push_job._albums(heavy)] == [[0, 1], [2], [3], [4]]
+
+
+def test_upload_bytes_counts_video_and_thumbnail_but_not_cached_file_id(push_job):
+    """Загрузка клипа — байты mp4 плюс превью; клип по ``file_id`` не грузит ничего."""
+    video = BufferedInputFile(b"v" * 7, filename="1.mp4")
+    thumbnail = BufferedInputFile(b"t" * 3, filename="1.jpg")
+    assert push_job._upload_bytes(((GAME_A, 1), video, {"thumbnail": thumbnail}, "")) == 10
+    assert push_job._upload_bytes(((GAME_A, 1), video, {}, "")) == 7
+    assert push_job._upload_bytes(((GAME_A, 1), "fid-1", {}, "")) == 0
 
 
 def test_albums_split_when_common_caption_exceeds_telegram_limit(push_job):
@@ -711,32 +716,33 @@ async def test_country_game_over_upload_budget_goes_out_in_several_albums(
     await country_env.run(
         [(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 5), final=True
     )
-    bot = country_env.bot
+    api = country_env.api
 
-    assert bot.order == [
+    assert _order(api) == [
         ("message", 111), ("album", 111), ("album", 111), ("video", 111),
         ("message", 222), ("album", 222),
     ]
-    assert [len(media) for _, media in bot.albums] == [2, 2, 5]
-    assert bot.videos[0][2]["caption"] == "<b>GOAL</b> 104", "одиночный клип — со своей подписью"
-    assert bot.videos[0][2]["parse_mode"] == "HTML"
+    assert [len(r.media) for r in api.sent(SendMediaGroup)] == [2, 2, 5]
+    [video] = api.sent(SendVideo)
+    assert video.caption == "<b>GOAL</b> 104", "одиночный клип — со своей подписью"
+    assert video.parse_mode == "HTML"
 
 
 @pytest.mark.asyncio
 async def test_country_broadcast_failed_game_does_not_stop_the_next(country_env):
     """Ночь 2026-10-13: отказ Telegram на альбоме погасил всю рассылку чату. Теперь сбой
     одного матча логируется и отмечается (повтора не будет), остальные матчи уходят."""
-    async def rejected(chat_id, media):
-        raise BadRequest("Request Entity Too Large")
-
-    country_env.bot.send_media_group = rejected
+    country_env.api.fail_next(
+        SendMediaGroup,
+        TelegramBadRequest(method=_method(), message="Bad Request: Request Entity Too Large"),
+    )
     await country_env.run(
         [(111, "RUS")],
         [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")],
         _goals(GAME_A, 2) + _goals(GAME_B, 1, first_event=200),
     )
 
-    assert country_env.bot.order == [("message", 111), ("message", 111), ("video", 111)]
+    assert _order(country_env.api) == [("message", 111), ("message", 111), ("video", 111)]
     assert country_env.deactivated == []
     assert country_env.marked == [(_sub(111), GAME_A), (_sub(111), GAME_B)]
 
@@ -745,27 +751,20 @@ async def test_country_broadcast_failed_game_does_not_stop_the_next(country_env)
 async def test_country_broadcast_night_without_players_sends_nothing(country_env):
     await country_env.run([(111, "RUS")], [], [])
 
-    bot = country_env.bot
-    assert (bot.order, country_env.downloads, country_env.marked) == ([], [], [])
+    assert (_order(country_env.api), country_env.downloads, country_env.marked) == ([], [], [])
 
 
 @pytest.mark.asyncio
 async def test_country_broadcast_deactivates_only_the_blocked_subscription(country_env):
     """Заблокировавший бота чат гасится один раз и больше матчей не получает."""
-    send_message = country_env.bot.send_message
-
-    async def blocked(**kwargs):
-        if kwargs["chat_id"] == 111:
-            raise Forbidden("blocked")
-        await send_message(**kwargs)
-
-    country_env.bot.send_message = blocked
+    # Первый запрос рассылки — сообщение чату 111: он «заблокировал» бота.
+    country_env.api.fail_next(SendMessage, _forbidden())
     await country_env.run(
         [(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")], []
     )
 
     assert country_env.deactivated == [(111, "country_players", None, "RUS")]
-    assert country_env.bot.order == [("message", 222), ("message", 222)]
+    assert _order(country_env.api) == [("message", 222), ("message", 222)]
     assert country_env.marked == [(_sub(222), GAME_A), (_sub(222), GAME_B)]
 
 
@@ -802,7 +801,7 @@ def upcoming_env(push_job, monkeypatch):
     ходили в NHL, ``previews`` — матчи, для которых собиралось превью, ``sent`` — отметки
     (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` — (id подписки,
     chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
-    ``run(context, now)`` — один прогон."""
+    ``run(bot, now)`` — один прогон."""
     env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0)
 
     def fetch(day):
@@ -858,7 +857,7 @@ def test_upcoming_games_wait_for_preview_start_of_the_league_day(push_job, upcom
 
 
 @pytest.mark.asyncio
-async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_context):
+async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_bot, api):
     """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне (раз в полчаса)
     подписчику одно превью — следующий по началу матч дня, каждый матч один раз; когда
     матчи кончились, прогон ничего не шлёт. Шапка — время начала по МСК; превью
@@ -866,74 +865,74 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
     upcoming_env.chats = [(10, 111), (20, 222)]
     by_slot = []
     for hour, minute in ((12, 30), (13, 0), (13, 30), (14, 0)):
-        before = len(fake_context.bot.sent_messages)
-        await upcoming_env.run(fake_context, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
-        by_slot.append([(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages[before:]])
+        before = len(api.sent_messages)
+        await upcoming_env.run(fake_bot, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
+        by_slot.append([(m.chat_id, m.text) for m in api.sent_messages[before:]])
 
     a = "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER
     b = "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
     c = "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER
     assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
-    assert all(m["parse_mode"] == "HTML" for m in fake_context.bot.sent_messages)
+    assert all(m.parse_mode == "HTML" for m in api.sent_messages)
     assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
 
 
 @pytest.mark.asyncio
-async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake_context):
+async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake_bot, api):
     """Следующий матч — свой у каждого подписчика: кому первый уже ушёл, получает второй;
     уже начавшиеся пропускаются."""
     upcoming_env.chats = [(10, 111), (20, 222)]
     upcoming_env.sent = {(20, GAME_A)}
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-    assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages] == [
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert [(m.chat_id, m.text) for m in api.sent_messages] == [
         (111, "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER),
         (222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
     ]
 
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 23, 40, tzinfo=UTC))
-    assert [(m["chat_id"], m["text"]) for m in fake_context.bot.sent_messages[2:]] == [
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 23, 40, tzinfo=UTC))
+    assert [(m.chat_id, m.text) for m in api.sent_messages[2:]] == [
         (111, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
         (222, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
     ]
 
 
 @pytest.mark.asyncio
-async def test_run_without_upcoming_games_sends_nothing(push_job, upcoming_env, fake_context):
+async def test_run_without_upcoming_games_sends_nothing(push_job, upcoming_env, fake_bot, api):
     """Прогон без предстоящих матчей ничего не шлёт и подписчиков из БД не читает."""
     upcoming_env.chats = [(10, 111)]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 25, 2, 30, tzinfo=UTC))
-    assert fake_context.bot.sent_messages == []
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 25, 2, 30, tzinfo=UTC))
+    assert api.sent_messages == []
     assert upcoming_env.read_subs == 0
     assert upcoming_env.sent == set()
 
 
 @pytest.mark.asyncio
 async def test_upcoming_blocked_chat_is_deactivated_and_others_still_get_it(
-    push_job, upcoming_env, fake_context
+    push_job, upcoming_env, fake_bot, api
 ):
     """Заблокировавший бота чат гасится (``upcoming_games``), матч ему отмечается;
     следующий подписчик превью получает."""
     upcoming_env.chats = [(10, 111), (20, 222)]
-    fake_context.bot.send_message_errors = [Forbidden("blocked")]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    api.fail_next(SendMessage, _forbidden())
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
 
-    assert [m["chat_id"] for m in fake_context.bot.sent_messages] == [222]
+    assert [m.chat_id for m in api.sent_messages] == [222]
     assert upcoming_env.deactivated == [(111, "upcoming_games")]
     assert upcoming_env.sent == {(10, GAME_A), (20, GAME_A)}
 
 
 @pytest.mark.asyncio
-async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env, fake_context):
+async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env, fake_bot, api):
     """Сбой отправки (не блокировка) логируется и не повторяется: матч отмечен, следующий
     прогон шлёт следующий матч, подписка жива."""
     upcoming_env.chats = [(10, 111)]
-    fake_context.bot.send_message_errors = [TelegramError("flood")]
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-    assert fake_context.bot.sent_messages == []
+    api.fail_next(SendMessage, TelegramAPIError(method=_method(), message="flood"))
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert api.sent_messages == []
     assert upcoming_env.sent == {(10, GAME_A)}
 
-    await upcoming_env.run(fake_context, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
-    assert [m["text"] for m in fake_context.bot.sent_messages] == [
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
+    assert [m.text for m in api.sent_messages] == [
         "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
     ]
     assert upcoming_env.deactivated == []
@@ -941,7 +940,7 @@ async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env,
 
 @pytest.mark.asyncio
 async def test_country_failure_does_not_stop_upcoming_and_still_fails_the_run(
-    push_job, fake_context
+    push_job, fake_bot
 ):
     """Страна и превью независимы (ревью Задачи 78): постоянный сбой страны (ffmpeg,
     Replay API) не отключает превью на всю ночь, но прогон всё равно падает — ошибка
@@ -952,7 +951,7 @@ async def test_country_failure_does_not_stop_upcoming_and_still_fails_the_run(
         calls.append("country")
         raise RuntimeError("ffmpeg")
 
-    async def upcoming(context, now):
+    async def upcoming(bot, now):
         calls.append(("upcoming", now))
 
     started = _msk(1, 0)
@@ -960,7 +959,7 @@ async def test_country_failure_does_not_stop_upcoming_and_still_fails_the_run(
         push_job, "run_country_broadcast", country
     ), patch.object(push_job, "run_upcoming_broadcast", upcoming):
         with pytest.raises(RuntimeError, match="ffmpeg"):
-            await push_job.broadcast_if_due(fake_context, started)
+            await push_job.broadcast_if_due(fake_bot, started)
 
     assert calls[0] == "country"
     assert calls[1][0] == "upcoming" and calls[1][1] > started
@@ -977,12 +976,11 @@ async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypa
     async def noop(self):
         return None
 
-    monkeypatch.setattr(Application, "initialize", noop)
-    monkeypatch.setattr(Application, "shutdown", noop)
+    monkeypatch.setattr(AiohttpSession, "close", noop)
     calls = []
 
-    async def upcoming(context, now):
-        calls.append(context.application.bot.token)
+    async def upcoming(bot, now):
+        calls.append(bot.token)
 
     async def night(*args):
         raise AssertionError("ночь днём не рассылается")

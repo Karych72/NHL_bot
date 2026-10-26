@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Рассылка утреннего дайджеста, итогов по команде, игроков страны и превью матчей подписчикам.
 
-Отдельный скрипт вне процесса бота: поднимает собственный ``Application``
-(без polling и без ``JobQueue``), рассылает и завершается. Запускается сервисом
+Отдельный скрипт вне процесса бота: поднимает собственный aiogram ``Bot``
+(без ``Dispatcher`` и polling), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
 раз в 30 минут с 12:00 до 08:00 UTC — и сам решает, пора ли: дайджест и команды уходят одной рассылкой,
 как только загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63;
@@ -35,9 +35,19 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
-from telegram.error import Forbidden, RetryAfter, TelegramError
-from telegram.ext import Application, CallbackContext
+from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import (
+    BufferedInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaLivePhoto,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 
 # Запуск из каталога telegram_bot (как make bot).
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,8 +93,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-# Токен бота — в URL каждого запроса httpx на INFO (как в bot.py main).
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("push_digest_job")
 
 # Крайний срок ночи — последний ночной прогон sync (08:00 UTC). Прогонов позже нет, поэтому
@@ -121,6 +129,9 @@ _CAPTION_LIMIT = 1024
 _HTML_TAG = re.compile(r"<[^>]+>")
 
 _T = TypeVar("_T")
+
+# Элемент альбома, как его типизирует ``Bot.send_media_group``; в альбоме рассылки — только видео.
+_AlbumMedia = Union[InputMediaAudio, InputMediaDocument, InputMediaLivePhoto, InputMediaPhoto, InputMediaVideo]
 
 
 def night_of(now: datetime) -> date:
@@ -179,8 +190,8 @@ def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
 async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     """Выполняет одну отправку и выдерживает паузу до следующей.
 
-    Зачем: ``RetryAfter`` означает, что отправка не доставлена, — повторяем
-    её один раз после указанной API задержки. Второй ``RetryAfter``, как и
+    Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
+    её один раз после указанной API задержки. Второй ``TelegramRetryAfter``, как и
     любая другая ошибка Telegram, улетает вызывающему.
 
     Аргументы: ``call`` — отправка без аргументов (её можно вызвать повторно);
@@ -188,7 +199,7 @@ async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     """
     try:
         result = await call()
-    except RetryAfter as exc:
+    except TelegramRetryAfter as exc:
         wait = float(exc.retry_after)
         logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
         await asyncio.sleep(wait)
@@ -198,19 +209,18 @@ async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     return result
 
 
-async def run_morning_digest_broadcast(context: CallbackContext, night: date) -> None:
+async def run_morning_digest_broadcast(bot: Bot, night: date) -> None:
     """Шлёт дайджест ночи *night* подписчикам ``morning_digest``, которым пора.
 
     Зачем: ровно те же карточки, что и меню ``/stats``, но без навигации диалога
-    (``attach_conv_nav_on_last=False``) — в рассылке кнопки диалога некуда вести.
+    (``dispatch_day_digest_messages`` без ``dialog``) — в рассылке кнопки диалога некуда вести.
     Чату, которому ночь уже ушла (``last_sent_night``), не шлётся ничего. После
     попытки ночь отмечается отправленной — один заход на чат, как и прежде. Ночь без
     матчей в БД не рассылается.
-    Заблокировавший бота чат (``Forbidden``) деактивируется, чтобы не долбиться
-    в него каждый день.
+    Заблокировавший бота чат (``TelegramForbiddenError``) деактивируется, чтобы не
+    долбиться в него каждый день.
 
-    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``night`` — игровая дата ночи (``night_of``).
+    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``).
     """
     due = [
         chat_id
@@ -226,50 +236,47 @@ async def run_morning_digest_broadcast(context: CallbackContext, night: date) ->
     for chat_id in due:
         try:
             await dispatch_day_digest_messages(
-                context,
+                bot,
                 chat_id,
                 day_label,
                 games,
-                attach_conv_nav_on_last=False,
                 inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
             )
-        except Forbidden:
+        except TelegramForbiddenError:
             logger.info("chat_id=%s blocked bot; deactivate morning_digest", chat_id)
             mark_subscription_inactive_by_chat_kind_team(
                 chat_id, "morning_digest", None
             )
-        except RetryAfter as exc:
+        except TelegramRetryAfter as exc:
             wait = float(exc.retry_after)
             logger.warning("digest RetryAfter %ss chat_id=%s", wait, chat_id)
             await asyncio.sleep(wait)
             try:
                 await dispatch_day_digest_messages(
-                    context,
+                    bot,
                     chat_id,
                     day_label,
                     games,
-                    attach_conv_nav_on_last=False,
                     inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
                 )
-            except Forbidden:
+            except TelegramForbiddenError:
                 mark_subscription_inactive_by_chat_kind_team(
                     chat_id, "morning_digest", None
                 )
-        except TelegramError as exc:
+        except TelegramAPIError as exc:
             logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
         mark_night_sent(chat_id, "morning_digest", None, night)
         # Telegram лимитирует бота ~30 сообщениями в секунду.
         await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
-async def run_team_scores_broadcast(context: CallbackContext, night: date) -> None:
+async def run_team_scores_broadcast(bot: Bot, night: date) -> None:
     """Полная карточка каждого матча команды за ночь *night*.
 
     Зачем: подписка ``team_scores`` — карточка матча (счёт, голы, вратари) с кнопками
     видео голов, как в меню, а не одна строка счёта; чат без матчей пропускается.
 
-    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``night`` — игровая дата ночи (``night_of``).
+    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``).
     """
     for chat_id, team_id, last_sent in list_active_team_scores_rows():
         if last_sent == night:
@@ -282,7 +289,7 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
             for text, goals_meta in cards:
                 await _throttled(
                     partial(
-                        context.bot.send_message,
+                        bot.send_message,
                         chat_id=chat_id,
                         text=f"<b>Матч вашей команды ({night})</b>\n\n{text}\n\n"
                         f"{SUBSCRIPTIONS_FOOTER}",
@@ -291,7 +298,7 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
                     ),
                     chat_id,
                 )
-        except Forbidden:
+        except TelegramForbiddenError:
             logger.info(
                 "chat_id=%s blocked bot; deactivate team_scores team_id=%s",
                 chat_id,
@@ -300,14 +307,14 @@ async def run_team_scores_broadcast(context: CallbackContext, night: date) -> No
             mark_subscription_inactive_by_chat_kind_team(
                 chat_id, "team_scores", team_id
             )
-        except TelegramError as exc:
+        except TelegramAPIError as exc:
             logger.warning("team notify failed chat_id=%s: %s", chat_id, exc)
         mark_night_sent(chat_id, "team_scores", team_id, night)
 
 
-# Клип к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры видео,
+# Клип к отправке: (ключ кэша, ``file_id`` из кэша или файл mp4 к загрузке, параметры видео,
 # HTML-описание гола ``goal_caption``).
-_Clip = Tuple[Tuple[int, int], Union[str, bytes], Dict[str, Any], str]
+_Clip = Tuple[Tuple[int, int], Union[str, BufferedInputFile], Dict[str, Any], str]
 
 # Кэш клипов на прогон: (game_id, event_id) → (``file_id`` Telegram, описание гола);
 # ``None`` — клипа нет.
@@ -315,11 +322,11 @@ _ClipCache = Dict[Tuple[int, int], Optional[Tuple[str, str]]]
 
 
 async def _prepare_goal_clips(goals: List[Tuple[int, int]], cache: _ClipCache) -> List[_Clip]:
-    """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или байты mp4, параметры,
+    """Клипы голов к отправке: (ключ кэша, ``file_id`` из кэша или mp4 к загрузке, параметры,
     общие для ``send_video`` и ``InputMediaVideo``, описание гола).
 
-    Байты, а не готовый ``InputFile``: так PTB сам ставит ``attach://`` в альбоме —
-    без него Telegram альбом не примет.
+    Файлы — ``BufferedInputFile`` в памяти: временные файлы удаляются сразу, а aiogram
+    сам ставит ``attach://`` у каждого файла альбома — без него Telegram альбом не примет.
 
     Аргументы: ``goals`` — (game_id, event_id); ``cache`` — см. ``_ClipCache``
     (гол без клипа второй раз не качаем).
@@ -339,14 +346,13 @@ async def _prepare_goal_clips(goals: List[Tuple[int, int]], cache: _ClipCache) -
             logger.warning("No video for goal game_id=%s event_id=%s", game_id, event_id)
             cache[key] = None
             continue
-        params: Dict[str, Any] = {
-            "filename": f"{event_id}.mp4",
-            "width": d.width, "height": d.height, "duration": d.duration,
-        }
+        params: Dict[str, Any] = {"width": d.width, "height": d.height, "duration": d.duration}
         try:
             if d.thumb_path:
-                params["thumbnail"] = Path(d.thumb_path).read_bytes()
-            video = Path(d.path).read_bytes()
+                params["thumbnail"] = BufferedInputFile(
+                    Path(d.thumb_path).read_bytes(), filename=f"{event_id}.jpg"
+                )
+            video = BufferedInputFile(Path(d.path).read_bytes(), filename=f"{event_id}.mp4")
         finally:
             os.unlink(d.path)
             if d.thumb_path:
@@ -360,7 +366,8 @@ def _upload_bytes(clip: _Clip) -> int:
     _, video, params, _ = clip
     if isinstance(video, str):
         return 0
-    return len(video) + len(params.get("thumbnail", b""))
+    thumbnail = params.get("thumbnail")
+    return len(video.data) + (len(thumbnail.data) if thumbnail is not None else 0)
 
 
 def _caption_length(text: str) -> int:
@@ -418,7 +425,9 @@ async def _send_country_game(
     матче; ``cache`` — см. ``_prepare_goal_clips``.
     """
     card_button = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}")]]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}")
+        ]]
     )
     await _throttled(
         lambda: bot.send_message(
@@ -440,9 +449,9 @@ async def _send_country_game(
                 )
             ]
         else:
-            media = [
+            media: List[_AlbumMedia] = [
                 InputMediaVideo(
-                    video, caption=caption if n == 0 else None, parse_mode="HTML",
+                    media=video, caption=caption if n == 0 else None, parse_mode="HTML",
                     supports_streaming=True, **params,
                 )
                 for n, (_, video, params, _) in enumerate(album)
@@ -468,7 +477,7 @@ async def _clips_published(
     return True
 
 
-async def run_country_broadcast(context: CallbackContext, night: date, final: bool) -> None:
+async def run_country_broadcast(bot: Bot, night: date, final: bool) -> None:
     """Матчи ночи *night* с игроками страны — подписчикам ``country_players``, по матчу.
 
     Зачем: подписка на страну (Задача 76) — сообщение о матче через полчаса после его
@@ -477,8 +486,8 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
     что есть. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится
     после попытки: сбой одного матча логируется и не повторяется, остальные уходят.
 
-    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``night`` — игровая дата ночи (``night_of``); ``final`` — наступил ли крайний срок.
+    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``);
+    ``final`` — наступил ли крайний срок.
     """
     rows = list_active_country_rows()
     games: Dict[str, List[Tuple[int, str, List[Tuple[int, int]]]]] = {}
@@ -508,14 +517,14 @@ async def run_country_broadcast(context: CallbackContext, night: date, final: bo
                 score_lines[game_id] = game_score_line(game_id)
             text = f"{score_lines[game_id]}\n\n{block}\n\n{SUBSCRIPTIONS_FOOTER}"
             try:
-                await _send_country_game(context.bot, chat_id, text, game_id, goals, file_ids)
-            except Forbidden:
+                await _send_country_game(bot, chat_id, text, game_id, goals, file_ids)
+            except TelegramForbiddenError:
                 logger.info("chat_id=%s blocked bot; deactivate country %s", chat_id, country)
                 mark_subscription_inactive_by_chat_kind_team(
                     chat_id, "country_players", None, country
                 )
                 break
-            except TelegramError as exc:
+            except TelegramAPIError as exc:
                 logger.warning(
                     "country send failed chat_id=%s %s game_id=%s: %s",
                     chat_id, country, game_id, exc,
@@ -547,7 +556,7 @@ def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
     ]
 
 
-async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> None:
+async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
     Зачем: бот на виду у подписчика весь день — с 15:30 МСК на каждом прогоне (раз в
@@ -558,8 +567,7 @@ async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> Non
     ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
-    Аргументы: ``context`` — контекст PTB, нужен ради ``context.bot``;
-    ``now`` — текущий момент (aware).
+    Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
     """
     games = upcoming_games(now)
     if not games:
@@ -579,18 +587,18 @@ async def run_upcoming_broadcast(context: CallbackContext, now: datetime) -> Non
         text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
         try:
             await _throttled(
-                partial(context.bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
+                partial(bot.send_message, chat_id=chat_id, text=text, parse_mode="HTML"),
                 chat_id,
             )
-        except Forbidden:
+        except TelegramForbiddenError:
             logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
             mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
-        except TelegramError as exc:
+        except TelegramAPIError as exc:
             logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
         mark_game_sent(subscription_id, game_id)
 
 
-async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
+async def broadcast_if_due(bot: Bot, now: datetime) -> None:
     """Прогоняет рассылки за ночь момента *now*.
 
     Дайджест и команды — когда ночь загружена целиком (``night_is_loaded``) или
@@ -602,19 +610,19 @@ async def broadcast_if_due(context: CallbackContext, now: datetime) -> None:
     сбой одной (NHL API, ffmpeg) логируется и не срывает другую, а после обеих
     пробрасывается — прогон красный в статусе sync, ошибка не глушится.
 
-    Аргументы: ``context`` — контекст PTB; ``now`` — текущий момент (aware).
+    Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
     """
     night = night_of(now)
     final = now >= _msk_moment(night, NIGHT_DEADLINE_MSK)
     if final or night_is_loaded(night):
-        await run_morning_digest_broadcast(context, night)
-        await run_team_scores_broadcast(context, night)
+        await run_morning_digest_broadcast(bot, night)
+        await run_team_scores_broadcast(bot, night)
     else:
         logger.info("Ночь %s загружена не целиком: дайджест и команды отложены.", night)
     errors: List[Exception] = []
     for name, broadcast in (
-        ("country", lambda: run_country_broadcast(context, night, final)),
-        ("upcoming", lambda: run_upcoming_broadcast(context, datetime.now(timezone.utc))),
+        ("country", lambda: run_country_broadcast(bot, night, final)),
+        ("upcoming", lambda: run_upcoming_broadcast(bot, datetime.now(timezone.utc))),
     ):
         try:
             await broadcast()
@@ -630,30 +638,18 @@ async def main(upcoming_only: bool) -> None:
     ``broadcast_if_due`` или, в дневном слоте (``upcoming_only``, флаг ``--upcoming-only``),
     только ``run_upcoming_broadcast`` — днём ночи нет, и NHL API о ней не спрашивается.
 
-    Зачем ``Application``, а не голый ``Bot``: ``dispatch_day_digest_messages``
-    принимает ``CallbackContext``, а построить его можно только от ``Application``.
-    Ни polling, ни ``JobQueue`` скрипту не нужны — отключены явно; ``async with``
-    инициализирует и корректно гасит HTTP-клиент бота.
+    ``async with`` закрывает HTTP-сессию бота после рассылки. Таймаут запроса — 300 с:
+    альбом из 10 клипов (~9 МБ каждый) не загрузится за 60 с по умолчанию.
     """
     config.validate_env()
     if not config.ENABLE_PUSH_DIGEST:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return
-    application = (
-        Application.builder()
-        .token(config.TOKEN)
-        .updater(None)
-        .job_queue(None)
-        # Альбом из 10 клипов (~9 МБ каждый) не загрузится за 20 с по умолчанию.
-        .media_write_timeout(300)
-        .build()
-    )
-    async with application:
-        context = CallbackContext(application)
+    async with Bot(config.TOKEN, session=AiohttpSession(timeout=300)) as bot:
         if upcoming_only:
-            await run_upcoming_broadcast(context, datetime.now(timezone.utc))
+            await run_upcoming_broadcast(bot, datetime.now(timezone.utc))
         else:
-            await broadcast_if_due(context, datetime.now(timezone.utc))
+            await broadcast_if_due(bot, datetime.now(timezone.utc))
     logger.info("Рассылка завершена.")
 
 

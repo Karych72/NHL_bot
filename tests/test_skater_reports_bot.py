@@ -3,7 +3,6 @@ import importlib
 import os
 import sys
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -196,20 +195,28 @@ def _load_stats_handlers():
     return importlib.import_module("stats_handlers")
 
 
+def _fake_bot():
+    """aiogram ``Bot`` на записывающей сессии (``tests/conftest.py``) — запросы к Bot API без сети."""
+    from aiogram import Bot
+
+    from tests.conftest import FAKE_TOKEN, FakeSession
+
+    return Bot(FAKE_TOKEN, session=FakeSession())
+
+
+def _dialog(bot):
+    """Состояние диалога `/stats` — дайджест открыт из меню."""
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=bot.id, chat_id=42, user_id=1))
+
+
 class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
     async def test_day_digest_single_game_sends_full_card_with_markup(self):
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-                return SimpleNamespace(message_id=len(sent))
-
-        class FakeContext:
-            bot = FakeBot()
-            user_data: dict = {}
-
+        bot = _fake_bot()
         games = [
             (
                 1,
@@ -218,27 +225,18 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         await stats_handlers.dispatch_day_digest_messages(
-            FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
+            bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
         )
+        sent = bot.session.sent_messages
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["text"], "Полная карточка")
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        self.assertIsNotNone(sent[0].get("reply_markup"))
+        self.assertEqual(sent[0].text, "Полная карточка")
+        self.assertEqual(sent[0].parse_mode, "HTML")
+        self.assertIsNotNone(sent[0].reply_markup)
 
     async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
         """Несколько матчей — одно сообщение-сводка и кнопки dg:<game_id>."""
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-                return SimpleNamespace(message_id=len(sent))
-
-        class FakeContext:
-            bot = FakeBot()
-            user_data: dict = {}
-
+        bot = _fake_bot()
         games = [
             (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
             (102, "<b>B C</b> 2:2\n", []),
@@ -249,13 +247,14 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             stats_handlers, "day_digest_summary_body", return_value=["1. <b>Home Away</b>", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
-                FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
+                bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
             )
+        sent = bot.session.sent_messages
         self.assertEqual(len(sent), 1)
-        self.assertIn("2 игр", sent[0]["text"])
-        self.assertIn("1. <b>Home Away</b>", sent[0]["text"])
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        kb = sent[0]["reply_markup"].inline_keyboard
+        self.assertIn("2 игр", sent[0].text)
+        self.assertIn("1. <b>Home Away</b>", sent[0].text)
+        self.assertEqual(sent[0].parse_mode, "HTML")
+        kb = sent[0].reply_markup.inline_keyboard
         self.assertEqual([b.text for b in kb[0]], ["1. HOM – AWY", "2. B – C"])
         ds = importlib.import_module("dialog_states")
         # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
@@ -266,23 +265,16 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-
-        class FakeContext:
-            bot = FakeBot()
-
+        bot = _fake_bot()
         games = [(0, "Нет матчей", [])]
         await stats_handlers.dispatch_day_digest_messages(
-            FakeContext(), chat_id=7, day_label="2025-01-01", games=games, attach_conv_nav_on_last=False
+            bot, chat_id=7, day_label="2025-01-01", games=games
         )
+        sent = bot.session.sent_messages
         self.assertEqual(len(sent), 2)
-        self.assertEqual(sent[0]["text"], "Нет матчей")
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        self.assertIn("/stats", sent[1]["text"])
+        self.assertEqual(sent[0].text, "Нет матчей")
+        self.assertEqual(sent[0].parse_mode, "HTML")
+        self.assertIn("/stats", sent[1].text)
 
 
 if __name__ == "__main__":

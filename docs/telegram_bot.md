@@ -169,8 +169,8 @@ make db-migrate
 «Настроить подписки: /subscriptions».
 
 Рассылка: [`push_digest_job.py`](../telegram_bot/push_digest_job.py),
-та же логика что `day_digest` / `dispatch_day_digest_messages`, с
-`attach_conv_nav_on_last=False`. Подписка на команду (`team_scores`) — полная карточка
+та же логика что `day_digest` / `dispatch_day_digest_messages`, без
+`dialog` (без кнопок диалога `/stats`). Подписка на команду (`team_scores`) — полная карточка
 каждого матча команды за ночь с кнопками видео голов, как в меню. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
 `PUSH_SEND_INTERVAL_SEC`, обработка `429` и блокировки бота — см. исходники скрипта.
 
