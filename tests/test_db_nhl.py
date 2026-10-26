@@ -469,10 +469,10 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             return cur.fetchall()
 
     def _fake_bot(self):
-        """aiogram ``Bot`` на записывающей сессии (``tests/conftest.py``) — без сети."""
+        """aiogram ``Bot`` на записывающей сессии (``tests/_telegram_fakes.py``) — без сети."""
         from aiogram import Bot
 
-        from tests.conftest import FAKE_TOKEN, FakeSession
+        from tests._telegram_fakes import FAKE_TOKEN, FakeSession
 
         return Bot(FAKE_TOKEN, session=FakeSession())
 

@@ -392,7 +392,7 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
 подменяются только границы БД (фикстура `fake_db_router` в `tests/conftest.py` —
-соединение psycopg2 и TTL-обёртка над ним) и сети (`FakeSession` — HTTP-сессия aiogram,
+соединение psycopg2 и TTL-обёртка над ним) и сети (`tests/_telegram_fakes.py::FakeSession` — HTTP-сессия aiogram,
 записывающая каждый запрос к Bot API), остальной стек — от разбора `callback_data` до
 сборки клавиатур и сериализации запросов aiogram — работает по-настоящему.
 

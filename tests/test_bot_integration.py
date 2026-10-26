@@ -22,7 +22,7 @@ from typing import Any, List
 import pytest
 from aiogram.filters import CommandObject
 
-from tests.conftest import body, rich_html
+from tests._telegram_fakes import body, rich_html
 
 
 def _tr(align: str, *cells: str) -> str:
