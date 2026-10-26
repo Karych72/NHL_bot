@@ -22,7 +22,9 @@ from leaderboard_specs import STAT_COLUMN_LABELS
 from template_funcs import output_text
 
 # Лимит текста rich-сообщения Telegram (символов). Считается по исходному HTML: он не
-# короче видимого текста, так что сообщение в лимите заведомо проходит.
+# короче видимого текста, так что сообщение в лимите заведомо проходит. Второй лимит —
+# 500 блоков (абзац, строка таблицы) — обрезкой не охраняется: самый длинный экран
+# (/standings, ~70 блоков) далёк от него, а длинные списки листаются страницами.
 RICH_MESSAGE_MAX_LENGTH = 32768
 
 
@@ -852,8 +854,7 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
     модельной оценки (если она опубликована; при раннем выходе, когда обеих
     команд нет в teams_stats, строки нет).
 
-    Разметка HTML (parse_mode=HTML): блок метрик в &lt;pre&gt; — моноширинный шрифт,
-    иначе в обычном тексте Telegram пробелы не выравнивают колонки.
+    Построчный HTML для `rich_message()`: метрики — таблица `_table`.
     """
     a = (away_abbr or "").strip().upper()
     h = (home_abbr or "").strip().upper()
@@ -2387,4 +2388,4 @@ def truncate_telegram_text(
         return text
     note = footer_note if footer_note is not None else ("\n\n" + truncation_marker())
     cut = _telegram_cut_budget(note, max_len)
-    return text[: max(text.rfind("\n", 0, cut), 0)] + note
+    return text[: max(text.rfind("\n", 0, cut + 1), 0)] + note

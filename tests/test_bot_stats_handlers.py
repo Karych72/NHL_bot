@@ -1139,8 +1139,10 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     сколько из всех матчей дня реально попало в текст, а не молчать про
     отброшенные заголовки."""
     stats_handlers = bot_module("stats_handlers")
-    fake_db_router(_digest_db_routes(lambda gid: "Х" * 40, lambda gid: "Y" * 40))
-    total_games = 500
+    # Длинные названия, а не сотни матчей: обрезка по символам должна сработать раньше
+    # лимита в 500 блоков (абзацев), который она не охраняет.
+    fake_db_router(_digest_db_routes(lambda gid: "Х" * 120, lambda gid: "Y" * 120))
+    total_games = 200
     games = [
         (
             i + 1,
@@ -1155,6 +1157,7 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     sent_text = body(api.sent_rich[0])
     # Лимит rich-сообщения — на текст, а не на разметку: теги `<p>` не считаются.
     assert len(re.sub(r"</?p>", "", sent_text)) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
+    assert sent_text.count("<p>") <= 500, "лимит Telegram — 500 блоков"
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None
     shown, total = int(match.group(1)), int(match.group(2))

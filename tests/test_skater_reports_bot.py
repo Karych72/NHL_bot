@@ -5,6 +5,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from tests.conftest import rich_html
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
 
@@ -218,13 +220,6 @@ def _fake_bot():
     from tests.conftest import FAKE_TOKEN, FakeSession
 
     return Bot(FAKE_TOKEN, session=FakeSession())
-
-
-def rich_html(text):
-    """HTML rich-сообщения для *text* (``bot_messages`` уже загружен хендлерами)."""
-    from tests.conftest import rich_html as _rich_html
-
-    return _rich_html(text)
 
 
 def _dialog(bot):

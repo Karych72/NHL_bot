@@ -1217,6 +1217,15 @@ def test_truncate_telegram_text_uses_custom_footer_note(bot_module):
     assert len(result) <= bot_messages.RICH_MESSAGE_MAX_LENGTH
 
 
+def test_truncate_telegram_text_keeps_last_line_that_fits_exactly(bot_module):
+    """Строка, конец которой ровно на границе бюджета, помещается — не отбрасывается."""
+    bot_messages = bot_module("bot_messages")
+    text = "\n".join(["a" * 9] * 20)
+    result = bot_messages.truncate_telegram_text(text, max_len=102, footer_note="\n\nN")
+    assert result == "\n".join(["a" * 9] * 10) + "\n\nN"
+    assert len(result) == 102
+
+
 def test_truncate_telegram_text_keeps_a_table_line_whole(bot_module):
     """Таблица — одна строка текста: её нельзя разрезать посередине, она либо
     помещается целиком, либо уходит целиком."""

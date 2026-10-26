@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
@@ -338,11 +339,16 @@ async def cmd_cancel_in_conversation(message: Message, state: FSMContext, bot: B
     # останется запертым в диалоге — следующий /cancel придёт уже вне его.
     await state.clear()
     if menu_message_id is not None:
-        await bot.edit_message_reply_markup(
-            chat_id=message.chat.id,
-            message_id=menu_message_id,
-            reply_markup=None,
-        )
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=menu_message_id,
+                reply_markup=None,
+            )
+        except TelegramBadRequest as exc:
+            # Пользователь удалил меню — снимать нечего, выход из диалога всё равно отвечаем.
+            if "message to edit not found" not in exc.message.lower():
+                raise
     await message.answer("Вы вышли из меню. Снова: /stats")
 
 

@@ -474,8 +474,8 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
 async def test_cancel_closes_dialog_even_when_menu_message_is_gone(
     bot_module, dispatcher, fake_bot, api, make_update
 ) -> None:
-    """Ревью переезда: меню удалено — снять с него клавиатуру нельзя, но диалог всё равно
-    закрыт, и следующий /cancel отвечает уже как вне диалога, а не падает снова."""
+    """Ревью переезда: меню удалено — снять с него клавиатуру нельзя, но диалог закрыт и
+    пользователь получает обычный ответ; следующий /cancel — уже как вне диалога."""
     from aiogram.exceptions import TelegramBadRequest
     from aiogram.methods import EditMessageReplyMarkup
 
@@ -485,9 +485,9 @@ async def test_cancel_closes_dialog_even_when_menu_message_is_gone(
         message="Bad Request: message to edit not found",
     ))
 
-    with pytest.raises(TelegramBadRequest, match="message to edit not found"):
-        await _feed(dispatcher, fake_bot, make_update("/cancel"))
+    await _feed(dispatcher, fake_bot, make_update("/cancel"))
     assert await _state(dispatcher, fake_bot) is None
+    assert api.sent_messages[-1].text == "Вы вышли из меню. Снова: /stats"
 
     await _feed(dispatcher, fake_bot, make_update("/cancel"))
     assert api.sent_messages[-1].text == "Меню /stats сейчас не открыто. Справка: /help"
