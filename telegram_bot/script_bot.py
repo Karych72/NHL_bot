@@ -12,6 +12,8 @@ from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot_messages import rich_message
+
 from dialog_states import (
     CHOOSE_STATS,
     DAY_DIGEST,
@@ -94,20 +96,14 @@ async def stats_root_edit(callback: CallbackQuery, state: FSMContext) -> None:
     """Главное меню тем же сообщением (редактирование текста кнопки)."""
     await callback.answer()
     await callback_message(callback).edit_text(
-        text=STATS_MENU_INTRO,
-        reply_markup=stats_main_markup(),
-        parse_mode="HTML",
+        rich_message=rich_message(STATS_MENU_INTRO), reply_markup=stats_main_markup(),
     )
     await state.set_state(StatsMenu.first)
 
 
 async def stats(message: Message, state: FSMContext) -> None:
     """Вызывается по команде `/stats` — в любом состоянии, в том числе вне диалога."""
-    sent = await message.answer(
-        text=STATS_MENU_INTRO,
-        reply_markup=stats_main_markup(),
-        parse_mode="HTML",
-    )
+    sent = await message.answer_rich(rich_message(STATS_MENU_INTRO), reply_markup=stats_main_markup())
     # Новое сообщение (`answer`, не `edit_text`): id записывается, чтобы /cancel мог
     # снять клавиатуру, если диалог оборвётся до «Готово». Все последующие экраны
     # диалога правят этот же message_id через edit_text — записывать его повторно не нужно.
@@ -120,11 +116,10 @@ async def stats(message: Message, state: FSMContext) -> None:
 async def stats_over(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Главное меню новым сообщением — предыдущий контент (статы/дайджест) остаётся в чате."""
     await callback.answer()
-    sent = await bot.send_message(
+    sent = await bot.send_rich_message(
         chat_id=callback_message(callback).chat.id,
-        text=STATS_MENU_INTRO,
+        rich_message=rich_message(STATS_MENU_INTRO),
         reply_markup=stats_main_markup(),
-        parse_mode="HTML",
     )
     await state.update_data({LAST_MENU_MESSAGE_ID_KEY: sent.message_id})
     await state.set_state(StatsMenu.first)
@@ -152,7 +147,7 @@ async def bot_team_stats(callback: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text="Выберите статистику", reply_markup=reply_markup
+        rich_message=rich_message("Выберите статистику"), reply_markup=reply_markup
     )
     await state.set_state(StatsMenu.first)
 
@@ -170,7 +165,7 @@ async def bot_player_stats(callback: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text="Выберите тип игроков", reply_markup=reply_markup
+        rich_message=rich_message("Выберите тип игроков"), reply_markup=reply_markup
     )
     await state.set_state(StatsMenu.first)
 
@@ -200,7 +195,7 @@ async def bot_player_field(callback: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text="Выберите тип статистики", reply_markup=reply_markup
+        rich_message=rich_message("Выберите тип статистики"), reply_markup=reply_markup
     )
     await state.set_state(StatsMenu.first)
 
@@ -230,7 +225,7 @@ async def bot_player_advanced_menu(callback: CallbackQuery, state: FSMContext) -
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text="Расширенная статистика полевых", reply_markup=reply_markup
+        rich_message=rich_message("Расширенная статистика полевых"), reply_markup=reply_markup
     )
     await state.set_state(StatsMenu.first)
 
@@ -249,7 +244,7 @@ async def bot_player_goalie(callback: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text="Выберите тип статистики", reply_markup=reply_markup
+        rich_message=rich_message("Выберите тип статистики"), reply_markup=reply_markup
     )
     await state.set_state(StatsMenu.first)
 
@@ -267,13 +262,12 @@ async def bot_digest_date_menu(callback: CallbackQuery, state: FSMContext) -> No
         inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
     await callback_message(callback).edit_text(
-        text=(
+        rich_message=rich_message(
             "Дайджест по завершённым матчам в базе.\n"
             "<i>Сегодня</i> — матчи прошедшей ночи по Москве, <i>Вчера</i> — ночью раньше. "
             "Своя дата — игровой день NHL (дата по Северной Америке)."
         ),
         reply_markup=reply_markup,
-        parse_mode="HTML",
     )
     await state.set_state(StatsMenu.first)
 

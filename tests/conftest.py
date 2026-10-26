@@ -28,15 +28,17 @@ from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import (
     AnswerCallbackQuery,
+    CopyMessage,
     EditMessageReplyMarkup,
     EditMessageText,
     GetMe,
     SendMediaGroup,
     SendMessage,
+    SendRichMessage,
     SendVideo,
     TelegramMethod,
 )
-from aiogram.types import CallbackQuery, Chat, Message, User, Video
+from aiogram.types import CallbackQuery, Chat, Message, MessageId, User, Video
 
 from tests._modeling_fixtures import write_synthetic_train_dataset
 
@@ -301,7 +303,18 @@ class FakeSession(BaseSession):
 
     @property
     def sent_messages(self) -> List[SendMessage]:
+        """Обычные текстовые сообщения (служебные ответы, подсказки)."""
         return self.sent(SendMessage)
+
+    @property
+    def sent_rich(self) -> List[SendRichMessage]:
+        """Rich-сообщения — экраны бота: таблицы, карточки, меню."""
+        return self.sent(SendRichMessage)
+
+    @property
+    def outgoing(self) -> List[Any]:
+        """Все новые сообщения бота по порядку — и обычные, и rich (тело — ``body()``)."""
+        return [r for r in self.requests if isinstance(r, (SendMessage, SendRichMessage))]
 
     @property
     def answers(self) -> List[Optional[str]]:
@@ -344,6 +357,11 @@ class FakeSession(BaseSession):
             return User(id=bot.id, is_bot=True, first_name="NHL", username=BOT_USERNAME)
         if isinstance(method, SendMessage):
             return self._message(method.chat_id, text=method.text)
+        if isinstance(method, SendRichMessage):
+            return self._message(method.chat_id)
+        if isinstance(method, CopyMessage):
+            self._message_ids += 1
+            return MessageId(message_id=self._message_ids)
         if isinstance(method, SendVideo):
             return self._video_message(method.chat_id, method.video)
         if isinstance(method, SendMediaGroup):
@@ -358,6 +376,21 @@ class FakeSession(BaseSession):
 
     async def close(self) -> None:
         return None
+
+
+def body(request: Any) -> str:
+    """Тело исходящего сообщения или правки: HTML rich-сообщения (``rich_message.html``)
+    или текст обычного сообщения."""
+    rich = getattr(request, "rich_message", None)
+    return rich.html if rich is not None else request.text
+
+
+def rich_html(text: str) -> str:
+    """HTML, в который ``bot_messages.rich_message`` превращает построчный *text* — ожидаемое
+    тело экрана в тестах (абзац на строку, таблицы — блоками)."""
+    import bot_messages
+
+    return bot_messages.rich_message(text).html
 
 
 @pytest.fixture

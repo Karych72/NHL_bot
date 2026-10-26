@@ -29,6 +29,7 @@ from throttle import enforce_callback_rate_limit
 from bot_messages import (
     country_rankings,
     day_digest,
+    rich_message,
     last_night_day,
     leaders_menu_intro,
     season_teams_by_division,
@@ -229,16 +230,16 @@ async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
         try:
             gid = int(args[0].split("_", 1)[1])
         except (IndexError, ValueError):
-            await message.answer(START_MESSAGE, parse_mode="HTML")
+            await message.answer_rich(rich_message(START_MESSAGE))
             return
         await send_game_card_message(bot, message.chat.id, gid)
         return
-    await message.answer(START_MESSAGE, parse_mode="HTML")
+    await message.answer_rich(rich_message(START_MESSAGE))
 
 
 async def cmd_help(message: Message, bot: Bot) -> None:
     """`/help`: список команд бота."""
-    await message.answer(HELP_MESSAGE, parse_mode="HTML")
+    await message.answer_rich(rich_message(HELP_MESSAGE))
 
 
 async def cmd_tonight(message: Message, bot: Bot) -> None:
@@ -255,16 +256,15 @@ async def cmd_tonight(message: Message, bot: Bot) -> None:
     # Проза без счётных элементов — сноска без чисел приходит из хелпера
     # по умолчанию (truncate_telegram_text), а не из литерала здесь.
     text = truncate_telegram_text(tonight_reply_intro(payload))
-    await message.answer(
-        text,
-        parse_mode="HTML",
+    await message.answer_rich(
+        rich_message(text),
         reply_markup=build_tonight_match_keyboard(games) if games else None,
     )
 
 
 async def cmd_standings(message: Message, bot: Bot) -> None:
     """`/standings`: турнирная таблица лиги."""
-    await message.answer(team_table(), parse_mode="HTML")
+    await message.answer_rich(rich_message(team_table()))
 
 
 async def cmd_today(message: Message, bot: Bot) -> None:
@@ -286,7 +286,7 @@ async def cmd_today(message: Message, bot: Bot) -> None:
 
 async def cmd_team(message: Message, bot: Bot) -> None:
     """`/team`: команды сезона кликабельными командами `/ABBR`."""
-    await message.answer(team_list_text(), parse_mode="HTML")
+    await message.answer_rich(rich_message(team_list_text()))
 
 
 def team_profile_text(abbrev: str, full: bool) -> str:
@@ -301,31 +301,23 @@ async def cmd_team_profile(message: Message, match: re.Match) -> None:
     """`/BOS` и т.п.: профиль клуба, `/BOS_FULL` — все его игроки (`team_profile_text`);
     `match` — совпадение `TEAM_COMMAND_PATTERN`."""
     abbrev, full = match.group(1), match.group(2)
-    await message.answer(team_profile_text(abbrev, bool(full)), parse_mode="HTML")
+    await message.answer_rich(rich_message(team_profile_text(abbrev, bool(full))))
 
 
 async def cmd_leaders(message: Message, bot: Bot) -> None:
     """`/leaders`: выбор категории лидеров кнопками."""
-    await message.answer(
-        leaders_menu_intro(),
-        parse_mode="HTML",
-        reply_markup=leaders_category_keyboard(),
-    )
+    await message.answer_rich(rich_message(leaders_menu_intro()), reply_markup=leaders_category_keyboard())
 
 
 async def cmd_countries(message: Message, bot: Bot) -> None:
     """`/countries`: рейтинг стран сезона и кнопки стран (Задача 49)."""
     text, markup = country_rankings_reply()
-    await message.answer(text, parse_mode="HTML", reply_markup=markup)
+    await message.answer_rich(rich_message(text), reply_markup=markup)
 
 
 async def cmd_advanced(message: Message, bot: Bot) -> None:
     """`/advanced`: расширенная статистика полевых игроков вне диалога `/stats`."""
-    await message.answer(
-        ADVANCED_COMMAND_INTRO,
-        parse_mode="HTML",
-        reply_markup=advanced_standalone_keyboard(),
-    )
+    await message.answer_rich(rich_message(ADVANCED_COMMAND_INTRO), reply_markup=advanced_standalone_keyboard())
 
 
 async def cmd_cancel_in_conversation(message: Message, state: FSMContext, bot: Bot) -> None:
@@ -584,14 +576,14 @@ async def _ai_digest_for_date(message: Message, bot: Bot, params: Dict[str, Any]
 async def _ai_team_profile(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
     """Профиль клуба, как `/WSH` (`all_players=false`) или `/WSH_FULL` (`true`)."""
     text = team_profile_text(params["team"], params["all_players"])
-    await message.answer(text, parse_mode="HTML")
+    await message.answer_rich(rich_message(text))
 
 
 def _ai_reply(screen: Callable[[Dict[str, Any]], Tuple[str, InlineKeyboardMarkup]]):
     """Экран из функции «параметры → (текст, кнопки)» ответом на вопрос пользователя."""
     async def _send(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
         text, markup = screen(params)
-        await message.answer(text, parse_mode="HTML", reply_markup=markup)
+        await message.answer_rich(rich_message(text), reply_markup=markup)
     return _send
 
 

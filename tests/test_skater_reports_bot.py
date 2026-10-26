@@ -58,7 +58,12 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
                     text = bot_messages.player_stats(title, table, col)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
-                self.assertRegex(text, r"1\.\|Ovechkin \[LW\]\|WSH\| ?58\.2\|82\|1700")
+                self.assertIn(
+                    '<tr><td align="right">1.</td><td>Ovechkin [LW]</td><td>WSH</td>'
+                    '<td align="right">58.2</td><td align="right">82</td>'
+                    '<td align="right">1700</td></tr>',
+                    text,
+                )
                 self.assertTrue(mock_fetch.called)
 
 
@@ -159,7 +164,13 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
         self.assertIn("BOS", text)
-        self.assertIn("<pre>", text)
+        self.assertIn("<table compact striped>", text)
+        self.assertNotIn("<pre>", text)
+        self.assertIn(
+            '<tr><td align="right">1.</td><td>BOS</td><td align="right">110</td>'
+            '<td align="right">82</td><td align="right">0.7</td></tr>',
+            text,
+        )
         self.assertIn("<b>ATLANTIC DIVISION</b>", text)
         self.assertIn("<b>EASTERN CONFERENCE</b>", text)
 
@@ -183,7 +194,12 @@ class Phase1UxCommandsTest(unittest.TestCase):
             )
         self.assertIn("Топ бомбардиров", text)
         self.assertIn("Ovechkin", text)
-        self.assertIn("1.|Ovechkin [LW]|WSH|  99|79|1650", text)
+        self.assertIn(
+            '<tr><td align="right">1.</td><td>Ovechkin [LW]</td><td>WSH</td>'
+            '<td align="right">99</td><td align="right">79</td>'
+            '<td align="right">1650</td></tr>',
+            text,
+        )
         self.assertFalse(has_prev)
         self.assertFalse(has_next)
 
@@ -202,6 +218,13 @@ def _fake_bot():
     from tests.conftest import FAKE_TOKEN, FakeSession
 
     return Bot(FAKE_TOKEN, session=FakeSession())
+
+
+def rich_html(text):
+    """HTML rich-сообщения для *text* (``bot_messages`` уже загружен хендлерами)."""
+    from tests.conftest import rich_html as _rich_html
+
+    return _rich_html(text)
 
 
 def _dialog(bot):
@@ -227,10 +250,10 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         await stats_handlers.dispatch_day_digest_messages(
             bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
         )
-        sent = bot.session.sent_messages
+        sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0].text, "Полная карточка")
-        self.assertEqual(sent[0].parse_mode, "HTML")
+        self.assertEqual(bot.session.sent_messages, [])
+        self.assertEqual(sent[0].rich_message.html, rich_html("Полная карточка"))
         self.assertIsNotNone(sent[0].reply_markup)
 
     async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
@@ -249,11 +272,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             await stats_handlers.dispatch_day_digest_messages(
                 bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
             )
-        sent = bot.session.sent_messages
+        sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertIn("2 игр", sent[0].text)
-        self.assertIn("1. <b>Home Away</b>", sent[0].text)
-        self.assertEqual(sent[0].parse_mode, "HTML")
+        self.assertEqual(bot.session.sent_messages, [])
+        self.assertIn("2 игр", sent[0].rich_message.html)
+        self.assertIn("<p>1. <b>Home Away</b></p>", sent[0].rich_message.html)
         kb = sent[0].reply_markup.inline_keyboard
         self.assertEqual([b.text for b in kb[0]], ["1. HOM – AWY", "2. B – C"])
         ds = importlib.import_module("dialog_states")
@@ -270,11 +293,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         await stats_handlers.dispatch_day_digest_messages(
             bot, chat_id=7, day_label="2025-01-01", games=games
         )
-        sent = bot.session.sent_messages
-        self.assertEqual(len(sent), 2)
-        self.assertEqual(sent[0].text, "Нет матчей")
-        self.assertEqual(sent[0].parse_mode, "HTML")
-        self.assertIn("/stats", sent[1].text)
+        self.assertEqual(len(bot.session.outgoing), 2)
+        (rich,) = bot.session.sent_rich
+        (hint,) = bot.session.sent_messages
+        self.assertEqual(rich.rich_message.html, rich_html("Нет матчей"))
+        self.assertIn("/stats", hint.text)
 
 
 if __name__ == "__main__":

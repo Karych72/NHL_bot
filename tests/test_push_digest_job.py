@@ -26,10 +26,10 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
-from aiogram.methods import SendMediaGroup, SendMessage, SendVideo
+from aiogram.methods import SendMediaGroup, SendMessage, SendRichMessage, SendVideo
 from aiogram.types import BufferedInputFile
 
-from tests.conftest import FAKE_TOKEN
+from tests.conftest import FAKE_TOKEN, body, rich_html
 
 # Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
 # а следом, без ``dialog``, подсказку «Ещё: …».
@@ -74,11 +74,13 @@ async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_bot
     ), patch.object(push_job, "mark_night_sent"):
         await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
-    sent = api.sent_messages
-    assert [m.chat_id for m in sent] == [111, 111, 222, 222]
-    assert sent[0].text == "<b>BOS 3 : 2 TOR</b>"
-    assert sent[1].text.startswith("Ещё:")
-    assert sent[1].text.endswith("Настроить подписки: /subscriptions")
+    assert [(type(r), r.chat_id) for r in api.outgoing] == [
+        (SendRichMessage, 111), (SendMessage, 111), (SendRichMessage, 222), (SendMessage, 222),
+    ]
+    cards, hints = api.sent_rich, api.sent_messages
+    assert cards[0].rich_message.html == rich_html("<b>BOS 3 : 2 TOR</b>")
+    assert hints[0].text.startswith("Ещё:")
+    assert hints[0].text.endswith("Настроить подписки: /subscriptions")
 
 
 @pytest.mark.asyncio
@@ -142,16 +144,19 @@ async def test_team_scores_sends_full_card_of_every_game_of_the_night(push_job, 
     ):
         await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
-    first, second = api.sent_messages
+    assert api.sent_messages == [], "карточки уходят rich-сообщениями"
+    first, second = api.sent_rich
     assert [m.chat_id for m in (first, second)] == [111, 111]
-    assert first.parse_mode == "HTML"
-    assert first.text == (
+    assert first.rich_message.html == rich_html(
         "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\nподробности"
         "\n\nНастроить подписки: /subscriptions"
     )
     [[button]] = first.reply_markup.inline_keyboard
     assert (button.text, button.callback_data) == ("▶ 1:0 Pastrnak 6:33", "gv:1:55")
-    assert "BOS 1 : 4 MTL\nещё" in second.text
+    assert second.rich_message.html == rich_html(
+        "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 1 : 4 MTL\nещё"
+        "\n\nНастроить подписки: /subscriptions"
+    )
     assert second.reply_markup is None
 
 
@@ -162,13 +167,13 @@ async def test_team_scores_skips_chat_without_games_that_night(push_job, fake_bo
     ), patch.object(push_job, "_game_ids_for_team_on_calendar_day", return_value=[]):
         await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
-    assert api.sent_messages == []
+    assert api.outgoing == []
 
 
 @pytest.mark.asyncio
 async def test_team_scores_resends_once_after_retry_after(push_job, fake_bot, api):
     """``_throttled`` повторяет отправку; без ``await`` 429 вообще не всплывёт."""
-    api.fail_next(SendMessage, _retry_after())
+    api.fail_next(SendRichMessage, _retry_after())
 
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
@@ -178,12 +183,12 @@ async def test_team_scores_resends_once_after_retry_after(push_job, fake_bot, ap
         await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
 
     # Первая попытка упала на 429 и не записана; без повтора сообщения не было бы вовсе.
-    assert [m.chat_id for m in api.sent_messages] == [111]
+    assert [m.chat_id for m in api.sent_rich] == [111]
 
 
 @pytest.mark.asyncio
 async def test_team_scores_deactivates_chat_that_blocked_the_bot(push_job, fake_bot, api):
-    api.fail_next(SendMessage, _forbidden())
+    api.fail_next(SendRichMessage, _forbidden())
 
     with patch.object(push_job, "mark_night_sent"), patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, None)]
@@ -326,7 +331,7 @@ async def _run_night(push_job, fake_bot, api, loaded_at):
         last_sent[chat_id] = night
 
     for slot in _night_slots():
-        before = len(api.sent_messages)
+        before = len(api.outgoing)
         loaded = loaded_at is not None and slot >= loaded_at
         with patch.object(
             push_job, "list_active_morning_digest_rows", return_value=[(111, last_sent[111])]
@@ -344,8 +349,8 @@ async def _run_night(push_job, fake_bot, api, loaded_at):
             push_job, "upcoming_games", return_value=[]
         ):
             await push_job.broadcast_if_due(fake_bot, slot)
-        for message in api.sent_messages[before:]:
-            if not message.text.startswith("Ещё:"):
+        for message in api.outgoing[before:]:
+            if not body(message).startswith("Ещё:"):
                 sent_at[message.chat_id].append(slot)
     return sent_at
 
@@ -415,7 +420,7 @@ async def test_repeated_tick_after_sending_sends_nothing(push_job, fake_bot, api
     ) as mark:
         await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
-    assert api.sent_messages == []
+    assert api.outgoing == []
     mark.assert_not_called()
 
 
@@ -431,7 +436,7 @@ async def test_night_without_games_is_not_sent(push_job, fake_bot, api):
         await push_job.run_morning_digest_broadcast(fake_bot, NIGHT)
 
     digest.assert_called_once_with(NIGHT)
-    assert api.sent_messages == []
+    assert api.outgoing == []
 
 
 @pytest.mark.asyncio
@@ -446,15 +451,15 @@ async def test_team_scores_are_not_repeated(push_job, fake_bot, api):
     ), patch.object(push_job, "mark_night_sent") as mark:
         await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
     mark.assert_called_once_with(111, "team_scores", 6, NIGHT)
-    assert [m.text for m in api.sent_messages] == [
-        "<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions"
+    assert [m.rich_message.html for m in api.sent_rich] == [
+        rich_html("<b>Матч вашей команды (2026-10-06)</b>\n\nBOS 3 : 2 TOR\n\nНастроить подписки: /subscriptions")
     ]
 
     with patches[0], patches[1], patch.object(
         push_job, "list_active_team_scores_rows", return_value=[(111, 6, NIGHT)]
     ), patch.object(push_job, "mark_night_sent"):
         await push_job.run_team_scores_broadcast(fake_bot, NIGHT)
-    assert len(api.sent_messages) == 1
+    assert len(api.sent_rich) == 1
 
 
 def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job):
@@ -495,7 +500,7 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
 # Подписка на страну (Задача 61): сообщение, альбомы видео, кэш file_id
 # ---------------------------------------------------------------------------
 
-_SEND_KIND = {SendMessage: "message", SendMediaGroup: "album", SendVideo: "video"}
+_SEND_KIND = {SendRichMessage: "message", SendMessage: "message", SendMediaGroup: "album", SendVideo: "video"}
 
 
 def _order(api):
@@ -606,11 +611,12 @@ async def test_country_game_is_short_text_with_card_button_then_goal_album(count
         ("message", 111), ("album", 111), ("message", 111),
         ("message", 222), ("album", 222), ("message", 222),
     ]
-    messages = api.sent_messages
-    assert [m.text for m in messages[:2]] == [
-        f"SCORE {GAME_A}\n\nBLOCK A" + FOOTER, f"SCORE {GAME_B}\n\nBLOCK B" + FOOTER,
+    assert api.sent_messages == [], "тексты матчей уходят rich-сообщениями"
+    messages = api.sent_rich
+    assert [m.rich_message.html for m in messages[:2]] == [
+        rich_html(f"SCORE {GAME_A}\n\nBLOCK A" + FOOTER),
+        rich_html(f"SCORE {GAME_B}\n\nBLOCK B" + FOOTER),
     ]
-    assert {m.parse_mode for m in messages} == {"HTML"}
     buttons = [m.reply_markup.inline_keyboard for m in messages[:2]]
     assert [[(b.text, b.callback_data) for row in kb for b in row] for kb in buttons] == [
         [("Карточка матча", f"dg:{GAME_A}")], [("Карточка матча", f"dg:{GAME_B}")],
@@ -758,7 +764,7 @@ async def test_country_broadcast_night_without_players_sends_nothing(country_env
 async def test_country_broadcast_deactivates_only_the_blocked_subscription(country_env):
     """Заблокировавший бота чат гасится один раз и больше матчей не получает."""
     # Первый запрос рассылки — сообщение чату 111: он «заблокировал» бота.
-    country_env.api.fail_next(SendMessage, _forbidden())
+    country_env.api.fail_next(SendRichMessage, _forbidden())
     await country_env.run(
         [(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK A"), (GAME_B, "BLOCK B")], []
     )
@@ -865,15 +871,15 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
     upcoming_env.chats = [(10, 111), (20, 222)]
     by_slot = []
     for hour, minute in ((12, 30), (13, 0), (13, 30), (14, 0)):
-        before = len(api.sent_messages)
+        before = len(api.sent_rich)
         await upcoming_env.run(fake_bot, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
-        by_slot.append([(m.chat_id, m.text) for m in api.sent_messages[before:]])
+        by_slot.append([(m.chat_id, m.rich_message.html) for m in api.sent_rich[before:]])
 
-    a = "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER
-    b = "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
-    c = "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER
+    a = rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER)
+    b = rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)
+    c = rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)
     assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
-    assert all(m.parse_mode == "HTML" for m in api.sent_messages)
+    assert api.sent_messages == [], "превью уходят rich-сообщениями"
     assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
 
 
@@ -884,15 +890,15 @@ async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake
     upcoming_env.chats = [(10, 111), (20, 222)]
     upcoming_env.sent = {(20, GAME_A)}
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-    assert [(m.chat_id, m.text) for m in api.sent_messages] == [
-        (111, "⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER),
-        (222, "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER),
+    assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [
+        (111, rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER)),
+        (222, rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)),
     ]
 
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 23, 40, tzinfo=UTC))
-    assert [(m.chat_id, m.text) for m in api.sent_messages[2:]] == [
-        (111, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
-        (222, "⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER),
+    assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich[2:]] == [
+        (111, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)),
+        (222, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)),
     ]
 
 
@@ -901,7 +907,7 @@ async def test_run_without_upcoming_games_sends_nothing(push_job, upcoming_env, 
     """Прогон без предстоящих матчей ничего не шлёт и подписчиков из БД не читает."""
     upcoming_env.chats = [(10, 111)]
     await upcoming_env.run(fake_bot, datetime(2026, 10, 25, 2, 30, tzinfo=UTC))
-    assert api.sent_messages == []
+    assert api.outgoing == []
     assert upcoming_env.read_subs == 0
     assert upcoming_env.sent == set()
 
@@ -913,10 +919,10 @@ async def test_upcoming_blocked_chat_is_deactivated_and_others_still_get_it(
     """Заблокировавший бота чат гасится (``upcoming_games``), матч ему отмечается;
     следующий подписчик превью получает."""
     upcoming_env.chats = [(10, 111), (20, 222)]
-    api.fail_next(SendMessage, _forbidden())
+    api.fail_next(SendRichMessage, _forbidden())
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
 
-    assert [m.chat_id for m in api.sent_messages] == [222]
+    assert [m.chat_id for m in api.sent_rich] == [222]
     assert upcoming_env.deactivated == [(111, "upcoming_games")]
     assert upcoming_env.sent == {(10, GAME_A), (20, GAME_A)}
 
@@ -926,14 +932,14 @@ async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env,
     """Сбой отправки (не блокировка) логируется и не повторяется: матч отмечен, следующий
     прогон шлёт следующий матч, подписка жива."""
     upcoming_env.chats = [(10, 111)]
-    api.fail_next(SendMessage, TelegramAPIError(method=_method(), message="flood"))
+    api.fail_next(SendRichMessage, TelegramAPIError(method=_method(), message="flood"))
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-    assert api.sent_messages == []
+    assert api.outgoing == []
     assert upcoming_env.sent == {(10, GAME_A)}
 
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
-    assert [m.text for m in api.sent_messages] == [
-        "⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER
+    assert [m.rich_message.html for m in api.sent_rich] == [
+        rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)
     ]
     assert upcoming_env.deactivated == []
 

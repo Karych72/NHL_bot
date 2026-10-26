@@ -17,6 +17,8 @@ import anthropic
 import httpx2
 import pytest
 
+from tests.conftest import body, rich_html
+
 TEAMS = [("BOS",), ("WSH",)]
 
 
@@ -134,7 +136,7 @@ async def test_team_profile_replies_like_team_command(
     for text in (command, other_command):
         await bot.cmd_team_profile(make_message(text), re.match(bot.TEAM_COMMAND_PATTERN, text))
 
-    via_ai, direct, other = api.sent_messages
+    via_ai, direct, other = api.sent_rich
     assert via_ai == direct
     assert via_ai != other
 
@@ -163,11 +165,10 @@ async def test_screen_tool_sends_what_the_button_draws(
     match = re.match(getattr(stats_handlers, pattern), data)
     await getattr(stats_handlers, callback)(make_callback(data), match=match)
 
-    (reply,) = api.sent_messages
+    (reply,) = api.sent_rich
     (edited,) = api.edited_texts
-    assert (reply.text, reply.parse_mode, reply.reply_markup) == (
-        edited.text, edited.parse_mode, edited.reply_markup,
-    )
+    assert reply.rich_message == edited.rich_message
+    assert reply.reply_markup == edited.reply_markup
 
 
 @pytest.mark.asyncio
@@ -176,8 +177,8 @@ async def test_digest_for_date_asks_that_day_and_sends_it(ai, make_message, fake
     await _ask(bot, make_message, fake_bot, "результаты 19 октября")
 
     assert any("games WHERE day" in q and p[0] == "2026-10-19" for q, p in cursor.executed)
-    sent = api.sent_messages[0]
-    assert sent.text == "За 2026-10-19 завершенных матчей не найдено."
+    sent = api.sent_rich[0]
+    assert body(sent) == rich_html("За 2026-10-19 завершенных матчей не найдено.")
     assert sent.reply_markup is None, "кнопок меню /stats вне диалога нет"
 
 

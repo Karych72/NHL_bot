@@ -45,6 +45,7 @@ from bot_messages import (
     game_message,
     matchup_season_preview,
     player_stat_leaderboard_page,
+    rich_message,
     season_team_abbrevs,
     stat_leaderboard_for_kind,
     team_profile,
@@ -156,7 +157,7 @@ def _page_nav_rows(
 
 
 async def _edit_page(callback: CallbackQuery, text: str, markup: InlineKeyboardMarkup) -> None:
-    """Перерисовывает листаемую страницу (HTML) на месте сообщения с нажатой кнопкой.
+    """Перерисовывает листаемую страницу (rich-сообщение) на месте сообщения с нажатой кнопкой.
 
     Зачем: повторное нажатие кнопки текущей страницы Telegram отвергает «message is
     not modified» — это штатный случай, он глушится; любая другая ошибка всплывает.
@@ -165,7 +166,7 @@ async def _edit_page(callback: CallbackQuery, text: str, markup: InlineKeyboardM
     Аргументы: `callback` — нажатие, `text` — HTML страницы, `markup` — её клавиатура.
     """
     try:
-        await callback_message(callback).edit_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=markup)
     except TelegramBadRequest as exc:
         if "message is not modified" not in exc.message.lower():
             raise
@@ -244,7 +245,7 @@ def _make_paginated_player_stat_open_handler(table: str, column: str):
         await callback.answer()
         text, hp, hn = player_stat_leaderboard_page(title, table, column, 0)
         markup = conversation_player_stat_keyboard(table, column, 0, hp, hn)
-        await callback_message(callback).edit_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=markup)
         await state.set_state(StatsMenu.second)
 
     return handler
@@ -257,7 +258,7 @@ def _make_paginated_team_stat_open_handler(column: str):
         await callback.answer()
         text, hp, hn = team_stat_leaderboard_page(title, column, 0)
         markup = conversation_team_stat_keyboard(column, 0, hp, hn)
-        await callback_message(callback).edit_text(text=text, parse_mode="HTML", reply_markup=markup)
+        await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=markup)
         await state.set_state(StatsMenu.second)
 
     return handler
@@ -279,7 +280,7 @@ def _make_team_group_summary_handler(summary_func):
         await callback.answer()
         markup = InlineKeyboardMarkup(inline_keyboard=[_stats_menu_nav_row(TEAM_STATS)])
         await callback_message(callback).edit_text(
-            text=summary_func(), parse_mode="HTML", reply_markup=markup
+            rich_message=rich_message(summary_func()), reply_markup=markup
         )
         await state.set_state(StatsMenu.second)
 
@@ -306,7 +307,7 @@ async def bot_team_profile_pick(callback: CallbackQuery, state: FSMContext) -> N
     rows = build_menu(buttons, n_cols=4, footer_buttons=[_stats_menu_nav_row(TEAM_STATS)])
     text = "Выберите команду:" if abbrevs else "В базе нет команд для этого сезона."
     await callback_message(callback).edit_text(
-        text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        rich_message=rich_message(text), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
     )
     await state.set_state(StatsMenu.second)
 
@@ -324,7 +325,7 @@ async def bot_team_profile_show(callback: CallbackQuery, state: FSMContext, matc
     await callback.answer()
     text = truncate_telegram_text(team_profile(match.group(1)))
     markup = InlineKeyboardMarkup(inline_keyboard=[_stats_menu_nav_row(TEAM_PROFILE_PICK)])
-    await callback_message(callback).edit_text(text=text, parse_mode="HTML", reply_markup=markup)
+    await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=markup)
     await state.set_state(StatsMenu.second)
 
 
@@ -452,18 +453,17 @@ async def callback_standalone_sa(callback: CallbackQuery, bot: Bot) -> None:
     if callback.data == "sa:menu":
         await callback.answer()
         await message.edit_text(
-            text=ADVANCED_COMMAND_INTRO,
-            parse_mode="HTML",
+            rich_message=rich_message(ADVANCED_COMMAND_INTRO),
             reply_markup=advanced_standalone_keyboard(),
         )
         return
     if callback.data == "sa:save":
         await callback.answer("Сохранено")
         # Сначала копия, потом снятие кнопок: упади отправка — страница останется живой.
-        await bot.send_message(
+        await bot.copy_message(
             chat_id=message.chat.id,
-            text=message.html_text,
-            parse_mode="HTML",
+            from_chat_id=message.chat.id,
+            message_id=message.message_id,
             reply_markup=message.reply_markup,
         )
         await message.edit_reply_markup(reply_markup=None)
@@ -605,18 +605,14 @@ async def send_game_card_message(bot: Bot, chat_id: int, game_id: int) -> Messag
     сообщение. Подписчику страны под карточкой — блок игроков каждой его страны,
     сыгравших в матче (Задача 76)."""
     if not game_exists(game_id):
-        return await bot.send_message(
-            chat_id=chat_id,
-            text="Такого матча нет в базе бота.",
-            parse_mode="HTML",
-        )
+        return await bot.send_message(chat_id=chat_id, text="Такого матча нет в базе бота.")
     text, goals_meta = game_message(game_id)
     for country in get_chat_subscriptions(chat_id).countries:
         block = country_game_block(country, game_id)
         if block is not None:
             text += f"\n\n{block}"
-    return await bot.send_message(
-        chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=goal_video_markup(goals_meta),
+    return await bot.send_rich_message(
+        chat_id=chat_id, rich_message=rich_message(text), reply_markup=goal_video_markup(goals_meta),
     )
 
 
@@ -668,11 +664,8 @@ async def dispatch_day_digest_messages(
         _, text, _ = games[0]
         nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if dialog else None
         safe_text = html.escape(text) if text else ""
-        sent = await bot.send_message(
-            chat_id=chat_id,
-            text=safe_text,
-            parse_mode="HTML",
-            reply_markup=nav_markup,
+        sent = await bot.send_rich_message(
+            chat_id=chat_id, rich_message=rich_message(safe_text), reply_markup=nav_markup,
         )
         await _finish(sent)
         return
@@ -686,8 +679,8 @@ async def dispatch_day_digest_messages(
             footer_buttons=[[b] for b in nav_buttons] if dialog else None,
         )
         markup = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-        sent = await bot.send_message(
-            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup,
+        sent = await bot.send_rich_message(
+            chat_id=chat_id, rich_message=rich_message(text), reply_markup=markup,
         )
         await _finish(sent)
         return
@@ -722,10 +715,9 @@ async def dispatch_day_digest_messages(
     rows = build_menu(expand_buttons, n_cols=3)
     if dialog:
         rows.append(nav_buttons)
-    sent = await bot.send_message(
+    sent = await bot.send_rich_message(
         chat_id=chat_id,
-        text=summary_text,
-        parse_mode="HTML",
+        rich_message=rich_message(summary_text),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await _finish(sent)
@@ -816,7 +808,7 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
         # того же единственного хелпера (truncate_telegram_text по умолчанию),
         # а не из литерала, продублированного здесь и в bot.py.
         text = truncate_telegram_text(matchup_season_preview(game_id, away, home))
-        answer = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        answer = await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(text))
     sent[key] = [answer.message_id, None]
 
 
@@ -842,7 +834,7 @@ async def callback_standalone_adv(callback: CallbackQuery, match: re.Match) -> N
         await callback_message(callback).edit_reply_markup(reply_markup=None)
         return
     text, kb = standalone_stat_reply(*ADVANCED_METRICS[key], 0)
-    await callback_message(callback).edit_text(text=text, parse_mode="HTML", reply_markup=kb)
+    await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=kb)
 
 
 def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
@@ -889,10 +881,9 @@ async def bot_league_standings(callback: CallbackQuery, state: FSMContext, bot: 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="« Главное меню", callback_data=str(CHOOSE_STATS))]]
     )
-    sent = await bot.send_message(
+    sent = await bot.send_rich_message(
         chat_id=callback_message(callback).chat.id,
-        text=team_table(),
-        parse_mode="HTML",
+        rich_message=rich_message(team_table()),
         reply_markup=markup,
     )
     await state.update_data({LAST_MENU_MESSAGE_ID_KEY: sent.message_id})
@@ -945,9 +936,10 @@ async def bot_digest_pick_date_prompt(callback: CallbackQuery, state: FSMContext
     """
     await callback.answer()
     await callback_message(callback).edit_text(
-        "Отправьте дату одним сообщением в формате <code>YYYY-MM-DD</code>.\n"
-        "/cancel — выход из меню.",
-        parse_mode="HTML",
+        rich_message=rich_message(
+            "Отправьте дату одним сообщением в формате <code>YYYY-MM-DD</code>.\n"
+            "/cancel — выход из меню."
+        ),
         reply_markup=_digest_back_from_date_keyboard(),
     )
     await state.set_state(StatsMenu.third)
@@ -967,8 +959,9 @@ async def bot_digest_custom_date(message: Message, state: FSMContext, bot: Bot) 
         # Новое сообщение (не edit_text) со своей копией «« Назад»» — id
         # записывается, чтобы /cancel мог снять клавиатуру с этой конкретной
         # (последней) копии.
-        sent = await message.answer(
-            "Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel.",
+        # Rich, как и весь диалог: «« Назад»» перерисует это сообщение меню дайджеста.
+        sent = await message.answer_rich(
+            rich_message("Нужен формат YYYY-MM-DD (например 2025-12-01). Попробуйте снова или /cancel."),
             reply_markup=_digest_back_from_date_keyboard(),
         )
         await state.update_data({LAST_MENU_MESSAGE_ID_KEY: sent.message_id})

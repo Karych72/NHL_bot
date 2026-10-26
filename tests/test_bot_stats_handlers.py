@@ -19,9 +19,9 @@ from unittest.mock import patch
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import DeleteMessage, EditMessageText, SendMessage, SendVideo
+from aiogram.methods import CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendVideo
 
-from tests.conftest import MENU_MESSAGE_ID
+from tests.conftest import MENU_MESSAGE_ID, body, rich_html
 
 
 def _bad_request(message: str) -> TelegramBadRequest:
@@ -237,8 +237,8 @@ async def test_stats_player_page_parses_offset_and_renders_known_stat(
 
     mock_page.assert_called_once_with("Лучшие бомбардиры", "players_season_stats", "points", 20)
     [edit] = api.edited_texts
-    assert edit.text == "PAGE TEXT"
-    assert edit.parse_mode == "HTML"
+    assert edit.text is None
+    assert body(edit) == rich_html("PAGE TEXT")
     assert edit.message_id == MENU_MESSAGE_ID, "страница — на месте сообщения с кнопкой"
     nav_row = edit.reply_markup.inline_keyboard[0]
     assert [b.callback_data for b in nav_row] == [
@@ -278,7 +278,7 @@ async def test_stats_team_page_parses_column_and_offset(bot_module, make_callbac
         )
 
     mock_page.assert_called_once_with("Статистика большинства", "power_play_percentage", 30)
-    assert api.edited_texts[0].text == "TEAM PAGE"
+    assert body(api.edited_texts[0]) == rich_html("TEAM PAGE")
     assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
 
 
@@ -296,10 +296,9 @@ async def test_standalone_sa_menu_returns_advanced_menu_in_place(
     await stats_handlers.callback_standalone_sa(make_callback("sa:menu"), fake_bot)
 
     [edit] = api.edited_texts
-    assert edit.text == help_text.ADVANCED_COMMAND_INTRO
-    assert edit.parse_mode == "HTML"
+    assert body(edit) == rich_html(help_text.ADVANCED_COMMAND_INTRO)
     assert edit.reply_markup == stats_handlers.advanced_standalone_keyboard()
-    assert api.sent_messages == [], "меню — в том же сообщении"
+    assert api.outgoing == [], "меню — в том же сообщении"
 
 
 @pytest.mark.asyncio
@@ -307,14 +306,13 @@ async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard
     bot_module, fake_bot, api
 ):
     """«Сохранить»: текущая страница остаётся в чате без кнопок (как прежнее
-    «Готово»), её копия с теми же кнопками уходит новым сообщением ниже."""
+    «Готово»), её копия (`copyMessage`) с теми же кнопками уходит новым сообщением ниже."""
     from aiogram.types import CallbackQuery
 
     stats_handlers = bot_module("stats_handlers")
     markup = stats_handlers.standalone_player_stat_keyboard(
         "players_advanced_stats", "sat_pct", 10, has_prev=True, has_next=True
     )
-    head, table = "Лидеры по Corsi", "1.|Makar|COL"
     callback = CallbackQuery.model_validate(
         {
             "id": "1",
@@ -325,11 +323,7 @@ async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard
                 "message_id": MENU_MESSAGE_ID,
                 "date": datetime.now(timezone.utc),
                 "chat": {"id": 100, "type": "private"},
-                "text": f"{head}\n\n{table}",
-                "entities": [
-                    {"type": "bold", "offset": 0, "length": len(head)},
-                    {"type": "pre", "offset": len(head) + 2, "length": len(table)},
-                ],
+                "text": "Лидеры по Corsi",
                 "reply_markup": markup.model_dump(),
             },
         },
@@ -341,10 +335,9 @@ async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard
     assert api.answers == ["Сохранено"]
     [frozen] = api.edited_markups
     assert (frozen.message_id, frozen.reply_markup) == (MENU_MESSAGE_ID, None)
-    [sent] = api.sent_messages
-    assert sent.chat_id == 100
-    assert sent.parse_mode == "HTML"
-    assert sent.text == "<b>Лидеры по Corsi</b>\n\n<pre>1.|Makar|COL</pre>"
+    [sent] = api.sent(CopyMessage)
+    assert (sent.chat_id, sent.from_chat_id, sent.message_id) == (100, 100, MENU_MESSAGE_ID)
+    assert api.outgoing == [], "копия — copyMessage, а не пересборка текста"
     assert [[(b.text, b.callback_data) for b in row] for row in sent.reply_markup.inline_keyboard] == [
         [(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard
     ]
@@ -384,7 +377,7 @@ async def test_standalone_sa_renders_known_stat_with_menu_and_save_footer(
         await stats_handlers.callback_standalone_sa(make_callback("sa:players_season_stats:goals:0"), fake_bot)
 
     edit = api.edited_texts[0]
-    assert edit.text == "GOALS PAGE"
+    assert body(edit) == rich_html("GOALS PAGE")
     assert [b.callback_data for b in edit.reply_markup.inline_keyboard[-1]] == ["sa:menu", "sa:save"]
 
 
@@ -476,8 +469,8 @@ async def test_league_standings_records_new_message_id_for_cancel(
         )
 
     assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    [sent] = api.sent_messages
-    assert sent.text == "TABLE"
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("TABLE")
     [row] = sent.reply_markup.inline_keyboard
     assert row[0].callback_data == str(dialog_states.CHOOSE_STATS)
     assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
@@ -521,8 +514,8 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
     mock_preview.assert_called_once_with(555, "DET", "NYR")
-    [sent] = api.sent_messages
-    assert (sent.text, sent.parse_mode) == ("PREVIEW", "HTML")
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("PREVIEW")
 
 
 @pytest.mark.asyncio
@@ -538,15 +531,15 @@ async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-        sent = api.sent_messages
-        assert [m.text for m in sent] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT]
+        sent = api.outgoing
+        assert [body(m) for m in sent] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
         assert sent[1].reply_parameters.message_id == 1, "цитата — на первую карточку"
         assert api.sent(DeleteMessage) == []
 
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    sent = api.sent_messages
-    assert [m.text for m in sent].count("CARD") == 1
+    sent = api.outgoing
+    assert [body(m) for m in sent].count(rich_html("CARD")) == 1
     assert sent[2].reply_parameters.message_id == 1
     assert [(d.chat_id, d.message_id) for d in api.sent(DeleteMessage)] == [(100, 2)]
 
@@ -562,8 +555,8 @@ async def test_tonight_game_resends_card_when_original_was_deleted(bot_module, m
         # Следующее нажатие ссылается уже на новую карточку.
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    sent = api.sent_messages
-    assert [m.text for m in sent] == ["CARD", "CARD", stats_handlers._TONIGHT_ALREADY_SENT]
+    sent = api.outgoing
+    assert [body(m) for m in sent] == [rich_html("CARD"), rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
     assert sent[2].reply_parameters.message_id == 2
 
 
@@ -579,7 +572,7 @@ async def test_tonight_game_resend_removes_pointer_to_deleted_card(bot_module, m
         api.fail_next(SendMessage, _bad_request("Bad Request: message to be replied not found"))
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    assert [m.text for m in api.sent_messages] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT, "CARD"]
+    assert [body(m) for m in api.outgoing] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT, rich_html("CARD")]
     assert [(d.chat_id, d.message_id) for d in api.sent(DeleteMessage)] == [(100, 2)]
 
 
@@ -596,7 +589,7 @@ async def test_tonight_game_pointer_delete_tolerates_only_gone_messages(
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         api.fail_next(DeleteMessage, _bad_request("Bad Request: message to delete not found"))
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
-        assert len(api.sent_messages) == 3, "третье нажатие отправило ссылку, ошибка удаления не помешала"
+        assert len(api.outgoing) == 3, "третье нажатие отправило ссылку, ошибка удаления не помешала"
 
         api.fail_next(DeleteMessage, _bad_request("Bad Request: chat not found"))
         with pytest.raises(TelegramBadRequest, match="chat not found"):
@@ -629,7 +622,7 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
         with patch.object(stats_handlers, "game_exists", return_value=True):
             await _tap_tonight(stats_handlers, make_callback, fake_bot, "tn:556:BOS:MIN")
 
-    assert [m.text for m in api.sent_messages] == ["PREVIEW", "CARD", "CARD"]
+    assert [body(m) for m in api.outgoing] == [rich_html("PREVIEW"), rich_html("CARD"), rich_html("CARD")]
 
 
 @pytest.mark.asyncio
@@ -643,7 +636,7 @@ async def test_tonight_answers_are_kept_per_chat(bot_module, make_callback, fake
         await stats_handlers.callback_tonight_game(make_callback(data, chat_id=100), fake_bot, match)
         await stats_handlers.callback_tonight_game(make_callback(data, chat_id=101), fake_bot, match)
 
-    assert [(m.chat_id, m.text) for m in api.sent_messages] == [(100, "CARD"), (101, "CARD")]
+    assert [(m.chat_id, body(m)) for m in api.outgoing] == [(100, rich_html("CARD")), (101, rich_html("CARD"))]
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +674,7 @@ async def test_leaders_pick_renders_chosen_category_from_offset_zero(bot_module,
         )
 
     mock_kind.assert_called_once_with("goals", 0)
-    assert api.edited_texts[0].text == "GOALS PAGE"
+    assert body(api.edited_texts[0]) == rich_html("GOALS PAGE")
 
 
 @pytest.mark.asyncio
@@ -733,7 +726,7 @@ async def test_standalone_adv_resolves_known_key_to_its_stat(bot_module, make_ca
     mock_page.assert_called_once_with(
         "Лидеры по Corsi (SAT %)", "players_advanced_stats", "sat_pct", 0
     )
-    assert api.edited_texts[0].text == "PAGE"
+    assert body(api.edited_texts[0]) == rich_html("PAGE")
 
 
 def test_advanced_pattern_covers_exactly_menu_keys_and_close(bot_module):
@@ -779,8 +772,8 @@ async def test_send_game_card_message_builds_goal_video_buttons(bot_module, fake
             patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", goals_meta)):
         await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
-    [sent] = api.sent_messages
-    assert sent.text == "GAME TEXT"
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("GAME TEXT")
     assert sent.chat_id == 42
     buttons = [b for row in sent.reply_markup.inline_keyboard for b in row]
     assert [b.callback_data for b in buttons] == ["gv:999:1", "gv:999:2"]
@@ -794,7 +787,7 @@ async def test_send_game_card_message_uses_no_markup_when_no_goals(bot_module, f
             patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", [])):
         await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
-    [sent] = api.sent_messages
+    [sent] = api.sent_rich
     assert sent.reply_markup is None
 
 
@@ -971,8 +964,8 @@ async def test_digest_custom_date_rejects_bad_format(bot_module, make_message, f
     await stats_handlers.bot_digest_custom_date(make_message("not-a-date"), fsm_state, fake_bot)
 
     assert await fsm_state.get_state() == dialog_states.StatsMenu.third.state
-    [reply] = api.sent_messages
-    assert "YYYY-MM-DD" in reply.text
+    [reply] = api.sent_rich
+    assert "YYYY-MM-DD" in body(reply)
     # Дно без клавиатуры — тупик (CLAUDE.md, Задача 5): пользователь должен
     # иметь кнопку выхода, а не только текстовое упоминание /cancel.
     buttons = [b for row in reply.reply_markup.inline_keyboard for b in row]
@@ -998,8 +991,8 @@ async def test_digest_custom_date_dispatches_digest_for_valid_date(
     assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
     # dispatch_day_digest_messages ran for real (not mocked) — assert on what
     # it actually sent, not just that something was sent.
-    [sent] = api.sent_messages
-    assert sent.text == "text"
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("text")
     assert sent.chat_id == 100
     # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень;
     # сообщение новое (send_message) — id записан для /cancel. Единственный
@@ -1062,7 +1055,7 @@ async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games, dialog=fsm_state)
 
-    [sent] = api.sent_messages
+    [sent] = api.sent_rich
     nav_row = sent.reply_markup.inline_keyboard[-1]
     assert [b.callback_data for b in nav_row] == [
         str(dialog_states.DAY_DIGEST),
@@ -1085,7 +1078,8 @@ async def test_dispatch_day_digest_outside_dialog_sends_hint_instead_of_navigati
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    summary, hint = api.sent_messages
+    [summary] = api.sent_rich
+    [hint] = api.sent_messages
     nav_data = {str(dialog_states.DAY_DIGEST), str(dialog_states.CHOOSE_STATS), str(dialog_states.END_CONVERSATION)}
     assert not nav_data & {b.callback_data for row in summary.reply_markup.inline_keyboard for b in row}
     assert hint.text == stats_handlers._DIGEST_MORE_HINT
@@ -1100,14 +1094,14 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    summary = api.sent_messages[0]
+    summary = api.sent_rich[0]
     # Матчи разделены пустой строкой (DIGEST_GAME_SEPARATOR).
-    assert (
+    assert rich_html(
         "1. <b>H1 1:0 A1</b>\n  1:0, 0:0, 0:0\n\n"
         "2. <b>H2 1:0 A2</b>\n  1:0, 0:0, 0:0\n\n"
         "3. <b>H3 1:0 A3</b>"
-    ) in summary.text
-    assert "Кнопка матча — полная карточка и видео голов." in summary.text
+    ) in body(summary)
+    assert "Кнопка матча — полная карточка и видео голов." in body(summary)
     rows = summary.reply_markup.inline_keyboard
     assert [len(r) for r in rows] == [3, 1]
     assert [b.text for r in rows for b in r] == [f"{n}. AAA – BBB" for n in range(1, 5)]
@@ -1118,7 +1112,7 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
 
 # ---------------------------------------------------------------------------
 # dispatch_day_digest_messages — truncation marker on the multi-game summary
-# (Задача 11: граница Telegram 4096 отбрасывает заголовки матчей молча без
+# (Задача 11: граница rich-сообщения 32768 отбрасывает заголовки матчей молча без
 # маркера «показаны N из M»).
 # ---------------------------------------------------------------------------
 
@@ -1131,7 +1125,7 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    sent_text = api.sent_messages[0].text
+    sent_text = body(api.sent_rich[0])
     assert "Показаны" not in sent_text
     assert "1. <b>H1 1:0 A1</b>" in sent_text
     assert "2. <b>H2 1:0 A2</b>" in sent_text
@@ -1146,7 +1140,7 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     отброшенные заголовки."""
     stats_handlers = bot_module("stats_handlers")
     fake_db_router(_digest_db_routes(lambda gid: "Х" * 40, lambda gid: "Y" * 40))
-    total_games = 80
+    total_games = 500
     games = [
         (
             i + 1,
@@ -1158,8 +1152,9 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    sent_text = api.sent_messages[0].text
-    assert len(sent_text) <= 4096
+    sent_text = body(api.sent_rich[0])
+    # Лимит rich-сообщения — на текст, а не на разметку: теги `<p>` не считаются.
+    assert len(re.sub(r"</?p>", "", sent_text)) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None
     shown, total = int(match.group(1)), int(match.group(2))

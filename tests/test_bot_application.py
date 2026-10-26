@@ -20,7 +20,7 @@ from aiogram import Dispatcher
 from aiogram.filters import Command, CommandStart
 from aiogram.methods import SetMyCommands
 
-from tests.conftest import CHAT_ID, FAKE_TOKEN, USER_ID
+from tests.conftest import CHAT_ID, FAKE_TOKEN, USER_ID, body, rich_html
 
 
 def _router(dispatcher: Dispatcher, name: str) -> Any:
@@ -294,15 +294,15 @@ async def test_command_reaches_its_handler_in_any_case_and_with_own_mention(
 ) -> None:
     await _feed(dispatcher, fake_bot, make_update(text))
 
-    [reply] = api.sent_messages
-    assert reply.text == bot_module("help_text").HELP_MESSAGE
+    [reply] = api.sent_rich
+    assert body(reply) == rich_html(bot_module("help_text").HELP_MESSAGE)
 
 
 @pytest.mark.asyncio
 async def test_command_addressed_to_another_bot_is_ignored(dispatcher, fake_bot, api, make_update) -> None:
     await _feed(dispatcher, fake_bot, make_update("/help@OtherBot"))
 
-    assert api.sent_messages == []
+    assert api.outgoing == []
 
 
 @pytest.mark.asyncio
@@ -315,7 +315,9 @@ async def test_team_command_routes_abbreviation_and_full_flag(
     await _feed(dispatcher, fake_bot, make_update("/BOS"))
     await _feed(dispatcher, fake_bot, make_update("/wsh_full"))
 
-    assert [m.text for m in api.sent_messages] == ["BOS full=False", "wsh full=True"]
+    assert [body(m) for m in api.sent_rich] == [
+        rich_html("BOS full=False"), rich_html("wsh full=True"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -354,7 +356,7 @@ async def test_dialog_walks_menu_then_date_input_then_cancel(
 
     await _feed(dispatcher, fake_bot, make_update("2026-01-01"))
     assert await _state(dispatcher, fake_bot) == ds.StatsMenu.second.state
-    assert api.sent_messages[-1].text == "За 2026-01-01 матчей нет"
+    assert body(api.sent_rich[-1]) == rich_html("За 2026-01-01 матчей нет")
 
     await _feed(dispatcher, fake_bot, make_update("/cancel"))
     assert await _state(dispatcher, fake_bot) is None
@@ -395,7 +397,7 @@ async def test_top_level_command_works_inside_the_dialog_and_keeps_its_state(
 
     await _feed(dispatcher, fake_bot, make_update("/help"))
 
-    assert api.sent_messages[-1].text == bot_module("help_text").HELP_MESSAGE
+    assert body(api.sent_rich[-1]) == rich_html(bot_module("help_text").HELP_MESSAGE)
     assert await _state(dispatcher, fake_bot) == ds.StatsMenu.third.state
 
 
@@ -464,7 +466,7 @@ async def test_stats_over_records_new_message_id(bot_module, make_callback, fsm_
     await script_bot.stats_over(make_callback(str(dialog_states.CHOOSE_STATS), chat_id=555), fsm_state, fake_bot)
 
     assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    [sent] = api.sent_messages
+    [sent] = api.sent_rich
     assert sent.chat_id == 555
     assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
