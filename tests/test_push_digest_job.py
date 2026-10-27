@@ -13,6 +13,7 @@ PTB 21.x) ровно потому, что ни один тест его не и�
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -522,16 +523,17 @@ def _sub(chat_id):
 
 
 @pytest.fixture
-def country_env(push_job, monkeypatch, tmp_path, fake_bot, api):
+def country_env(push_job, monkeypatch, tmp_path, fake_bot, api, goal_clip_store):
     """Рассылка по стране с подменой БД, NHL и скачивания: бот (``fake_bot``, запросы —
-    в ``api``), журнал скачиваний и проверок клипов, отметки «матч ушёл» (``sent`` — в БД,
+    в ``api``), журнал скачиваний и проверок клипов, кэш клипов ``clips``
+    (``goal_clip_store``), отметки «матч ушёл» (``sent`` — в БД,
     ``marked`` — по порядку), погашенные подписки и ``run(chats, games, goals, final)``;
     ``chats`` — (chat_id, страна), ``games`` — (game_id, блок страны) матчей ночи,
     ``goals`` — (game_id, event_id) голов страны; ``unpublished`` — голы, клипа которых
     NHL ещё не выложила, ``missing`` — голы, клип которых не скачался."""
     env = SimpleNamespace(
         bot=fake_bot, api=api, downloads=[], clip_checks=[], marked=[], sent=set(),
-        deactivated=[], missing=set(), unpublished=set(),
+        deactivated=[], missing=set(), unpublished=set(), clips=goal_clip_store,
     )
 
     def published(game_id, event_id):
@@ -640,7 +642,11 @@ async def test_country_game_is_short_text_with_card_button_then_goal_album(count
     assert [ref.removeprefix("attach://") for ref in attached] == list(parts)
     assert len(set(attached)) == 4, "у каждого видео и превью свой attach://"
     assert sorted(parts.values()) == ["100.jpg", "100.mp4", "102.jpg", "102.mp4"]
-    assert sorted(country_env.downloads) == _goals(GAME_A, 3)
+    # Клипы качаются один раз; гол без клипа — у каждого чата заново (в кэш он не попадает).
+    assert sorted(country_env.downloads) == sorted(_goals(GAME_A, 3) + [(GAME_A, 101)])
+    assert country_env.clips == {
+        (GAME_A, 100): ("fid-1", "<b>GOAL</b> 100"), (GAME_A, 102): ("fid-2", "<b>GOAL</b> 102"),
+    }
     assert list(country_env.tmp_path.iterdir()) == [], "временные файлы удалены"
     assert country_env.marked == [
         (_sub(111), GAME_A), (_sub(111), GAME_B), (_sub(222), GAME_A), (_sub(222), GAME_B),
@@ -751,6 +757,74 @@ async def test_country_broadcast_failed_game_does_not_stop_the_next(country_env)
     assert _order(country_env.api) == [("message", 111), ("message", 111), ("video", 111)]
     assert country_env.deactivated == []
     assert country_env.marked == [(_sub(111), GAME_A), (_sub(111), GAME_B)]
+
+
+@pytest.mark.asyncio
+async def test_clip_uploaded_once_serves_later_runs_and_the_card_button(
+    country_env, bot_module, make_callback, monkeypatch
+):
+    """Задача 87: клип, загруженный рассылкой, следующий прогон шлёт по ``file_id`` без
+    скачивания, и кнопка видео в карточке берёт тот же ``file_id`` — сразу, без загрузки."""
+    await country_env.run([(111, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 1))
+    assert country_env.downloads == _goals(GAME_A, 1)
+    [uploaded] = country_env.api.sent(SendVideo)
+    assert isinstance(uploaded.video, BufferedInputFile)
+
+    country_env.downloads.clear()
+    await country_env.run([(222, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 1))
+    stats_handlers = bot_module("stats_handlers")
+    monkeypatch.setattr(stats_handlers, "download_goal_video", country_env.downloads.append)
+    data = f"gv:{GAME_A}:100"
+    match = re.match(stats_handlers.GOAL_VIDEO_CALLBACK_PATTERN, data)
+    await stats_handlers.handle_goal_video(make_callback(data, chat_id=333), country_env.bot, match)
+
+    assert country_env.downloads == []
+    _, by_run, by_button = country_env.api.sent(SendVideo)
+    assert (by_run.chat_id, by_run.video, by_run.caption) == (222, "fid-1", "<b>GOAL</b> 100")
+    assert (by_button.chat_id, by_button.video, by_button.caption) == (333, "fid-1", "<b>GOAL</b> 100")
+    assert country_env.api.answers == [None], "из кэша — без «Загружаю видео гола...»"
+
+
+@pytest.mark.asyncio
+async def test_rejected_cached_file_id_is_logged_and_clips_reuploaded_once(country_env, caplog):
+    """Задача 87: Telegram отверг ``file_id`` из кэша (протух) — громкая ошибка в логе и одна
+    повторная отправка альбома: клип из кэша скачивается заново, загруженный в этот раз —
+    не качается второй раз; кэш получает новый ``file_id``."""
+    country_env.clips[(GAME_A, 100)] = ("stale", "<b>GOAL</b> 100")
+    country_env.api.fail_next(
+        SendMediaGroup,
+        TelegramBadRequest(method=_method(), message="Bad Request: wrong file identifier/HTTP URL specified"),
+    )
+    await country_env.run([(111, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 2))
+
+    assert country_env.downloads == [(GAME_A, 101), (GAME_A, 100)]
+    [album] = country_env.api.sent(SendMediaGroup)
+    assert all(isinstance(m.media, BufferedInputFile) for m in album.media)
+    assert [m.media.filename for m in album.media] == ["100.mp4", "101.mp4"], "порядок голов сохранён"
+    assert country_env.clips == {
+        (GAME_A, 100): ("fid-1", "<b>GOAL</b> 100"), (GAME_A, 101): ("fid-2", "<b>GOAL</b> 101"),
+    }
+    assert [r.levelname for r in caplog.records if "rejected cached clips" in r.getMessage()] == ["ERROR"]
+    assert country_env.marked == [(_sub(111), GAME_A)]
+
+
+@pytest.mark.asyncio
+async def test_rejected_cached_clip_that_fails_to_download_drops_out_of_the_retry(country_env):
+    """Задача 87: клип с протухшим ``file_id`` при повторе не скачался — он выпадает, а
+    старый ``file_id`` второй раз не шлётся; оставшийся клип уходит один, ``send_video``."""
+    country_env.clips[(GAME_A, 100)] = ("stale", "<b>GOAL</b> 100")
+    country_env.missing = {(GAME_A, 100)}
+    country_env.api.fail_next(
+        SendMediaGroup,
+        TelegramBadRequest(method=_method(), message="Bad Request: wrong file identifier/HTTP URL specified"),
+    )
+    await country_env.run([(111, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 2))
+
+    assert country_env.downloads == [(GAME_A, 101), (GAME_A, 100)]
+    assert country_env.api.sent(SendMediaGroup) == []
+    [video] = country_env.api.sent(SendVideo)
+    assert video.video.filename == "101.mp4"
+    assert country_env.clips[(GAME_A, 100)] == ("stale", "<b>GOAL</b> 100")
 
 
 @pytest.mark.asyncio

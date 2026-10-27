@@ -801,7 +801,9 @@ async def _tap_goal(stats_handlers, make_callback, fake_bot, data="gv:100:200"):
 
 
 @pytest.mark.asyncio
-async def test_goal_video_reports_unavailable_when_download_fails(bot_module, make_callback, fake_bot, api):
+async def test_goal_video_reports_unavailable_when_download_fails(
+    bot_module, make_callback, fake_bot, api, goal_clip_store
+):
     stats_handlers = bot_module("stats_handlers")
 
     with patch.object(stats_handlers, "download_goal_video", return_value=None) as mock_download:
@@ -814,7 +816,7 @@ async def test_goal_video_reports_unavailable_when_download_fails(bot_module, ma
 
 @pytest.mark.asyncio
 async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
-    bot_module, make_callback, fake_bot, api, tmp_path
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
 ):
     from aiogram.types import FSInputFile
 
@@ -842,11 +844,12 @@ async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
     assert sent.parse_mode == "HTML"
     assert not video_path.exists(), "clip must be deleted after sending"
     assert not thumb_path.exists(), "thumbnail must be deleted after sending"
+    assert goal_clip_store == {(100, 200): ("fid-1", "🚨 <b>W. Borgen</b>")}, "file_id — в кэш"
 
 
 @pytest.mark.asyncio
 async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
-    bot_module, make_callback, fake_bot, api, tmp_path
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
 ):
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
@@ -861,6 +864,31 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
     assert api.sent(SendVideo) == []
     assert api.sent_messages[-1].text == "Ошибка при отправке видео."
     assert not video_path.exists(), "clip must be deleted even when send_video() raises"
+    assert goal_clip_store == {}
+
+
+@pytest.mark.asyncio
+async def test_goal_video_reuploads_once_when_telegram_rejects_cached_file_id(
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store, caplog
+):
+    """Задача 87: протухший ``file_id`` из кэша — ошибка в логе, клип скачивается и
+    загружается заново, кэш получает новый ``file_id``."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake-mp4")
+    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="<b>GOAL</b>")
+    goal_clip_store[(100, 200)] = ("stale", "<b>GOAL</b>")
+    api.fail_next(SendVideo, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+
+    with patch.object(stats_handlers, "download_goal_video", return_value=delivery) as mock_download:
+        await _tap_goal(stats_handlers, make_callback, fake_bot)
+
+    mock_download.assert_called_once_with(100, 200)
+    [sent] = api.sent(SendVideo)
+    assert sent.video.path == str(video_path)
+    assert goal_clip_store == {(100, 200): ("fid-1", "<b>GOAL</b>")}
+    assert [r.levelname for r in caplog.records if "rejected cached clip" in r.getMessage()] == ["ERROR"]
 
 
 def _replay(**goal):

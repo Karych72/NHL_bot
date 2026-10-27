@@ -75,7 +75,7 @@ from leaderboard_specs import (
     PLAYER_STAT_TITLES,
     TEAM_STAT_TITLES,
 )
-from video_replay import download_goal_video
+from video_replay import cached_goal_clip, download_goal_video, save_goal_clip
 
 logger = logging.getLogger(__name__)
 
@@ -1027,13 +1027,35 @@ async def callback_leaderboard_page(callback: CallbackQuery, match: re.Match) ->
 
 
 async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) -> None:
-    """Скачивает клип гола по кнопке `gv:<game_id>:<event_id>` (`match` — совпадение
-    `GOAL_VIDEO_CALLBACK_PATTERN`) и шлёт его в чат с подписью
-    ``GoalVideoDelivery.caption`` (кто забил, с чьих передач, когда)."""
+    """Шлёт клип гола по кнопке `gv:<game_id>:<event_id>` (`match` — совпадение
+    `GOAL_VIDEO_CALLBACK_PATTERN`) с подписью ``goal_caption`` (кто забил, с чьих
+    передач, когда).
+
+    Клип из кэша (``cached_goal_clip``) уходит по ``file_id`` сразу; иначе он скачивается
+    с NHL, грузится в Telegram, и его ``file_id`` запоминается (Задача 87). Протухший
+    ``file_id`` (Telegram отверг) — ошибка в лог и одна повторная загрузка.
+    """
     assert callback.message is not None
-    await callback.answer("Загружаю видео гола...")
     game_id, event_id = int(match.group(1)), int(match.group(2))
     chat_id = callback.message.chat.id
+
+    cached = cached_goal_clip(game_id, event_id)
+    if cached is not None:
+        await callback.answer()
+        file_id, caption = cached
+        try:
+            await bot.send_video(
+                chat_id=chat_id, video=file_id, caption=caption, parse_mode="HTML",
+                supports_streaming=True,
+            )
+            return
+        except TelegramBadRequest as exc:
+            logger.error(
+                "Telegram rejected cached clip game=%s event=%s, re-uploading: %s",
+                game_id, event_id, exc,
+            )
+    else:
+        await callback.answer("Загружаю видео гола...")
 
     # В отдельном потоке: скачивание MP4 и два прохода ffmpeg блокируют
     # единственный event loop бота до ~2 минут (см. video_replay).
@@ -1043,7 +1065,7 @@ async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) 
         return
 
     try:
-        await bot.send_video(
+        sent = await bot.send_video(
             chat_id=chat_id,
             video=FSInputFile(delivery.path),
             thumbnail=FSInputFile(delivery.thumb_path) if delivery.thumb_path else None,
@@ -1057,6 +1079,9 @@ async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) 
     except Exception:
         logger.exception("Failed to send goal video")
         await bot.send_message(chat_id=chat_id, text="Ошибка при отправке видео.")
+    else:
+        assert sent.video is not None  # ответ на отправку видео всегда содержит video
+        save_goal_clip(game_id, event_id, sent.video.file_id, delivery.caption)
     finally:
         try:
             os.unlink(delivery.path)

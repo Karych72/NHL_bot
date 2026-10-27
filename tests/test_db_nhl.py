@@ -913,6 +913,44 @@ class TestPredictionLogSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestGoalClipCacheSql(unittest.TestCase):
+    """Кэш клипов голов (Задача 87) на настоящей ``bot_goal_clips``: юнит-тесты рассылки и
+    кнопки видео подменяют кэш словарём, здесь — сам SQL чтения и перезаписи. Матч —
+    несуществующий ``game_id``; строки удаляются до и после."""
+
+    GAME = -2026000087
+
+    def setUp(self):
+        import video_replay
+
+        self.clips = video_replay
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM bot_goal_clips WHERE game_id = %s", (self.GAME,))
+
+    def test_saved_clip_is_read_by_goal_and_reupload_overwrites_it(self):
+        clips = self.clips
+        self.assertIsNone(clips.cached_goal_clip(self.GAME, 100))
+
+        clips.save_goal_clip(self.GAME, 100, "fid-old", "<b>GOAL</b> 100")
+        clips.save_goal_clip(self.GAME, 101, "fid-101", "<b>GOAL</b> 101")
+        self.assertEqual(clips.cached_goal_clip(self.GAME, 100), ("fid-old", "<b>GOAL</b> 100"))
+        self.assertIsNone(clips.cached_goal_clip(self.GAME, 102))
+
+        # Протухший file_id: повторная загрузка перезаписывает строку, а не падает на ключе.
+        clips.save_goal_clip(self.GAME, 100, "fid-new", "<b>GOAL</b> 100")
+        self.assertEqual(clips.cached_goal_clip(self.GAME, 100), ("fid-new", "<b>GOAL</b> 100"))
+        self.assertEqual(clips.cached_goal_clip(self.GAME, 101), ("fid-101", "<b>GOAL</b> 101"))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestAiQuestionsSql(unittest.TestCase):
     """Суточный лимит и журнал свободного текста (Задача 81) на настоящих ``ai_questions`` и
     ``ai_existing_users``. Юнит-тесты подменяют ответ БД, здесь проверяется сам SQL: граница

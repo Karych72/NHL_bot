@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pytest
 from aiogram import Bot
@@ -245,6 +245,25 @@ def fake_db_router(
         return cursor
 
     return _patch
+
+
+@pytest.fixture
+def goal_clip_store(
+    bot_module: Callable[[str], Any], monkeypatch: pytest.MonkeyPatch
+) -> Dict[Tuple[int, int], Tuple[str, str]]:
+    """Кэш клипов голов ``bot_goal_clips`` (Задача 87) в памяти — один на рассылку
+    (``push_digest_job``) и кнопку видео (``stats_handlers``), как общая таблица в БД:
+    (game_id, event_id) → (``file_id``, подпись). SQL кэша — в tests/test_db_nhl.py."""
+    store: Dict[Tuple[int, int], Tuple[str, str]] = {}
+
+    def save(game_id: int, event_id: int, file_id: str, caption: str) -> None:
+        store[(game_id, event_id)] = (file_id, caption)
+
+    for name in ("push_digest_job", "stats_handlers"):
+        module = bot_module(name)
+        monkeypatch.setattr(module, "cached_goal_clip", lambda game_id, event_id: store.get((game_id, event_id)))
+        monkeypatch.setattr(module, "save_goal_clip", save)
+    return store
 
 
 # ---------------------------------------------------------------------------
