@@ -1775,9 +1775,10 @@ _COUNTRY_FROM = (
 )
 
 
-def _country_label(code: str) -> str:
+def country_label(code: str) -> str:
     """Метка страны для HTML: флаг + русское название из `COUNTRY_LABELS`,
-    неизвестный код — сам код; результат экранирован."""
+    неизвестный код — сам код; результат экранирован. Нужна и строке «По подписке»
+    рассылки (`push_digest_job`)."""
     return html.escape(COUNTRY_LABELS.get(code, code))
 
 
@@ -1965,7 +1966,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
         _BY_COUNTRY, code, group, LEADERBOARD_PAGE_SIZE, offset, ranked=True
     )
     body = f"{table}\n<i>{_GROUP_LEGEND[group]}.</i>"
-    heading = f"{PLAYER_GROUPS[group][0]}: {_country_label(code)}"
+    heading = f"{PLAYER_GROUPS[group][0]}: {country_label(code)}"
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
@@ -2042,14 +2043,14 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
-    heading = f"<b>{_country_label(code)}</b>"
+    heading = f"<b>{country_label(code)}</b>"
     return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
 
 
 def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
     """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
     (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
-    Нужно рассылке подписки на страну (`push_digest_job.run_country_broadcast`)."""
+    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`)."""
     return sorted(_country_blocks(code, "g.day", night).items())
 
 
@@ -2065,23 +2066,25 @@ def game_score_line(game_id: int) -> str:
     return _score_line(_game_score_header(*_fetch_game_score_rows(game_id)))
 
 
-def country_night_goals(code: str, night: date) -> List[Tuple[int, int]]:
-    """Голы игроков страны `code` за ночь `night` для видео в рассылке:
-    (game_id, event_id) по порядку игры. Голы без `event_id` и буллиты
-    (`period >= 5` в матче с `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются."""
+def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
+    """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
+    порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
+    в плей-офф 5+ — овертаймы) пропускаются.
+    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) ждёт клипов всех голов
+    матча, а в альбом подписчику страны берёт голы её игроков."""
     goals = fetch_all(
-        "SELECT a.game_id, a.event_id "
+        "SELECT a.game_id, a.event_id, r.nationality "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
-        "JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
-        "WHERE g.day = %s AND r.nationality = %s AND a.event_id IS NOT NULL "
+        "LEFT JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
+        "WHERE g.day = %s AND a.event_id IS NOT NULL "
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
-        (night, code),
-        columns=["game_id", "event_id"],
+        (night,),
+        columns=["game_id", "event_id", "nationality"],
     )
     return [
-        (int(goals["game_id"][i]), int(goals["event_id"][i]))
+        (int(goals["game_id"][i]), int(goals["event_id"][i]), goals["nationality"][i])
         for i in range(goals["count_rows"])
     ]
 

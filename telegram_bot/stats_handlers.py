@@ -624,12 +624,15 @@ async def dispatch_day_digest_messages(
     *,
     dialog: Optional[FSMContext] = None,
     inter_message_sleep_sec: Optional[float] = None,
+    heading: str = "Матчи",
 ) -> None:
     """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота.
 
     Аргументы:
         bot, chat_id: куда слать.
         day_label, games: ответ `day_digest()`.
+        heading: заголовок сводки перед датой; рассылка без уже присланных чату матчей —
+            «Остальные матчи ночи» (Задача 85).
         dialog: состояние диалога `/stats`, если дайджест открыт из него: под последним
             сообщением — кнопки навигации диалога, а его id записывается для `/cancel`.
             Без него (`/today`, ИИ, рассылка) вместо навигации — подсказка «Ещё: …».
@@ -690,7 +693,7 @@ async def dispatch_day_digest_messages(
     lines = day_digest_summary_body(game_ids)
     body = DIGEST_GAME_SEPARATOR.join(lines)
     header = (
-        f"<b>Матчи {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
+        f"<b>{heading} {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
     )
     intro = (
         f"{header}{body}\n\n"

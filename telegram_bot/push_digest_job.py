@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Рассылка утреннего дайджеста, итогов по команде, игроков страны и превью матчей подписчикам.
+"""Рассылка итогов матчей ночи, утреннего дайджеста и превью матчей подписчикам.
 
 Отдельный скрипт вне процесса бота: поднимает собственный aiogram ``Bot``
 (без ``Dispatcher`` и polling), рассылает и завершается. Запускается сервисом
 `sync` (`pipeline/scheduled_sync.py`) после каждого успешного прогона загрузчика —
-раз в 30 минут с 12:00 до 08:00 UTC — и сам решает, пора ли: дайджест и команды уходят одной рассылкой,
-как только загружен последний матч ночи, а к 11:00 МСК — в любом случае (Задача 63;
-времени у подписчика нет); отметка ``last_sent_night`` не даёт отправить ночь дважды.
-Подписка на страну (Задачи 61, 75, 76) — по матчу, на первом прогоне после его конца,
-когда выложены клипы голов: счёт и игроки страны с кнопкой карточки, за ними видео голов.
+раз в 30 минут с 12:00 до 08:00 UTC — и сам решает, пора ли. Итог матча приходит чату
+ровно один раз (Задача 85), сколько бы подписок на него ни вело; отметка — пара (чат, матч).
+Матч подписанной команды или с игроками подписанной страны — одним сообщением под подписки
+чата, на первом прогоне после конца матча, когда NHL выложила клипы всех его голов, а к
+11:00 МСК — с тем, что есть: есть команда — полная карточка с блоками стран, только
+страны — счёт и блоки стран с кнопкой карточки, за ними видео голов этих стран.
+Дайджест — остальные матчи ночи, как только загружен последний её матч, а к 11:00 МСК — в
+любом случае (Задача 63); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Предстоящие матчи (Задача 78) — на каждом прогоне с 15:30 МСК одно превью: ближайший ещё
 не начавшийся матч дня, которого подписчик не получал; каждый матч — один раз. Дневные
 слоты sync (с 12:30 UTC) зовут скрипт с ``--upcoming-only``: тогда идёт только превью.
@@ -33,7 +36,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Tuple, TypeVar, Union
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -62,12 +65,13 @@ if _HERE not in sys.path:
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MSK,
+    country_label,
     country_night_blocks,
-    country_night_goals,
     day_digest,
     game_message,
     game_score_line,
     matchup_season_preview,
+    night_goals,
     rich_message,
 )
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
@@ -83,13 +87,14 @@ from stats_handlers import (  # noqa: E402
     goal_video_markup,
 )
 from subscription_repo import (  # noqa: E402
-    list_active_country_rows,
+    chat_games_sent,
+    deactivate_chat,
+    list_active_game_rows,
     list_active_morning_digest_rows,
-    list_active_team_scores_rows,
     list_active_upcoming_rows,
+    mark_chat_games_sent,
     mark_game_sent,
-    mark_night_sent,
-    mark_subscription_inactive_by_chat_kind_team,
+    mark_digest_night_sent,
     sent_games,
 )
 from database import fetch_all  # noqa: E402
@@ -188,14 +193,66 @@ def night_is_loaded(night: date) -> bool:
     return not missing
 
 
-def _game_ids_for_team_on_calendar_day(team_id: int, day_iso: str) -> list:
-    row = fetch_all(
-        "SELECT game_id FROM games WHERE season_id = %s AND day = %s::date "
-        "AND (home_team_id = %s OR away_team_id = %s) ORDER BY game_id",
-        (config.SEASON_ID, day_iso, team_id, team_id),
-        columns=["game_id"],
+class _GameSubscriptions(NamedTuple):
+    """Подписки чата, которые ведут на один матч ночи (``subscribed_games``)."""
+
+    teams: List[str]
+    """Аббревиатуры подписанных команд матча, хозяева первыми."""
+    countries: List[Tuple[str, str]]
+    """(код, блок игроков страны) подписанных стран, чьи игроки играли, — по алфавиту."""
+
+
+# chat_id → {game_id: подписки чата на матч}.
+_SubscribedGames = Dict[int, Dict[int, _GameSubscriptions]]
+
+
+def subscribed_games(night: date) -> _SubscribedGames:
+    """Матчи ночи *night*, на которые у чата есть подписка на команду или страну.
+
+    Зачем: такой матч приходит чату одним сообщением под его подписки
+    (``run_game_broadcast``), а в дайджест не попадает (``run_morning_digest_broadcast``).
+    Чата без таких матчей в ответе нет.
+
+    Аргументы:
+        night: игровая дата ночи (``night_of``).
+    """
+    rows = list_active_game_rows()
+    if not rows:
+        return {}
+    games = fetch_all(
+        "SELECT g.game_id, g.home_team_id, trim(h.abbreviation), g.away_team_id, trim(a.abbreviation) "
+        "FROM games g "
+        "JOIN teams h ON h.team_id = g.home_team_id AND h.season_id = g.season_id "
+        "JOIN teams a ON a.team_id = g.away_team_id AND a.season_id = g.season_id "
+        "WHERE g.season_id = %s AND g.day = %s ORDER BY g.game_id",
+        (config.SEASON_ID, night),
+        columns=["game_id", "home_id", "home", "away_id", "away"],
     )
-    return [int(row["game_id"][i]) for i in range(row["count_rows"])]
+    blocks = {
+        country: dict(country_night_blocks(country, night))
+        for country in sorted({country for _, _, country in rows if country is not None})
+    }
+    chats: Dict[int, Tuple[Set[int], List[str]]] = defaultdict(lambda: (set(), []))
+    for chat_id, team_id, country in rows:
+        if team_id is not None:
+            chats[chat_id][0].add(team_id)
+        if country is not None:
+            chats[chat_id][1].append(country)
+    result: _SubscribedGames = {}
+    for chat_id, (team_ids, countries) in chats.items():
+        for i in range(games["count_rows"]):
+            game_id = int(games["game_id"][i])
+            subs = _GameSubscriptions(
+                [
+                    games[side][i]
+                    for side in ("home", "away")
+                    if int(games[f"{side}_id"][i]) in team_ids
+                ],
+                [(country, blocks[country][game_id]) for country in countries if game_id in blocks[country]],
+            )
+            if subs.teams or subs.countries:
+                result.setdefault(chat_id, {})[game_id] = subs
+    return result
 
 
 async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
@@ -220,18 +277,23 @@ async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     return result
 
 
-async def run_morning_digest_broadcast(bot: Bot, night: date) -> None:
+async def run_morning_digest_broadcast(
+    bot: Bot, night: date, final: bool, subscribed: _SubscribedGames
+) -> None:
     """Шлёт дайджест ночи *night* подписчикам ``morning_digest``, которым пора.
 
     Зачем: ровно те же карточки, что и меню ``/stats``, но без навигации диалога
     (``dispatch_day_digest_messages`` без ``dialog``) — в рассылке кнопки диалога некуда вести.
-    Чату, которому ночь уже ушла (``last_sent_night``), не шлётся ничего. После
-    попытки ночь отмечается отправленной — один заход на чат, как и прежде. Ночь без
-    матчей в БД не рассылается.
-    Заблокировавший бота чат (``TelegramForbiddenError``) деактивируется, чтобы не
-    долбиться в него каждый день.
+    В дайджесте чата — только матчи, итог которых ему ещё не ушёл (Задача 85); до крайнего
+    срока не берутся и матчи его подписок (``subscribed``): ждущий клипов уйдёт своим
+    сообщением. На крайнем сроке рассылка по матчам уже прошла, и матч подписки без отметки
+    (её сбой) попадает сюда. Отфильтрованная сводка — «Остальные матчи ночи»; не осталось
+    ничего — дайджеста нет. Чату, которому ночь уже ушла (``last_sent_night``), не шлётся
+    ничего; после попытки ночь и её матчи отмечаются отправленными. Ночь без матчей в БД не
+    рассылается. Заблокировавший бота чат (``TelegramForbiddenError``) теряет все подписки.
 
-    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``).
+    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``);
+    ``final`` — наступил ли крайний срок; ``subscribed`` — ``subscribed_games(night)``.
     """
     due = [
         chat_id
@@ -244,83 +306,36 @@ async def run_morning_digest_broadcast(bot: Bot, night: date) -> None:
     if games[0][0] == 0:
         logger.info("No games in DB for night %s: digest not sent", night)
         return
+    sent = chat_games_sent([game[0] for game in games])
     for chat_id in due:
-        try:
-            await dispatch_day_digest_messages(
+        own = set() if final else set(subscribed.get(chat_id, {}))
+        rest = [game for game in games if (chat_id, game[0]) not in sent and game[0] not in own]
+        if rest:
+            send = partial(
+                dispatch_day_digest_messages,
                 bot,
                 chat_id,
                 day_label,
-                games,
+                rest,
                 inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
+                heading="Матчи" if len(rest) == len(games) else "Остальные матчи ночи",
             )
-        except TelegramForbiddenError:
-            logger.info("chat_id=%s blocked bot; deactivate morning_digest", chat_id)
-            mark_subscription_inactive_by_chat_kind_team(
-                chat_id, "morning_digest", None
-            )
-        except TelegramRetryAfter as exc:
-            wait = float(exc.retry_after)
-            logger.warning("digest RetryAfter %ss chat_id=%s", wait, chat_id)
-            await asyncio.sleep(wait)
             try:
-                await dispatch_day_digest_messages(
-                    bot,
-                    chat_id,
-                    day_label,
-                    games,
-                    inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
-                )
+                try:
+                    await send()
+                except TelegramRetryAfter as exc:
+                    logger.warning("digest RetryAfter %ss chat_id=%s", exc.retry_after, chat_id)
+                    await asyncio.sleep(float(exc.retry_after))
+                    await send()
             except TelegramForbiddenError:
-                mark_subscription_inactive_by_chat_kind_team(
-                    chat_id, "morning_digest", None
-                )
-        except TelegramAPIError as exc:
-            logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
-        mark_night_sent(chat_id, "morning_digest", None, night)
+                logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+                deactivate_chat(chat_id)
+            except TelegramAPIError as exc:
+                logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
+            mark_chat_games_sent(chat_id, [game[0] for game in rest])
+        mark_digest_night_sent(chat_id, night)
         # Telegram лимитирует бота ~30 сообщениями в секунду.
         await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
-
-
-async def run_team_scores_broadcast(bot: Bot, night: date) -> None:
-    """Полная карточка каждого матча команды за ночь *night*.
-
-    Зачем: подписка ``team_scores`` — карточка матча (счёт, голы, вратари) с кнопками
-    видео голов, как в меню, а не одна строка счёта; чат без матчей пропускается.
-
-    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``).
-    """
-    for chat_id, team_id, last_sent in list_active_team_scores_rows():
-        if last_sent == night:
-            continue
-        gids = _game_ids_for_team_on_calendar_day(team_id, night.isoformat())
-        if not gids:
-            continue
-        cards = [game_message(gid) for gid in gids]
-        try:
-            for text, goals_meta in cards:
-                await _throttled(
-                    partial(
-                        bot.send_rich_message,
-                        chat_id=chat_id,
-                        rich_message=rich_message(
-                            f"<b>Матч вашей команды ({night})</b>\n\n{text}\n\n{SUBSCRIPTIONS_FOOTER}"
-                        ),
-                        reply_markup=goal_video_markup(goals_meta),
-                    ),
-                    chat_id,
-                )
-        except TelegramForbiddenError:
-            logger.info(
-                "chat_id=%s blocked bot; deactivate team_scores team_id=%s",
-                chat_id,
-                team_id,
-            )
-            mark_subscription_inactive_by_chat_kind_team(
-                chat_id, "team_scores", team_id
-            )
-        except TelegramAPIError as exc:
-            logger.warning("team notify failed chat_id=%s: %s", chat_id, exc)
-        mark_night_sent(chat_id, "team_scores", team_id, night)
 
 
 # Клип к отправке: ((game_id, event_id), ``file_id`` из кэша или файл mp4 к загрузке,
@@ -414,8 +429,8 @@ async def _send_country_game(
     game_id: int,
     goals: List[Tuple[int, int]],
 ) -> None:
-    """Один матч рассылки по стране (Задача 76): короткое сообщение ``text`` (счёт и
-    игроки страны) с кнопкой полной карточки матча, за ним видео голов страны альбомом.
+    """Матч рассылки только по странам (Задачи 76, 85): короткое сообщение ``text`` (счёт и
+    игроки стран) с кнопкой полной карточки матча, за ним видео голов этих стран альбомом.
 
     Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет. Подпись альбома —
     описания всех его голов (``_album_caption``): кто забил, с чьих передач, когда. Клипы, не
@@ -427,8 +442,8 @@ async def _send_country_game(
 
     Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — построчный HTML сообщения
     (уходит rich-сообщением, ``rich_message``);
-    ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов страны в
-    матче.
+    ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов стран в
+    матче, каждый один раз.
     """
     card_button = InlineKeyboardMarkup(
         inline_keyboard=[[
@@ -505,58 +520,81 @@ async def _clips_published(
     return True
 
 
-async def run_country_broadcast(bot: Bot, night: date, final: bool) -> None:
-    """Матчи ночи *night* с игроками страны — подписчикам ``country_players``, по матчу.
+async def run_game_broadcast(
+    bot: Bot, night: date, final: bool, subscribed: _SubscribedGames
+) -> None:
+    """Итог каждого матча подписок чата (``subscribed``) — одним сообщением, ровно один раз.
 
-    Зачем: подписка на страну (Задача 76) — сообщение о матче через полчаса после его
-    конца, а не утром. Матч уходит на первом прогоне sync, когда он уже в ``games`` и у
-    всех голов страны в нём NHL выложила клипы; ``final`` (крайний срок ночи) — с тем,
-    что есть. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится
-    после попытки: сбой одного матча логируется и не повторяется, остальные уходят.
+    Зачем: правило «каждый матч ночи — чату ровно один раз» (Задача 85): сколько бы
+    подписок ни вело на матч (команда, страны), сообщение одно и собрано под них. Первая
+    строка — «По подписке: …» с этими подписками. Есть подписанная команда — полная
+    карточка с кнопками видео голов и блоками стран под ней; только страны — счёт и блоки
+    стран с кнопкой карточки, за ними видео голов игроков этих стран (``_send_country_game``).
+    Матч уходит на первом прогоне sync, когда он уже в ``games`` и NHL выложила клипы всех
+    его голов; ``final`` (крайний срок ночи) — с тем, что есть. Отметка — пара (чат, матч)
+    в ``bot_chat_game_sent``, ставится после любой попытки: сбой Telegram на одном матче
+    логируется и не повторяется, остальные уходят; иной сбой (БД, ffmpeg) тоже отмечает матч
+    и обрывает прогон. Заблокировавший бота чат теряет все подписки.
 
     Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``);
-    ``final`` — наступил ли крайний срок.
+    ``final`` — наступил ли крайний срок; ``subscribed`` — ``subscribed_games(night)``.
     """
-    rows = list_active_country_rows()
-    games: Dict[str, List[Tuple[int, str, List[Tuple[int, int]]]]] = {}
-    for country in sorted({country for _, _, country in rows}):
-        goals_by_game: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
-        for goal in country_night_goals(country, night):
-            goals_by_game[goal[0]].append(goal)
-        games[country] = [
-            (game_id, block, goals_by_game[game_id])
-            for game_id, block in country_night_blocks(country, night)
-        ]
-    game_ids = sorted({game_id for country_games in games.values() for game_id, _, _ in country_games})
-    if not game_ids:
+    if not subscribed:
         return
-    sent = sent_games(game_ids)
+    sent = chat_games_sent(sorted({game_id for games in subscribed.values() for game_id in games}))
+    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
+    for game_id, event_id, nationality in night_goals(night):
+        goals[game_id].append(((game_id, event_id), nationality))
     published: Dict[Tuple[int, int], bool] = {}
+    cards: Dict[int, Tuple[str, List[Dict]]] = {}
     score_lines: Dict[int, str] = {}
-    for subscription_id, chat_id, country in rows:
-        for game_id, block, goals in games[country]:
-            if (subscription_id, game_id) in sent:
+    for chat_id, games in subscribed.items():
+        for game_id, subs in games.items():
+            if (chat_id, game_id) in sent:
                 continue
-            if not final and not await _clips_published(goals, published):
-                logger.info("game_id=%s: клипы %s ещё не выложены, ждём", game_id, country)
+            if not final and not await _clips_published([goal for goal, _ in goals[game_id]], published):
+                logger.info("game_id=%s: клипы ещё не выложены, ждём", game_id)
                 continue
-            if game_id not in score_lines:
-                score_lines[game_id] = game_score_line(game_id)
-            text = f"{score_lines[game_id]}\n\n{block}\n\n{SUBSCRIPTIONS_FOOTER}"
+            labels = [html.escape(team) for team in subs.teams] + [
+                country_label(country) for country, _ in subs.countries
+            ]
+            head = f"🔔 По подписке: {' · '.join(labels)}"
+            blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
             try:
-                await _send_country_game(bot, chat_id, text, game_id, goals)
+                if subs.teams:
+                    if game_id not in cards:
+                        cards[game_id] = game_message(game_id)
+                    text, goals_meta = cards[game_id]
+                    await _throttled(
+                        partial(
+                            bot.send_rich_message,
+                            chat_id=chat_id,
+                            rich_message=rich_message(f"{head}\n\n{text}{blocks}\n\n{SUBSCRIPTIONS_FOOTER}"),
+                            reply_markup=goal_video_markup(goals_meta),
+                        ),
+                        chat_id,
+                    )
+                else:
+                    if game_id not in score_lines:
+                        score_lines[game_id] = game_score_line(game_id)
+                    countries = {country for country, _ in subs.countries}
+                    await _send_country_game(
+                        bot,
+                        chat_id,
+                        f"{head}\n\n{score_lines[game_id]}{blocks}\n\n{SUBSCRIPTIONS_FOOTER}",
+                        game_id,
+                        [goal for goal, nationality in goals[game_id] if nationality in countries],
+                    )
             except TelegramForbiddenError:
-                logger.info("chat_id=%s blocked bot; deactivate country %s", chat_id, country)
-                mark_subscription_inactive_by_chat_kind_team(
-                    chat_id, "country_players", None, country
-                )
+                logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+                deactivate_chat(chat_id)
                 break
             except TelegramAPIError as exc:
-                logger.warning(
-                    "country send failed chat_id=%s %s game_id=%s: %s",
-                    chat_id, country, game_id, exc,
-                )
-            mark_game_sent(subscription_id, game_id)
+                logger.warning("game send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
+            finally:
+                # И при сбое не из Telegram (БД, ffmpeg) после ушедшего текста: матч не
+                # повторится и не попадёт ещё и в дайджест; сама ошибка всплывает.
+                mark_chat_games_sent(chat_id, [game_id])
 
 
 def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
@@ -618,8 +656,8 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
                 chat_id,
             )
         except TelegramForbiddenError:
-            logger.info("chat_id=%s blocked bot; deactivate upcoming_games", chat_id)
-            mark_subscription_inactive_by_chat_kind_team(chat_id, "upcoming_games")
+            logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+            deactivate_chat(chat_id)
         except TelegramAPIError as exc:
             logger.warning("upcoming send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
         mark_game_sent(subscription_id, game_id)
@@ -628,27 +666,31 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
 async def broadcast_if_due(bot: Bot, now: datetime) -> None:
     """Прогоняет рассылки за ночь момента *now*.
 
-    Дайджест и команды — когда ночь загружена целиком (``night_is_loaded``) или
-    наступил крайний срок ``NIGHT_DEADLINE_MSK``. Страна — на каждом прогоне, по
-    готовым матчам (``run_country_broadcast``): её сбой (NHL, ffmpeg) не срывает дайджест
-    на крайнем сроке, у которого следующей попытки нет. После крайнего срока NHL API о
-    готовности ночи не спрашивается. Превью предстоящих матчей — на каждом прогоне, с
-    моментом на свой старт (страна с видео идёт минутами). Страна и превью независимы:
-    сбой одной (NHL API, ffmpeg) логируется и не срывает другую, а после обеих
-    пробрасывается — прогон красный в статусе sync, ошибка не глушится.
+    Сначала итоги по матчам подписок (``run_game_broadcast``) — на каждом прогоне, по
+    готовым матчам; затем дайджест — когда ночь загружена целиком (``night_is_loaded``) или
+    наступил крайний срок ``NIGHT_DEADLINE_MSK``: на крайнем сроке ждущие матчи уже ушли, и
+    дайджест берёт остаток. После крайнего срока NHL API о готовности ночи не спрашивается.
+    Превью предстоящих матчей — последним, с моментом на свой старт (матчи с видео идут
+    минутами). Рассылки независимы: сбой одной (NHL API, ffmpeg) логируется и не срывает
+    следующие — дайджест на крайнем сроке, у которого следующей попытки нет, уйдёт и после
+    сбоя матчей, — а после всех пробрасывается: прогон красный в статусе sync.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
     """
     night = night_of(now)
     final = now >= _msk_moment(night, NIGHT_DEADLINE_MSK)
-    if final or night_is_loaded(night):
-        await run_morning_digest_broadcast(bot, night)
-        await run_team_scores_broadcast(bot, night)
-    else:
-        logger.info("Ночь %s загружена не целиком: дайджест и команды отложены.", night)
+    subscribed = subscribed_games(night)
+
+    async def digest() -> None:
+        if final or night_is_loaded(night):
+            await run_morning_digest_broadcast(bot, night, final, subscribed)
+        else:
+            logger.info("Ночь %s загружена не целиком: дайджест отложен.", night)
+
     errors: List[Exception] = []
     for name, broadcast in (
-        ("country", lambda: run_country_broadcast(bot, night, final)),
+        ("games", lambda: run_game_broadcast(bot, night, final, subscribed)),
+        ("digest", digest),
         ("upcoming", lambda: run_upcoming_broadcast(bot, datetime.now(timezone.utc))),
     ):
         try:
