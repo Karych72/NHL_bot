@@ -24,6 +24,7 @@ from contextlib import closing
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -255,7 +256,7 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     """SQL ``subscription_repo`` на настоящей ``bot_subscriptions`` (Задача 60).
 
     Юнит-тесты рассылки подменяют репозиторий; здесь проверяется, что сами запросы
-    выбирают и отмечают нужные строки — ошибка в ``WHERE`` у ``mark_night_sent``
+    выбирают и отмечают нужные строки — ошибка в ``WHERE`` у ``mark_digest_night_sent``
     слала бы дайджест каждые полчаса при зелёных юнит-тестах. Строки заводятся на
     отрицательные ``chat_id``, которых нет среди подписчиков (диапазон групп Telegram,
     но таких групп у бота нет), и удаляются до и после теста.
@@ -277,16 +278,25 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     def _delete_rows(self):
         # psycopg2: `with conn` — транзакция, а не закрытие; закрывает `closing`.
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM bot_subscriptions WHERE chat_id IN (%s, %s)",
-                (self.CHAT, self.OTHER_CHAT),
-            )
+            for table in ("bot_subscriptions", "bot_chat_game_sent"):
+                cur.execute(
+                    f"DELETE FROM {table} WHERE chat_id IN (%s, %s)", (self.CHAT, self.OTHER_CHAT)
+                )
 
     def _digest_rows(self, chat_id=CHAT):
         return [r for r in self.repo.list_active_morning_digest_rows() if r[0] == chat_id]
 
-    def _team_rows(self, chat_id=CHAT):
-        return [r for r in self.repo.list_active_team_scores_rows() if r[0] == chat_id]
+    def _game_rows(self, chat_id=CHAT):
+        """Строки рассылки итогов по матчу (команды и страны) чата: (team_id, country)."""
+        return [r[1:] for r in self.repo.list_active_game_rows() if r[0] == chat_id]
+
+    def _last_sent(self, chat_id, kind):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT last_sent_night FROM bot_subscriptions WHERE chat_id = %s AND kind = %s",
+                (chat_id, kind),
+            )
+            return cur.fetchone()[0]
 
     def test_digest_lifecycle(self):
         repo = self.repo
@@ -300,53 +310,63 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.upsert_chat_kind(self.CHAT, "morning_digest")
         self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
 
-    def test_mark_night_sent_touches_only_its_subscription(self):
+    def test_mark_digest_night_sent_touches_only_its_subscription(self):
         repo = self.repo
         for chat_id in (self.CHAT, self.OTHER_CHAT):
             repo.upsert_chat_kind(chat_id, "morning_digest")
             repo.upsert_team_scores(chat_id, self.TEAM)
 
-        repo.mark_night_sent(self.CHAT, "morning_digest", None, self.NIGHT)
+        repo.mark_digest_night_sent(self.CHAT, self.NIGHT)
         self.assertEqual(self._digest_rows(), [(self.CHAT, self.NIGHT)])
-        self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, None)])
+        self.assertIsNone(self._last_sent(self.CHAT, "team_scores"))
         self.assertEqual(self._digest_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, None)])
-
-        repo.mark_night_sent(self.CHAT, "team_scores", self.TEAM, self.NIGHT)
-        self.assertEqual(self._team_rows(), [(self.CHAT, self.TEAM, self.NIGHT)])
-        self.assertEqual(self._team_rows(self.OTHER_CHAT), [(self.OTHER_CHAT, self.TEAM, None)])
-
-    def _country_rows(self, chat_id=CHAT):
-        return [r for r in self.repo.list_active_country_rows() if r[1] == chat_id]
 
     def test_country_subscriptions(self):
         repo = self.repo
         repo.upsert_country(self.CHAT, "RUS")
         repo.upsert_country(self.CHAT, "FIN")
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
         repo.upsert_country(self.OTHER_CHAT, "RUS")
         repo.upsert_chat_kind(self.CHAT, "morning_digest")
-        (fin, _, _), (rus, _, _) = self._country_rows()
-        ((other_rus, _, _),) = self._country_rows(self.OTHER_CHAT)
-        self.assertEqual(
-            [r[1:] for r in self._country_rows()], [(self.CHAT, "FIN"), (self.CHAT, "RUS")]
-        )
-
-        # Задача 76: отметка матча — только у своей подписки; повторная — no-op.
-        game, other_game = 2099990001, 2099990002
-        repo.mark_game_sent(rus, game)
-        repo.mark_game_sent(rus, game)
-        repo.mark_game_sent(other_rus, other_game)
-        self.assertEqual(repo.sent_games([game]), {(rus, game)})
-        self.assertEqual(
-            repo.sent_games([game, other_game]), {(rus, game), (other_rus, other_game)}
-        )
-        self.assertNotIn((fin, game), repo.sent_games([game]))
-        self.assertEqual(self._digest_rows(), [(self.CHAT, None)])
+        # Задача 85: рассылка по матчу читает команды и страны чата одним списком.
+        self.assertEqual(self._game_rows(), [(None, "FIN"), (None, "RUS"), (self.TEAM, None)])
+        self.assertEqual(self._game_rows(self.OTHER_CHAT), [(None, "RUS")])
 
         # Отписка от одной страны; переподписка реактивирует ту же строку.
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, set(), ["FIN"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN"]))
         repo.upsert_country(self.CHAT, "RUS")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, set(), ["FIN", "RUS"]))
+        self.assertEqual(
+            repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN", "RUS"])
+        )
+
+    def test_chat_game_marks_and_deactivate_chat(self):
+        """Задача 85: отметка «итог матча ушёл» — по паре (чат, матч), повторная — no-op;
+        отметка превью (``bot_game_sent``) итогом не считается. Заблокировавший бота чат
+        гасит все свои подписки, чужие живы."""
+        repo = self.repo
+        game, other_game = 2099990001, 2099990002
+        repo.mark_chat_games_sent(self.CHAT, [game, other_game])
+        repo.mark_chat_games_sent(self.CHAT, [game])
+        repo.mark_chat_games_sent(self.OTHER_CHAT, [other_game])
+        self.assertEqual(repo.chat_games_sent([game]), {(self.CHAT, game)})
+        self.assertEqual(
+            repo.chat_games_sent([game, other_game]),
+            {(self.CHAT, game), (self.CHAT, other_game), (self.OTHER_CHAT, other_game)},
+        )
+
+        repo.upsert_chat_kind(self.OTHER_CHAT, "upcoming_games")
+        ((upcoming, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.OTHER_CHAT]
+        repo.mark_game_sent(upcoming, game)
+        self.assertNotIn((self.OTHER_CHAT, game), repo.chat_games_sent([game]))
+
+        for chat_id in (self.CHAT, self.OTHER_CHAT):
+            repo.upsert_chat_kind(chat_id, "morning_digest")
+            repo.upsert_country(chat_id, "RUS")
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        repo.deactivate_chat(self.CHAT)
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
+        self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"]))
 
     def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
         repo = self.repo
@@ -363,21 +383,21 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
     def test_upcoming_games_subscription(self):
         """Задача 78: подписка на чат — одна строка, переподписка реактивирует её; в
-        рассылку идут только активные; отметка матча — в общей ``bot_game_sent``, своя у
-        каждой подписки (страна того же чата превью не помечает)."""
+        рассылку идут только активные; отметка матча — в ``bot_game_sent``, своя у каждой
+        подписки."""
         repo = self.repo
         repo.upsert_chat_kind(self.CHAT, "upcoming_games")
         repo.upsert_chat_kind(self.CHAT, "upcoming_games")
         repo.upsert_chat_kind(self.OTHER_CHAT, "upcoming_games")
         repo.upsert_country(self.CHAT, "RUS")
         ((upcoming, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT]
-        ((rus, _, _),) = self._country_rows()
+        ((other, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.OTHER_CHAT]
         self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, True, set(), ["RUS"]))
 
         game = 2099990003
         repo.mark_game_sent(upcoming, game)
         self.assertEqual(repo.sent_games([game]), {(upcoming, game)})
-        self.assertNotIn((rus, game), repo.sent_games([game]))
+        self.assertNotIn((other, game), repo.sent_games([game]))
 
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "upcoming_games")
         self.assertEqual([r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT], [])
@@ -776,11 +796,49 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertEqual(line, "🏒 <b>Home 3:2 Away</b>")
         self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
 
-    def test_goals_of_country_skip_shootout_in_game_order(self):
+    def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(
-            self.messages.country_night_goals("ZZZ", self.NIGHT),
-            [(self.GAME, 5), (self.GAME, 10), (self.GAME, 30)],
+            self.messages.night_goals(self.NIGHT),
+            [(self.GAME, 5, "ZZZ"), (self.GAME, 10, "ZZZ"), (self.GAME, 20, "YYY"), (self.GAME, 30, "ZZZ")],
         )
+
+    def test_subscribed_games_match_teams_and_countries_of_each_chat(self):
+        """Задача 85: матч ночи — чату, у которого на него подписка на команду (хозяева
+        первыми) или страну, чьи игроки играли; погашенная подписка и чат без таких матчей
+        в ответ не попадают."""
+        import push_digest_job
+        import subscription_repo as repo
+
+        chats = (-999000085, -999000086, -999000087)
+        self.addCleanup(self._delete_subscriptions, chats)
+        both, yyy, gone = chats
+        repo.upsert_team_scores(both, self.TEAM)
+        repo.upsert_country(both, "ZZZ")
+        repo.upsert_country(both, "XXX")
+        repo.upsert_country(yyy, "YYY")
+        repo.upsert_team_scores(gone, self.OPPONENT)
+        repo.deactivate_chat(gone)
+        with patch.object(config, "SEASON_ID", self.SEASON):
+            subscribed = {
+                chat: games
+                for chat, games in push_digest_job.subscribed_games(self.NIGHT).items()
+                if chat in chats
+            }
+
+        blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
+        self.assertEqual(subscribed[both], {
+            self.GAME: (["HOM"], [("ZZZ", blocks[self.GAME])]),
+            self.GAME2: (["HOM"], [("ZZZ", blocks[self.GAME2])]),
+        })
+        self.assertEqual(
+            {game: (subs.teams, [code for code, _ in subs.countries]) for game, subs in subscribed[yyy].items()},
+            {self.GAME: ([], ["YYY"])},
+        )
+        self.assertNotIn(gone, subscribed)
+
+    def _delete_subscriptions(self, chats):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = ANY(%s)", (list(chats),))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
