@@ -135,13 +135,22 @@ def test_rich_message_keeps_table_as_own_block_without_gap(bot_module):
     assert message.html == f"<p><b>Дивизион</b></p>{table}<p>Итог: /help</p>{table}<p>после</p>"
 
 
-def test_rich_message_puts_footer_last(bot_module):
-    """Служебный хвост — `<footer>` в конце: клиенты рисуют его мельче и серее текста."""
+def test_rich_message_keeps_footer_details_and_list_as_own_blocks(bot_module):
+    """Подвал, свёрнутый блок и список — свои блоки, не внутри абзаца; содержимое
+    `<details>` собирается по тем же правилам абзацев, строки подвала — через `<br>`."""
     bot_messages = bot_module("bot_messages")
+    details = bot_messages.rich_details("Обозначения", "Г — голы\nО — очки\n\nИ — игры")
+    footer = bot_messages.rich_footer("Настроить: /subscriptions\n\nданные на 27.10")
+    items = bot_messages.rich_list(["/today — ночь", "/help — справка"])
 
-    message = bot_messages.rich_message("Счёт\n\n", footer="Настроить: /subscriptions\nданные на 27.10")
+    message = bot_messages.rich_message(f"Счёт\n{items}\n{details}\n\n{footer}")
 
-    assert message.html == "<p>Счёт</p><footer>Настроить: /subscriptions<br>данные на 27.10</footer>"
+    assert message.html == (
+        "<p>Счёт</p><ul><li>/today — ночь</li><li>/help — справка</li></ul>"
+        "<details><summary>Обозначения</summary>"
+        "<p>Г — голы<br>О — очки</p><p>&nbsp;</p><p>И — игры</p></details>"
+        "<footer>Настроить: /subscriptions<br>данные на 27.10</footer>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -938,8 +947,8 @@ def test_conference_summary_reports_when_season_has_no_rows(
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
         text = bot_messages.conference_summary()
-    assert "В базе нет командной статистики для этого сезона." in text
-    assert "(25/26)" in text
+    assert text.startswith("<b>Сводка по конференциям</b>\nВ базе нет командной статистики")
+    assert text.endswith("<footer>Сезон 25/26</footer>")
 
 
 def test_conference_summary_escapes_html_in_group_name(
@@ -1590,6 +1599,8 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
         ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], ["линия плей-офф"], ["3.", "T5"],
     ]
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
+    assert text.startswith("<b>Турнирная таблица NHL</b>\n\n")
+    assert text.rstrip().endswith(" · данные на 2026-04-01</footer>"), "дата — в подвале"
 
 
 
@@ -1665,7 +1676,7 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     # Неизвестный код показывается как есть, без исключения.
     assert _tables(text) == [[
         ["", "Страна", "Игр", "О", "Г", "О/и"],
-        ["1.", "🇨🇦 Канада", "4", "100", "40", "25.0"],
+        ["1.", "Канада", "4", "100", "40", "25.0"],
         ["2.", "XXX", "3", "30", "9", "10.0"],
     ]]
     assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
@@ -1679,6 +1690,7 @@ def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, f
     bot_messages = bot_module("bot_messages")
     fake_db_router([("GROUP BY r.nationality", [])])
 
+    # Простой текст без разметки: причину показывает и экран подписок, а он не rich.
     assert bot_messages.country_rankings() == (
         "В базе нет данных по странам для этого сезона.",
         [],

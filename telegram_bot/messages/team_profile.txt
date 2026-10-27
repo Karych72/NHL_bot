@@ -1,4 +1,4 @@
-<b>{{ team_name }}</b> ({{ abbrev }}) · сезон {{ season }}
+<b>{{ team_name }}</b> ({{ abbrev }})
 {{ division }}: {{ div_place }}-е место · {{ conference }}: {{ conf_place }}-е · лига: {{ league_place }}-е из {{ league_size }} сыгравших
 
 <b>Сезон</b>
@@ -22,6 +22,5 @@
 <b>Вратари</b>
 {{ goalies_table }}
 {%- endif %}
-
 {{ legend }}
-Все игроки: {{ full_command }}
+{{ footer }}

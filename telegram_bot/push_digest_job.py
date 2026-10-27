@@ -72,6 +72,7 @@ from bot_messages import (  # noqa: E402
     game_score_line,
     matchup_season_preview,
     night_goals,
+    rich_footer,
     rich_message,
 )
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
@@ -441,7 +442,7 @@ async def _send_country_game(
     ошибка в лог и одна повторная отправка с загрузкой клипов заново.
 
     Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — построчный HTML сообщения
-    (уходит rich-сообщением, ``rich_message``, с подвалом ``SUBSCRIPTIONS_FOOTER``);
+    (уходит rich-сообщением, ``rich_message``, с подвалом ``rich_footer(SUBSCRIPTIONS_FOOTER)``);
     ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов стран в
     матче, каждый один раз.
     """
@@ -452,7 +453,7 @@ async def _send_country_game(
     )
     await _throttled(
         lambda: bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(text, footer=SUBSCRIPTIONS_FOOTER),
+            chat_id=chat_id, rich_message=rich_message(f"{text}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"),
             reply_markup=card_button,
         ),
         chat_id,
@@ -570,7 +571,9 @@ async def run_game_broadcast(
                         partial(
                             bot.send_rich_message,
                             chat_id=chat_id,
-                            rich_message=rich_message(f"{head}\n\n{text}{blocks}", footer=SUBSCRIPTIONS_FOOTER),
+                            rich_message=rich_message(
+                                f"{head}\n\n{text}{blocks}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"
+                            ),
                             reply_markup=goal_video_markup(goals_meta),
                         ),
                         chat_id,
@@ -655,7 +658,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
                 partial(
                     bot.send_rich_message,
                     chat_id=chat_id,
-                    rich_message=rich_message(previews[game_id], footer=SUBSCRIPTIONS_FOOTER),
+                    rich_message=rich_message(f"{previews[game_id]}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"),
                 ),
                 chat_id,
             )

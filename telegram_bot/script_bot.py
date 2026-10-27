@@ -12,7 +12,7 @@ from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot_messages import rich_message
+from bot_messages import rich_footer, rich_message
 
 from dialog_states import (
     CHOOSE_STATS,
@@ -64,8 +64,8 @@ from dialog_states import (
 logger = logging.getLogger(__name__)
 
 STATS_MENU_INTRO = (
-    "Меню статистики NHL. Выберите раздел кнопкой ниже. "
-    "Список команд: <code>/help</code>."
+    "<b>Меню статистики NHL</b>\nВыберите раздел кнопкой ниже.\n"
+    + rich_footer("Все команды — /help")
 )
 
 # Строковые callback для «Назад» между подменю (не занимают числовой диапазон состояний).

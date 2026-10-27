@@ -294,9 +294,9 @@ async def cmd_team(message: Message, bot: Bot) -> None:
 def team_profile_text(abbrev: str, full: bool) -> str:
     """Ответ `/BOS` — статистика клуба (`team_profile()`), при `full` (`/BOS_FULL`) — все
     его игроки (`team_full_stats()`); неизвестную аббревиатуру обе функции сами
-    превращают в текст с причиной."""
+    превращают в текст с причиной, а ссылку на `/team` ставят в подвал."""
     body = team_full_stats(abbrev) if full else team_profile(abbrev)
-    return truncate_telegram_text(body + "\n\nВсе команды: /team")
+    return truncate_telegram_text(body)
 
 
 async def cmd_team_profile(message: Message, match: re.Match) -> None:

@@ -104,6 +104,22 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("Corsi", help_text.ADVANCED_COMMAND_INTRO)
         self.assertIn("Fenwick", help_text.ADVANCED_COMMAND_INTRO)
 
+    def test_reference_texts_fold_legends_and_footer_links(self):
+        """Стиль справочных экранов (Задача 89): команды /help — список, легенда и
+        расшифровка метрик свёрнуты, ссылка на /help из /start — в подвале."""
+        help_text = _load_help_text()
+        hm = help_text.HELP_MESSAGE
+        self.assertTrue(hm.startswith("<b>Справка</b>\n"))
+        self.assertIn("\n<ul><li>/today — ", hm)
+        legend = hm.split("<details><summary>Обозначения</summary>", 1)[1]
+        self.assertIn("ПШ — победная шайба", legend)
+        start = help_text.START_MESSAGE
+        self.assertIn("<b>Быстрый старт</b>", start)
+        self.assertNotIn("/countries", start, "полный перечень команд — в /help")
+        self.assertTrue(start.endswith("<footer>Все команды и обозначения — /help</footer>"))
+        explained = help_text.ADVANCED_COMMAND_INTRO.split("<details><summary>", 1)[1]
+        self.assertIn("Corsi", explained)
+
     def test_start_and_help_use_plain_clickable_commands(self):
         """`<code>/cmd</code>` в Telegram не кликается — команды пишутся голыми."""
         help_text = _load_help_text()

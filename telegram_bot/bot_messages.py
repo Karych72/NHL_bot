@@ -217,21 +217,13 @@ _STRIPED_MIN_ROWS = 10
 _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
 
-def rich_message(text: str, *, footer: Optional[str] = None) -> InputRichMessage:
-    """Текст бота → rich-сообщение (Bot API 10.1): блок строк — абзац `<p>` с переносами
-    `<br>`, пустая строка — граница абзацев с видимым зазором, строка-таблица (`_table`) —
-    свой блок, `footer` — подвал `<footer>` в конце.
+# Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица, свёрнутый блок,
+# список, подвал — каждый собран своим хелпером в одну строку.
+_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer")
 
-    Зачем: в rich-HTML перевод строки — пробел, поэтому строки соединяются `<br>`;
-    пустые строки, которыми шаблоны и сборщики делят сообщение на разделы, остаются
-    зазором. Подвал — служебный хвост (ссылки на настройки): клиенты рисуют его мельче
-    и серее содержания. Тег не должен пересекать пустую строку: блоки — законченные
-    фрагменты разметки, иначе Telegram отвергнет сообщение.
 
-    Аргументы:
-        text: построчный HTML, как его собирают функции этого модуля.
-        footer: построчный HTML подвала; `None` — без подвала.
-    """
+def _rich_html(text: str) -> str:
+    """Построчный HTML → rich-HTML блоков; правила — у `rich_message()`."""
     blocks: List[str] = []
     paragraph: List[str] = []
     gap = False
@@ -247,7 +239,7 @@ def rich_message(text: str, *, footer: Optional[str] = None) -> InputRichMessage
         gap = False
 
     for line in text.split("\n"):
-        if line.startswith("<table"):
+        if line.startswith(_BLOCK_TAGS):
             flush()
             blocks.append(line)
         elif line.strip():
@@ -256,9 +248,63 @@ def rich_message(text: str, *, footer: Optional[str] = None) -> InputRichMessage
             flush()
             gap = True
     flush()
-    if footer is not None:
-        blocks.append("<footer>" + "<br>".join(line for line in footer.split("\n") if line.strip()) + "</footer>")
-    return InputRichMessage(html="".join(blocks))
+    return "".join(blocks)
+
+
+def rich_message(text: str) -> InputRichMessage:
+    """Текст бота → rich-сообщение (Bot API 10.1): блок строк — абзац `<p>` с переносами
+    `<br>`, пустая строка — граница абзацев с видимым зазором, строка-блок (`_table`,
+    `rich_details`, `rich_list`, `rich_footer`) — свой блок.
+
+    Зачем: в rich-HTML перевод строки — пробел, поэтому строки соединяются `<br>`;
+    пустые строки, которыми шаблоны и сборщики делят сообщение на разделы, остаются
+    зазором. Тег не должен пересекать пустую строку: блоки — законченные фрагменты
+    разметки, иначе Telegram отвергнет сообщение.
+
+    Аргументы: `text` — построчный HTML, как его собирают функции этого модуля.
+    """
+    return InputRichMessage(html=_rich_html(text))
+
+
+def rich_footer(text: str) -> str:
+    """Подвал сообщения — строка-блок `<footer>` для конца текста `rich_message()`.
+
+    Зачем: служебный хвост (ссылки на настройки и соседние экраны, сезон, «данные на …»)
+    клиенты рисуют мельче и серее содержания (`docs/telegram_bot.md` §«Стиль сообщений»,
+    правило 3).
+
+    Аргументы: `text` — построчный HTML подвала; строки соединяются `<br>`.
+    """
+    return "<footer>" + "<br>".join(line for line in text.split("\n") if line.strip()) + "</footer>"
+
+
+def rich_details(summary: str, text: str) -> str:
+    """Свёрнутый блок `<details>` — строка-блок для текста `rich_message()`.
+
+    Зачем: легенды обозначений и расшифровки метрик нужны не при каждом открытии экрана —
+    по умолчанию свёрнуты, кто не знает — раскроет (правило 4 стиля).
+
+    Аргументы:
+        summary: подпись свёрнутого блока (уже экранированная).
+        text: построчный HTML содержимого — по тем же правилам, что у `rich_message()`.
+    """
+    return f"<details><summary>{summary}</summary>{_rich_html(text)}</details>"
+
+
+def _season_footer() -> str:
+    """Подвал справочного экрана, у которого из служебного — только сезон."""
+    return rich_footer(f"Сезон {html.escape(str(config.CURRENT_SEASON))}")
+
+
+def rich_list(items: Sequence[str]) -> str:
+    """Маркированный список `<ul>` — строка-блок для текста `rich_message()`.
+
+    Зачем: перечень команд `/help` — список с отступом у переносов длинных пунктов,
+    а не строки абзаца.
+
+    Аргументы: `items` — пункты, уже готовый инлайн-HTML.
+    """
+    return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
 
 
 def _record_str(
@@ -1132,8 +1178,8 @@ def _rank_range_label(offset: int, rows: int) -> str:
 def _leaderboard_page_text(
     heading_html: str, body: str, n: int, total: int, offset: int
 ) -> Tuple[str, bool, bool]:
-    """Общий хвост страницы лидерборда: шапка с маркером «Показаны N из M» и
-    флаги перелистывания.
+    """Общий каркас страницы лидерборда: заголовок, тело, подвал с сезоном и маркером
+    «Показаны N из M» и флаги перелистывания.
 
     Аргументы:
         heading_html: уже экранированный заголовок (без тегов).
@@ -1148,9 +1194,8 @@ def _leaderboard_page_text(
         marker = f"<i>{html.escape(span)}</i>"
     else:
         marker = truncation_marker(html.escape(span), total, item_word="строк")
-    text = (
-        f"<b>{heading_html}</b> ({html.escape(str(config.CURRENT_SEASON))}) "
-        f"— {marker}\n\n{body}"
+    text = f"<b>{heading_html}</b>\n{body}\n" + rich_footer(
+        f"Сезон {html.escape(str(config.CURRENT_SEASON))} · {marker}"
     )
     # total, а не «страница пришла полной» — иначе последняя полная страница
     # рисует кнопку «вперёд» на пустой диапазон, противореча маркеру.
@@ -1159,11 +1204,7 @@ def _leaderboard_page_text(
 
 def leaders_menu_intro() -> str:
     """Текст первого шага /leaders — до выбора категории кнопкой."""
-    season_esc = html.escape(str(config.CURRENT_SEASON))
-    return (
-        f"<b>Лидеры сезона</b> ({season_esc})\n\n"
-        "Выберите категорию:"
-    )
+    return "<b>Лидеры сезона</b>\nВыберите категорию:\n" + _season_footer()
 
 
 def player_stat_leaderboard_page(
@@ -1375,10 +1416,10 @@ def team_table() -> str:
     )
 
     if stats['count_rows'] == 0:
-        season_esc = html.escape(str(config.CURRENT_SEASON))
         return (
-            f"<b>Турнирная таблица NHL</b> — сезон {season_esc}\n\n"
-            "Сезон ещё не начался: в базе нет статистики команд."
+            "<b>Турнирная таблица NHL</b>\n"
+            "Сезон ещё не начался: в базе нет статистики команд.\n"
+            + _season_footer()
         )
 
     teams: List[Dict[str, Union[int, str, float, None]]] = []
@@ -1396,9 +1437,11 @@ def team_table() -> str:
 
     table_body = _build_standings_table_body(teams)
     to_template = {
-        'season': html.escape(str(config.CURRENT_SEASON)),
-        'as_of': html.escape(str(_standings_as_of_day())),
         'table_body': table_body,
+        'footer': rich_footer(
+            f"Сезон {html.escape(str(config.CURRENT_SEASON))} · "
+            f"данные на {html.escape(str(_standings_as_of_day()))}"
+        ),
     }
     return output_text('messages/league_table.txt', to_template)
 
@@ -1433,7 +1476,6 @@ def _team_group_summary(group_by: str, heading: str) -> str:
         heading: заголовок сообщения («Сводка по конференциям»/«...дивизионам»).
     """
     group_columns = _GROUP_BY_COLUMNS[group_by]
-    season_esc = html.escape(str(config.CURRENT_SEASON))
     select_group = ", ".join(f"t.{col}" for col in group_columns)
     stats = cached_fetch_all(
         f"SELECT {select_group}, COUNT(*) AS team_count, "
@@ -1454,8 +1496,9 @@ def _team_group_summary(group_by: str, heading: str) -> str:
     )
     if stats["count_rows"] == 0:
         return (
-            f"<b>{heading}</b> ({season_esc})\n"
-            "В базе нет командной статистики для этого сезона."
+            f"<b>{heading}</b>\n"
+            "В базе нет командной статистики для этого сезона.\n"
+            + _season_footer()
         )
     # Средние — один знак после запятой: с двумя «Metropolitan 91.38 3.08 21.46%
     # 79.88%» — 37 символов, шире экрана телефона.
@@ -1473,12 +1516,16 @@ def _team_group_summary(group_by: str, heading: str) -> str:
         ]
         for i in range(stats["count_rows"])
     ]
-    return (
-        f"<b>{heading}</b> ({season_esc})\n\n"
-        + _table(rows, "lrrrrr")
-        + "\n<i>Средние по команде: О — очки, Г/и — голы за игру, Бол — реализация "
-        "большинства, Мен — игра в меньшинстве; Ком — число команд.</i>"
+    legend = (
+        "Средние по команде: О — очки, Г/и — голы за игру, Бол — реализация "
+        "большинства, Мен — игра в меньшинстве; Ком — число команд."
     )
+    return "\n".join([
+        f"<b>{heading}</b>",
+        _table(rows, "lrrrrr"),
+        rich_details("Обозначения", legend),
+        _season_footer(),
+    ])
 
 
 def conference_summary() -> str:
@@ -1523,7 +1570,6 @@ def team_list_text() -> str:
     В таблице `teams` сезона только команды, уже сыгравшие хотя бы матч
     (загрузчик строит её из `team/summary`), — в начале сезона список неполный.
     """
-    season_esc = html.escape(str(config.CURRENT_SEASON))
     rows = cached_fetch_all(
         "SELECT trim(abbreviation), name, division_name FROM teams "
         "WHERE season_id = %s AND NULLIF(trim(abbreviation), '') IS NOT NULL "
@@ -1533,8 +1579,9 @@ def team_list_text() -> str:
     )
     if rows["count_rows"] == 0:
         return (
-            f"<b>Команды сезона</b> ({season_esc})\n"
-            "В базе пока нет списка команд для этого сезона."
+            "<b>Команды сезона</b>\n"
+            "В базе пока нет списка команд для этого сезона.\n"
+            + _season_footer()
         )
     by_division: Dict[str, List[str]] = defaultdict(list)
     for i in range(rows["count_rows"]):
@@ -1546,8 +1593,10 @@ def team_list_text() -> str:
         for div, lines in by_division.items()
     ]
     return (
-        f"<b>Команды сезона</b> ({season_esc}) — нажмите на команду, чтобы открыть "
-        "её статистику.\n\n" + "\n\n".join(blocks)
+        "<b>Команды сезона</b>\nНажмите на команду, чтобы открыть её статистику.\n\n"
+        + "\n\n".join(blocks)
+        + "\n"
+        + _season_footer()
     )
 
 
@@ -1584,10 +1633,17 @@ _TEAM_SKATER_COLUMNS = [
     "lastname", "position", "games", "goals", "assists", "points", "plus_minus", "toi",
 ]
 _TEAM_STATS_LEGEND = (
-    "<i>И — игры, Г — голы, П — передачи, О — очки, ВП — среднее время на льду за игру; "
+    "И — игры, Г — голы, П — передачи, О — очки, ВП — среднее время на льду за игру; "
     "вратари: В-П-ОТ — победы, поражения, поражения в овертайме, %ОБ — процент "
-    "отражённых бросков, КН — коэффициент надёжности.</i>"
+    "отражённых бросков, КН — коэффициент надёжности."
 )
+
+
+def _team_footer(*links: str) -> str:
+    """Подвал экранов клуба (`team_profile`, `team_full_stats`): сезон, ссылки `links`
+    на соседние экраны клуба и список всех команд `/team`."""
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    return rich_footer(" · ".join([f"Сезон {season_esc}", *links, "все команды: /team"]))
 
 
 def _team_skaters(team_id: int, order_by: str, limit: int) -> Dict:
@@ -1686,10 +1742,9 @@ def team_profile(abbrev: str) -> str:
             попадает только как параметр.
     """
     a = abbrev.strip().upper()
-    season_esc = html.escape(str(config.CURRENT_SEASON))
     team_id = _team_id_for_abbrev(a)
     if team_id is None:
-        return f"<b>{html.escape(a)}</b> ({season_esc})\nКоманда не найдена в базе для этого сезона."
+        return f"<b>{html.escape(a)}</b>\nКоманда не найдена в базе для этого сезона.\n{_team_footer()}"
 
     league = cached_fetch_all(
         "SELECT ts.team_id, t.name, t.short_name, t.division_name, t.conference_name, "
@@ -1709,8 +1764,8 @@ def team_profile(abbrev: str) -> str:
     ]
     if not any(r["team_id"] == team_id for r in rows):
         return (
-            f"<b>{html.escape(a)}</b> ({season_esc})\n"
-            "Команда ещё не сыграла в этом сезоне — статистики нет."
+            f"<b>{html.escape(a)}</b>\n"
+            f"Команда ещё не сыграла в этом сезоне — статистики нет.\n{_team_footer()}"
         )
     me, div_place, conf_place, league_place = _team_places(team_id, rows)
 
@@ -1733,7 +1788,6 @@ def team_profile(abbrev: str) -> str:
         {
             "team_name": html.escape(me["name"] or a),
             "abbrev": html.escape(a),
-            "season": season_esc,
             "division": html.escape(me["division_name"] or "—"),
             "conference": html.escape(me["conference_name"] or "—"),
             "div_place": div_place,
@@ -1756,8 +1810,8 @@ def team_profile(abbrev: str) -> str:
             "scorers_table": _table(scorer_rows, "llrrrr") if scorers["count_rows"] else "",
             "toi_table": _table(toi_rows, "llrr") if toi_leaders["count_rows"] else "",
             "goalies_table": _team_goalies_table(team_id),
-            "legend": _TEAM_STATS_LEGEND,
-            "full_command": f"/{html.escape(a)}_FULL",
+            "legend": rich_details("Обозначения", _TEAM_STATS_LEGEND),
+            "footer": _team_footer(f"все игроки: /{html.escape(a)}_FULL"),
         },
     )
 
@@ -1773,18 +1827,21 @@ def team_full_stats(abbrev: str) -> str:
             текст с причиной.
     """
     a = abbrev.strip().upper()
-    season_esc = html.escape(str(config.CURRENT_SEASON))
     team_id = _team_id_for_abbrev(a)
     if team_id is None:
-        return f"<b>{html.escape(a)}</b> ({season_esc})\nКоманда не найдена в базе для этого сезона."
-    parts = [f"<b>{html.escape(a)}: все игроки</b> · сезон {season_esc}"]
+        return f"<b>{html.escape(a)}</b>\nКоманда не найдена в базе для этого сезона.\n{_team_footer()}"
+    parts = [f"<b>{html.escape(a)}: все игроки</b>"]
+    legends = []
     for group, (label, _cond) in PLAYER_GROUPS.items():
         table, n, _total = _player_group_table(_BY_TEAM, team_id, group, None, 0, ranked=False)
         if n:
-            parts += ["", f"<b>{label}</b>", table, f"<i>{_GROUP_LEGEND[group]}.</i>"]
-    if len(parts) == 1:
-        return parts[0] + "\n\nУ команды пока нет статистики игроков в этом сезоне."
-    parts += ["", f"Профиль клуба: /{html.escape(a)}"]
+            parts += ["", f"<b>{label}</b>", table]
+            legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
+    if legends:
+        parts.append(rich_details("Обозначения", "\n".join(legends)))
+    else:
+        parts.append("У команды пока нет статистики игроков в этом сезоне.")
+    parts.append(_team_footer(f"профиль клуба: /{html.escape(a)}"))
     return "\n".join(parts)
 
 
@@ -1855,6 +1912,7 @@ def country_rankings() -> Tuple[str, List[str]]:
     season_esc = html.escape(str(config.CURRENT_SEASON))
     ranking = _country_ranking()
     if not ranking:
+        # Простой текст: причина уходит и в «Подписки → Страны» (`bot.py`), а там не rich.
         return "В базе нет данных по странам для этого сезона.", []
     unknown = cached_fetch_all(
         "SELECT COUNT(*) " + _COUNTRY_FROM
@@ -1863,19 +1921,27 @@ def country_rankings() -> Tuple[str, List[str]]:
         columns=["n"],
     )["n"][0]
     rows = [["", "Страна", "Игр", "О", "Г", "О/и"]] + [
-        [f"{i}.", COUNTRY_LABELS.get(code, code), str(players), str(points), str(goals),
+        # Без флага: эмодзи в ячейках таблиц не ставим (стиль, правило 5); метка
+        # `COUNTRY_LABELS` — всегда «флаг название», неизвестный код — без флага.
+        [f"{i}.", COUNTRY_LABELS[code].split(" ", 1)[1] if code in COUNTRY_LABELS else code,
+         str(players), str(points), str(goals),
          f"{points / players:.1f}"]
         for i, (code, players, points, goals) in enumerate(ranking, start=1)
     ]
-    text = (
-        f"<b>Рейтинг стран</b> ({season_esc})\n"
-        f"<i>Полевые игроки; страна — национальность игрока по NHL (одна на игрока); "
+    legend = (
+        f"Полевые игроки; страна — национальность игрока по NHL (одна на игрока); "
         f"страны от {COUNTRY_MIN_PLAYERS} игроков. Игр — игроков, О — очки, Г — голы, "
-        f"О/и — очков на игрока.</i>\n\n"
-        + _table(rows, "rlrrrr")
+        f"О/и — очков на игрока."
     )
+    footer = f"Сезон {season_esc}"
     if unknown:
-        text += f"\n\n<i>Страна не указана в данных NHL у игроков: {unknown} (не учтены).</i>"
+        footer += f"\nСтрана не указана в данных NHL у игроков: {unknown} (не учтены)."
+    text = "\n".join([
+        "<b>Рейтинг стран</b>",
+        _table(rows, "rlrrrr"),
+        rich_details("Обозначения", legend),
+        rich_footer(footer),
+    ])
     return text, [code for code, _, _, _ in ranking]
 
 
@@ -2001,8 +2067,9 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     table, n, total = _player_group_table(
         _BY_COUNTRY, code, group, LEADERBOARD_PAGE_SIZE, offset, ranked=True
     )
-    body = f"{table}\n<i>{_GROUP_LEGEND[group]}.</i>"
-    heading = f"{PLAYER_GROUPS[group][0]}: {country_label(code)}"
+    body = f"{table}\n" + rich_details("Обозначения", f"{_GROUP_LEGEND[group]}.")
+    # Флаг — в начале заголовка: эмодзи только как метка в начале сообщения (правило 5).
+    heading = f"{country_label(code)}: {PLAYER_GROUPS[group][0].lower()}"
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
