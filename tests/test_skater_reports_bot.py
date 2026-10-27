@@ -57,7 +57,7 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
         for title, table, col in cases:
             with self.subTest(table=table, column=col):
                 with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows) as mock_fetch:
-                    text = bot_messages.player_stats(title, table, col)
+                    text, _, _ = bot_messages.player_stat_leaderboard_page(title, table, col, 0)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
                 self.assertIn(
@@ -81,9 +81,8 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/tonight",
             "/standings",
             "/team",
-            "/leaders",
             "/stats",
-            "/cancel",
+            "/team_stats",
             "/help",
             "/advanced",
             "/countries",
@@ -92,7 +91,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
-        for removed in ("/day_games", "/table", "/game"):
+        for removed in ("/day_games", "/table", "/game", "/leaders", "/cancel"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
@@ -192,7 +191,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("<b>ATLANTIC DIVISION</b>", text)
         self.assertIn("<b>EASTERN CONFERENCE</b>", text)
 
-    def test_stat_leaderboard_for_kind_points(self):
+    def test_player_stat_leaderboard_page_points(self):
         bot_messages = _load_bot_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
@@ -207,10 +206,10 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "count_rows": 1,
         }
         with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows):
-            text, has_prev, has_next = bot_messages.stat_leaderboard_for_kind(
-                bot_messages.LEADERBOARD_KIND_POINTS, 0
+            text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+                "Лучшие бомбардиры", "players_season_stats", "points", 0
             )
-        self.assertIn("Топ бомбардиров", text)
+        self.assertIn("Лучшие бомбардиры", text)
         self.assertIn("Ovechkin", text)
         self.assertIn(
             '<tr><td align="right">1.</td><td>Ovechkin [LW]</td><td>WSH</td>'
@@ -238,15 +237,6 @@ def _fake_bot():
     return Bot(FAKE_TOKEN, session=FakeSession())
 
 
-def _dialog(bot):
-    """Состояние диалога `/stats` — дайджест открыт из меню."""
-    from aiogram.fsm.context import FSMContext
-    from aiogram.fsm.storage.base import StorageKey
-    from aiogram.fsm.storage.memory import MemoryStorage
-
-    return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=bot.id, chat_id=42, user_id=1))
-
-
 class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
     async def test_day_digest_single_game_sends_full_card_with_markup(self):
         stats_handlers = _load_stats_handlers()
@@ -259,13 +249,14 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         await stats_handlers.dispatch_day_digest_messages(
-            bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
+            bot, chat_id=42, day_label="2025-03-01", games=games
         )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(bot.session.sent_messages, [])
+        self.assertEqual(len(bot.session.sent_messages), 1, "подсказка «Ещё: …»")
         self.assertEqual(sent[0].rich_message.html, rich_html("Полная карточка"))
-        self.assertIsNotNone(sent[0].reply_markup)
+        [[video]] = sent[0].reply_markup.inline_keyboard
+        self.assertEqual(video.callback_data, "gv:1:2")
 
     async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
         """Несколько матчей — одно сообщение-сводка и кнопки dg:<game_id>."""
@@ -281,21 +272,15 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             stats_handlers, "day_digest_summary_body", return_value=["1. <b>Home Away</b>", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
-                bot, chat_id=42, day_label="2025-03-01", games=games, dialog=_dialog(bot)
+                bot, chat_id=42, day_label="2025-03-01", games=games
             )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(bot.session.sent_messages, [])
+        self.assertEqual(len(bot.session.sent_messages), 1, "подсказка «Ещё: …»")
         self.assertIn("2 игр", sent[0].rich_message.html)
         self.assertIn("<p>1. <b>Home Away</b></p>", sent[0].rich_message.html)
         kb = sent[0].reply_markup.inline_keyboard
-        self.assertEqual([b.text for b in kb[0]], ["1. HOM – AWY", "2. B – C"])
-        ds = importlib.import_module("dialog_states")
-        # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
-        # сразу в корень; «В начало»/«Закрыть меню» — следом.
-        self.assertEqual(kb[-1][0].callback_data, str(ds.DAY_DIGEST))
-        self.assertEqual(kb[-1][1].callback_data, str(ds.CHOOSE_STATS))
-        self.assertEqual(kb[-1][2].callback_data, str(ds.END_CONVERSATION))
+        self.assertEqual([[b.text for b in row] for row in kb], [["1. HOM – AWY", "2. B – C"]])
 
     async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()

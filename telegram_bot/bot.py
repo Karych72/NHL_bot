@@ -1,11 +1,10 @@
 """Точка входа Telegram-бота: сборка `Dispatcher` aiogram и регистрация хендлеров.
 
-Роль в пайплайне: `bot.py` собирает `Dispatcher` aiogram 3.31 из трёх роутеров —
-standalone-команды и кнопки, диалог `/stats` (FSM `dialog_states.StatsMenu`),
-хвост (`/cancel` вне диалога и свободный текст), — вешает троттлинг нажатий
-(`throttle.py`) и запускает long polling. Сами обработчики живут в `script_bot.py`
-(навигация) и `stats_handlers.py` (выборки из БД); здесь — только команды
-верхнего уровня, подписки, свободный текст и сборка `Dispatcher`.
+Роль в пайплайне: `bot.py` собирает `Dispatcher` aiogram 3.31 из двух роутеров —
+команды и кнопки, затем свободный текст, — вешает троттлинг нажатий (`throttle.py`)
+и запускает long polling. Меню и листание таблиц статистики живут в
+`stats_handlers.py`; здесь — команды верхнего уровня, подписки, свободный текст и
+сборка `Dispatcher`.
 """
 
 import asyncio
@@ -15,10 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.magic_filter import MagicFilter
@@ -33,7 +29,6 @@ from bot_messages import (
     day_digest,
     rich_message,
     last_night_day,
-    leaders_menu_intro,
     season_teams_by_division,
     team_list_text,
     team_full_stats,
@@ -49,134 +44,36 @@ from nhl_scoreboard import (
     tonight_match_button_label,
     tonight_reply_intro,
 )
-from help_text import ADVANCED_COMMAND_INTRO, BOT_COMMANDS, HELP_MESSAGE, START_MESSAGE
-from dialog_states import (
-    build_menu,
-    callback_message,
-    CHOOSE_STATS,
-    DAY_DIGEST,
-    DIGEST_CALENDAR_TODAY,
-    DIGEST_CALENDAR_YESTERDAY,
-    DIGEST_PICK_DATE,
-    END_CONVERSATION,
-    GOALIE_PERCENTAGE,
-    GOALIE_SHOOTOUTS,
-    GOALIE_WINS,
-    LAST_MENU_MESSAGE_ID_KEY,
-    LEAGUE_STANDINGS,
-    PLAYER_ADVANCED_SUBMENU,
-    PLAYER_ASSISTS,
-    PLAYER_BLOCKS,
-    PLAYER_FIELD,
-    PLAYER_GOALIE,
-    PLAYER_GOALS,
-    PLAYER_GOALS_FOR_PCT,
-    PLAYER_HITS,
-    PLAYER_ICE_TIME,
-    PLAYER_PENALTIES,
-    PLAYER_PLUS_MINUS,
-    PLAYER_POINTS,
-    PLAYER_SAT_PCT,
-    PLAYER_SHOOTOUT_PCT,
-    PLAYER_SHOT_BACKHAND,
-    PLAYER_SHOT_DEFLECTED,
-    PLAYER_SHOT_SLAP,
-    PLAYER_SHOT_SNAP,
-    PLAYER_SHOT_TIP_IN,
-    PLAYER_SHOT_WRAP_AROUND,
-    PLAYER_SHOT_WRIST,
-    PLAYER_STATS,
-    PLAYER_USAT_PCT,
-    PLAYER_OZ_START_PCT,
-    StatsMenu,
-    TEAM_CONFERENCE_STATS,
-    TEAM_DIVISION_STATS,
-    TEAM_POWER_KILL,
-    TEAM_POWER_PLAY,
-    TEAM_PROCENT_WINS,
-    TEAM_PROFILE_PICK,
-    TEAM_STATS,
+from help_text import (
+    ADVANCED_COMMAND_INTRO,
+    BOT_COMMANDS,
+    HELP_MESSAGE,
+    START_MESSAGE,
+    STATS_COMMAND_INTRO,
+    TEAM_STATS_COMMAND_INTRO,
 )
-from script_bot import (
-    NAV_FIELD,
-    NAV_PLAYERS,
-    bot_digest_date_menu,
-    bot_player_advanced_menu,
-    bot_player_field,
-    bot_player_goalie,
-    bot_player_stats,
-    bot_team_stats,
-    end,
-    stats,
-    stats_over,
-    stats_root_edit,
-)
+from keyboards import build_menu, callback_message
 from stats_handlers import (
     ADVANCED_CALLBACK_PATTERN,
     COUNTRY_CALLBACK_PATTERN,
-    DIGEST_BACK_FROM_DATE_CALLBACK,
     DIGEST_EXPAND_CALLBACK_PATTERN,
     GOAL_VIDEO_CALLBACK_PATTERN,
-    LEADERS_PICK_CALLBACK_PATTERN,
-    LEADERBOARD_PAGE_CALLBACK_PATTERN,
-    STAT_PAGE_CALLBACK_PATTERN,
-    STANDALONE_SA_CALLBACK_PATTERN,
-    TEAM_PAGE_CALLBACK_PATTERN,
-    TEAM_PROFILE_CALLBACK_PATTERN,
+    STAT_SCREEN_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     advanced_standalone_keyboard,
     callback_country,
-    country_rankings_reply,
-    bot_digest_calendar_today,
-    bot_digest_calendar_yesterday,
-    bot_digest_custom_date,
-    bot_digest_pick_date_prompt,
-    bot_goalie_percentage,
-    bot_goalie_shootouts,
-    bot_goalie_wins,
-    bot_league_standings,
-    bot_player_assists,
-    bot_player_blocks,
-    bot_player_goals,
-    bot_player_goals_for_pct,
-    bot_player_hits,
-    bot_player_ice_time,
-    bot_player_oz_start_pct,
-    bot_player_penalties,
-    bot_player_plus_minus,
-    bot_player_points,
-    bot_player_sat_pct,
-    bot_player_shootout_pct,
-    bot_player_shot_backhand,
-    bot_player_shot_deflected,
-    bot_player_shot_slap,
-    bot_player_shot_snap,
-    bot_player_shot_tip_in,
-    bot_player_shot_wrap,
-    bot_player_shot_wrist,
-    bot_player_usat_pct,
-    bot_team_conference_stats,
-    bot_team_division_stats,
-    bot_team_power_kill,
-    bot_team_power_play,
-    bot_team_procent_wins,
-    bot_team_profile_pick,
-    bot_team_profile_show,
     callback_expand_digest_game,
-    callback_leaderboard_page,
-    callback_leaders_pick,
+    callback_stat_screen,
     callback_standalone_adv,
-    callback_standalone_sa,
-    callback_stats_player_page,
-    callback_stats_team_page,
     callback_tonight_game,
     country_page_reply,
-    leaders_category_keyboard,
-    leaders_reply,
+    country_rankings_reply,
     dispatch_day_digest_messages,
     handle_goal_video,
     send_game_card_message,
-    standalone_stat_reply,
+    stat_page_reply,
+    stats_menu_keyboard,
+    team_stats_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,9 +203,14 @@ async def cmd_team_profile(message: Message, match: re.Match) -> None:
     await message.answer_rich(rich_message(team_profile_text(abbrev, bool(full))))
 
 
-async def cmd_leaders(message: Message, bot: Bot) -> None:
-    """`/leaders`: выбор категории лидеров кнопками."""
-    await message.answer_rich(rich_message(leaders_menu_intro()), reply_markup=leaders_category_keyboard())
+async def cmd_stats(message: Message, bot: Bot) -> None:
+    """`/stats`: лидеры игроков — все метрики полевых и вратарей кнопками одного экрана."""
+    await message.answer_rich(rich_message(STATS_COMMAND_INTRO), reply_markup=stats_menu_keyboard())
+
+
+async def cmd_team_stats(message: Message, bot: Bot) -> None:
+    """`/team_stats`: рейтинги команд — голы, броски, спецбригады, вбрасывания."""
+    await message.answer_rich(rich_message(TEAM_STATS_COMMAND_INTRO), reply_markup=team_stats_keyboard())
 
 
 async def cmd_countries(message: Message, bot: Bot) -> None:
@@ -318,43 +220,8 @@ async def cmd_countries(message: Message, bot: Bot) -> None:
 
 
 async def cmd_advanced(message: Message, bot: Bot) -> None:
-    """`/advanced`: расширенная статистика полевых игроков вне диалога `/stats`."""
+    """`/advanced`: только расширенная статистика полевых игроков — та же, что в конце меню `/stats`."""
     await message.answer_rich(rich_message(ADVANCED_COMMAND_INTRO), reply_markup=advanced_standalone_keyboard())
-
-
-async def cmd_cancel_in_conversation(message: Message, state: FSMContext, bot: Bot) -> None:
-    """`/cancel` внутри диалога `/stats`: закрывает разговор.
-
-    Зачем читает данные диалога: конец диалога не трогает сообщение меню — его
-    inline-клавиатура остаётся в чате на вид живой, но вне диалога ни один хендлер
-    её callback_data больше не матчит (тот же класс дефекта, что и у просроченной
-    кнопки «« Назад»» ввода даты: кнопка матчится только в тех состояниях FSM, где
-    для неё явно зарегистрирован хендлер). Если экран меню создавался НОВЫМ
-    сообщением, его id записан под `dialog_states.LAST_MENU_MESSAGE_ID_KEY` (там же —
-    канонический список мест записи) — снимаем клавиатуру явно. Отсутствие записи —
-    штатный случай (`/cancel` без открытого меню), не ошибка.
-    """
-    menu_message_id = (await state.get_data()).get(LAST_MENU_MESSAGE_ID_KEY)
-    # Сначала закрыть диалог: если меню уже удалено и правка упадёт, пользователь не
-    # останется запертым в диалоге — следующий /cancel придёт уже вне его.
-    await state.clear()
-    if menu_message_id is not None:
-        try:
-            await bot.edit_message_reply_markup(
-                chat_id=message.chat.id,
-                message_id=menu_message_id,
-                reply_markup=None,
-            )
-        except TelegramBadRequest as exc:
-            # Пользователь удалил меню — снимать нечего, выход из диалога всё равно отвечаем.
-            if "message to edit not found" not in exc.message.lower():
-                raise
-    await message.answer("Вы вышли из меню. Снова: /stats")
-
-
-async def cmd_cancel_outside_conversation(message: Message) -> None:
-    """`/cancel` вне диалога: объясняет, что отменять нечего."""
-    await message.answer("Меню /stats сейчас не открыто. Справка: /help")
 
 
 _DELIVERY_NOTE = (
@@ -568,7 +435,8 @@ AI_COMMANDS: Dict[str, Callable[[Message, Bot], Awaitable[None]]] = {
     "tonight": cmd_tonight,
     "standings": cmd_standings,
     "team": cmd_team,
-    "leaders": cmd_leaders,
+    "stats": cmd_stats,
+    "team_stats": cmd_team_stats,
     "countries": cmd_countries,
     "advanced": cmd_advanced,
     "subscriptions": cmd_subscriptions,
@@ -577,7 +445,7 @@ AI_COMMANDS: Dict[str, Callable[[Message, Bot], Awaitable[None]]] = {
 
 
 async def _ai_digest_for_date(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
-    """Дайджест игрового дня `params["date"]` — как ввод даты в `/stats`, но без кнопок меню."""
+    """Дайджест игрового дня `params["date"]` — как `/today`, но за выбранную дату."""
     day_label, games = day_digest(params["date"])
     await dispatch_day_digest_messages(bot, message.chat.id, day_label, games)
 
@@ -601,14 +469,16 @@ AI_SCREENS: Dict[str, Callable[[Message, Bot, Dict[str, Any]], Awaitable[None]]]
     "open_command": lambda message, bot, p: AI_COMMANDS[p["command"]](message, bot),
     "digest_for_date": _ai_digest_for_date,
     "team_profile": _ai_team_profile,
-    "leaders": _ai_reply(lambda p: leaders_reply(p["category"], 0)),
+    "leaders": _ai_reply(lambda p: stat_page_reply("st", f"players_season_stats:{p['category']}", 0)),
     "country_players": _ai_reply(lambda p: country_page_reply(p["country"], "F", 0)),
-    "advanced_metric": _ai_reply(lambda p: standalone_stat_reply(*ADVANCED_METRICS[p["metric"]], 0)),
+    "advanced_metric": _ai_reply(
+        lambda p: stat_page_reply("sa", "{}:{}".format(*ADVANCED_METRICS[p["metric"]]), 0)
+    ),
 }
 
 
 async def on_free_text(message: Message, bot: Bot) -> None:
-    """Текст в личке вне команд и вне ввода даты `/stats`: вопрос модели (`ai_router.ask`).
+    """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
     Лимит исчерпан — ответ без вызова модели; модель выбрала экран — бот показывает его
     (`AI_SCREENS`); иначе — её текст: отказ, уточнение или сообщение о сбое API.
@@ -627,99 +497,14 @@ async def on_free_text(message: Message, bot: Bot) -> None:
 def is_plain_text(message: Message) -> bool:
     """Текстовое сообщение, не начинающееся с команды бота.
 
-    Зачем: ввод даты в `/stats` и свободный текст ловят только обычный текст, а
-    `/cancel` и любая другая команда должны дойти до своих хендлеров. Команда — как
-    у Telegram: сущность `bot_command` в самом начале текста.
+    Зачем: свободный текст ловит только обычный текст — команда, даже неизвестная
+    боту, к модели не уходит. Команда — как у Telegram: сущность `bot_command` в
+    самом начале текста.
     """
     if message.text is None:
         return False
     entities = message.entities or []
     return not (entities and entities[0].type == "bot_command" and entities[0].offset == 0)
-
-
-def _state(value: int) -> str:
-    """Regex callback_data кнопки меню с числовым значением `value` (`dialog_states`)."""
-    return f"^{value}$"
-
-
-# Диалог `/stats`: состояние → (regex callback_data, хендлер) в порядке проверки. Кнопка
-# срабатывает только в тех состояниях, где она здесь указана: вне диалога его кнопки молчат.
-STATS_DIALOG: Dict[State, List[Tuple[str, Callable[..., Awaitable[None]]]]] = {
-    StatsMenu.first: [
-        (_state(CHOOSE_STATS), stats_root_edit),
-        (_state(DAY_DIGEST), bot_digest_date_menu),
-        (_state(LEAGUE_STANDINGS), bot_league_standings),
-        (_state(DIGEST_CALENDAR_TODAY), bot_digest_calendar_today),
-        (_state(DIGEST_CALENDAR_YESTERDAY), bot_digest_calendar_yesterday),
-        (_state(DIGEST_PICK_DATE), bot_digest_pick_date_prompt),
-        # Просроченная кнопка «« Назад»» ввода даты (её копии переживают выход из
-        # `third`, см. stats_handlers.bot_digest_custom_date) — открывает меню
-        # дайджеста, родительский экран.
-        (f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$", bot_digest_date_menu),
-        (f"^{NAV_PLAYERS}$", bot_player_stats),
-        (f"^{NAV_FIELD}$", bot_player_field),
-        (STAT_PAGE_CALLBACK_PATTERN, callback_stats_player_page),
-        (TEAM_PAGE_CALLBACK_PATTERN, callback_stats_team_page),
-        (_state(TEAM_STATS), bot_team_stats),
-        (_state(PLAYER_STATS), bot_player_stats),
-        (_state(PLAYER_FIELD), bot_player_field),
-        (_state(PLAYER_GOALIE), bot_player_goalie),
-        (_state(PLAYER_ADVANCED_SUBMENU), bot_player_advanced_menu),
-        (_state(PLAYER_POINTS), bot_player_points),
-        (_state(PLAYER_GOALS), bot_player_goals),
-        (_state(PLAYER_ASSISTS), bot_player_assists),
-        (_state(PLAYER_PLUS_MINUS), bot_player_plus_minus),
-        (_state(PLAYER_PENALTIES), bot_player_penalties),
-        (_state(PLAYER_HITS), bot_player_hits),
-        (_state(PLAYER_BLOCKS), bot_player_blocks),
-        (_state(PLAYER_ICE_TIME), bot_player_ice_time),
-        (_state(PLAYER_SAT_PCT), bot_player_sat_pct),
-        (_state(PLAYER_USAT_PCT), bot_player_usat_pct),
-        (_state(PLAYER_GOALS_FOR_PCT), bot_player_goals_for_pct),
-        (_state(PLAYER_OZ_START_PCT), bot_player_oz_start_pct),
-        (_state(PLAYER_SHOOTOUT_PCT), bot_player_shootout_pct),
-        (_state(PLAYER_SHOT_WRIST), bot_player_shot_wrist),
-        (_state(PLAYER_SHOT_SLAP), bot_player_shot_slap),
-        (_state(PLAYER_SHOT_SNAP), bot_player_shot_snap),
-        (_state(PLAYER_SHOT_BACKHAND), bot_player_shot_backhand),
-        (_state(PLAYER_SHOT_TIP_IN), bot_player_shot_tip_in),
-        (_state(PLAYER_SHOT_DEFLECTED), bot_player_shot_deflected),
-        (_state(PLAYER_SHOT_WRAP_AROUND), bot_player_shot_wrap),
-        (_state(GOALIE_WINS), bot_goalie_wins),
-        (_state(GOALIE_PERCENTAGE), bot_goalie_percentage),
-        (_state(GOALIE_SHOOTOUTS), bot_goalie_shootouts),
-        (_state(TEAM_PROCENT_WINS), bot_team_procent_wins),
-        (_state(TEAM_POWER_PLAY), bot_team_power_play),
-        (_state(TEAM_POWER_KILL), bot_team_power_kill),
-        (_state(TEAM_CONFERENCE_STATS), bot_team_conference_stats),
-        (_state(TEAM_DIVISION_STATS), bot_team_division_stats),
-        (_state(TEAM_PROFILE_PICK), bot_team_profile_pick),
-    ],
-    StatsMenu.second: [
-        (STAT_PAGE_CALLBACK_PATTERN, callback_stats_player_page),
-        (TEAM_PAGE_CALLBACK_PATTERN, callback_stats_team_page),
-        # «« Назад»» страницы стата ведёт на родительское подменю — эти подменю
-        # переводят диалог в `first`, страница стата — в `second`, поэтому их
-        # хендлеры нужны и здесь.
-        (_state(PLAYER_FIELD), bot_player_field),
-        (_state(PLAYER_GOALIE), bot_player_goalie),
-        (_state(PLAYER_ADVANCED_SUBMENU), bot_player_advanced_menu),
-        (_state(TEAM_STATS), bot_team_stats),
-        (TEAM_PROFILE_CALLBACK_PATTERN, bot_team_profile_show),
-        (_state(TEAM_PROFILE_PICK), bot_team_profile_pick),
-        # «« Назад»» результата дайджеста ведёт на меню дайджеста; та же
-        # просроченная кнопка ввода даты, что и в `first` — сюда тоже можно
-        # вернуться из `second`.
-        (_state(DAY_DIGEST), bot_digest_date_menu),
-        (f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$", bot_digest_date_menu),
-        (_state(CHOOSE_STATS), stats_over),
-        (_state(END_CONVERSATION), end),
-    ],
-    StatsMenu.third: [
-        (_state(CHOOSE_STATS), stats_root_edit),
-        (f"^{DIGEST_BACK_FROM_DATE_CALLBACK}$", bot_digest_date_menu),
-    ],
-}
 
 
 def _command(name: str) -> Command:
@@ -733,10 +518,7 @@ def _callback(pattern: str) -> MagicFilter:
 
 
 def build_standalone_router() -> Router:
-    """Команды верхнего уровня и inline-кнопки вне диалога `/stats`.
-
-    Без фильтра состояния и первым в `Dispatcher`: работают и при открытом меню `/stats`.
-    """
+    """Команды верхнего уровня и inline-кнопки — первым в `Dispatcher`, раньше свободного текста."""
     router = Router(name="standalone")
     router.message.register(cmd_start, CommandStart(ignore_case=True))
     for name, handler in (
@@ -749,20 +531,19 @@ def build_standalone_router() -> Router:
         router.message.register(handler, _command(name))
     router.message.register(cmd_team_profile, F.text.regexp(TEAM_COMMAND_PATTERN).as_("match"))
     for name, handler in (
-        ("leaders", cmd_leaders),
+        ("stats", cmd_stats),
+        ("team_stats", cmd_team_stats),
         ("countries", cmd_countries),
         ("advanced", cmd_advanced),
         ("subscriptions", cmd_subscriptions),
     ):
         router.message.register(handler, _command(name))
     for pattern, callback in (
-        (LEADERS_PICK_CALLBACK_PATTERN, callback_leaders_pick),
-        (LEADERBOARD_PAGE_CALLBACK_PATTERN, callback_leaderboard_page),
+        (STAT_SCREEN_CALLBACK_PATTERN, callback_stat_screen),
         (DIGEST_EXPAND_CALLBACK_PATTERN, callback_expand_digest_game),
         (SUBSCRIPTIONS_CALLBACK_PATTERN, callback_subscriptions),
         (TONIGHT_GAME_CALLBACK_PATTERN, callback_tonight_game),
         (COUNTRY_CALLBACK_PATTERN, callback_country),
-        (STANDALONE_SA_CALLBACK_PATTERN, callback_standalone_sa),
         (ADVANCED_CALLBACK_PATTERN, callback_standalone_adv),
         (GOAL_VIDEO_CALLBACK_PATTERN, handle_goal_video),
     ):
@@ -770,32 +551,12 @@ def build_standalone_router() -> Router:
     return router
 
 
-def build_stats_router() -> Router:
-    """Диалог `/stats` (FSM `StatsMenu`) по карте `STATS_DIALOG`.
-
-    `/stats` открывает меню в любом состоянии, `/cancel` и ввод даты (`third`) — только
-    внутри диалога; ввод даты ловит лишь обычный текст (`is_plain_text`), так что
-    `/cancel` в `third` доходит до своего хендлера.
-    """
-    router = Router(name="stats")
-    router.message.register(stats, _command("stats"))
-    router.message.register(cmd_cancel_in_conversation, _command("cancel"), StateFilter(StatsMenu))
-    router.message.register(bot_digest_custom_date, StatsMenu.third, is_plain_text)
-    for state, handlers in STATS_DIALOG.items():
-        for pattern, callback in handlers:
-            router.callback_query.register(callback, state, _callback(pattern))
-    return router
-
-
 def build_tail_router() -> Router:
-    """Последний роутер: `/cancel` вне диалога и свободный текст (Задача 81).
+    """Последний роутер: свободный текст (Задача 81), только в личке.
 
-    Стоит после диалога: в aiogram апдейт берёт первый подошедший хендлер, поэтому ввод
-    даты в `third` и `/cancel` в диалоге забирает `build_stats_router`, а ИИ видит лишь
-    текст, который диалогу не нужен. Свободный текст — только в личке.
+    Стоит после команд: в aiogram апдейт берёт первый подошедший хендлер.
     """
     router = Router(name="tail")
-    router.message.register(cmd_cancel_outside_conversation, _command("cancel"))
     router.message.register(on_free_text, F.chat.type == "private", is_plain_text)
     return router
 
@@ -820,20 +581,19 @@ def build_dispatcher() -> Dispatcher:
 
     Троттлинг нажатий (`throttle.py`) — outer-middleware `callback_query`: он видит
     нажатие раньше фильтров любого роутера и при превышении лимита обрывает его, не
-    давая дойти ни до standalone-кнопок, ни до диалога. Роутеры проверяются по
-    порядку: standalone → диалог `/stats` → хвост (`build_tail_router`).
+    давая дойти до кнопок. Роутеры проверяются по порядку: standalone → хвост
+    (`build_tail_router`).
 
     Апдейты разных пользователей обрабатываются конкурентно (polling aiogram запускает
     каждый задачей): ожидание ответа модели на свободный текст (секунды, при сбое API —
     до ~30 с) не останавливает остальных. Апдейты одного пользователя в чате — по одному
     (`SimpleEventIsolation`, как было в python-telegram-bot): иначе двойной тап обгоняет
-    запись состояния диалога и реестра `/tonight`, и кнопки меню «умирают», а карточка
-    уходит дважды.
+    запись реестра `/tonight`, и карточка уходит дважды.
     """
     dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
     dispatcher.callback_query.outer_middleware(enforce_callback_rate_limit)
     dispatcher.startup.register(_publish_command_menu)
-    dispatcher.include_routers(build_standalone_router(), build_stats_router(), build_tail_router())
+    dispatcher.include_routers(build_standalone_router(), build_tail_router())
     return dispatcher
 
 

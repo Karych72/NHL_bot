@@ -2,7 +2,7 @@
 callback_data strings and the pure keyboard builders that produce them.
 
 Handlers get real aiogram objects (conftest: ``make_callback``/``make_message``
-bound to ``fake_bot``, dialog state ``fsm_state``) and the arguments aiogram's
+bound to ``fake_bot``) and the arguments aiogram's
 dependency injection would pass — the regex ``match`` of the registration filter
 included; what they ask Telegram to do is read back from the recording session
 (``api``). Where a handler calls into bot_messages for DB-backed rendering, that
@@ -42,131 +42,265 @@ def no_country_subscriptions(bot_module, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Pure keyboard builders — callback_data shape and offset math
+# Меню /stats, /advanced, /team_stats — каждая кнопка ведёт на известную таблицу
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "builder_name, args, prefix, footer_kind, parent_attr",
-    [
-        (
-            "conversation_player_stat_keyboard",
-            ("players_season_stats", "points"),
-            "st:players_season_stats:points:",
-            "menu_nav",
-            "PLAYER_FIELD",
-        ),
-        (
-            "conversation_team_stat_keyboard",
-            ("procent_points",),
-            "tm:procent_points:",
-            "menu_nav",
-            "TEAM_STATS",
-        ),
-        (
-            "standalone_player_stat_keyboard",
-            ("players_season_stats", "points"),
-            "sa:players_season_stats:points:",
-            "standalone",
-            None,
-        ),
-    ],
-)
-def test_pagination_keyboard_offsets_and_prev_floor(
-    bot_module, builder_name, args, prefix, footer_kind, parent_attr
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    builder = getattr(stats_handlers, builder_name)
+def _buttons(markup):
+    return [b for row in markup.inline_keyboard for b in row]
 
-    markup = builder(*args, 20, has_prev=True, has_next=True)
-    nav_row = markup.inline_keyboard[0]
+
+def test_stats_menu_offers_every_player_and_goalie_table_once(bot_module):
+    """Один экран `/stats` вместо подменю полевых, вратарей и расширенной: каждая таблица
+    игроков — ровно одной кнопкой, первая страница."""
+    stats_handlers = bot_module("stats_handlers")
+    specs = bot_module("leaderboard_specs")
+
+    data = [b.callback_data for b in _buttons(stats_handlers.stats_menu_keyboard())]
+
+    assert sorted(data) == sorted(f"st:{t}:{c}:0" for t, c in specs.PLAYER_STAT_TITLES)
+    assert all(re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, d) for d in data), "кнопка без хендлера"
+
+
+def test_stats_menu_highlights_only_points_goals_assists(bot_module):
+    """Сдержанный акцент: цветом выделен только первый ряд — бывший /leaders."""
+    stats_handlers = bot_module("stats_handlers")
+
+    rows = stats_handlers.stats_menu_keyboard().inline_keyboard
+
+    assert [(b.text, b.style) for b in rows[0]] == [
+        ("Очки", "primary"), ("Голы", "primary"), ("Передачи", "primary"),
+    ]
+    assert {b.style for row in rows[1:] for b in row} == {None}
+
+
+def test_team_stats_menu_offers_every_team_table_once(bot_module):
+    stats_handlers = bot_module("stats_handlers")
+    specs = bot_module("leaderboard_specs")
+
+    data = [b.callback_data for b in _buttons(stats_handlers.team_stats_keyboard())]
+
+    assert sorted(data) == sorted(f"tm:{key}:0" for key in specs.TEAM_STAT_SPECS)
+    assert all(re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, d) for d in data), "кнопка без хендлера"
+
+
+# ---------------------------------------------------------------------------
+# stat_page_reply — листание и подвал страницы у всех трёх команд
+# ---------------------------------------------------------------------------
+
+_PAGE_KEYS = [
+    ("st", "players_season_stats:points", "player_stat_leaderboard_page"),
+    ("sa", "players_advanced_stats:sat_pct", "player_stat_leaderboard_page"),
+    ("tm", "goals", "team_stat_leaderboard_page"),
+]
+
+
+@pytest.mark.parametrize("prefix, key, render", _PAGE_KEYS)
+def test_stat_page_offsets_prev_floor_and_footer(bot_module, prefix, key, render):
+    stats_handlers = bot_module("stats_handlers")
+    page = f"{prefix}:{key}:"
+
+    with patch.object(stats_handlers, render, return_value=("T", True, True)):
+        _, markup = stats_handlers.stat_page_reply(prefix, key, 20)
+    with patch.object(stats_handlers, render, return_value=("T", True, False)):
+        _, floor = stats_handlers.stat_page_reply(prefix, key, 5)
+
     # С третьей страницы первой кнопкой идёт «« 1–10» на начало списка.
-    assert [b.callback_data for b in nav_row] == [f"{prefix}0", f"{prefix}10", f"{prefix}30"]
-
+    assert [b.callback_data for b in markup.inline_keyboard[0]] == [f"{page}0", f"{page}10", f"{page}30"]
     # prev never goes negative, even near the start of the list
-    markup_floor = builder(*args, 5, has_prev=True, has_next=False)
-    assert markup_floor.inline_keyboard[0][0].callback_data == f"{prefix}0"
-    assert len(markup_floor.inline_keyboard[0]) == 1
-
-    footer = markup.inline_keyboard[-1]
-    if footer_kind == "menu_nav":
-        # «« Назад»» на родительское подменю, «В начало» на корень, «Готово»
-        # на выход: родитель, если он есть, а не корень.
-        assert [b.callback_data for b in footer] == [
-            str(getattr(dialog_states, parent_attr)),
-            str(dialog_states.CHOOSE_STATS),
-            str(dialog_states.END_CONVERSATION),
-        ]
-    else:
-        # /advanced: возврат к меню статистик и «Сохранить» вместо «Готово».
-        assert [b.callback_data for b in footer] == ["sa:menu", "sa:save"]
+    assert [b.callback_data for b in floor.inline_keyboard[0]] == [f"{page}0"]
+    # Подвал: меню своей команды и «Сохранить».
+    assert [b.callback_data for b in markup.inline_keyboard[-1]] == [f"{prefix}:menu", f"{prefix}:save"]
 
 
-@pytest.mark.parametrize(
-    "builder_name, args",
-    [
-        ("conversation_player_stat_keyboard", ("players_season_stats", "points")),
-        ("conversation_team_stat_keyboard", ("procent_points",)),
-    ],
-)
-def test_pagination_keyboard_omits_nav_row_on_single_page(bot_module, builder_name, args):
+def test_stat_page_single_page_has_only_footer(bot_module):
     stats_handlers = bot_module("stats_handlers")
-    builder = getattr(stats_handlers, builder_name)
 
-    markup = builder(*args, 0, has_prev=False, has_next=False)
+    with patch.object(stats_handlers, "team_stat_leaderboard_page", return_value=("T", False, False)):
+        _, markup = stats_handlers.stat_page_reply("tm", "pp", 0)
 
-    # Only the footer row («« Назад»» / «В начало» / «Готово») remains — no
-    # empty pagination row.
-    assert len(markup.inline_keyboard) == 1
+    assert len(markup.inline_keyboard) == 1, "без пустого ряда листания"
+
+
+def test_stat_page_renders_player_title_and_team_columns(bot_module):
+    """Ключ кнопки раскрывается в заголовок и колонки справочника `leaderboard_specs`."""
+    stats_handlers = bot_module("stats_handlers")
+
+    with patch.object(stats_handlers, "player_stat_leaderboard_page", return_value=("P", False, False)) as player, \
+            patch.object(stats_handlers, "team_stat_leaderboard_page", return_value=("T", False, False)) as team:
+        assert stats_handlers.stat_page_reply("st", "goalies_season_stats:wins", 30)[0] == "P"
+        assert stats_handlers.stat_page_reply("tm", "goals", 10)[0] == "T"
+
+    player.assert_called_once_with("Лидеры по победам", "goalies_season_stats", "wins", 30)
+    team.assert_called_once_with(
+        "Голы за и против в среднем за игру", ("goals_per_game", "goals_against_per_game"), 10
+    )
 
 
 # ---------------------------------------------------------------------------
-# «« Назад»» страницы стата игрока/вратаря — родитель выводится из
-# (table, column), а не хранится: callback_data пагинации
-# (`st:{table}:{column}:{offset}`) не оставляет места для лишнего поля.
+# callback_stat_screen
 # ---------------------------------------------------------------------------
+
+def _match(stats_handlers, pattern_name: str, data: str) -> re.Match:
+    """Совпадение, которое aiogram передаёт хендлеру нажатия (`F.data.regexp(...).as_("match")`)."""
+    match = re.match(getattr(stats_handlers, pattern_name), data)
+    assert match is not None
+    return match
+
+
+async def _press_stat(stats_handlers, make_callback, fake_bot, data):
+    await stats_handlers.callback_stat_screen(
+        make_callback(data), fake_bot, _match(stats_handlers, "STAT_SCREEN_CALLBACK_PATTERN", data)
+    )
+
+
+@pytest.mark.asyncio
+async def test_stat_screen_parses_offset_and_renders_page_in_place(bot_module, make_callback, fake_bot, api):
+    stats_handlers = bot_module("stats_handlers")
+    data = "st:players_season_stats:points:20"
+
+    with patch.object(
+        stats_handlers, "player_stat_leaderboard_page", return_value=("PAGE TEXT", True, True)
+    ) as mock_page:
+        await _press_stat(stats_handlers, make_callback, fake_bot, data)
+
+    mock_page.assert_called_once_with("Лучшие бомбардиры", "players_season_stats", "points", 20)
+    [edit] = api.edited_texts
+    assert edit.text is None
+    assert body(edit) == rich_html("PAGE TEXT")
+    assert edit.message_id == MENU_MESSAGE_ID, "страница — на месте сообщения с кнопкой"
+    assert [b.callback_data for b in edit.reply_markup.inline_keyboard[0]] == [
+        "st:players_season_stats:points:0",
+        "st:players_season_stats:points:10",
+        "st:players_season_stats:points:30",
+    ]
+
 
 @pytest.mark.parametrize(
-    "table, column, expected_parent_attr",
+    "prefix, intro, keyboard",
     [
-        ("players_season_stats", "points", "PLAYER_FIELD"),
-        ("players_season_stats", "time_on_ice_per_game", "PLAYER_FIELD"),
-        # shootout_pct физически лежит в players_season_stats, но в меню
-        # (script_bot.bot_player_advanced_menu) он в advanced-подменю, не в
-        # полевых — правило деривации должно это отражать.
-        ("players_season_stats", "shootout_pct", "PLAYER_ADVANCED_SUBMENU"),
-        ("players_advanced_stats", "sat_pct", "PLAYER_ADVANCED_SUBMENU"),
-        ("players_shot_types", "goals_wrist", "PLAYER_ADVANCED_SUBMENU"),
-        ("goalies_season_stats", "wins", "PLAYER_GOALIE"),
+        ("st", "STATS_COMMAND_INTRO", "stats_menu_keyboard"),
+        ("sa", "ADVANCED_COMMAND_INTRO", "advanced_standalone_keyboard"),
+        ("tm", "TEAM_STATS_COMMAND_INTRO", "team_stats_keyboard"),
     ],
 )
-def test_conversation_player_stat_keyboard_back_targets_correct_submenu(
-    bot_module, table, column, expected_parent_attr
+@pytest.mark.asyncio
+async def test_stat_screen_menu_returns_own_command_menu_in_place(
+    bot_module, make_callback, fake_bot, api, prefix, intro, keyboard
 ):
     stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
+    help_text = bot_module("help_text")
 
-    markup = stats_handlers.conversation_player_stat_keyboard(
-        table, column, 0, has_prev=False, has_next=False
+    await _press_stat(stats_handlers, make_callback, fake_bot, f"{prefix}:menu")
+
+    [edit] = api.edited_texts
+    assert body(edit) == rich_html(getattr(help_text, intro))
+    assert edit.reply_markup == getattr(stats_handlers, keyboard)()
+    assert api.outgoing == [], "меню — в том же сообщении"
+
+
+@pytest.mark.asyncio
+async def test_stat_screen_save_freezes_page_and_sends_copy_with_same_keyboard(
+    bot_module, fake_bot, api
+):
+    """«Сохранить»: текущая страница остаётся в чате без кнопок, её копия
+    (`copyMessage`) с теми же кнопками уходит новым сообщением ниже."""
+    from aiogram.types import CallbackQuery
+
+    stats_handlers = bot_module("stats_handlers")
+    with patch.object(stats_handlers, "team_stat_leaderboard_page", return_value=("T", True, True)):
+        _, markup = stats_handlers.stat_page_reply("tm", "shots", 10)
+    callback = CallbackQuery.model_validate(
+        {
+            "id": "1",
+            "from": {"id": 200, "is_bot": False, "first_name": "Test"},
+            "chat_instance": "ci",
+            "data": "tm:save",
+            "message": {
+                "message_id": MENU_MESSAGE_ID,
+                "date": datetime.now(timezone.utc),
+                "chat": {"id": 100, "type": "private"},
+                "text": "Броски",
+                "reply_markup": markup.model_dump(),
+            },
+        },
+        context={"bot": fake_bot},
     )
-    [footer] = markup.inline_keyboard
-    assert footer[0].callback_data == str(getattr(dialog_states, expected_parent_attr))
+
+    await stats_handlers.callback_stat_screen(
+        callback, fake_bot, _match(stats_handlers, "STAT_SCREEN_CALLBACK_PATTERN", "tm:save")
+    )
+
+    assert api.answers == ["Сохранено"]
+    [frozen] = api.edited_markups
+    assert (frozen.message_id, frozen.reply_markup) == (MENU_MESSAGE_ID, None)
+    [sent] = api.sent(CopyMessage)
+    assert (sent.chat_id, sent.from_chat_id, sent.message_id) == (100, 100, MENU_MESSAGE_ID)
+    assert api.outgoing == [], "копия — copyMessage, а не пересборка текста"
+    assert [[(b.text, b.callback_data) for b in row] for row in sent.reply_markup.inline_keyboard] == [
+        [(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard
+    ]
+    # Сначала копия, потом снятие кнопок: упади отправка — страница останется живой.
+    assert api.requests.index(sent) < api.requests.index(frozen)
 
 
-def test_leaders_category_keyboard_has_fixed_three_categories(bot_module):
+# ---------------------------------------------------------------------------
+# «message is not modified» при повторном нажатии глушится; любая другая
+# ошибка правки всплывает (`stats_handlers._edit_page`)
+# ---------------------------------------------------------------------------
+
+# Все листаемые экраны рисуют страницу через `_edit_page`; варьируются хендлер, его
+# callback_data, паттерн регистрации и функция рендера, которую тест подменяет.
+_EDIT_PAGE_CASES = [
+    ("callback_stat_screen", "st:players_season_stats:points:0", "STAT_SCREEN_CALLBACK_PATTERN",
+     "player_stat_leaderboard_page", ("t", False, False)),
+    ("callback_stat_screen", "tm:pp:0", "STAT_SCREEN_CALLBACK_PATTERN",
+     "team_stat_leaderboard_page", ("t", False, False)),
+    ("callback_country", "cn:list", "COUNTRY_CALLBACK_PATTERN", "country_rankings", ("t", [])),
+]
+
+
+async def _press_page(stats_handlers, make_callback, fake_bot, name, data, pattern_name):
+    """Нажатие листаемого экрана с теми аргументами, которые подставил бы aiogram."""
+    handler = getattr(stats_handlers, name)
+    kwargs = {"match": _match(stats_handlers, pattern_name, data)}
+    if "bot" in handler.__code__.co_varnames[:handler.__code__.co_argcount]:
+        kwargs["bot"] = fake_bot
+    await handler(make_callback(data), **kwargs)
+
+
+@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
+@pytest.mark.asyncio
+async def test_page_edit_swallows_message_not_modified(
+    bot_module, make_callback, fake_bot, api, name, data, pattern_name, patched_func, rendered
+):
     stats_handlers = bot_module("stats_handlers")
-    markup = stats_handlers.leaders_category_keyboard()
-    [row] = markup.inline_keyboard
-    assert [b.callback_data for b in row] == ["pl:pick:points", "pl:pick:goals", "pl:pick:assists"]
+    api.fail_next(EditMessageText, _bad_request("Bad Request: message is not modified: specified new "
+                                                "message content and reply markup are exactly the same"))
+
+    with patch.object(stats_handlers, patched_func, return_value=rendered):
+        await _press_page(stats_handlers, make_callback, fake_bot, name, data, pattern_name)
+
+    # Хендлер дошёл до правки (не выпал раньше на проверке данных) — и правка не прошла.
+    assert api.answers == [None]
+    assert api.edited_texts == []
 
 
-def test_leaderboard_nav_keyboard_prepends_pagination_row(bot_module):
+@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
+@pytest.mark.asyncio
+async def test_page_edit_reraises_other_bad_request(
+    bot_module, make_callback, fake_bot, api, name, data, pattern_name, patched_func, rendered
+):
     stats_handlers = bot_module("stats_handlers")
-    markup = stats_handlers.leaderboard_nav_keyboard("goals", 20, has_prev=True, has_next=True)
-    nav_row = markup.inline_keyboard[0]
-    assert [b.callback_data for b in nav_row] == ["pl:goals:0", "pl:goals:10", "pl:goals:30"]
-    assert markup.inline_keyboard[-1][0].callback_data == "pl:pick:points"
+    api.fail_next(EditMessageText, _bad_request("Bad Request: chat not found"))
 
+    with patch.object(stats_handlers, patched_func, return_value=rendered):
+        with pytest.raises(TelegramBadRequest, match="chat not found"):
+            await _press_page(stats_handlers, make_callback, fake_bot, name, data, pattern_name)
+
+
+# ---------------------------------------------------------------------------
+# _page_nav_rows — подписи диапазонов
+# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "offset, has_prev, has_next, expected",
@@ -190,291 +324,6 @@ def test_page_nav_rows_label_ranges_and_offer_first_page_only_from_offset_twenty
 def test_page_nav_rows_empty_without_neighbouring_pages(bot_module):
     stats_handlers = bot_module("stats_handlers")
     assert stats_handlers._page_nav_rows("p", 0, False, False) == []
-
-
-# ---------------------------------------------------------------------------
-# callback_stats_player_page / callback_stats_team_page
-# ---------------------------------------------------------------------------
-
-def _match(stats_handlers, pattern_name: str, data: str) -> re.Match:
-    """Совпадение, которое aiogram передаёт хендлеру нажатия (`F.data.regexp(...).as_("match")`)."""
-    match = re.match(getattr(stats_handlers, pattern_name), data)
-    assert match is not None
-    return match
-
-
-@pytest.mark.asyncio
-async def test_stats_player_page_answers_without_rendering_for_unknown_stat(
-    bot_module, make_callback, fsm_state, api
-):
-    """Пара (table, column) вне `PLAYER_STAT_TITLES` подходит под паттерн, но не роняет
-    диалог: нажатие получает ответ, страница не перерисовывается, состояние не меняется."""
-    stats_handlers = bot_module("stats_handlers")
-    data = "st:not_a_table:not_a_col:0"
-
-    await stats_handlers.callback_stats_player_page(
-        make_callback(data), fsm_state, _match(stats_handlers, "STAT_PAGE_CALLBACK_PATTERN", data)
-    )
-
-    assert api.answers == [None]
-    assert api.edited_texts == []
-    assert await fsm_state.get_state() is None
-
-
-@pytest.mark.asyncio
-async def test_stats_player_page_parses_offset_and_renders_known_stat(
-    bot_module, make_callback, fsm_state, api
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    data = "st:players_season_stats:points:20"
-
-    with patch.object(
-        stats_handlers, "player_stat_leaderboard_page", return_value=("PAGE TEXT", True, True)
-    ) as mock_page:
-        await stats_handlers.callback_stats_player_page(
-            make_callback(data), fsm_state, _match(stats_handlers, "STAT_PAGE_CALLBACK_PATTERN", data)
-        )
-
-    mock_page.assert_called_once_with("Лучшие бомбардиры", "players_season_stats", "points", 20)
-    [edit] = api.edited_texts
-    assert edit.text is None
-    assert body(edit) == rich_html("PAGE TEXT")
-    assert edit.message_id == MENU_MESSAGE_ID, "страница — на месте сообщения с кнопкой"
-    nav_row = edit.reply_markup.inline_keyboard[0]
-    assert [b.callback_data for b in nav_row] == [
-        "st:players_season_stats:points:0",
-        "st:players_season_stats:points:10",
-        "st:players_season_stats:points:30",
-    ]
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-
-
-@pytest.mark.asyncio
-async def test_stats_team_page_answers_without_rendering_for_unknown_column(
-    bot_module, make_callback, fsm_state, api
-):
-    stats_handlers = bot_module("stats_handlers")
-    data = "tm:not_a_column:0"
-
-    await stats_handlers.callback_stats_team_page(
-        make_callback(data), fsm_state, _match(stats_handlers, "TEAM_PAGE_CALLBACK_PATTERN", data)
-    )
-
-    assert api.answers == [None]
-    assert api.edited_texts == []
-
-
-@pytest.mark.asyncio
-async def test_stats_team_page_parses_column_and_offset(bot_module, make_callback, fsm_state, api):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    data = "tm:power_play_percentage:30"
-
-    with patch.object(
-        stats_handlers, "team_stat_leaderboard_page", return_value=("TEAM PAGE", True, False)
-    ) as mock_page:
-        await stats_handlers.callback_stats_team_page(
-            make_callback(data), fsm_state, _match(stats_handlers, "TEAM_PAGE_CALLBACK_PATTERN", data)
-        )
-
-    mock_page.assert_called_once_with("Статистика большинства", "power_play_percentage", 30)
-    assert body(api.edited_texts[0]) == rich_html("TEAM PAGE")
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-
-
-# ---------------------------------------------------------------------------
-# callback_standalone_sa
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_standalone_sa_menu_returns_advanced_menu_in_place(
-    bot_module, make_callback, fake_bot, api
-):
-    stats_handlers = bot_module("stats_handlers")
-    help_text = bot_module("help_text")
-
-    await stats_handlers.callback_standalone_sa(make_callback("sa:menu"), fake_bot)
-
-    [edit] = api.edited_texts
-    assert body(edit) == rich_html(help_text.ADVANCED_COMMAND_INTRO)
-    assert edit.reply_markup == stats_handlers.advanced_standalone_keyboard()
-    assert api.outgoing == [], "меню — в том же сообщении"
-
-
-@pytest.mark.asyncio
-async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard(
-    bot_module, fake_bot, api
-):
-    """«Сохранить»: текущая страница остаётся в чате без кнопок (как прежнее
-    «Готово»), её копия (`copyMessage`) с теми же кнопками уходит новым сообщением ниже."""
-    from aiogram.types import CallbackQuery
-
-    stats_handlers = bot_module("stats_handlers")
-    markup = stats_handlers.standalone_player_stat_keyboard(
-        "players_advanced_stats", "sat_pct", 10, has_prev=True, has_next=True
-    )
-    callback = CallbackQuery.model_validate(
-        {
-            "id": "1",
-            "from": {"id": 200, "is_bot": False, "first_name": "Test"},
-            "chat_instance": "ci",
-            "data": "sa:save",
-            "message": {
-                "message_id": MENU_MESSAGE_ID,
-                "date": datetime.now(timezone.utc),
-                "chat": {"id": 100, "type": "private"},
-                "text": "Лидеры по Corsi",
-                "reply_markup": markup.model_dump(),
-            },
-        },
-        context={"bot": fake_bot},
-    )
-
-    await stats_handlers.callback_standalone_sa(callback, fake_bot)
-
-    assert api.answers == ["Сохранено"]
-    [frozen] = api.edited_markups
-    assert (frozen.message_id, frozen.reply_markup) == (MENU_MESSAGE_ID, None)
-    [sent] = api.sent(CopyMessage)
-    assert (sent.chat_id, sent.from_chat_id, sent.message_id) == (100, 100, MENU_MESSAGE_ID)
-    assert api.outgoing == [], "копия — copyMessage, а не пересборка текста"
-    assert [[(b.text, b.callback_data) for b in row] for row in sent.reply_markup.inline_keyboard] == [
-        [(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard
-    ]
-    # Сначала копия, потом снятие кнопок: упади отправка — страница останется живой.
-    assert api.requests.index(sent) < api.requests.index(frozen)
-
-
-@pytest.mark.asyncio
-async def test_standalone_sa_ignores_malformed_data(bot_module, make_callback, fake_bot, api):
-    stats_handlers = bot_module("stats_handlers")
-
-    await stats_handlers.callback_standalone_sa(make_callback("sa:whatever"), fake_bot)
-
-    assert api.answers == [None]
-    assert api.edited_texts == []
-
-
-@pytest.mark.asyncio
-async def test_standalone_sa_answers_without_rendering_unknown_stat(bot_module, make_callback, fake_bot, api):
-    stats_handlers = bot_module("stats_handlers")
-
-    await stats_handlers.callback_standalone_sa(make_callback("sa:not_a_table:not_a_col:0"), fake_bot)
-
-    assert api.answers == [None]
-    assert api.edited_texts == []
-
-
-@pytest.mark.asyncio
-async def test_standalone_sa_renders_known_stat_with_menu_and_save_footer(
-    bot_module, make_callback, fake_bot, api
-):
-    stats_handlers = bot_module("stats_handlers")
-
-    with patch.object(
-        stats_handlers, "player_stat_leaderboard_page", return_value=("GOALS PAGE", False, True)
-    ):
-        await stats_handlers.callback_standalone_sa(make_callback("sa:players_season_stats:goals:0"), fake_bot)
-
-    edit = api.edited_texts[0]
-    assert body(edit) == rich_html("GOALS PAGE")
-    assert [b.callback_data for b in edit.reply_markup.inline_keyboard[-1]] == ["sa:menu", "sa:save"]
-
-
-# ---------------------------------------------------------------------------
-# «message is not modified» при повторном нажатии глушится; любая другая
-# ошибка правки всплывает (`stats_handlers._edit_page`)
-# ---------------------------------------------------------------------------
-
-# Все листаемые экраны рисуют страницу через `_edit_page`; варьируются хендлер, его
-# callback_data, паттерн регистрации (None — хендлер разбирает данные сам) и функция
-# рендера, которую тест подменяет.
-_EDIT_PAGE_CASES = [
-    ("callback_stats_player_page", "st:players_season_stats:points:0", "STAT_PAGE_CALLBACK_PATTERN",
-     "player_stat_leaderboard_page", ("t", False, False)),
-    ("callback_stats_team_page", "tm:procent_points:0", "TEAM_PAGE_CALLBACK_PATTERN",
-     "team_stat_leaderboard_page", ("t", False, False)),
-    ("callback_standalone_sa", "sa:players_season_stats:points:0", None,
-     "player_stat_leaderboard_page", ("t", False, False)),
-    ("callback_leaders_pick", "pl:pick:points", "LEADERS_PICK_CALLBACK_PATTERN",
-     "stat_leaderboard_for_kind", ("t", False, False)),
-    ("callback_leaderboard_page", "pl:points:0", "LEADERBOARD_PAGE_CALLBACK_PATTERN",
-     "stat_leaderboard_for_kind", ("t", False, False)),
-    ("callback_country", "cn:list", "COUNTRY_CALLBACK_PATTERN", "country_rankings", ("t", [])),
-]
-
-
-async def _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name):
-    """Нажатие листаемого экрана с теми аргументами, которые подставил бы aiogram."""
-    handler = getattr(stats_handlers, name)
-    callback = make_callback(data)
-    kwargs = {}
-    if pattern_name is not None:
-        kwargs["match"] = _match(stats_handlers, pattern_name, data)
-    params = handler.__code__.co_varnames[:handler.__code__.co_argcount]
-    if "state" in params:
-        kwargs["state"] = fsm_state
-    if "bot" in params:
-        kwargs["bot"] = fake_bot
-    await handler(callback, **kwargs)
-
-
-@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
-@pytest.mark.asyncio
-async def test_page_edit_swallows_message_not_modified(
-    bot_module, make_callback, fake_bot, fsm_state, api, name, data, pattern_name, patched_func, rendered
-):
-    stats_handlers = bot_module("stats_handlers")
-    api.fail_next(EditMessageText, _bad_request("Bad Request: message is not modified: specified new "
-                                                "message content and reply markup are exactly the same"))
-
-    with patch.object(stats_handlers, patched_func, return_value=rendered):
-        await _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name)
-
-    # Хендлер дошёл до правки (не выпал раньше на проверке данных) — и правка не прошла.
-    assert api.answers == [None]
-    assert api.edited_texts == []
-
-
-@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
-@pytest.mark.asyncio
-async def test_page_edit_reraises_other_bad_request(
-    bot_module, make_callback, fake_bot, fsm_state, api, name, data, pattern_name, patched_func, rendered
-):
-    stats_handlers = bot_module("stats_handlers")
-    api.fail_next(EditMessageText, _bad_request("Bad Request: chat not found"))
-
-    with patch.object(stats_handlers, patched_func, return_value=rendered):
-        with pytest.raises(TelegramBadRequest, match="chat not found"):
-            await _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name)
-
-
-# ---------------------------------------------------------------------------
-# bot_league_standings создаёт НОВОЕ сообщение (`send_message`, не
-# `edit_text`) с клавиатурой меню (« Главное меню» → CHOOSE_STATS) —
-# его message_id должен попасть в данные диалога так же, как у остальных мест,
-# создающих новое сообщение с живой клавиатурой диалога.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_league_standings_records_new_message_id_for_cancel(
-    bot_module, make_callback, fsm_state, fake_bot, api
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-
-    with patch.object(stats_handlers, "team_table", return_value="TABLE"):
-        await stats_handlers.bot_league_standings(
-            make_callback(str(dialog_states.LEAGUE_STANDINGS)), fsm_state, fake_bot
-        )
-
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    [sent] = api.sent_rich
-    assert body(sent) == rich_html("TABLE")
-    [row] = sent.reply_markup.inline_keyboard
-    assert row[0].callback_data == str(dialog_states.CHOOSE_STATS)
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -656,43 +505,6 @@ async def test_expand_digest_game_opens_card_for_valid_id(bot_module, make_callb
 
     mock_send.assert_awaited_once_with(fake_bot, 100, 777)
     assert api.answers == [None]
-
-
-# ---------------------------------------------------------------------------
-# callback_leaders_pick / callback_leaderboard_page
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_leaders_pick_renders_chosen_category_from_offset_zero(bot_module, make_callback, api):
-    stats_handlers = bot_module("stats_handlers")
-    data = "pl:pick:goals"
-
-    with patch.object(
-        stats_handlers, "stat_leaderboard_for_kind", return_value=("GOALS PAGE", False, True)
-    ) as mock_kind:
-        await stats_handlers.callback_leaders_pick(
-            make_callback(data), _match(stats_handlers, "LEADERS_PICK_CALLBACK_PATTERN", data)
-        )
-
-    mock_kind.assert_called_once_with("goals", 0)
-    assert body(api.edited_texts[0]) == rich_html("GOALS PAGE")
-
-
-@pytest.mark.asyncio
-async def test_leaderboard_page_parses_kind_and_offset_from_data(bot_module, make_callback, api):
-    stats_handlers = bot_module("stats_handlers")
-    data = "pl:assists:30"
-
-    with patch.object(
-        stats_handlers, "stat_leaderboard_for_kind", return_value=("PAGE", True, False)
-    ) as mock_kind:
-        await stats_handlers.callback_leaderboard_page(
-            make_callback(data), _match(stats_handlers, "LEADERBOARD_PAGE_CALLBACK_PATTERN", data)
-        )
-
-    mock_kind.assert_called_once_with("assists", 30)
-    nav = api.edited_texts[0].reply_markup.inline_keyboard[0]
-    assert [b.callback_data for b in nav] == ["pl:assists:0", "pl:assists:20"]
 
 
 # ---------------------------------------------------------------------------
@@ -980,68 +792,7 @@ def test_download_goal_video_fails_loudly_without_ffmpeg_before_any_network(
 
 
 # ---------------------------------------------------------------------------
-# bot_digest_custom_date — free-text date parsing (not a callback, but the
-# same module's input-parsing surface feeding dispatch_day_digest_messages)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_digest_custom_date_rejects_bad_format(bot_module, make_message, fsm_state, fake_bot, api):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    await fsm_state.set_state(dialog_states.StatsMenu.third)
-
-    await stats_handlers.bot_digest_custom_date(make_message("not-a-date"), fsm_state, fake_bot)
-
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.third.state
-    [reply] = api.sent_rich
-    assert "YYYY-MM-DD" in body(reply)
-    # Дно без клавиатуры — тупик (CLAUDE.md, Задача 5): пользователь должен
-    # иметь кнопку выхода, а не только текстовое упоминание /cancel.
-    buttons = [b for row in reply.reply_markup.inline_keyboard for b in row]
-    assert buttons[0].callback_data == stats_handlers.DIGEST_BACK_FROM_DATE_CALLBACK
-    # Это НОВОЕ сообщение — его id записан, чтобы /cancel мог снять клавиатуру с него.
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-@pytest.mark.asyncio
-async def test_digest_custom_date_dispatches_digest_for_valid_date(
-    bot_module, make_message, fsm_state, fake_bot, api
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    await fsm_state.set_state(dialog_states.StatsMenu.third)
-
-    with patch.object(
-        stats_handlers, "day_digest", return_value=("2025-12-01", [(1, "text", [])])
-    ) as mock_digest:
-        await stats_handlers.bot_digest_custom_date(make_message("2025-12-01"), fsm_state, fake_bot)
-
-    mock_digest.assert_called_once_with("2025-12-01")
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    # dispatch_day_digest_messages ran for real (not mocked) — assert on what
-    # it actually sent, not just that something was sent.
-    [sent] = api.sent_rich
-    assert body(sent) == rich_html("text")
-    assert sent.chat_id == 100
-    # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень;
-    # сообщение новое (send_message) — id записан для /cancel. Единственный
-    # реальный матч без кнопок видео гола рендерится build_menu(..., n_cols=1)
-    # — каждая кнопка на своей строке.
-    nav_rows = sent.reply_markup.inline_keyboard[-3:]
-    assert [row[0].callback_data for row in nav_rows] == [
-        str(dialog_states.DAY_DIGEST),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-# ---------------------------------------------------------------------------
-# dispatch_day_digest_messages — the two branches not covered by the
-# bot_digest_custom_date test above: "no real games" (gid == 0) and multi-game
-# (2+ real games). Each is a physically separate code path — its own
-# send_message call — but both attach the same 3-button footer and record the
-# same way, so one parametrized test asserts both.
+# dispatch_day_digest_messages — ветки «нет матчей», «один матч», «несколько»
 # ---------------------------------------------------------------------------
 
 def _digest_db_routes(home, away):
@@ -1072,46 +823,30 @@ def digest_labels_db(fake_db_router):
     [
         pytest.param([(0, "Матчей не найдено", [])], id="no_real_games"),
         pytest.param(
+            [(1, "Матч 1 текст", [{"label": "▶ 1:0", "game_id": 1, "event_id": 5}])], id="single_game"
+        ),
+        pytest.param(
             [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])], id="multi_game"
         ),
     ],
 )
-async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
-    bot_module, fake_bot, api, fsm_state, digest_labels_db, games
+async def test_dispatch_day_digest_ends_with_hint_and_carries_only_match_buttons(
+    bot_module, fake_bot, api, digest_labels_db, games
 ):
+    """Дайджест (`/today`, ИИ, рассылка): сообщение матчей, затем подсказка «Ещё: …»;
+    кнопки — только карточки матчей (`dg:`) и видео голов (`gv:`)."""
     stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-
-    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games, dialog=fsm_state)
-
-    [sent] = api.sent_rich
-    nav_row = sent.reply_markup.inline_keyboard[-1]
-    assert [b.callback_data for b in nav_row] == [
-        str(dialog_states.DAY_DIGEST),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-@pytest.mark.asyncio
-async def test_dispatch_day_digest_outside_dialog_sends_hint_instead_of_navigation(
-    bot_module, fake_bot, api, digest_labels_db
-):
-    """`/today` и рассылка зовут без `dialog` — вне диалога `/stats`: ни кнопок навигации
-    диалога (они никуда не ведут), ни записи id меню, а подсказка «Ещё: …» последним
-    сообщением."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    [summary] = api.sent_rich
+    [digest] = api.sent_rich
     [hint] = api.sent_messages
-    nav_data = {str(dialog_states.DAY_DIGEST), str(dialog_states.CHOOSE_STATS), str(dialog_states.END_CONVERSATION)}
-    assert not nav_data & {b.callback_data for row in summary.reply_markup.inline_keyboard for b in row}
     assert hint.text == stats_handlers._DIGEST_MORE_HINT
+    assert api.requests.index(digest) < api.requests.index(hint)
+    rows = digest.reply_markup.inline_keyboard if digest.reply_markup else []
+    data = [b.callback_data for row in rows for b in row]
+    assert all(d.startswith(("dg:", "gv:")) for d in data)
+    assert bool(data) is (games[0][0] != 0), "у «матчей не найдено» кнопок нет"
 
 
 @pytest.mark.asyncio
@@ -1224,28 +959,26 @@ def test_tonight_game_callback_pattern_matches_only_well_formed_data(bot_module,
     "data, expected",
     [
         ("st:players_season_stats:points:0", True),
+        ("sa:players_advanced_stats:sat_pct:10", True),
+        ("tm:goals:20", True),
+        ("st:menu", True),
+        ("tm:save", True),
         ("st:players_season_stats:points:-5", False),  # \d+ rejects a leading '-'
         ("st:players_season_stats:points", False),  # missing offset
+        ("tm:goals", False),  # missing offset
+        ("pl:points:0", False),  # префикс убранного /leaders
         ("st:players; DROP TABLE t;--:points:0", False),  # SQL-injection-shaped garbage
+        ("tm:points; DROP TABLE teams;--:0", False),
+        ("st:a:b:c:0", False),  # ключ — не больше «таблица:колонка»
+        ("st:not_a_table:not_a_col:0", False),  # ключ вне PLAYER_STAT_TITLES
+        ("tm:procent_points:0", False),  # % очков убран из /team_stats — в /standings
+        ("tm:players_season_stats:points:0", False),  # ключ игроков с префиксом команд
+        ("st:goals:0", False),  # ключ команд с префиксом игроков
     ],
 )
-def test_stat_page_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
+def test_stat_screen_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
     stats_handlers = bot_module("stats_handlers")
-    assert bool(re.match(stats_handlers.STAT_PAGE_CALLBACK_PATTERN, data)) is expected
-
-
-@pytest.mark.parametrize(
-    "data, expected",
-    [
-        ("tm:procent_points:0", True),
-        ("tm:procent_points:-5", False),  # \d+ rejects a leading '-'
-        ("tm:procent_points", False),  # missing offset
-        ("tm:points; DROP TABLE teams;--:0", False),  # SQL-injection-shaped garbage
-    ],
-)
-def test_team_page_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
-    stats_handlers = bot_module("stats_handlers")
-    assert bool(re.match(stats_handlers.TEAM_PAGE_CALLBACK_PATTERN, data)) is expected
+    assert bool(re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, data)) is expected
 
 
 @pytest.mark.parametrize(
@@ -1253,10 +986,6 @@ def test_team_page_callback_pattern_matches_only_well_formed_data(bot_module, da
     [
         ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:777", True),
         ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:not-an-int", False),
-        ("LEADERS_PICK_CALLBACK_PATTERN", "pl:pick:goals", True),
-        ("LEADERS_PICK_CALLBACK_PATTERN", "pl:pick:wins", False),  # категории вне Очки/Голы/Передачи
-        ("LEADERBOARD_PAGE_CALLBACK_PATTERN", "pl:assists:30", True),
-        ("LEADERBOARD_PAGE_CALLBACK_PATTERN", "pl:invalid_kind:0", False),
         ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001:55", True),
         ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001", False),  # без события
         ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:x:55", False),

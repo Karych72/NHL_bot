@@ -107,7 +107,7 @@ def _plain(messages) -> list:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "command", ["today", "standings", "team", "leaders", "countries", "advanced", "help"]
+    "command", ["today", "standings", "stats", "team_stats", "team", "countries", "advanced", "help"]
 )
 async def test_open_command_replies_like_the_command(
     ai, make_message, fake_bot, api, monkeypatch, command
@@ -143,19 +143,19 @@ async def test_team_profile_replies_like_team_command(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool", "params", "callback", "data", "pattern"),
+    ("tool", "params", "callback", "data", "pattern", "needs_bot"),
     [
-        ("leaders", {"category": "goals"}, "callback_leaders_pick", "pl:pick:goals",
-         "LEADERS_PICK_CALLBACK_PATTERN"),
+        ("leaders", {"category": "goals"}, "callback_stat_screen", "st:players_season_stats:goals:0",
+         "STAT_SCREEN_CALLBACK_PATTERN", True),
         ("country_players", {"country": "RUS"}, "callback_country", "cn:RUS:F:0",
-         "COUNTRY_CALLBACK_PATTERN"),
+         "COUNTRY_CALLBACK_PATTERN", False),
         ("advanced_metric", {"metric": "sat"}, "callback_standalone_adv", "adv:sat",
-         "ADVANCED_CALLBACK_PATTERN"),
+         "ADVANCED_CALLBACK_PATTERN", False),
     ],
 )
 async def test_screen_tool_sends_what_the_button_draws(
     ai, bot_module, make_message, make_callback, fake_bot, api,
-    tool, params, callback, data, pattern,
+    tool, params, callback, data, pattern, needs_bot,
 ):
     """Экран из кнопки рисуется правкой сообщения, из вопроса — новым сообщением; текст и
     кнопки одни и те же."""
@@ -163,7 +163,8 @@ async def test_screen_tool_sends_what_the_button_draws(
     bot, _, _ = ai(_response(_tool_use(tool, **params)))
     await _ask(bot, make_message, fake_bot)
     match = re.match(getattr(stats_handlers, pattern), data)
-    await getattr(stats_handlers, callback)(make_callback(data), match=match)
+    extra = {"bot": fake_bot} if needs_bot else {}
+    await getattr(stats_handlers, callback)(make_callback(data), match=match, **extra)
 
     (reply,) = api.sent_rich
     (edited,) = api.edited_texts
@@ -179,7 +180,7 @@ async def test_digest_for_date_asks_that_day_and_sends_it(ai, make_message, fake
     assert any("games WHERE day" in q and p[0] == "2026-10-19" for q, p in cursor.executed)
     sent = api.sent_rich[0]
     assert body(sent) == rich_html("За 2026-10-19 завершенных матчей не найдено.")
-    assert sent.reply_markup is None, "кнопок меню /stats вне диалога нет"
+    assert sent.reply_markup is None, "у дня без матчей кнопок нет"
 
 
 def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):

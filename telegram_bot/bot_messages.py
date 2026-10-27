@@ -4,7 +4,7 @@
 Часть `telegram_bot/`, которая читает БД (заполненную `pipeline/`) и
 превращает строки в готовый Telegram-текст: построчный HTML с таблицами
 `_table`, который `rich_message()` превращает в rich-сообщение (Bot API 10.1+);
-сама отправка, листание страниц и клавиатуры живут в `stats_handlers.py`/`script_bot.py`.
+сама отправка, листание страниц и клавиатуры живут в `stats_handlers.py`.
 """
 
 import html
@@ -1029,10 +1029,6 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
 
 LEADERBOARD_PAGE_SIZE = 10
 
-LEADERBOARD_KIND_POINTS = "points"
-LEADERBOARD_KIND_ASSISTS = "assists"
-LEADERBOARD_KIND_GOALS = "goals"
-
 
 def player_stats_with_count(
     name_stats: str,
@@ -1145,26 +1141,6 @@ def player_stats_with_count(
     return body, stats["count_rows"], total
 
 
-def player_stats(
-    name_stats: str,
-    table_name: str,
-    column_name: str,
-    count: int = 10,
-    offset: int = 0,
-    *,
-    secondary_sort: Optional[str] = None,
-) -> str:
-    """Текст лидерборда; всегда HTML (экранирование имён из БД), как в /stats и /leaders."""
-    return player_stats_with_count(
-        name_stats,
-        table_name,
-        column_name,
-        count=count,
-        offset=offset,
-        secondary_sort=secondary_sort,
-    )[0]
-
-
 def _rank_range_label(offset: int, rows: int) -> str:
     if rows <= 0:
         return "нет данных"
@@ -1202,11 +1178,6 @@ def _leaderboard_page_text(
     return text, offset > 0, offset + n < total
 
 
-def leaders_menu_intro() -> str:
-    """Текст первого шага /leaders — до выбора категории кнопкой."""
-    return "<b>Лидеры сезона</b>\nВыберите категорию:\n" + _season_footer()
-
-
 def player_stat_leaderboard_page(
     heading: str,
     table_name: str,
@@ -1227,34 +1198,6 @@ def player_stat_leaderboard_page(
         secondary_sort=secondary_sort,
     )
     return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
-
-
-def single_stat_leaderboard_page(
-    heading: str,
-    column_name: str,
-    offset: int,
-) -> Tuple[str, bool, bool]:
-    """Сезонные статы полевых (players_season_stats)."""
-    return player_stat_leaderboard_page(
-        heading, "players_season_stats", column_name, offset
-    )
-
-
-def stat_leaderboard_for_kind(kind: str, offset: int) -> Tuple[str, bool, bool]:
-    """Топ по очкам, голам или передачам; *kind* — points / goals / assists."""
-    if kind == LEADERBOARD_KIND_POINTS:
-        return player_stat_leaderboard_page(
-            "Топ бомбардиров", "players_season_stats", "points", offset
-        )
-    if kind == LEADERBOARD_KIND_GOALS:
-        return player_stat_leaderboard_page(
-            "Топ снайперов", "players_season_stats", "goals", offset
-        )
-    if kind == LEADERBOARD_KIND_ASSISTS:
-        return player_stat_leaderboard_page(
-            "Топ ассистентов", "players_season_stats", "assists", offset
-        )
-    raise ValueError(f"unknown leaderboard kind: {kind!r}")
 
 
 def _standings_as_of_day() -> str:
@@ -1396,8 +1339,7 @@ def team_table() -> str:
     """Турнирная таблица всех команд текущего сезона (`config.SEASON_ID`):
     секции по конференциям/дивизионам, отсортированные по очкам, плюс секции
     Wild Card — HTML-текст с шапкой сезона и даты (шаблон
-    `messages/league_table.txt`) для команды `/standings` (`bot.py`) и пункта
-    «Турнирная таблица» диалога `/stats` (`stats_handlers.py`).
+    `messages/league_table.txt`) для команды `/standings` (`bot.py`).
 
     Пустой `teams_stats` (сезон ещё не начался — загрузчик не пишет туда
     строк, пока в сезоне нет ни одной завершённой игры, см. Задача 36)
@@ -1446,107 +1388,10 @@ def team_table() -> str:
     return output_text('messages/league_table.txt', to_template)
 
 
-# GROUP BY для сводок по конференциям/дивизионам (Задача 41, Фаза B) — ровно
-# два статических варианта, не пользовательский ввод: `_team_group_summary()`
-# принимает только эти литералы, третьего варианта нет и не планируется (YAGNI).
-_CONFERENCE_GROUP_BY = "t.conference_name"
-_DIVISION_GROUP_BY = "t.conference_name, t.division_name"
-
-_GROUP_BY_COLUMNS = {
-    _CONFERENCE_GROUP_BY: ["conference_name"],
-    _DIVISION_GROUP_BY: ["conference_name", "division_name"],
-}
-
-
-def _team_group_summary(group_by: str, heading: str) -> str:
-    """Общий скелет сводки по конференциям/дивизионам сезона `config.SEASON_ID`:
-    число команд и средние командные метрики (`teams_stats` ⋈ `teams` по
-    `(team_id, season_id)`) — очки на команду, голы за игру, % большинства/
-    меньшинства. Только то, что уже лежит в `teams_stats` — без вычисляемых
-    «рейтингов». Не дублирует турнирную таблицу `/standings` (`team_table()`): там
-    строка на каждую команду, здесь — усреднение по группе. Строка группы —
-    таблица rich-сообщения (`_table`). Пустой сезон — текст с причиной, а не пустая таблица (Задача 36).
-
-    Args:
-        group_by: `_CONFERENCE_GROUP_BY` или `_DIVISION_GROUP_BY` — единственные
-            допустимые значения (ключ `_GROUP_BY_COLUMNS`), подставляются в
-            `GROUP BY`/`ORDER BY` как есть, т.к. это фиксированные литералы
-            модуля, а не значения от пользователя. Имя группы в таблице —
-            последняя колонка группировки (конференция или дивизион).
-        heading: заголовок сообщения («Сводка по конференциям»/«...дивизионам»).
-    """
-    group_columns = _GROUP_BY_COLUMNS[group_by]
-    select_group = ", ".join(f"t.{col}" for col in group_columns)
-    stats = cached_fetch_all(
-        f"SELECT {select_group}, COUNT(*) AS team_count, "
-        "AVG(ts.goals_per_game) AS avg_goals_per_game, "
-        "AVG(ts.power_play_percentage) AS avg_power_play_percentage, "
-        "AVG(ts.penalty_kill_percentage) AS avg_penalty_kill_percentage, "
-        "AVG(ts.points) AS avg_points "
-        "FROM teams_stats ts "
-        "JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
-        f"GROUP BY {group_by} "
-        f"ORDER BY {group_by}",
-        (config.SEASON_ID,),
-        columns=group_columns + [
-            "team_count", "avg_goals_per_game", "avg_power_play_percentage",
-            "avg_penalty_kill_percentage", "avg_points",
-        ],
-    )
-    if stats["count_rows"] == 0:
-        return (
-            f"<b>{heading}</b>\n"
-            "В базе нет командной статистики для этого сезона.\n"
-            + _season_footer()
-        )
-    # Средние — один знак после запятой: с двумя «Metropolitan 91.38 3.08 21.46%
-    # 79.88%» — 37 символов, шире экрана телефона.
-    def avg(val: Union[int, float, Decimal, None], unit: str = "") -> str:
-        return "—" if val is None else f"{float(val):.1f}{unit}"
-
-    rows = [["", "Ком", "О", "Г/и", "Бол", "Мен"]] + [
-        [
-            (stats[group_columns[-1]][i] or "—").strip(),
-            _format_leader_value(stats["team_count"][i]),
-            avg(stats["avg_points"][i]),
-            avg(stats["avg_goals_per_game"][i]),
-            avg(stats["avg_power_play_percentage"][i], "%"),
-            avg(stats["avg_penalty_kill_percentage"][i], "%"),
-        ]
-        for i in range(stats["count_rows"])
-    ]
-    legend = (
-        "Средние по команде: О — очки, Г/и — голы за игру, Бол — реализация "
-        "большинства, Мен — игра в меньшинстве; Ком — число команд."
-    )
-    return "\n".join([
-        f"<b>{heading}</b>",
-        _table(rows, "lrrrrr"),
-        rich_details("Обозначения", legend),
-        _season_footer(),
-    ])
-
-
-def conference_summary() -> str:
-    """Сводка по конференциям — тонкая обёртка над `_team_group_summary()`
-    с группировкой по конференции; см. докстринг `_team_group_summary()`."""
-    return _team_group_summary(_CONFERENCE_GROUP_BY, "Сводка по конференциям")
-
-
-def division_summary() -> str:
-    """Сводка по дивизионам — тонкая обёртка над `_team_group_summary()` с
-    группировкой по конференции+дивизиону (дивизион однозначно лежит в одной
-    конференции, но `GROUP BY` требует явного столбца); см. докстринг
-    `_team_group_summary()`."""
-    return _team_group_summary(_DIVISION_GROUP_BY, "Сводка по дивизионам")
-
-
 def season_team_abbrevs() -> List[str]:
     """Отсортированный список аббревиатур команд текущего сезона (`config.SEASON_ID`).
 
-    Источник клавиатуры выбора команды профиля (Задача 41, Фаза D,
-    `bot_team_profile_pick` в `stats_handlers.py`).
+    Источник перечня клубов инструмента `team_profile` свободного текста (`ai_router.py`).
     """
     stats = cached_fetch_all(
         "SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation), ''), short_name)) AS ab "
@@ -2193,8 +2038,7 @@ def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
 
 
 def team_stats_with_count(
-    name_stats: str,
-    column_name: str,
+    columns: Sequence[str],
     count: int = 10,
     offset: int = 0,
 ) -> Tuple[str, int, int]:
@@ -2204,66 +2048,82 @@ def team_stats_with_count(
     нуждается в полном размере выборки, который берём окном `COUNT(*) OVER ()`
     в этом же запросе, а не отдельным `SELECT count(*)`.
 
-    Аргументы: заголовок (пусто — без заголовка), колонка сортировки (из белого
-    списка `validate_column`), размер и сдвиг страницы.
+    Аргументы:
+        columns: колонки `teams_stats` из белого списка `validate_column` — одна
+            (рейтинг по ней) или две, «за» и «против» в среднем за игру (рейтинг
+            по разнице, `TEAM_STAT_SPECS` в `leaderboard_specs.py`).
+        count, offset: размер и сдвиг страницы.
 
-    Строки — таблица rich-сообщения (`_table`) с постоянным «хвостом» уже
-    загруженных полей (Задача 18): игры, баланс `wins`-`losses`-`ot` и `points`
-    из `teams_stats`. Команда — аббревиатурой: полное имя не помещается в
-    строку на экране телефона. Сортировка от хвоста не меняется.
+    Строки — таблица rich-сообщения (`_table`), команда — аббревиатурой: полное имя
+    не помещается в строку на экране телефона. У одной колонки — постоянный «хвост»
+    уже загруженных полей (Задача 18): игры, баланс `wins`-`losses`-`ot` и `points`;
+    у пары — «за», «против», разница и игры: шире строка на телефоне не помещается.
 
     Возвращает: (текст, число строк на странице, полный размер выборки).
     """
-    validate_column(column_name)
-    if offset < 0:
-        offset = 0
+    for column in columns:
+        validate_column(column)
+    offset = max(offset, 0)
+    ids = [sql.Identifier(column) for column in columns]
+    sort = ids[0] if len(ids) == 1 else sql.SQL("({} - {})").format(*ids)
+    values = [f"v{i}" for i in range(len(ids))]
 
     q = sql.SQL(
-        "SELECT t.abbreviation, {col}, games_played, wins, losses, ot, points, "
+        "SELECT t.abbreviation, {cols}, {sort}, games_played, wins, losses, ot, points, "
         "COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
-        "ORDER BY {col} DESC NULLS LAST, t.abbreviation "
+        "ORDER BY {sort} DESC NULLS LAST, t.abbreviation "
         "LIMIT %s OFFSET %s"
-    ).format(col=sql.Identifier(column_name))
+    ).format(cols=sql.SQL(", ").join(ids), sort=sort)
     stats = cached_fetch_all(
         q,
         (config.SEASON_ID, count, offset),
         columns=[
-            'team', 'points', 'games_played',
+            'team', *values, 'sort', 'games_played',
             'wins', 'losses', 'ot', 'record_points', 'total',
         ],
     )
 
     total = int(stats['total'][0]) if stats['count_rows'] else 0
 
-    rows: List[List[str]] = [["", "Ком", STAT_COLUMN_LABELS[column_name], "И", "В-П-ОТ", "О"]]
-    for i in range(stats['count_rows']):
-        rows.append([
-            f"{offset + i + 1}.",
-            (stats['team'][i] or "—").strip(),
-            _format_leader_value(stats['points'][i]),
-            _format_leader_value(stats['games_played'][i]),
-            _record_str(stats['wins'][i], stats['losses'][i], stats['ot'][i]),
-            _format_leader_value(stats['record_points'][i]),
-        ])
+    if len(columns) == 1:
+        rows: List[List[str]] = [["", "Ком", STAT_COLUMN_LABELS[columns[0]], "И", "В-П-ОТ", "О"]]
+        for i in range(stats['count_rows']):
+            rows.append([
+                f"{offset + i + 1}.",
+                (stats['team'][i] or "—").strip(),
+                _format_leader_value(stats['v0'][i]),
+                _format_leader_value(stats['games_played'][i]),
+                _record_str(stats['wins'][i], stats['losses'][i], stats['ot'][i]),
+                _format_leader_value(stats['record_points'][i]),
+            ])
+    else:
+        rows = [["", "Ком", "За", "Пр", "Разн", "И"]]
+        for i in range(stats['count_rows']):
+            rows.append([
+                f"{offset + i + 1}.",
+                (stats['team'][i] or "—").strip(),
+                _fmt_num_max2(stats['v0'][i]),
+                _fmt_num_max2(stats['v1'][i]),
+                _fmt_signed(stats['sort'][i]),
+                _format_leader_value(stats['games_played'][i]),
+            ])
 
     body = _table(rows, "rlrrrr") if stats['count_rows'] else ""
-    if name_stats:
-        body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
 
 
 def team_stat_leaderboard_page(
     heading: str,
-    column_name: str,
+    columns: Sequence[str],
     offset: int,
 ) -> Tuple[str, bool, bool]:
-    """Топ команд по одной колонке teams_stats."""
+    """Страница рейтинга команд `/team_stats`: заголовок `heading`, колонки `columns`
+    (см. `team_stats_with_count`), сдвиг `offset`; возвращает (текст, has_prev, has_next)."""
     body, n, total = team_stats_with_count(
-        "",
-        column_name,
+        columns,
         count=LEADERBOARD_PAGE_SIZE,
         offset=offset,
     )

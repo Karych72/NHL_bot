@@ -1,11 +1,10 @@
 """Каркас бота на aiogram 3: сборка `Dispatcher` и маршрутизация апдейтов.
 
-Две части. Регистрация: какие хендлеры в каких роутерах и в каком порядке, карта
-диалога `/stats` по состояниям, троттлинг и публикация меню команд. Маршрутизация:
-настоящие апдейты Telegram прогоняются через `Dispatcher.feed_update` на боте с
-записывающей сессией (`conftest.FakeSession`) — так проверяется не список
-регистраций, а куда реально попадает команда, текст или нажатие при данном
-состоянии диалога. Сеть не используется; где хендлер ходил бы в БД или в Claude API,
+Две части. Регистрация: какие хендлеры в каких роутерах и в каком порядке,
+троттлинг и публикация меню команд. Маршрутизация: настоящие апдейты Telegram
+прогоняются через `Dispatcher.feed_update` на боте с записывающей сессией
+(`conftest.FakeSession`) — так проверяется не список регистраций, а куда реально
+попадает команда, текст или нажатие. Сеть не используется; где хендлер ходил бы в БД или в Claude API,
 подменяется функция модуля, которую он зовёт.
 """
 
@@ -20,7 +19,7 @@ from aiogram import Dispatcher
 from aiogram.filters import Command, CommandStart
 from aiogram.methods import SetMyCommands
 
-from tests._telegram_fakes import CHAT_ID, FAKE_TOKEN, USER_ID, body, rich_html
+from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
 
 def _router(dispatcher: Dispatcher, name: str) -> Any:
@@ -63,11 +62,10 @@ def dispatcher(bot_module) -> Dispatcher:
 # Регистрация
 # ---------------------------------------------------------------------------
 
-def test_dispatcher_checks_standalone_then_dialog_then_tail(dispatcher) -> None:
+def test_dispatcher_checks_commands_then_free_text(dispatcher) -> None:
     """Порядок роутеров — поведение: апдейт берёт первый подошедший хендлер, поэтому
-    команды верхнего уровня работают и при открытом меню `/stats`, а свободный текст
-    видит только то, что не нужно диалогу."""
-    assert [r.name for r in dispatcher.sub_routers] == ["standalone", "stats", "tail"]
+    свободный текст видит только то, что не забрали команды и кнопки."""
+    assert [r.name for r in dispatcher.sub_routers] == ["standalone", "tail"]
 
 
 def test_throttle_is_the_only_outer_middleware_of_button_presses(bot_module, dispatcher) -> None:
@@ -83,13 +81,13 @@ def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
 
     assert [h.callback for h in handlers] == [
         bot.cmd_start, bot.cmd_help, bot.cmd_today, bot.cmd_tonight, bot.cmd_standings,
-        bot.cmd_team, bot.cmd_team_profile, bot.cmd_leaders, bot.cmd_countries,
+        bot.cmd_team, bot.cmd_team_profile, bot.cmd_stats, bot.cmd_team_stats, bot.cmd_countries,
         bot.cmd_advanced, bot.cmd_subscriptions,
     ]
     assert isinstance(handlers[0].filters[0].callback, CommandStart)
     assert _commands(router) == [
-        "start", "help", "today", "tonight", "standings", "team", "leaders", "countries", "advanced",
-        "subscriptions",
+        "start", "help", "today", "tonight", "standings", "team", "stats", "team_stats", "countries",
+        "advanced", "subscriptions",
     ]
 
 
@@ -98,117 +96,22 @@ def test_standalone_buttons_and_their_order(bot_module, dispatcher) -> None:
     sh = bot_module("stats_handlers")
 
     assert _callback_handlers(_router(dispatcher, "standalone")) == [
-        (sh.LEADERS_PICK_CALLBACK_PATTERN, sh.callback_leaders_pick),
-        (sh.LEADERBOARD_PAGE_CALLBACK_PATTERN, sh.callback_leaderboard_page),
+        (sh.STAT_SCREEN_CALLBACK_PATTERN, sh.callback_stat_screen),
         (r"^dg:(\d+)$", sh.callback_expand_digest_game),
         (bot.SUBSCRIPTIONS_CALLBACK_PATTERN, bot.callback_subscriptions),
         (sh.TONIGHT_GAME_CALLBACK_PATTERN, sh.callback_tonight_game),
         (sh.COUNTRY_CALLBACK_PATTERN, sh.callback_country),
-        (sh.STANDALONE_SA_CALLBACK_PATTERN, sh.callback_standalone_sa),
         (r"^adv:(sat|usat|gf|oz|so|wrist|slap|snap|back|tip|defl|wrap|close)$", sh.callback_standalone_adv),
         (r"^gv:(\d+):(\d+)$", sh.handle_goal_video),
     ]
 
 
-def test_dialog_router_registers_every_button_of_the_dialog_map(bot_module, dispatcher) -> None:
-    """Роутер диалога — ровно карта `STATS_DIALOG`: состояние за состоянием, в её порядке."""
-    bot = bot_module("bot")
-    expected = [(pattern, callback) for handlers in bot.STATS_DIALOG.values() for pattern, callback in handlers]
-    assert _callback_handlers(_router(dispatcher, "stats")) == expected
+def test_tail_takes_only_free_text(bot_module, dispatcher) -> None:
+    tail = _router(dispatcher, "tail")
 
-
-def test_dialog_map_states_and_buttons(bot_module) -> None:
-    ds = bot_module("dialog_states")
-    sb = bot_module("script_bot")
-    sh = bot_module("stats_handlers")
-    bot = bot_module("bot")
-
-    def state(value: int) -> str:
-        return f"^{value}$"
-
-    back_from_date = f"^{sh.DIGEST_BACK_FROM_DATE_CALLBACK}$"
-    assert list(bot.STATS_DIALOG) == [ds.StatsMenu.first, ds.StatsMenu.second, ds.StatsMenu.third]
-    assert bot.STATS_DIALOG[ds.StatsMenu.first] == [
-        (state(ds.CHOOSE_STATS), sb.stats_root_edit),
-        (state(ds.DAY_DIGEST), sb.bot_digest_date_menu),
-        (state(ds.LEAGUE_STANDINGS), sh.bot_league_standings),
-        (state(ds.DIGEST_CALENDAR_TODAY), sh.bot_digest_calendar_today),
-        (state(ds.DIGEST_CALENDAR_YESTERDAY), sh.bot_digest_calendar_yesterday),
-        (state(ds.DIGEST_PICK_DATE), sh.bot_digest_pick_date_prompt),
-        (back_from_date, sb.bot_digest_date_menu),
-        (f"^{sb.NAV_PLAYERS}$", sb.bot_player_stats),
-        (f"^{sb.NAV_FIELD}$", sb.bot_player_field),
-        (sh.STAT_PAGE_CALLBACK_PATTERN, sh.callback_stats_player_page),
-        (sh.TEAM_PAGE_CALLBACK_PATTERN, sh.callback_stats_team_page),
-        (state(ds.TEAM_STATS), sb.bot_team_stats),
-        (state(ds.PLAYER_STATS), sb.bot_player_stats),
-        (state(ds.PLAYER_FIELD), sb.bot_player_field),
-        (state(ds.PLAYER_GOALIE), sb.bot_player_goalie),
-        (state(ds.PLAYER_ADVANCED_SUBMENU), sb.bot_player_advanced_menu),
-        (state(ds.PLAYER_POINTS), sh.bot_player_points),
-        (state(ds.PLAYER_GOALS), sh.bot_player_goals),
-        (state(ds.PLAYER_ASSISTS), sh.bot_player_assists),
-        (state(ds.PLAYER_PLUS_MINUS), sh.bot_player_plus_minus),
-        (state(ds.PLAYER_PENALTIES), sh.bot_player_penalties),
-        (state(ds.PLAYER_HITS), sh.bot_player_hits),
-        (state(ds.PLAYER_BLOCKS), sh.bot_player_blocks),
-        (state(ds.PLAYER_ICE_TIME), sh.bot_player_ice_time),
-        (state(ds.PLAYER_SAT_PCT), sh.bot_player_sat_pct),
-        (state(ds.PLAYER_USAT_PCT), sh.bot_player_usat_pct),
-        (state(ds.PLAYER_GOALS_FOR_PCT), sh.bot_player_goals_for_pct),
-        (state(ds.PLAYER_OZ_START_PCT), sh.bot_player_oz_start_pct),
-        (state(ds.PLAYER_SHOOTOUT_PCT), sh.bot_player_shootout_pct),
-        (state(ds.PLAYER_SHOT_WRIST), sh.bot_player_shot_wrist),
-        (state(ds.PLAYER_SHOT_SLAP), sh.bot_player_shot_slap),
-        (state(ds.PLAYER_SHOT_SNAP), sh.bot_player_shot_snap),
-        (state(ds.PLAYER_SHOT_BACKHAND), sh.bot_player_shot_backhand),
-        (state(ds.PLAYER_SHOT_TIP_IN), sh.bot_player_shot_tip_in),
-        (state(ds.PLAYER_SHOT_DEFLECTED), sh.bot_player_shot_deflected),
-        (state(ds.PLAYER_SHOT_WRAP_AROUND), sh.bot_player_shot_wrap),
-        (state(ds.GOALIE_WINS), sh.bot_goalie_wins),
-        (state(ds.GOALIE_PERCENTAGE), sh.bot_goalie_percentage),
-        (state(ds.GOALIE_SHOOTOUTS), sh.bot_goalie_shootouts),
-        (state(ds.TEAM_PROCENT_WINS), sh.bot_team_procent_wins),
-        (state(ds.TEAM_POWER_PLAY), sh.bot_team_power_play),
-        (state(ds.TEAM_POWER_KILL), sh.bot_team_power_kill),
-        (state(ds.TEAM_CONFERENCE_STATS), sh.bot_team_conference_stats),
-        (state(ds.TEAM_DIVISION_STATS), sh.bot_team_division_stats),
-        (state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
-    ]
-    assert bot.STATS_DIALOG[ds.StatsMenu.second] == [
-        (sh.STAT_PAGE_CALLBACK_PATTERN, sh.callback_stats_player_page),
-        (sh.TEAM_PAGE_CALLBACK_PATTERN, sh.callback_stats_team_page),
-        (state(ds.PLAYER_FIELD), sb.bot_player_field),
-        (state(ds.PLAYER_GOALIE), sb.bot_player_goalie),
-        (state(ds.PLAYER_ADVANCED_SUBMENU), sb.bot_player_advanced_menu),
-        (state(ds.TEAM_STATS), sb.bot_team_stats),
-        (sh.TEAM_PROFILE_CALLBACK_PATTERN, sh.bot_team_profile_show),
-        (state(ds.TEAM_PROFILE_PICK), sh.bot_team_profile_pick),
-        (state(ds.DAY_DIGEST), sb.bot_digest_date_menu),
-        (back_from_date, sb.bot_digest_date_menu),
-        (state(ds.CHOOSE_STATS), sb.stats_over),
-        (state(ds.END_CONVERSATION), sb.end),
-    ]
-    assert bot.STATS_DIALOG[ds.StatsMenu.third] == [
-        (state(ds.CHOOSE_STATS), sb.stats_root_edit),
-        (back_from_date, sb.bot_digest_date_menu),
-    ]
-
-
-def test_dialog_and_tail_message_handlers(bot_module, dispatcher) -> None:
-    bot = bot_module("bot")
-    sb = bot_module("script_bot")
-    sh = bot_module("stats_handlers")
-    stats_router, tail = _router(dispatcher, "stats"), _router(dispatcher, "tail")
-
-    assert [h.callback for h in stats_router.message.handlers] == [
-        sb.stats, bot.cmd_cancel_in_conversation, sh.bot_digest_custom_date,
-    ]
-    assert _commands(stats_router) == ["stats", "cancel"]
-    assert [h.callback for h in tail.message.handlers] == [
-        bot.cmd_cancel_outside_conversation, bot.on_free_text,
-    ]
-    assert _commands(tail) == ["cancel"]
+    assert [h.callback for h in tail.message.handlers] == [bot_module("bot").on_free_text]
+    assert _commands(tail) == []
+    assert tail.callback_query.handlers == []
 
 
 @pytest.mark.parametrize(
@@ -269,10 +172,9 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
     for handler in registered:
         assert asyncio.iscoroutinefunction(handler.callback), f"{handler.callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: standalone — 11 команд и 9 кнопок; диалог —
-    # /stats, /cancel, ввод даты и 45 + 12 + 2 кнопок по состояниям; хвост — 2.
-    assert len(registered) == 20 + 62 + 2
-    assert {h.callback.__module__ for h in registered} == {"bot", "script_bot", "stats_handlers"}
+    # Страховка от «проверили пустой список»: standalone — 12 команд и 7 кнопок; хвост — 1.
+    assert len(registered) == 19 + 1
+    assert {h.callback.__module__ for h in registered} == {"bot", "stats_handlers"}
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +183,6 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
 
 async def _feed(dispatcher: Dispatcher, fake_bot: Any, update: Any) -> None:
     await dispatcher.feed_update(fake_bot, update)
-
-
-async def _state(dispatcher: Dispatcher, fake_bot: Any) -> Any:
-    return await dispatcher.fsm.get_context(bot=fake_bot, chat_id=CHAT_ID, user_id=USER_ID).get_state()
 
 
 @pytest.mark.asyncio
@@ -321,91 +219,55 @@ async def test_team_command_routes_abbreviation_and_full_flag(
 
 
 @pytest.mark.asyncio
-async def test_dialog_buttons_do_nothing_outside_the_dialog(
-    bot_module, dispatcher, fake_bot, api, make_update
+@pytest.mark.parametrize(
+    "command, intro, data, render",
+    [
+        ("/stats", "STATS_COMMAND_INTRO", "st:players_season_stats:goals:0", "player_stat_leaderboard_page"),
+        ("/team_stats", "TEAM_STATS_COMMAND_INTRO", "tm:goals:0", "team_stat_leaderboard_page"),
+    ],
+)
+async def test_stats_command_menu_then_table_button(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, command, intro, data, render
 ) -> None:
-    """Кнопка меню `/stats` без открытого диалога (после «Готово» или /cancel) не
-    срабатывает: её хендлеры зарегистрированы только в состояниях диалога."""
-    ds = bot_module("dialog_states")
-    await _feed(dispatcher, fake_bot, make_update(data=str(ds.CHOOSE_STATS)))
+    """Команда присылает меню, кнопка меню — таблицу на месте того же сообщения; без
+    состояния диалога: кнопка работает и в меню, присланном давно."""
+    sh = bot_module("stats_handlers")
+    monkeypatch.setattr(sh, render, lambda *args: ("TABLE", False, True))
 
-    assert api.requests == []
+    await _feed(dispatcher, fake_bot, make_update(command))
+    await _feed(dispatcher, fake_bot, make_update(data=data))
+
+    [menu] = api.sent_rich
+    assert body(menu) == rich_html(getattr(bot_module("help_text"), intro))
+    assert data in [b.callback_data for row in menu.reply_markup.inline_keyboard for b in row]
+    [page] = api.edited_texts
+    assert body(page) == rich_html("TABLE")
 
 
 @pytest.mark.asyncio
-async def test_dialog_walks_menu_then_date_input_then_cancel(
-    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch
+@pytest.mark.parametrize("update", [{"text": "/leaders"}, {"text": "/cancel"}, {"data": "0"}, {"data": "pl:pick:goals"}])
+async def test_removed_commands_and_old_menu_buttons_are_silent(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, update
 ) -> None:
-    """/stats → меню (`first`) → «Выбрать дату» (`third`) → дата уходит в диалог, а не ИИ
-    (`second`) → /cancel закрывает диалог."""
-    ds = bot_module("dialog_states")
-    sh = bot_module("stats_handlers")
+    """Убранные `/leaders`, `/cancel` и кнопки старого меню `/stats` (числа, `pl:`) никуда
+    не ведут: команда не уходит в ИИ как вопрос, кнопку не берёт ни один хендлер."""
     bot = bot_module("bot")
-    monkeypatch.setattr(sh, "day_digest", lambda day: (day, [(0, f"За {day} матчей нет", [])]))
 
     async def no_ai(*args: Any) -> Any:
-        raise AssertionError("дату в диалоге не должен видеть ИИ")
+        raise AssertionError("команда — не вопрос модели")
 
     monkeypatch.setattr(bot.ai_router, "ask", no_ai)
 
-    await _feed(dispatcher, fake_bot, make_update("/stats"))
-    assert await _state(dispatcher, fake_bot) == ds.StatsMenu.first.state
-    await _feed(dispatcher, fake_bot, make_update(data=str(ds.DAY_DIGEST)))
-    await _feed(dispatcher, fake_bot, make_update(data=str(ds.DIGEST_PICK_DATE)))
-    assert await _state(dispatcher, fake_bot) == ds.StatsMenu.third.state
+    await _feed(dispatcher, fake_bot, make_update(**update))
 
-    await _feed(dispatcher, fake_bot, make_update("2026-01-01"))
-    assert await _state(dispatcher, fake_bot) == ds.StatsMenu.second.state
-    assert body(api.sent_rich[-1]) == rich_html("За 2026-01-01 матчей нет")
-
-    await _feed(dispatcher, fake_bot, make_update("/cancel"))
-    assert await _state(dispatcher, fake_bot) is None
-    assert api.sent_messages[-1].text == "Вы вышли из меню. Снова: /stats"
-
-
-@pytest.mark.asyncio
-async def test_cancel_inside_date_input_reaches_cancel_not_date_parser(
-    bot_module, dispatcher, fake_bot, api, make_update
-) -> None:
-    ds = bot_module("dialog_states")
-    await _feed(dispatcher, fake_bot, make_update("/stats"))
-    await _feed(dispatcher, fake_bot, make_update(data=str(ds.DIGEST_PICK_DATE)))
-
-    await _feed(dispatcher, fake_bot, make_update("/cancel"))
-
-    assert await _state(dispatcher, fake_bot) is None
-    assert api.sent_messages[-1].text == "Вы вышли из меню. Снова: /stats"
-
-
-@pytest.mark.asyncio
-async def test_cancel_outside_dialog_explains_there_is_nothing_to_cancel(
-    dispatcher, fake_bot, api, make_update
-) -> None:
-    await _feed(dispatcher, fake_bot, make_update("/cancel"))
-
-    [reply] = api.sent_messages
-    assert reply.text == "Меню /stats сейчас не открыто. Справка: /help"
-
-
-@pytest.mark.asyncio
-async def test_top_level_command_works_inside_the_dialog_and_keeps_its_state(
-    bot_module, dispatcher, fake_bot, api, make_update
-) -> None:
-    ds = bot_module("dialog_states")
-    await _feed(dispatcher, fake_bot, make_update("/stats"))
-    await _feed(dispatcher, fake_bot, make_update(data=str(ds.DIGEST_PICK_DATE)))
-
-    await _feed(dispatcher, fake_bot, make_update("/help"))
-
-    assert body(api.sent_rich[-1]) == rich_html(bot_module("help_text").HELP_MESSAGE)
-    assert await _state(dispatcher, fake_bot) == ds.StatsMenu.third.state
+    assert api.requests == []
 
 
 @pytest.mark.asyncio
 async def test_free_text_goes_to_ai_only_in_private_chat(
     bot_module, dispatcher, fake_bot, api, make_update, monkeypatch
 ) -> None:
-    """Задача 81: текст в личке вне диалога — вопрос модели; в группе бот молчит."""
+    """Задача 81: текст в личке — вопрос модели; в группе бот молчит."""
     bot = bot_module("bot")
     asked: List[str] = []
 
@@ -470,99 +332,6 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
     assert pointer.reply_parameters.message_id == 1, "второй тап — ссылка на неё"
 
 
-@pytest.mark.asyncio
-async def test_cancel_closes_dialog_even_when_menu_message_is_gone(
-    bot_module, dispatcher, fake_bot, api, make_update
-) -> None:
-    """Ревью переезда: меню удалено — снять с него клавиатуру нельзя, но диалог закрыт и
-    пользователь получает обычный ответ; следующий /cancel — уже как вне диалога."""
-    from aiogram.exceptions import TelegramBadRequest
-    from aiogram.methods import EditMessageReplyMarkup
-
-    await _feed(dispatcher, fake_bot, make_update("/stats"))
-    api.fail_next(EditMessageReplyMarkup, TelegramBadRequest(
-        method=EditMessageReplyMarkup(chat_id=CHAT_ID, message_id=1),
-        message="Bad Request: message to edit not found",
-    ))
-
-    await _feed(dispatcher, fake_bot, make_update("/cancel"))
-    assert await _state(dispatcher, fake_bot) is None
-    assert api.sent_messages[-1].text == "Вы вышли из меню. Снова: /stats"
-
-    await _feed(dispatcher, fake_bot, make_update("/cancel"))
-    assert api.sent_messages[-1].text == "Меню /stats сейчас не открыто. Справка: /help"
-
-
-# ---------------------------------------------------------------------------
-# Запись id сообщения меню — источник данных для /cancel ниже. stats()/
-# stats_over() пишут его сами (как и страницы дайджеста в stats_handlers), и
-# если строка записи потеряется при рефакторинге, /cancel в основном сценарии
-# молча перестанет снимать клавиатуру, а make ci-local останется зелёным без
-# этих тестов.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_stats_entry_point_records_new_message_id(bot_module, make_message, fsm_state, api):
-    script_bot = bot_module("script_bot")
-    dialog_states = bot_module("dialog_states")
-
-    await script_bot.stats(make_message("/stats"), fsm_state)
-
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-@pytest.mark.asyncio
-async def test_stats_over_records_new_message_id(bot_module, make_callback, fsm_state, fake_bot, api):
-    script_bot = bot_module("script_bot")
-    dialog_states = bot_module("dialog_states")
-
-    await script_bot.stats_over(make_callback(str(dialog_states.CHOOSE_STATS), chat_id=555), fsm_state, fake_bot)
-
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    [sent] = api.sent_rich
-    assert sent.chat_id == 555
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
-
-
-# ---------------------------------------------------------------------------
-# /cancel внутри диалога — снятие «зомби»-клавиатуры: сообщение меню
-# остаётся в чате с виду живым после конца диалога, хотя ни один хендлер
-# его callback_data больше не матчит.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_cancel_in_conversation_clears_recorded_menu_keyboard(
-    bot_module, make_message, fsm_state, fake_bot, api
-):
-    bot = bot_module("bot")
-    dialog_states = bot_module("dialog_states")
-    await fsm_state.set_state(dialog_states.StatsMenu.second)
-    await fsm_state.update_data({dialog_states.LAST_MENU_MESSAGE_ID_KEY: 42})
-
-    await bot.cmd_cancel_in_conversation(make_message("/cancel", chat_id=555), fsm_state, fake_bot)
-
-    [edit] = api.edited_markups
-    assert (edit.chat_id, edit.message_id, edit.reply_markup) == (555, 42, None)
-    # Диалог закрыт и id снят — второй /cancel подряд не редактирует уже неактуальное сообщение.
-    assert await fsm_state.get_state() is None
-    assert await fsm_state.get_data() == {}
-    assert api.sent_messages[0].text == "Вы вышли из меню. Снова: /stats"
-
-
-@pytest.mark.asyncio
-async def test_cancel_in_conversation_without_recorded_id_skips_keyboard_edit(
-    bot_module, make_message, fsm_state, fake_bot, api
-):
-    """`/cancel` без открытого кнопкой меню — штатный случай (CLAUDE.md,
-    Global Constraint 4): отсутствие записи не ошибка, а не try/except."""
-    bot = bot_module("bot")
-
-    await bot.cmd_cancel_in_conversation(make_message("/cancel"), fsm_state, fake_bot)
-
-    assert api.edited_markups == []
-
-
 # ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
@@ -590,7 +359,7 @@ def test_main_starts_polling_with_bot_built_from_config_token(
 
     [(dispatcher, (polled_bot,))] = polled
     assert polled_bot.token == FAKE_TOKEN
-    assert [r.name for r in dispatcher.sub_routers] == ["standalone", "stats", "tail"]
+    assert [r.name for r in dispatcher.sub_routers] == ["standalone", "tail"]
 
 
 def test_main_raises_and_never_polls_when_token_missing(

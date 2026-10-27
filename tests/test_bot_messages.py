@@ -818,7 +818,7 @@ def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
 def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
-        "team": ["BOS"], "points": [55.5], "games_played": [40],
+        "team": ["BOS"], "v0": [55.5], "sort": [55.5], "games_played": [40],
         # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
         # team_stats_with_count читает эти ключи напрямую (без запасного None).
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
@@ -826,7 +826,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
-            "Статистика большинства", "power_play_percentage", 0
+            "Статистика большинства", ("power_play_percentage",), 0
         )
     assert "Статистика большинства" in text
     assert _tables(text) == [[["", "Ком", "%бол", "И", "В-П-ОТ", "О"], ["1.", "BOS", "55.5", "40", "30-8-2", "62"]]]
@@ -839,7 +839,8 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
         "team": [f"T{i}" for i in range(10)],
-        "points": [float(i) for i in range(10)],
+        "v0": [float(i) for i in range(10)],
+        "sort": [float(i) for i in range(10)],
         "games_played": [40] * 10,
         "wins": [10 + i for i in range(10)],
         "losses": [5] * 10,
@@ -849,7 +850,7 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         "count_rows": 10,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
+        text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
     assert _tables(text)[0][1] == ["1.", "T0", "0", "40", "10-5-1", "0"]
@@ -859,15 +860,39 @@ def test_stat_column_labels_cover_every_leaderboard_column(bot_module):
     """Шапка колонки показателя берётся по ключу без запасного значения —
     у каждого лидерборда меню должна быть своя подпись вместо «Знач»."""
     specs = bot_module("leaderboard_specs")
-    columns = {col for _table, col in specs.PLAYER_STAT_TITLES} | set(specs.TEAM_STAT_TITLES)
+    team_single = {cols[0] for _title, cols in specs.TEAM_STAT_SPECS.values() if len(cols) == 1}
+    columns = {col for _table, col in specs.PLAYER_STAT_TITLES} | team_single
     assert columns <= set(specs.STAT_COLUMN_LABELS)
     assert all(len(label) <= 5 for label in specs.STAT_COLUMN_LABELS.values())
 
 
-def test_stat_leaderboard_for_kind_rejects_unknown_kind(bot_module):
+def test_team_stat_leaderboard_page_for_against_pair_shows_both_difference_and_games(bot_module):
+    """Пара колонок «за/против» (`/team_stats` → «Голы», «Броски»): средние за игру,
+    разница со знаком, игры; без хвоста баланса — шире строка на
+    телефоне не помещается."""
     bot_messages = bot_module("bot_messages")
-    with pytest.raises(ValueError, match="unknown leaderboard kind"):
-        bot_messages.stat_leaderboard_for_kind("wins", 0)
+    rows = {
+        "team": ["WSH", "BOS"], "v0": [3.4, 2.9], "v1": [2.5, None], "sort": [0.9, None],
+        "games_played": [17, 20], "wins": [10, 12], "losses": [5, 6], "ot": [2, 1],
+        "record_points": [22, 25], "total": [32, 32], "count_rows": 2,
+    }
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+        text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
+            "Голы", ("goals_per_game", "goals_against_per_game"), 10
+        )
+    assert _tables(text) == [[
+        ["", "Ком", "За", "Пр", "Разн", "И"],
+        ["11.", "WSH", "3.4", "2.5", "+0.9", "17"],
+        ["12.", "BOS", "2.9", "—", "—", "20"],
+    ]]
+    assert (has_prev, has_next) == (True, True)
+
+
+def test_team_stats_with_count_rejects_column_outside_allowlist(bot_module):
+    """Колонки идут в SQL идентификаторами — только из белого списка, в паре тоже."""
+    bot_messages = bot_module("bot_messages")
+    with pytest.raises(ValueError, match="Column not allowed"):
+        bot_messages.team_stats_with_count(("goals_per_game", "goals; DROP TABLE teams"))
 
 
 # ---------------------------------------------------------------------------
@@ -881,12 +906,12 @@ def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     """(A) Лидерборд команд: хвост игр:/W-L-OT/очков поверх текущей строки."""
     bot_messages = bot_module("bot_messages")
     rows = {
-        "team": ["BOS"], "points": [55], "games_played": [40],
+        "team": ["BOS"], "v0": [55], "sort": [55], "games_played": [40],
         "wins": [25], "losses": [10], "ot": [5], "record_points": [55],
         "total": [1], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
+        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert _tables(text)[0][1] == ["1.", "BOS", "55", "40", "25-10-5", "55"]
 
 
@@ -897,12 +922,12 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     bot_messages = bot_module("bot_messages")
     monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
-        "team": ["BOS"], "points": [None], "games_played": [40],
+        "team": ["BOS"], "v0": [None], "sort": [None], "games_played": [40],
         "wins": [None], "losses": [None], "ot": [None], "record_points": [None],
         "total": [1], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
+        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert _tables(text)[0][1] == ["1.", "BOS", "—", "40", "—-—-—", "—"]
     assert "None" not in text
 
@@ -926,53 +951,6 @@ def test_player_stat_leaderboard_page_season_end_goalie_keeps_every_column(bot_m
         ["", "Вратарь", "Ком", "%ОБ", "И", "Сейвы"],
         ["10.", "Vasilevskiy", "TBL", "92.52", "58", "1353/1483"],
     ]]
-
-
-# ---------------------------------------------------------------------------
-# conference_summary() / division_summary() — Задача 41, Фаза B
-#
-# Обе функции — тонкие обёртки над общим _team_group_summary(); полный
-# рендер (сортировка полей, конкретные числа, кнопка «« Назад»») уже
-# проверяется сквозным сценарием в test_bot_integration.py для каждой из
-# двух веток. Здесь — то, что уникально для unit-уровня и не покрыто
-# сценарием: экранирование HTML (общий код, проверяется один раз — второй
-# вызов через division_summary() исполнил бы тот же самый код) и пустой сезон.
-# ---------------------------------------------------------------------------
-
-def test_conference_summary_reports_when_season_has_no_rows(
-    bot_module, monkeypatch: pytest.MonkeyPatch
-):
-    bot_messages = bot_module("bot_messages")
-    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
-    empty = {"count_rows": 0}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text = bot_messages.conference_summary()
-    assert text.startswith("<b>Сводка по конференциям</b>\nВ базе нет командной статистики")
-    assert text.endswith("<footer>Сезон 25/26</footer>")
-
-
-def test_conference_summary_escapes_html_in_group_name(
-    bot_module, monkeypatch: pytest.MonkeyPatch
-):
-    bot_messages = bot_module("bot_messages")
-    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
-    rows = {
-        "conference_name": ["<i>Western"],
-        "team_count": [16],
-        "avg_goals_per_game": [3.0],
-        "avg_power_play_percentage": [20.0],
-        "avg_penalty_kill_percentage": [80.0],
-        "avg_points": [50.0],
-        "count_rows": 1,
-    }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text = bot_messages.conference_summary()
-    assert "<td>&lt;i&gt;Western</td>" in text
-    assert _tables(text) == [[
-        ["", "Ком", "О", "Г/и", "Бол", "Мен"],
-        ["<i>Western", "16", "50.0", "3.0", "20.0%", "80.0%"],
-    ]]
-    assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 
 def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
@@ -1518,14 +1496,14 @@ def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
 def test_team_stats_with_count_returns_total_from_window_function(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
-        "team": ["BOS"], "points": [55.5], "games_played": [40],
+        "team": ["BOS"], "v0": [55.5], "sort": [55.5], "games_played": [40],
         # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
         # team_stats_with_count читает эти ключи напрямую (без запасного None).
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [7], "count_rows": 1,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
+        _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 1
     assert total == 7
 
@@ -1533,12 +1511,12 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
     bot_messages = bot_module("bot_messages")
     rows = {
-        "team": [], "points": [], "games_played": [],
+        "team": [], "v0": [], "sort": [], "games_played": [],
         "wins": [], "losses": [], "ot": [], "record_points": [],
         "total": [], "count_rows": 0,
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        _, n, total = bot_messages.team_stats_with_count("Title", "power_play_percentage")
+        _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 0
     assert total == 0
 
