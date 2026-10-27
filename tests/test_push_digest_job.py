@@ -34,7 +34,7 @@ from aiogram.types import BufferedInputFile
 from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
 # Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
-# а следом, без ``dialog``, подсказку «Ещё: …».
+# а следом подсказку «Ещё: …».
 ONE_GAME_DAY = ("2026-01-15", [(2026020001, "<b>BOS 3 : 2 TOR</b>", [])])
 
 # Ночь игровой даты 2026-10-06: прогоны sync — с 18:00 UTC 06.10 до 08:00 UTC 07.10.

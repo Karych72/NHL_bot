@@ -21,9 +21,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pytest
 from aiogram import Bot
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.base import StorageKey
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message
 
 from tests._modeling_fixtures import write_synthetic_train_dataset
@@ -282,15 +279,6 @@ def api(fake_bot: Bot) -> FakeSession:
     session = fake_bot.session
     assert isinstance(session, FakeSession)
     return session
-
-
-@pytest.fixture
-def fsm_state(fake_bot: Bot) -> FSMContext:
-    """State of the `/stats` dialog for (CHAT_ID, USER_ID), as aiogram hands it to handlers."""
-    return FSMContext(
-        storage=MemoryStorage(),
-        key=StorageKey(bot_id=fake_bot.id, chat_id=CHAT_ID, user_id=USER_ID),
-    )
 
 
 @pytest.fixture

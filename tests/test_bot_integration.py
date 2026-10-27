@@ -102,35 +102,11 @@ async def test_standings_command_renders_divisions_with_ranked_rows_sorted_by_po
         '<table compact><tr><th align="right"></th><th>Команда</th>'
         '<th align="right">Очк</th><th align="right">Игр</th><th align="right">%очк</th></tr>'
     ) in text
-    assert reply.reply_markup is None, "у /standings вне диалога клавиатуры нет"
-
-
-@pytest.mark.asyncio
-async def test_stats_menu_standings_branch_sends_table_with_menu_button(
-    bot_module, fake_db_router, make_callback, fake_bot, api, fsm_state
-):
-    """Та же таблица, но веткой диалога `/stats`, а не командой.
-
-    Отдельный сценарий, потому что путь отличается всем, кроме рендера: новое
-    сообщение вместо `message.answer`, кнопка возврата в корень меню и запись id
-    сообщения в данные диалога — с неё `/cancel` снимает клавиатуру.
-    """
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router(_TABLE_ROUTES)
-    callback = make_callback(str(dialog_states.LEAGUE_STANDINGS))
-
-    await stats_handlers.bot_league_standings(callback, fsm_state, fake_bot)
-
-    (sent,) = api.sent_rich
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
-    assert "<p><b>METROPOLITAN DIVISION</b></p>" in body(sent)
-    assert _callback_data(sent.reply_markup) == [str(dialog_states.CHOOSE_STATS)]
-    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+    assert reply.reply_markup is None, "у /standings клавиатуры нет"
 
 
 # ---------------------------------------------------------------------------
-# Сценарий «лидеры с пагинацией»: /leaders → категория → следующая страница
+# Сценарий «лидеры с пагинацией»: /stats → «Очки» → следующая страница
 # ---------------------------------------------------------------------------
 
 # lastname, position, value, team, games, shifts (Задача 18 — «хвост» строки
@@ -153,27 +129,36 @@ def _leaderboard_page_route(rows):
 _LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route(_LEADERS))]
 
 
+async def _press_stat(bot_module, make_callback, fake_bot, data):
+    """Нажатие кнопки таблицы `/stats`/`/team_stats` с аргументами, которые подставил бы aiogram."""
+    stats_handlers = bot_module("stats_handlers")
+    match = re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, data)
+    assert match
+    await stats_handlers.callback_stat_screen(make_callback(data), fake_bot, match)
+
+
+async def _open_points(bot_module, make_message, make_callback, fake_bot, api):
+    """/stats и первая кнопка меню — «Очки»."""
+    await bot_module("bot").cmd_stats(make_message("/stats"), fake_bot)
+    points_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
+    assert points_button.text == "Очки"
+    await _press_stat(bot_module, make_callback, fake_bot, points_button.callback_data)
+
+
 @pytest.mark.asyncio
 async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     bot_module, fake_db_router, make_message, make_callback, fake_bot, api
 ):
-    bot = bot_module("bot")
-    stats_handlers = bot_module("stats_handlers")
     fake_db_router(_LEADERS_ROUTES)
 
-    await bot.cmd_leaders(make_message("/leaders"), fake_bot)
+    await _open_points(bot_module, make_message, make_callback, fake_bot, api)
+
     (menu,) = api.sent_rich
-    assert body(menu).startswith("<p><b>Лидеры сезона</b><br>Выберите категорию:</p><footer>Сезон ")
-    points_button = _flat_buttons(menu.reply_markup)[0]
-    match = re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, points_button.callback_data)
-    assert match
-
-    await stats_handlers.callback_leaders_pick(make_callback(points_button.callback_data), match)
-
+    assert body(menu).startswith("<p><b>Лидеры сезона</b><br>")
     (edited,) = api.edited_texts
     text = body(edited)
     # Заголовок — одна строка, сезон и маркер страницы — подвал.
-    assert text.startswith("<p><b>Топ бомбардиров</b></p><table")
+    assert text.startswith("<p><b>Лучшие бомбардиры</b></p><table")
     assert text.endswith(" · <i>Показаны 1–10 из 25 строк.</i></footer>")
     assert (
         '<table compact><tr><th align="right"></th><th>Игрок</th><th>Ком</th>'
@@ -182,25 +167,20 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     assert _tr("rllrrr", "1.", "Player01 [C]", "NYR", "99", "82", "1501") in text
     assert _tr("rllrrr", "10.", "Player10 [C]", "NYR", "90", "82", "1510") in text
     assert "Player11" not in text
-    assert _callback_data(edited.reply_markup)[0] == "pl:points:10", "первая страница — только «вперёд»"
+    assert _callback_data(edited.reply_markup) == [
+        "st:players_season_stats:points:10", "st:menu", "st:save",
+    ], "первая страница — только «вперёд»"
 
 
 @pytest.mark.asyncio
 async def test_leaders_next_page_asks_db_for_offset_ten_and_renders_ranks_eleven_to_twenty(
-    bot_module, fake_db_router, make_callback, api
+    bot_module, fake_db_router, make_message, make_callback, fake_bot, api
 ):
-    stats_handlers = bot_module("stats_handlers")
     cursor = fake_db_router(_LEADERS_ROUTES)
 
-    data = "pl:pick:points"
-    await stats_handlers.callback_leaders_pick(
-        make_callback(data), re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, data)
-    )
+    await _open_points(bot_module, make_message, make_callback, fake_bot, api)
     next_button = _flat_buttons(api.edited_texts[0].reply_markup)[0]
-    match = re.match(stats_handlers.LEADERBOARD_PAGE_CALLBACK_PATTERN, next_button.callback_data)
-    assert match
-
-    await stats_handlers.callback_leaderboard_page(make_callback(next_button.callback_data), match)
+    await _press_stat(bot_module, make_callback, fake_bot, next_button.callback_data)
 
     _first, edited = api.edited_texts
     text = body(edited)
@@ -208,7 +188,9 @@ async def test_leaders_next_page_asks_db_for_offset_ten_and_renders_ranks_eleven
     assert _tr("rllrrr", "11.", "Player11 [C]", "NYR", "89", "82", "1511") in text
     assert _tr("rllrrr", "20.", "Player20 [C]", "NYR", "80", "82", "1520") in text
     assert "Player10" not in text
-    assert _callback_data(edited.reply_markup)[:2] == ["pl:points:0", "pl:points:20"]
+    assert _callback_data(edited.reply_markup)[:2] == [
+        "st:players_season_stats:points:0", "st:players_season_stats:points:20",
+    ]
     # Смещение не «нарисовано» в тексте, а действительно ушло в БД параметром.
     assert [params[1:] for _query, params in cursor.executed] == [(10, 0), (10, 10)]
 
@@ -497,7 +479,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
 
 # ---------------------------------------------------------------------------
-# Задача 36: сезон с 0 и с 1–3 игровыми днями — /standings, /leaders, /today,
+# Задача 36: сезон с 0 и с 1–3 игровыми днями — /standings, /stats, /today,
 # карточка матча, /advanced.
 #
 # Факт из прогона загрузчика на скретч-БД (season-load-full, SEASON_ID=20262027,
@@ -544,19 +526,12 @@ async def test_standings_command_on_empty_season_reports_season_not_started(
 
 
 @pytest.mark.asyncio
-async def test_leaders_pick_on_empty_season_reports_no_data(
+async def test_stats_points_on_empty_season_reports_no_data(
     bot_module, fake_db_router, make_message, make_callback, fake_bot, api
 ):
-    bot = bot_module("bot")
-    stats_handlers = bot_module("stats_handlers")
     fake_db_router(_EMPTY_SEASON_ROUTES)
 
-    await bot.cmd_leaders(make_message("/leaders"), fake_bot)
-    points_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
-    match = re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, points_button.callback_data)
-    assert match
-
-    await stats_handlers.callback_leaders_pick(make_callback(points_button.callback_data), match)
+    await _open_points(bot_module, make_message, make_callback, fake_bot, api)
 
     (edited,) = api.edited_texts
     assert "Нет данных в этом диапазоне." in body(edited)
@@ -677,29 +652,20 @@ _PARTIAL_LEADERS_ROUTES = [("COUNT(*) OVER () AS total", _leaderboard_page_route
 
 
 @pytest.mark.asyncio
-async def test_leaders_pick_on_partial_season_shows_short_page_without_next_button(
+async def test_stats_points_on_partial_season_shows_short_page_without_next_button(
     bot_module, fake_db_router, make_message, make_callback, fake_bot, api
 ):
-    bot = bot_module("bot")
-    stats_handlers = bot_module("stats_handlers")
     fake_db_router(_PARTIAL_LEADERS_ROUTES)
 
-    await bot.cmd_leaders(make_message("/leaders"), fake_bot)
-    points_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
-    match = re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, points_button.callback_data)
-    assert match
-
-    await stats_handlers.callback_leaders_pick(make_callback(points_button.callback_data), match)
+    await _open_points(bot_module, make_message, make_callback, fake_bot, api)
 
     (edited,) = api.edited_texts
     text = body(edited)
     assert "<i>Показаны 1–4 из 4 строк.</i>" in text
     assert _tr("rllrrr", "1.", "Panarin [LW]", "NYR", "5", "2", "45") in text
     assert _tr("rllrrr", "4.", "Matthews [C]", "TOR", "1", "1", "18") in text
-    # Ни prev, ни next — показаны все 4 строки; остаётся только смена категории.
-    assert _callback_data(edited.reply_markup) == [
-        "pl:pick:points", "pl:pick:goals", "pl:pick:assists",
-    ]
+    # Ни prev, ни next — показаны все 4 строки; остаются меню и «Сохранить».
+    assert _callback_data(edited.reply_markup) == ["st:menu", "st:save"]
 
 
 # Ранняя сборная (games < 20) отфильтровывается INNER JOIN players_season_stats
@@ -780,104 +746,53 @@ async def test_today_on_partial_season_renders_the_single_game_card(
 
 
 # ---------------------------------------------------------------------------
-# Сценарий «сводки по конференциям/дивизионам»: подменю команд → кнопка
-# «По конференциям»/«По дивизионам» (Задача 41, Фаза B)
+# Сценарий «статистика команд»: /team_stats → «Голы» (за, против, разница за игру)
 # ---------------------------------------------------------------------------
 
-# conference_name, team_count, avg_goals_per_game, avg_power_play_percentage,
-# avg_penalty_kill_percentage, avg_points
-_CONFERENCE_ROWS = [
-    ("Eastern", 16, 3.12, 21.5, 79.5, 55.25),
-    ("Western", 16, 2.98, 19.9, 80.25, 50.1),
-]
-
-# conference_name, division_name, team_count, avg_goals_per_game,
-# avg_power_play_percentage, avg_penalty_kill_percentage, avg_points
-_DIVISION_ROWS = [
-    # Значения конца сезона: с двумя знаками строка была бы 37 символов.
-    ("Eastern", "Metropolitan", 8, 3.0812, 21.4567, 79.8811, 91.375),
+# abbreviation, goals_per_game, goals_against_per_game, разница (сортировка),
+# games_played, wins, losses, ot, points — уже по разнице: сортирует БД.
+_TEAM_GOALS = [
+    ("WSH", 3.4, 2.5, 0.9, 17, 10, 5, 2, 22),
+    ("BOS", 3.0, 3.1, -0.1, 20, 12, 6, 1, 25),
 ]
 
 
 @pytest.mark.asyncio
-async def test_team_submenu_conference_button_renders_summary_and_back_to_team_stats(
-    bot_module, fake_db_router, make_callback, api, fsm_state
+async def test_team_stats_goals_button_ranks_teams_by_goal_difference_per_game(
+    bot_module, fake_db_router, make_message, make_callback, fake_bot, api
 ):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router([("FROM teams_stats ts", _CONFERENCE_ROWS)])
-    callback = make_callback(str(dialog_states.TEAM_CONFERENCE_STATS))
+    cursor = fake_db_router([("COUNT(*) OVER () AS total", _leaderboard_page_route(_TEAM_GOALS))])
 
-    await stats_handlers.bot_team_conference_stats(callback, fsm_state)
+    await bot_module("bot").cmd_team_stats(make_message("/team_stats"), fake_bot)
+    goals_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
+    assert goals_button.text == "Голы"
+    await _press_stat(bot_module, make_callback, fake_bot, goals_button.callback_data)
 
     (edited,) = api.edited_texts
     text = body(edited)
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert "<b>Сводка по конференциям</b>" in text
-    # Rich-таблица: шапка и по строке на конференцию, легенда сокращений под ней.
+    assert text.startswith("<p><b>Голы за и против в среднем за игру</b></p>")
     assert (
-        '<table compact><tr><th></th><th align="right">Ком</th>'
-        '<th align="right">О</th><th align="right">Г/и</th><th align="right">Бол</th>'
-        '<th align="right">Мен</th></tr>'
-        + _tr("lrrrrr", "Eastern", "16", "55.2", "3.1", "21.5%", "79.5%")
-        + _tr("lrrrrr", "Western", "16", "50.1", "3.0", "19.9%", "80.2%")
+        '<table compact><tr><th align="right"></th><th>Ком</th><th align="right">За</th>'
+        '<th align="right">Пр</th><th align="right">Разн</th><th align="right">И</th></tr>'
+        + _tr("rlrrrr", "1.", "WSH", "3.4", "2.5", "+0.9", "17")
+        + _tr("rlrrrr", "2.", "BOS", "3", "3.1", "-0.1", "20")
         + "</table>"
     ) in text
-    assert "Бол — реализация большинства" in text
-    # «« Назад»» ведёт на родительское подменю команд, как у TEAM_PROCENT_WINS и соседей.
-    assert _callback_data(edited.reply_markup) == [
-        str(dialog_states.TEAM_STATS),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_team_submenu_division_button_renders_summary_table(
-    bot_module, fake_db_router, make_callback, api, fsm_state
-):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router([("FROM teams_stats ts", _DIVISION_ROWS)])
-    callback = make_callback(str(dialog_states.TEAM_DIVISION_STATS))
-
-    await stats_handlers.bot_team_division_stats(callback, fsm_state)
-
-    (edited,) = api.edited_texts
-    text = body(edited)
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert "<b>Сводка по дивизионам</b>" in text
-    # Все колонки на месте, число команд тоже — Telegram сам раскладывает по ширине.
-    assert _tr("lrrrrr", "Metropolitan", "8", "91.4", "3.1", "21.5%", "79.9%") in text
-    assert "<pre>" not in text
-    assert _callback_data(edited.reply_markup)[0] == str(dialog_states.TEAM_STATS)
-
-
-@pytest.mark.asyncio
-async def test_team_submenu_conference_button_reports_empty_season_without_traceback(
-    bot_module, fake_db_router, make_callback, api, fsm_state
-):
-    """Пустой сезон (Задача 36): текст с причиной, не пустая таблица и не исключение,
-    и «« Назад»» на подменю команд по-прежнему на месте."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router([("FROM teams_stats ts", [])])
-    callback = make_callback(str(dialog_states.TEAM_CONFERENCE_STATS))
-
-    await stats_handlers.bot_team_conference_stats(callback, fsm_state)
-
-    (edited,) = api.edited_texts
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert "В базе нет командной статистики для этого сезона." in body(edited)
-    assert _callback_data(edited.reply_markup)[0] == str(dialog_states.TEAM_STATS)
+    [(query, params)] = cursor.executed
+    # Порядок даёт БД: сортировка — по разнице «за − против», а не по одной из колонок.
+    assert (
+        "SQL(' DESC NULLS LAST, t.abbreviation LIMIT %s OFFSET %s')" in query
+        and "Composed([SQL('('), Identifier('goals_per_game'), SQL(' - '), "
+        "Identifier('goals_against_per_game'), SQL(')')]), SQL(' DESC" in query
+    )
+    assert params[1:] == (10, 0), "первая страница по 10 строк"
+    assert _callback_data(edited.reply_markup) == ["tm:menu", "tm:save"]
 
 
 # ---------------------------------------------------------------------------
 # Сценарий «профиль команды»: подменю команд → «Профиль команды» → выбор
 # аббревиатуры → карточка состава (Задача 41, Фаза D)
 # ---------------------------------------------------------------------------
-
-_SEASON_ABBREVS = [("WSH",), ("WPG",)]
 
 # team_id, name, division_name, conference_name, games_played, wins, losses, ot,
 # points, procent_points, goals_per_game, goals_against_per_game, shots_per_game,
@@ -922,66 +837,18 @@ _PROFILE_ROUTES = [
 
 
 @pytest.mark.asyncio
-async def test_team_submenu_profile_button_lists_season_abbreviations(
-    bot_module, fake_db_router, make_callback, api, fsm_state
+async def test_team_profile_command_shows_places_scorers_and_goalies(
+    bot_module, fake_db_router, make_message, api
 ):
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router([("SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation)", _SEASON_ABBREVS)])
-    callback = make_callback(str(dialog_states.TEAM_PROFILE_PICK))
-
-    await stats_handlers.bot_team_profile_pick(callback, fsm_state)
-
-    (edited,) = api.edited_texts
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert body(edited) == rich_html("Выберите команду:")
-    callbacks = _callback_data(edited.reply_markup)
-    assert callbacks[:2] == ["tp:WSH", "tp:WPG"]
-    # Футер — «« Назад»» на подменю команд, как у соседних командных экранов.
-    assert callbacks[2:] == [
-        str(dialog_states.TEAM_STATS),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_team_submenu_profile_button_reports_empty_season_without_traceback(
-    bot_module, fake_db_router, make_callback, api, fsm_state
-):
-    """Пустой сезон (Задача 36): нет команд в базе — текст с причиной, не
-    клавиатура без единой кнопки, и без исключения."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
-    fake_db_router([("SELECT DISTINCT trim(COALESCE(NULLIF(trim(abbreviation)", [])])
-    callback = make_callback(str(dialog_states.TEAM_PROFILE_PICK))
-
-    await stats_handlers.bot_team_profile_pick(callback, fsm_state)
-
-    (edited,) = api.edited_texts
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert body(edited) == rich_html("В базе нет команд для этого сезона.")
-    assert _callback_data(edited.reply_markup)[0] == str(dialog_states.TEAM_STATS)
-
-
-@pytest.mark.asyncio
-async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies(
-    bot_module, fake_db_router, make_callback, api, fsm_state
-):
-    """Выбор аббревиатуры на экране профиля: места в дивизионе/конференции/лиге,
-    баланс, форма и серия, спецбригады, топ бомбардиров и вратарь; «« Назад»» —
-    на список команд (TEAM_PROFILE_PICK), не сразу в подменю команд."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
+    """`/WSH`: места в дивизионе/конференции/лиге, баланс, форма и серия, спецбригады,
+    топ бомбардиров и вратарь."""
+    bot = bot_module("bot")
     fake_db_router(_PROFILE_ROUTES)
-    callback = make_callback("tp:WSH")
-    match = re.match(stats_handlers.TEAM_PROFILE_CALLBACK_PATTERN, "tp:WSH")
 
-    await stats_handlers.bot_team_profile_show(callback, fsm_state, match)
+    await bot.cmd_team_profile(make_message("/WSH"), re.match(bot.TEAM_COMMAND_PATTERN, "/WSH"))
 
-    (edited,) = api.edited_texts
-    text = body(edited)
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
+    (reply,) = api.sent_rich
+    text = body(reply)
     # Заголовок — одна строка, сезон — в подвале.
     assert text.startswith("<p><b>Washington Capitals</b> (WSH)<br>")
     assert "Metropolitan: 2-е место · Eastern: 3-е · лига: 4-е из 4 сыгравших" in text
@@ -1017,31 +884,24 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     ) in text
     assert "<details><summary>Обозначения</summary><p>И — игры" in text
     assert text.endswith(" · все игроки: /WSH_FULL · все команды: /team</footer>")
-    assert _callback_data(edited.reply_markup) == [
-        str(dialog_states.TEAM_PROFILE_PICK),
-        str(dialog_states.CHOOSE_STATS),
-        str(dialog_states.END_CONVERSATION),
-    ]
 
 
 @pytest.mark.asyncio
 async def test_team_profile_reports_team_that_has_not_played_yet(
-    bot_module, fake_db_router, make_callback, api, fsm_state
+    bot_module, fake_db_router, make_message, api
 ):
     """Команда есть в `teams`, но без строки в `teams_stats` (ещё не сыграла,
     Задача 36) — текст с причиной, не пустая карточка и не исключение."""
-    stats_handlers = bot_module("stats_handlers")
+    bot = bot_module("bot")
     fake_db_router([
         ("SELECT team_id FROM teams WHERE season_id", [(99,)]),
         ("FROM teams_stats ts", _LEAGUE_ROWS),
     ])
-    callback = make_callback("tp:WSH")
-    match = re.match(stats_handlers.TEAM_PROFILE_CALLBACK_PATTERN, "tp:WSH")
 
-    await stats_handlers.bot_team_profile_show(callback, fsm_state, match)
+    await bot.cmd_team_profile(make_message("/WSH"), re.match(bot.TEAM_COMMAND_PATTERN, "/WSH"))
 
-    (edited,) = api.edited_texts
-    assert "Команда ещё не сыграла в этом сезоне — статистики нет." in body(edited)
+    (reply,) = api.sent_rich
+    assert "Команда ещё не сыграла в этом сезоне — статистики нет." in body(reply)
 
 
 @pytest.mark.asyncio
@@ -1182,23 +1042,17 @@ async def test_team_full_command_skips_empty_groups(
 
 @pytest.mark.asyncio
 async def test_team_profile_reports_unknown_abbreviation(
-    bot_module, fake_db_router, make_callback, api, fsm_state
+    bot_module, fake_db_router, make_message, api
 ):
-    """Аббревиатура прошла TEAM_PROFILE_CALLBACK_PATTERN (кнопка), но не
-    резолвится в team_id (не найдена в teams для сезона) — текст с причиной,
-    «« Назад»» на список команд по-прежнему на месте."""
-    stats_handlers = bot_module("stats_handlers")
-    dialog_states = bot_module("dialog_states")
+    """`/ZZZ` прошла TEAM_COMMAND_PATTERN, но не резолвится в team_id (не найдена
+    в teams для сезона) — текст с причиной, не исключение."""
+    bot = bot_module("bot")
     fake_db_router([("SELECT team_id FROM teams WHERE season_id", [])])
-    callback = make_callback("tp:ZZZ")
-    match = re.match(stats_handlers.TEAM_PROFILE_CALLBACK_PATTERN, "tp:ZZZ")
 
-    await stats_handlers.bot_team_profile_show(callback, fsm_state, match)
+    await bot.cmd_team_profile(make_message("/ZZZ"), re.match(bot.TEAM_COMMAND_PATTERN, "/ZZZ"))
 
-    (edited,) = api.edited_texts
-    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert "Команда не найдена в базе для этого сезона." in body(edited)
-    assert _callback_data(edited.reply_markup)[0] == str(dialog_states.TEAM_PROFILE_PICK)
+    (reply,) = api.sent_rich
+    assert "Команда не найдена в базе для этого сезона." in body(reply)
 
 
 # ---------------------------------------------------------------------------

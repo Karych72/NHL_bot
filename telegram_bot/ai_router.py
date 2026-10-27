@@ -35,9 +35,9 @@ FAILURE_TEXT = "Не удалось разобрать вопрос, попро�
 UNSUPPORTED_TEXT = "Это я пока не умею. Что умею — /help"
 
 # Команды без параметров, которые модель может открыть инструментом `open_command`; функции
-# экранов — `bot.AI_COMMANDS`. Нет `/stats` (диалог) и `/cancel`.
+# экранов — `bot.AI_COMMANDS`.
 SCREEN_COMMANDS = (
-    "today", "tonight", "standings", "team", "leaders", "countries", "advanced",
+    "today", "tonight", "standings", "stats", "team_stats", "team", "countries", "advanced",
     "subscriptions", "help",
 )
 

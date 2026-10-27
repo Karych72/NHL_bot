@@ -79,8 +79,7 @@ NHL_bot/
 │   ├── api_data_research.md
 │   ├── data_loading.md                 # установка окружения, БД, загрузка NHL API
 │   ├── pipeline_nulls_and_explicit_null_tz.md   # контракт NULL-семантики лоадера
-│   ├── telegram_bot.md                 # запуск и команды бота
-│   └── user_journey_stats.md
+│   └── telegram_bot.md                 # запуск и команды бота
 │
 ├── plan/                               # Планы (индекс: plan/README.md)
 │   ├── README.md
@@ -113,19 +112,19 @@ NHL_bot/
 │   ├── test_pipeline_optional_helpers.py  # §1 контракта NULL: to_int / optional_* / safe_pct
 │   ├── test_pipeline_season_rows.py    # Сборка строк сезонных таблиц (teams … goalies_season_stats)
 │   ├── test_pipeline_game_rows.py      # Сборка строк пер-игровых таблиц (games, all_goals, …)
-│   ├── test_bot_integration.py         # Сквозные сценарии бота: /standings, /leaders, карточка матча, /today
+│   ├── test_bot_integration.py         # Сквозные сценарии бота: /standings, /stats, /team_stats, карточка матча, /today
 │   ├── test_bot_*.py, test_modeling_*.py, test_db_nhl.py, …
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, FSM-карта диалога /stats
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит в сутки, журнал ai_questions (Задача 81)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
-│   ├── dialog_states.py                # FSM-состояния и callback ID
-│   ├── script_bot.py                   # Обработчики меню навигации
-│   ├── stats_handlers.py              # Фабрика обработчиков статистики
+│   ├── keyboards.py                    # build_menu(), callback_message() — общие помощники кнопок
+│   ├── leaderboard_specs.py            # Таблицы лидеров: заголовки, колонки, раскладка меню
+│   ├── stats_handlers.py              # Меню /stats, /team_stats, /advanced, листание таблиц, дайджест
 │   ├── bot_messages.py                 # Формирование текстов ответов (SQL + шаблоны)
 │   ├── template_funcs.py              # Обёртка Jinja2
 │   ├── messages/                       # Jinja2-шаблоны сообщений
@@ -203,7 +202,7 @@ NHL_bot/
 
 | Пакет | Назначение |
 |---|---|
-| `aiogram==3.31.0` | Telegram Bot API 10.3 (asyncio): роутеры, FSM, InlineKeyboard, Rich Messages |
+| `aiogram==3.31.0` | Telegram Bot API 10.3 (asyncio): роутеры, InlineKeyboard, Rich Messages |
 | `psycopg2-binary` | Драйвер PostgreSQL |
 | `requests` | HTTP-запросы к NHL API |
 | `jinja2` | Шаблонизатор для формирования текстов сообщений |
@@ -380,34 +379,32 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 ### Точка входа: `bot.py`
 
 Использует aiogram 3 (asyncio). `build_dispatcher()` собирает `Dispatcher`: троттлинг
-callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, затем три роутера по
-порядку — `standalone` (команды верхнего уровня и inline-кнопки, без фильтра состояния),
-`stats` (диалог `/stats` по карте `STATS_DIALOG`: состояние FSM `dialog_states.StatsMenu` →
-кнопки и их хендлеры; плюс `/stats`, `/cancel` в диалоге и ввод даты) и `tail` (`/cancel` вне
-диалога и свободный текст `on_free_text`, Задача 81). Апдейт берёт первый подошедший хендлер.
-`main()` запускает `start_polling()`; при старте `set_my_commands` публикует меню команд.
-Хендлеры получают зависимости по имени параметра (DI aiogram): `bot`, `state` (`FSMContext`),
-`match` — совпадение regex фильтра callback_data, `command` — аргументы `/start`. Переход
-диалога — `await state.set_state(...)`, конец — `state.clear()`. Состав регистрации и
+callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, затем два роутера по
+порядку — `standalone` (команды и inline-кнопки) и `tail` (свободный текст `on_free_text`,
+Задача 81). Апдейт берёт первый подошедший хендлер. Состояний FSM у бота нет (Задача 92 убрала
+диалог `/stats`): каждая кнопка несёт в `callback_data` всё, что нужно её хендлеру, и работает
+в сообщении любой давности. `main()` запускает `start_polling()`; при старте `set_my_commands`
+публикует меню команд. Хендлеры получают зависимости по имени параметра (DI aiogram): `bot`,
+`match` — совпадение regex фильтра callback_data, `command` — аргументы `/start`. Состав регистрации и
 маршрутизация настоящих апдейтов (`Dispatcher.feed_update`) закреплены в
-`tests/test_bot_application.py`. Подписки (Задача 63) — не часть диалога: одна команда
+`tests/test_bot_application.py`. Подписки (Задача 63): одна команда
 `/subscriptions` и кнопки `sub:…` в `bot.py` правят одно сообщение через `edit_text`, а читают
 и пишут `bot_subscriptions` через `subscription_repo.py`.
 
-Сквозные сценарии «запрос → ответ» (`/standings`, `/leaders` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
-и ветка таблицы внутри диалога закреплены в `tests/test_bot_integration.py`:
+Сквозные сценарии «запрос → ответ» (`/standings`, `/stats` и `/team_stats` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
+закреплены в `tests/test_bot_integration.py`:
 подменяются только границы БД (фикстура `fake_db_router` в `tests/conftest.py` —
 соединение psycopg2 и TTL-обёртка над ним) и сети (`tests/_telegram_fakes.py::FakeSession` — HTTP-сессия aiogram,
 записывающая каждый запрос к Bot API), остальной стек — от разбора `callback_data` до
 сборки клавиатур и сериализации запросов aiogram — работает по-настоящему.
 
-Все хендлеры в `bot.py`, `script_bot.py` и `stats_handlers.py` — корутины (`async def`),
+Все хендлеры в `bot.py` и `stats_handlers.py` — корутины (`async def`),
 вызовы Bot API идут под `await`. Сообщение с нажатой кнопкой распаковывает
-`dialog_states.callback_message` (у `CallbackQuery.message` тип `Message | InaccessibleMessage |
+`keyboards.callback_message` (у `CallbackQuery.message` тип `Message | InaccessibleMessage |
 None`); форму callback_data проверяет regex фильтра регистрации, хендлер получает готовое
 совпадение `match`. Апдейты обрабатываются конкурентно (polling aiogram запускает каждый
 задачей), но апдейты одного пользователя — по одному (`SimpleEventIsolation`), чтобы двойной
-тап не обгонял запись состояния диалога. Асинхронен и скрипт рассылки `push_digest_job.py` (запускается сервисом `sync` после
+тап по матчу `/tonight` не обгонял запись реестра ответов. Асинхронен и скрипт рассылки `push_digest_job.py` (запускается сервисом `sync` после
 каждого прогона, ночью — после загрузчика, см. «Модуль: `pipeline/scheduled_sync.py`» выше): он не часть
 процесса бота, а отдельный запуск, который поднимает собственный `Bot` (без `Dispatcher` и
 polling, таймаут сессии 300 с ради альбомов видео) и переиспользует
@@ -427,8 +424,7 @@ polling, таймаут сессии 300 с ради альбомов видео
 `enforce_callback_rate_limit` на `Dispatcher.callback_query` видит нажатие раньше фильтров
 любого роутера. Per-user скользящее окно: `CALLBACK_RATE_LIMIT = 8` нажатий за
 `CALLBACK_RATE_WINDOW_SEC = 3.0` секунд, ключ — `callback.from_user.id`. При превышении —
-`answer()` с текстом, а следующий шаг цепочки не вызывается: нажатие не доходит ни до
-диалога, ни до standalone-хендлеров. Троттлятся только нажатия кнопок; команды и текст
+`answer()` с текстом, а следующий шаг цепочки не вызывается: нажатие не доходит до хендлеров. Троттлятся только нажатия кнопок; команды и текст
 проходят без ограничений. Состояние — только в памяти
 процесса (module-level `dict`, без Redis); истёкшие записи вычищаются по ходу вызова, без
 отдельного планировщика. Тесты — `tests/test_bot_throttle.py` (поведение окна) и
@@ -436,8 +432,7 @@ polling, таймаут сессии 300 с ради альбомов видео
 
 ### Свободный текст: `ai_router.py` (Задача 81)
 
-Текст в личке вне команд ловит `on_free_text` в роутере `tail`, после роутера диалога:
-срабатывает первый подошедший хендлер, поэтому ввод даты в `StatsMenu.third` забирает диалог.
+Текст в личке вне команд ловит `on_free_text` в роутере `tail`, после команд и кнопок.
 `ai_router.ask` — один вызов `claude-sonnet-5-5` (effort `low`) с инструментами-экранами
 (`build_tools`: строгие схемы, `enum` из `BOT_COMMANDS`, `COUNTRY_LABELS`,
 `leaderboard_specs`, команд сезона); модель либо выбирает экран, либо пишет короткий отказ
@@ -450,70 +445,28 @@ polling, таймаут сессии 300 с ради альбомов видео
 командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
 `tests/test_bot_ai_router.py`.
 
-### FSM (Finite State Machine)
+### Меню статистики: `/stats`, `/team_stats`, `/advanced`
 
-На схеме FIRST / SECOND / THIRD — состояния `dialog_states.StatsMenu.first / second / third`
-(aiogram FSM); какие кнопки в каком состоянии работают — карта `bot.STATS_DIALOG`.
+Задача 92 заменила FSM-диалог `/stats` (подменю, дайджест с вводом даты, турнирная таблица,
+`/cancel`) тремя меню без состояний; раскладка кнопок, заголовки таблиц и колонки — один
+справочник `leaderboard_specs.py`.
 
-```
-                    /stats
-                      │
-                      ▼
-               ┌─────────────┐
-               │    FIRST     │  ← Навигация по меню
-               │              │
-               │  Главное меню│
-               │  ├─ Дайджест дня ──────────────────┐
-               │  ├─ Статистика игроков              │
-               │  │   ├─ Полевые игроки              │
-               │  │   │   ├─ Очки                    │
-               │  │   │   ├─ Голы                     │
-               │  │   │   ├─ Ассисты                  │
-               │  │   │   ├─ Хиты                     │
-               │  │   │   ├─ +/-                      │
-               │  │   │   ├─ Игровое время            │
-               │  │   │   ├─ Штрафные минуты          │
-               │  │   │   └─ Блоки ──────────────┐    │
-               │  │   ├─ Вратари                  │    │
-               │  │   │   ├─ Победы               │    │
-               │  │   │   ├─ % отр. бросков        │    │
-               │  │   │   └─ Сухари ─────────┐    │    │
-               │  └─ Статистика команд        │    │    │
-               │      ├─ % очков              │    │    │
-               │      ├─ Большинство          │    │    │
-               │      ├─ Меньшинство          │    │    │
-               │      ├─ По конференциям      │    │    │
-               │      ├─ По дивизионам        │    │    │
-               │      └─ Профиль команды ──┐  │    │    │
-               └───────────────────────────┘──┘────┘────┘
-                                         │
-                                         ▼
-                                  ┌─────────────┐
-                                  │   SECOND     │  ← Показ результата
-                                  │              │
-                                  │  [В меню]    │──→ FIRST
-                                  │  [Выход]     │──→ END
-                                  └──────────────┘
-```
-
-### Состояния и callback ID (`dialog_states.py`)
-
-| ID | Константа | Назначение |
+| Команда | Меню | Кнопка → страница |
 |---|---|---|
-| 0 | `CHOOSE_STATS` | Возврат в главное меню |
-| 1 | `TEAM_STATS` | Подменю статистики команд |
-| 2 | `PLAYER_STATS` | Подменю статистики игроков |
-| 3 | `DAY_DIGEST` | Дайджест дня |
-| 4 | `PLAYER_FIELD` | Подменю полевых игроков |
-| 5 | `PLAYER_GOALIE` | Подменю вратарей |
-| 6–8 | `TEAM_PROCENT_WINS`, `TEAM_POWER_PLAY`, `TEAM_POWER_KILL` | Показатели команд |
-| 9–16 | `PLAYER_POINTS` ... `PLAYER_ICE_TIME` | Статистики полевых игроков |
-| 17–19 | `GOALIE_WINS`, `GOALIE_PERCENTAGE`, `GOALIE_SHOOTOUTS` | Статистики вратарей |
-| 20 | `END_CONVERSATION` | Завершение диалога |
-| 38–39 | `TEAM_CONFERENCE_STATS`, `TEAM_DIVISION_STATS` | Сводки по конференциям/дивизионам (Задача 41, Фаза B); полный список состояний 21–37 (расширенная статистика полевых, типы бросков, турнирная таблица, дайджест по датам) в этой таблице не отражён — источник истины `dialog_states.py`. |
-| 40 | `TEAM_PROFILE_PICK` | Профиль команды (Задача 41, Фаза D): экран выбора аббревиатуры; зарегистрирован и в `first` (кнопка из подменю команд), и в `second` (кнопка «« Назад»» с самого профиля). |
+| `/stats` | одним экраном все 23 таблицы игроков: полевые и вратари (`MAIN_STAT_ROWS`, первый ряд — очки, голы, передачи — выделен `style="primary"`), затем расширенные и голы по типу броска (`ADVANCED_ROWS`) | `st:<таблица>:<колонка>:<offset>` |
+| `/team_stats` | голы и броски за/против в среднем за игру, большинство, меньшинство, вбрасывания (`TEAM_STAT_ROWS`, `TEAM_STAT_SPECS`) | `tm:<ключ>:<offset>` |
+| `/advanced` | только расширенные (`ADVANCED_ROWS`) | `adv:<ключ>` → `sa:<таблица>:<колонка>:<offset>` |
 
-**Статистика по странам — не состояние диалога, а команда `/countries`** (Задача 49; до неё —
+Страницу всех трёх рисует `stats_handlers.stat_page_reply`, нажатия разбирает
+`callback_stat_screen` (`STAT_SCREEN_CALLBACK_PATTERN`): листание, `<префикс>:menu` — меню своей
+команды на месте страницы, `<префикс>:save` — страница остаётся в чате, её копия с кнопками
+уходит ниже. Паттерн собран из ключей справочника: кнопки убранных экранов в старых сообщениях
+ни один хендлер не берёт. Командная таблица — `bot_messages.team_stats_with_count`:
+одна колонка `teams_stats` — рейтинг по ней с хвостом игр и баланса, пара «за/против» — рейтинг по
+разнице. Дайджест дня — только `/today` и свободный текст (`digest_for_date`), турнирная
+таблица — `/standings`, профиль клуба — `/team` и `/BOS`.
+
+**Статистика по странам — команда `/countries`** (Задача 49; до неё —
 пункт «По странам» в подменю игроков, Задача 42). Рейтинг стран — выровненная таблица и кнопки
 стран; страница страны — standalone-callback `cn:<CODE>:<F|D|G>:<offset>` (нападающие /
 защитники / вратари, листание, переключатель групп), `cn:list` — назад к рейтингу. Данные —
@@ -534,15 +487,13 @@ bot.py
   │
   ├── config.py              Чтение переменных окружения
   │
-  ├── dialog_states.py       FSM-состояния, callback ID, build_menu()
+  ├── keyboards.py           build_menu(), callback_message()
   │
-  ├── script_bot.py          Навигация: stats(), stats_over(),
-  │                          bot_team_stats(), bot_player_stats(),
-  │                          bot_player_field(), bot_player_goalie(), end()
+  ├── leaderboard_specs.py   Справочник таблиц и раскладка кнопок меню
   │
-  ├── stats_handlers.py      Фабрика _make_stats_handler():
-  │   │                      создаёт обработчики, вызывающие data_func()
-  │   │                      и показывающие кнопки «Назад» / «Выход»
+  ├── stats_handlers.py      Меню /stats, /team_stats, /advanced и листание
+  │   │                      их таблиц (stat_page_reply, callback_stat_screen),
+  │   │                      дайджест, /countries, /tonight, видео голов
   │   │
   │   └── bot_messages.py    Бизнес-логика формирования текстов:
   │       │                  day_digest(), player_stats(),
@@ -558,25 +509,6 @@ bot.py
   └── nhl_scoreboard.py      /today / /standings (запросы к Web API NHL,
                              форматирование расписания)
 ```
-
-### Фабрика обработчиков (`stats_handlers.py`)
-
-Все конечные обработчики статистики создаются единообразно через `_make_stats_handler(data_func, back_label)`:
-
-```python
-handler = _make_stats_handler(
-    partial(player_stats, 'Лучшие бомбардиры', 'players_season_stats', 'points')
-)
-```
-
-Фабрика:
-1. Отвечает на callback query.
-2. Вызывает `data_func()` для получения текста.
-3. Редактирует сообщение с `parse_mode='MARKDOWN'`.
-4. Добавляет кнопки «В главное меню» и «Выход».
-5. Переводит FSM в состояние `SECOND`.
-
-Это устраняет дублирование: 17 обработчиков создаются в одну строку каждый.
 
 ---
 
@@ -930,7 +862,7 @@ Vasilevskiy — 29/32, 90.63%, 65:00
 ### Rich-сообщения и таблицы
 
 Экраны бота — rich-сообщения Bot API 10.1+ (`send_rich_message`, `answer_rich`,
-`edit_text(rich_message=…)`): таблицы, карточки матчей, дайджест, меню `/stats`, `/leaders`,
+`edit_text(rich_message=…)`): таблицы, карточки матчей, дайджест, меню `/stats`, `/team_stats`,
 `/countries`, `/advanced`, превью матчей и рассылки. Тексты по-прежнему собираются построчным
 HTML; `bot_messages.rich_message(text)` делает блок строк абзацем `<p>` с переносами
 `<br>` (в rich-HTML перевод строки — пробел), пустую строку — зазором `<p>&nbsp;</p>` между
@@ -941,10 +873,10 @@ HTML; `bot_messages.rich_message(text)` делает блок строк абз�
 колонкам и, в турнирной таблице, строкой «линия плей-офф» на всю ширину; колонки раскладывает
 Telegram, поэтому ни обрезки фамилий, ни выбрасывания колонок под ширину телефона нет. Лимит —
 `RICH_MESSAGE_MAX_LENGTH` (32 768 символов, считается по исходному HTML); `truncate_telegram_text`
-режет целыми строками, чтобы не разорвать таблицу или тег. Весь диалог `/stats` — rich: правка
-идёт только rich → rich. Обычным текстом остаются служебные ответы (`/cancel`, подсказка «Ещё: …»,
-ответы ИИ текстом), меню `/subscriptions` и подписи к видео. «Сохранить» в `/advanced` —
-`copy_message`.
+режет целыми строками, чтобы не разорвать таблицу или тег. Меню статистики и их таблицы — rich:
+правка идёт только rich → rich. Обычным текстом остаются служебные ответы (подсказка «Ещё: …»,
+ответы ИИ текстом), меню `/subscriptions` и подписи к видео. «Сохранить» в таблицах `/stats`,
+`/team_stats`, `/advanced` — `copy_message`.
 
 ### Лидерборды (без шаблона)
 
@@ -981,19 +913,6 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 `WC2`, затем черта и три ближайших претендента. Команды, ещё не сыгравшие в сезоне, в `teams_stats`
 отсутствуют и в таблицу не попадают.
 
-### Сводки по конференциям и дивизионам (Задача 41, Фаза B; без шаблона)
-
-`bot_messages.conference_summary()` / `division_summary()`: `GROUP BY t.conference_name` /
-`t.division_name` над `teams_stats ⋈ teams` по `(team_id, season_id)` для `config.SEASON_ID` —
-число команд и средние по группе `goals_per_game`/`power_play_percentage`/
-`penalty_kill_percentage`/`points` (только то, что уже есть в `teams_stats`, без вычисляемых
-«рейтингов»), таблицей `_table()` с легендой сокращений. Не дублирует `/standings` (`team_table()`, строка на команду) — здесь усреднение по
-группе. Пустой сезон — текст с причиной вместо пустой таблицы. Экраны: кнопки «По конференциям» /
-«По дивизионам» в подменю команд (`TEAM_STATS`, рядом с TEAM_PROCENT_WINS/TEAM_POWER_PLAY/
-TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STATS`
-(`dialog_states.py`), хендлеры `bot_team_conference_stats`/`bot_team_division_stats`
-(`stats_handlers.py`); «« Назад»» — на `TEAM_STATS`, как у соседних командных экранов.
-
 ### `team_profile.txt` — Статистика клуба (Задача 41, Фаза D; переделан 2026-10-01)
 
 `bot_messages.team_profile(abbrev)`: места в дивизионе/конференции/лиге (`teams_stats ⋈ teams`
@@ -1004,11 +923,9 @@ TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STAT
 В конце — `/BOS_FULL`: `team_full_stats()`, все игроки клуба тремя таблицами — нападающие,
 защитники, вратари (с хотя бы одной игрой) — с колонками экрана страны (`_player_group_table()`),
 тот же хендлер `cmd_team_profile` (группа `_FULL` в `TEAM_COMMAND_PATTERN`).
-Два входа: команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
-`bot.py` по `TEAM_COMMAND_PATTERN`) и инлайн-кнопка аббревиатуры в меню `/stats` (`tp:<ABBR>`,
-`bot_team_profile_pick()` в `stats_handlers.py`); обе резолвят аббревиатуру через
-`_team_id_for_abbrev()`, как `matchup_season_preview()` (Фаза C). «« Назад»» со списка — на
-`TEAM_STATS`, с карточки (`bot_team_profile_show()`) — обратно на список (`TEAM_PROFILE_PICK`).
+Вход — команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
+`bot.py` по `TEAM_COMMAND_PATTERN`) и инструмент `team_profile` свободного текста; аббревиатура
+резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C).
 
 `players_season_stats` не хранит команду игрока — очки/голы за весь сезон целиком относятся
 к тому `current_team_id`, что сейчас стоит в `rosters` (последний обработанный ростер,
@@ -1065,10 +982,9 @@ TEAM_POWER_KILL), состояния `TEAM_CONFERENCE_STATS`/`TEAM_DIVISION_STAT
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        Telegram Bot                                  │
 │                                                                      │
-│  bot.py → Dispatcher, FSM StatsMenu (first / second / third)        │
+│  bot.py → Dispatcher: роутеры standalone и tail                      │
 │     │                                                                │
-│     ├── script_bot.py      Inline-меню навигации                    │
-│     ├── stats_handlers.py  Фабрика: _make_stats_handler()           │
+│     ├── stats_handlers.py  Меню статистики, листание таблиц          │
 │     └── bot_messages.py    SQL-запросы → Jinja2-шаблоны             │
 │            │                                                         │
 │            ├── database.py     fetch_all() + whitelist               │
@@ -1162,6 +1078,6 @@ make season-sync-month    # обновить данные за последни�
 1. **Стратегия загрузки:** сезонные таблицы пишутся через UPSERT (`ON CONFLICT … DO UPDATE`), per-game таблицы — через `DELETE … WHERE game_id = ANY(window) → INSERT`. Полностью идемпотентно на пересекающихся окнах. Подробнее — `docs/data_loading.md` §6.3.
 2. **FOREIGN KEY (Задача 4, 2026-08-12):** DDL объявляет составные FK `games.(home_team_id|away_team_id|winner_id, season_id) → teams.(team_id, season_id)`, `teams_stats.(team_id, season_id) → teams`, `rosters.(current_team_id, season_id) → teams`, `players_season_stats|players_advanced_stats|players_shot_types|goalies_season_stats.(player_id, season_id) → rosters`, и `game_team_stats|game_player_stats|game_goalie_stats|all_goals|game_three_stars|shot_attempts.game_id → games.game_id` (`shot_attempts` — Задача 69A: удаляется вместе с `all_goals` до `games`, вставляется после `all_goals`). `DELETE`+`INSERT`-стратегия per-game таблиц (`pipeline/load_season_modern.py`) не блокируется: удаление уже шло в порядке «дети раньше родителя» (`all_goals → game_player_stats → game_team_stats → game_goalie_stats → games`), а фактическая вставка в загрузчике — в порядке «родители раньше детей» (`teams → teams_stats → rosters → players_season_stats → players_advanced_stats → players_shot_types → goalies_season_stats → games → all_goals → game_team_stats → game_player_stats → game_goalie_stats`); оба порядка проверены на живой БД (6559 игр, 5 сезонов, 0 нарушений FK). `game_three_stars` (Задача 23.2) встроена в загрузчике в тот же порядок — первой при удалении, последней при вставке — и проверена на живой БД отдельно (прогон по всем 5 сезонам, 6560 игр, 2026-09-15…09-18): 0 строк с `game_id`, отсутствующим в `games`. FK по `team_id`/`player_id` на самих пер-игровых таблицах (`game_team_stats`, `game_player_stats`, `game_goalie_stats`, `all_goals`, `game_three_stars`, `shot_attempts`) не объявлены: эти таблицы не хранят `season_id`, а `teams`/`rosters` уникальны только по составному `(id, season_id)` — без `season_id` в дочерней строке корректная ссылка невозможна. `all_goals` по-прежнему без PK (только `event_id`), но получил индекс на `game_id` (обслуживает `telegram_bot/queries/get_goals_game.sql`) и FK на `games`. `games` получил индекс `(season_id, day)` под фактические паттерны бота (форма команды, дневной дайджест, датасет-билдер).
 3. **Working directory:** Шаблоны загружаются по относительным путям (`messages/game_message.txt`) — бот должен запускаться из директории `telegram_bot/`.
-4. **aiogram 3.31:** asyncio-API (`Dispatcher`, роутеры, FSM, DI зависимостей хендлеров), Bot API 10.3 — Rich Messages и компактные таблицы доступны типизированно. Переезд с python-telegram-bot 21.11.1 — решение человека 2026-10-26 (PTB отстал на Bot API 8.3–10.0, план — `plan/rich_messages/`). Планировщик не нужен: рассылка живёт вне процесса бота, в отдельном скрипте `push_digest_job.py` (запускается сервисом `sync`, Задача 34).
+4. **aiogram 3.31:** asyncio-API (`Dispatcher`, роутеры, DI зависимостей хендлеров), Bot API 10.3 — Rich Messages и компактные таблицы доступны типизированно. Переезд с python-telegram-bot 21.11.1 — решение человека 2026-10-26 (PTB отстал на Bot API 8.3–10.0, план — `plan/rich_messages/`). Планировщик не нужен: рассылка живёт вне процесса бота, в отдельном скрипте `push_digest_job.py` (запускается сервисом `sync`, Задача 34).
 5. **Rosters `abbreviation`:** Pipeline записывает код позиции в колонку `abbreviation`, хотя по смыслу это поле предназначено для аббревиатуры команды.
 6. **Датасет-билдер — мультисезонная сборка (Задача 30, 2026-09-12):** `python -m modeling.cli build-dataset` кладёт `dataset_{train,predict}.csv` и `metadata_*.json` плоско в `artifacts/datasets/` (дефолт CLI) — не коммитятся, `--season-ids` фиксирует, какие сезоны вошли, в `data_snapshot_id` метаданных (пустое значение пишет `seasons=all` и не восстанавливается из артефакта, поэтому прогон всегда с явным списком). Rolling-окна (`features.py::compute_team_rolling_features`) и as-of снэпшоты (`features.py::_snapshot_side`, `merge_asof`) группируются по `(team_id, season_id)`, а не только по `team_id` — без этого признаки первой игры нового сезона утекали статистику из прошлого. Из-за сброса окон на границе каждого сезона `apply_cold_start_policy` (train, `min_prior_games=5`) отбрасывает больше строк, чем при однолетней сборке: на 5 сезонах/6560 играх — 6049 строк (511 отброшено, а не только в начале первого сезона). Подробности и контракт — `docs/modeling_dataset_builder.md`.
