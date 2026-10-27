@@ -149,7 +149,7 @@ def body(request: Any) -> str:
 
 def rich_html(text: str) -> str:
     """HTML, в который ``bot_messages.rich_message`` превращает построчный *text* — ожидаемое
-    тело экрана в тестах (абзац на строку, таблицы — блоками)."""
+    тело экрана в тестах (блок строк — абзац, таблицы — блоками)."""
     import bot_messages
 
     return bot_messages.rich_message(text).html

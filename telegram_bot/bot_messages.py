@@ -182,7 +182,8 @@ def _table(
 
     Зачем: колонки rich-таблицы Telegram раскладывает сам по ширине экрана — без
     моноширинного `<pre>`, выравнивания пробелами и выбрасывания колонок под телефон.
-    `compact` — меньшие отступы в ячейках, `striped` — чередование строк для чтения.
+    `compact` — меньшие отступы в ячейках; `striped` (чередование строк) — только у
+    таблиц длиннее `_STRIPED_MIN_ROWS` строк.
     Таблица — одна строка текста: `rich_message()` делает её отдельным блоком.
 
     Аргументы:
@@ -203,25 +204,60 @@ def _table(
         if i == playoff_line_after:
             parts.append(f'<tr><td colspan="{len(align)}" align="center"><i>линия плей-офф</i></td></tr>')
         parts.append(row(cells, "td"))
-    return "<table compact striped>" + "".join(parts) + "</table>"
+    attrs = "compact striped" if len(body) > _STRIPED_MIN_ROWS else "compact"
+    return f"<table {attrs}>" + "".join(parts) + "</table>"
 
 
-def rich_message(text: str) -> InputRichMessage:
-    """Текст бота → rich-сообщение (Bot API 10.1): каждая непустая строка — абзац `<p>`,
-    строка-таблица (`_table`) — свой блок.
+# Полосы — только у таблиц длиннее десятка строк: на длинной они ведут глаз по строке,
+# на короткой — лишний шум (spike Задачи 88, `docs/telegram_bot.md` §«Стиль сообщений»).
+_STRIPED_MIN_ROWS = 10
 
-    Зачем: экраны бота уходят rich-сообщениями ради таблиц; в rich-HTML перевод строки —
-    пробел, как в обычном HTML, поэтому строки текста становятся абзацами. Тексты бота
-    держат HTML-теги в пределах строки (шаблоны и сборка в этом модуле), так что каждая
-    строка — законченный фрагмент разметки; иначе Telegram отвергнет сообщение.
+# Видимый зазор между абзацами: граница `<p>` в клиентах Telegram отступа не даёт,
+# а пустой `<p></p>` схлопывается (spike Задачи 88).
+_PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
-    Аргументы: `text` — построчный HTML, как его собирают функции этого модуля.
+
+def rich_message(text: str, *, footer: Optional[str] = None) -> InputRichMessage:
+    """Текст бота → rich-сообщение (Bot API 10.1): блок строк — абзац `<p>` с переносами
+    `<br>`, пустая строка — граница абзацев с видимым зазором, строка-таблица (`_table`) —
+    свой блок, `footer` — подвал `<footer>` в конце.
+
+    Зачем: в rich-HTML перевод строки — пробел, поэтому строки соединяются `<br>`;
+    пустые строки, которыми шаблоны и сборщики делят сообщение на разделы, остаются
+    зазором. Подвал — служебный хвост (ссылки на настройки): клиенты рисуют его мельче
+    и серее содержания. Тег не должен пересекать пустую строку: блоки — законченные
+    фрагменты разметки, иначе Telegram отвергнет сообщение.
+
+    Аргументы:
+        text: построчный HTML, как его собирают функции этого модуля.
+        footer: построчный HTML подвала; `None` — без подвала.
     """
-    blocks = [
-        line if line.startswith("<table") else f"<p>{line}</p>"
-        for line in text.split("\n")
-        if line.strip()
-    ]
+    blocks: List[str] = []
+    paragraph: List[str] = []
+    gap = False
+
+    def flush() -> None:
+        nonlocal gap
+        if not paragraph:
+            return
+        if gap and blocks and blocks[-1].startswith("<p>"):
+            blocks.append(_PARAGRAPH_GAP)
+        blocks.append("<p>" + "<br>".join(paragraph) + "</p>")
+        paragraph.clear()
+        gap = False
+
+    for line in text.split("\n"):
+        if line.startswith("<table"):
+            flush()
+            blocks.append(line)
+        elif line.strip():
+            paragraph.append(line)
+        else:
+            flush()
+            gap = True
+    flush()
+    if footer is not None:
+        blocks.append("<footer>" + "<br>".join(line for line in footer.split("\n") if line.strip()) + "</footer>")
     return InputRichMessage(html="".join(blocks))
 
 
@@ -2378,8 +2414,8 @@ def truncate_telegram_text(
 
     Зачем: сообщения Telegram не долетают за лимитом символов; резать нужно с
     запасом под сноску и добавлять её саму, а не отправлять оборванный текст
-    без предупреждения. Режет по границе строки: строка — абзац или таблица
-    rich-сообщения (`rich_message`), и её обрывок оставил бы незакрытый тег.
+    без предупреждения. Режет по границе строки: строка — законченный фрагмент
+    разметки rich-сообщения (`rich_message`), и её обрывок оставил бы незакрытый тег.
 
     Аргументы:
         text: исходный текст сообщения (построчный HTML).

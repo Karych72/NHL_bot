@@ -80,7 +80,7 @@ def test_table_renders_header_alignment_and_escapes_cells(bot_module):
     table = bot_messages._table([["", "Команда", "Очк"], ["1.", "A&B <Team>", "10"]], "rlr")
 
     assert table == (
-        "<table compact striped>"
+        "<table compact>"
         '<tr><th align="right"></th><th>Команда</th><th align="right">Очк</th></tr>'
         '<tr><td align="right">1.</td><td>A&amp;B &lt;Team&gt;</td><td align="right">10</td></tr>'
         "</table>"
@@ -97,16 +97,51 @@ def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module)
     assert '<td colspan="2" align="center"><i>линия плей-офф</i></td>' in table
 
 
-def test_rich_message_makes_paragraph_per_line_and_keeps_tables_as_blocks(bot_module):
-    """В rich-HTML перевод строки — пробел: каждая строка текста — свой абзац,
-    пустые строки не дают пустых абзацев, таблица — отдельный блок."""
+def test_table_stripes_only_tables_longer_than_ten_rows(bot_module):
+    """Полосы ведут глаз по длинной таблице, на короткой — шум (spike Задачи 88)."""
+    bot_messages = bot_module("bot_messages")
+
+    assert bot_messages._table([["#"]] + [["1"]] * 10, "r").startswith("<table compact><tr>")
+    assert bot_messages._table([["#"]] + [["1"]] * 11, "r").startswith("<table compact striped><tr>")
+
+
+def test_rich_message_joins_block_lines_into_one_paragraph(bot_module):
+    """В rich-HTML перевод строки — пробел: строки одного блока — один абзац через `<br>`."""
+    bot_messages = bot_module("bot_messages")
+
+    message = bot_messages.rich_message("<b>Заголовок</b>\n<i>сезон</i>\nстрока")
+
+    assert message.html == "<p><b>Заголовок</b><br><i>сезон</i><br>строка</p>"
+    assert (message.markdown, message.blocks) == (None, None)
+
+
+def test_rich_message_blank_line_splits_paragraphs_with_visible_gap(bot_module):
+    """Граница `<p>` в клиентах отступа не даёт: пустая строка (и несколько подряд) — один
+    зазор `<p>&nbsp;</p>` между абзацами; в начале и в конце текста зазора нет."""
+    bot_messages = bot_module("bot_messages")
+
+    message = bot_messages.rich_message("\nраздел 1\nещё\n\n\nраздел 2\n\n")
+
+    assert message.html == "<p>раздел 1<br>ещё</p><p>&nbsp;</p><p>раздел 2</p>"
+
+
+def test_rich_message_keeps_table_as_own_block_without_gap(bot_module):
+    """Таблица — свой блок; отступ вокруг неё клиент рисует сам, зазор не добавляется."""
     bot_messages = bot_module("bot_messages")
     table = bot_messages._table([["A"], ["1"]], "r")
 
-    message = bot_messages.rich_message(f"<b>Заголовок</b>\n<i>сезон</i>\n\n{table}\n\nИтог: /help")
+    message = bot_messages.rich_message(f"<b>Дивизион</b>\n{table}\n\nИтог: /help\n{table}\nпосле")
 
-    assert message.html == f"<p><b>Заголовок</b></p><p><i>сезон</i></p>{table}<p>Итог: /help</p>"
-    assert (message.markdown, message.blocks) == (None, None)
+    assert message.html == f"<p><b>Дивизион</b></p>{table}<p>Итог: /help</p>{table}<p>после</p>"
+
+
+def test_rich_message_puts_footer_last(bot_module):
+    """Служебный хвост — `<footer>` в конце: клиенты рисуют его мельче и серее текста."""
+    bot_messages = bot_module("bot_messages")
+
+    message = bot_messages.rich_message("Счёт\n\n", footer="Настроить: /subscriptions\nданные на 27.10")
+
+    assert message.html == "<p>Счёт</p><footer>Настроить: /subscriptions<br>данные на 27.10</footer>"
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ TelegramBadRequest handling — is isolated from database access.
 """
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -1128,7 +1129,7 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
         "1. <b>H1 1:0 A1</b>\n  1:0, 0:0, 0:0\n\n"
         "2. <b>H2 1:0 A2</b>\n  1:0, 0:0, 0:0\n\n"
         "3. <b>H3 1:0 A3</b>"
-    ) in body(summary)
+    ).removesuffix("</p>") + "<br>" in body(summary)
     assert "Кнопка матча — полная карточка и видео голов." in body(summary)
     rows = summary.reply_markup.inline_keyboard
     assert [len(r) for r in rows] == [3, 1]
@@ -1183,8 +1184,9 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
     sent_text = body(api.sent_rich[0])
-    # Лимит rich-сообщения — на текст, а не на разметку: теги `<p>` не считаются.
-    assert len(re.sub(r"</?p>", "", sent_text)) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
+    # Лимит rich-сообщения — на текст, а не на разметку: теги не считаются, сущность — один символ.
+    plain = html.unescape(re.sub(r"<[^>]+>", "", sent_text))
+    assert len(plain) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
     assert sent_text.count("<p>") <= 500, "лимит Telegram — 500 блоков"
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None

@@ -441,7 +441,7 @@ async def _send_country_game(
     ошибка в лог и одна повторная отправка с загрузкой клипов заново.
 
     Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — построчный HTML сообщения
-    (уходит rich-сообщением, ``rich_message``);
+    (уходит rich-сообщением, ``rich_message``, с подвалом ``SUBSCRIPTIONS_FOOTER``);
     ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов стран в
     матче, каждый один раз.
     """
@@ -452,7 +452,8 @@ async def _send_country_game(
     )
     await _throttled(
         lambda: bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(text), reply_markup=card_button
+            chat_id=chat_id, rich_message=rich_message(text, footer=SUBSCRIPTIONS_FOOTER),
+            reply_markup=card_button,
         ),
         chat_id,
     )
@@ -569,7 +570,7 @@ async def run_game_broadcast(
                         partial(
                             bot.send_rich_message,
                             chat_id=chat_id,
-                            rich_message=rich_message(f"{head}\n\n{text}{blocks}\n\n{SUBSCRIPTIONS_FOOTER}"),
+                            rich_message=rich_message(f"{head}\n\n{text}{blocks}", footer=SUBSCRIPTIONS_FOOTER),
                             reply_markup=goal_video_markup(goals_meta),
                         ),
                         chat_id,
@@ -581,7 +582,7 @@ async def run_game_broadcast(
                     await _send_country_game(
                         bot,
                         chat_id,
-                        f"{head}\n\n{score_lines[game_id]}{blocks}\n\n{SUBSCRIPTIONS_FOOTER}",
+                        f"{head}\n\n{score_lines[game_id]}{blocks}",
                         game_id,
                         [goal for goal, nationality in goals[game_id] if nationality in countries],
                     )
@@ -649,10 +650,13 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
                 f"⏰ <b>Начало в {start.astimezone(MSK):%H:%M} МСК</b>\n"
                 + matchup_season_preview(game_id, away, home)
             )
-        text = f"{previews[game_id]}\n\n{SUBSCRIPTIONS_FOOTER}"
         try:
             await _throttled(
-                partial(bot.send_rich_message, chat_id=chat_id, rich_message=rich_message(text)),
+                partial(
+                    bot.send_rich_message,
+                    chat_id=chat_id,
+                    rich_message=rich_message(previews[game_id], footer=SUBSCRIPTIONS_FOOTER),
+                ),
                 chat_id,
             )
         except TelegramForbiddenError:

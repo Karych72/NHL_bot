@@ -99,7 +99,7 @@ async def test_standings_command_renders_divisions_with_ranked_rows_sorted_by_po
     assert all(row in text for row in rows)
     assert [text.index(row) for row in rows] == sorted(text.index(row) for row in rows)
     assert (
-        '<table compact striped><tr><th align="right"></th><th>Команда</th>'
+        '<table compact><tr><th align="right"></th><th>Команда</th>'
         '<th align="right">Очк</th><th align="right">Игр</th><th align="right">%очк</th></tr>'
     ) in text
     assert reply.reply_markup is None, "у /standings вне диалога клавиатуры нет"
@@ -175,7 +175,7 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
     assert "<p><b>Топ бомбардиров</b>" in text
     assert "<i>Показаны 1–10 из 25 строк.</i>" in text
     assert (
-        '<table compact striped><tr><th align="right"></th><th>Игрок</th><th>Ком</th>'
+        '<table compact><tr><th align="right"></th><th>Игрок</th><th>Ком</th>'
         '<th align="right">Очки</th><th align="right">И</th><th align="right">Смен</th></tr>'
     ) in text
     assert _tr("rllrrr", "1.", "Player01 [C]", "NYR", "99", "82", "1501") in text
@@ -328,8 +328,9 @@ async def test_game_card_renders_full_card(
     # Шесть разных запросов, по разу; подписки чата — ради блока страны (Задача 76).
     assert len(cursor.executed) == 6
     # Формы до матча в итоге матча нет (Задача 84) — голы сразу под периодами.
-    assert rich_html(
-        "🏒 <b>NYR 3:2 BOS</b>\n<i>Периоды: 1:0, 1:1, 1:1</i>\n\n<b>1-й период</b>"
+    assert (
+        "<p>🏒 <b>NYR 3:2 BOS</b><br><i>Периоды: 1:0, 1:1, 1:1</i></p><p>&nbsp;</p>"
+        "<p><b>1-й период</b><br>"
     ) in text
     assert "Форма" not in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
@@ -353,18 +354,17 @@ async def test_game_card_renders_full_card(
         "18:03 · 3:2 — PANARIN [LW] (ПШ)\n"
         "\n"
         "<b>Броски</b>: 31 - 27"
-    ) in text
+    ).removesuffix("</p>") + "<br>" in text, "броски открывают раздел итогов матча"
     assert "<b>Броски</b>: 31 - 27" in text
     assert "<b>Штрафное время</b>: 8 - 6" in text
-    assert rich_html(
+    assert "<br>" + rich_html(
         "<b>Вратари</b>\nShesterkin — 25/27, 92.59%, 60:00\n"
         "Swayman — 28/31, 90.32%, 60:00"
-    ) in text
-    assert "<p><b>Звёзды матча</b></p>" in text
-    assert "<p>★1 Panarin (NYR) — 2+1</p>" in text
-    assert "<p>★2 Shesterkin (NYR) — 25/27, 92.59%</p>" in text
-    assert "<p>★3 Marchand (BOS) — 1+0</p>" in text
-    assert text.endswith("<p>★3 Marchand (BOS) — 1+0</p>"), "без подписки на страну блока страны нет"
+    ).removeprefix("<p>") in text, "вратари — в разделе итогов, после штрафов"
+    assert text.endswith(
+        "<p><b>Звёзды матча</b><br>★1 Panarin (NYR) — 2+1<br>"
+        "★2 Shesterkin (NYR) — 25/27, 92.59%<br>★3 Marchand (BOS) — 1+0</p>"
+    ), "без подписки на страну блока страны нет"
 
 
 @pytest.mark.asyncio
@@ -386,12 +386,12 @@ async def test_game_card_of_country_subscriber_ends_with_country_block(
     await bot.cmd_start(message, fake_bot, _start_command(f"game_{GAME_ONE}"))
 
     (sent,) = api.sent_rich
-    assert body(sent).endswith(rich_html(
+    assert body(sent).endswith("<br>" + rich_html(
         "★3 Marchand (BOS) — 1+0\n\n"
         "<b>🇷🇺 Россия</b>\n\n"
         "<b>Panarin</b> (NYR)\n"
         "2+1 · +2 · 5 бр. · 0 хитов · 20:15"
-    ))
+    ).removeprefix("<p>")), "блок страны — после звёзд матча, отдельным разделом"
     block_queries = [p for q, p in cursor.executed if "r.nationality" in q]
     assert block_queries == [(GAME_ONE, "RUS")] * 2, "блок — по этому матчу и этой стране"
 
@@ -655,7 +655,7 @@ async def test_standings_command_on_partial_season_shows_only_teams_with_games(
     # каждый дивизион без единой сыгранной игры несёт текст-причину, а не
     # заголовки пустой таблицы.
     assert "<p><b>WESTERN CONFERENCE</b></p>" in text
-    assert "<p><b>CENTRAL DIVISION</b></p>" in text
+    assert "<p><b>CENTRAL DIVISION</b><br>(в дивизионе ещё никто не сыграл)</p>" in text
     # Ровно два пустых дивизиона (Central и Pacific) — оба западных, оба с
     # текстом-причиной, ни одного лишнего или пропущенного.
     assert text.count("(в дивизионе ещё никто не сыграл)") == 2
@@ -815,7 +815,7 @@ async def test_team_submenu_conference_button_renders_summary_and_back_to_team_s
     assert "<b>Сводка по конференциям</b>" in text
     # Rich-таблица: шапка и по строке на конференцию, легенда сокращений под ней.
     assert (
-        '<table compact striped><tr><th></th><th align="right">Ком</th>'
+        '<table compact><tr><th></th><th align="right">Ком</th>'
         '<th align="right">О</th><th align="right">Г/и</th><th align="right">Бол</th>'
         '<th align="right">Мен</th></tr>'
         + _tr("lrrrrr", "Eastern", "16", "55.2", "3.1", "21.5%", "79.5%")
@@ -990,7 +990,7 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     # Бомбардиры — в порядке выдачи БД (по очкам), rich-таблицей.
     assert (
         "<p><b>Бомбардиры</b></p>"
-        '<table compact striped><tr><th></th><th>Игрок</th><th align="right">И</th>'
+        '<table compact><tr><th></th><th>Игрок</th><th align="right">И</th>'
         '<th align="right">Г</th><th align="right">П</th><th align="right">О</th></tr>'
         + _tr("llrrrr", "1.", "Ovechkin [L]", "17", "38", "4", "42")
         + _tr("llrrrr", "2.", "Backstrom [C]", "17", "10", "20", "30")
@@ -999,7 +999,7 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     ) in text
     assert (
         "<p><b>Игровое время</b></p>"
-        '<table compact striped><tr><th></th><th>Игрок</th><th align="right">И</th>'
+        '<table compact><tr><th></th><th>Игрок</th><th align="right">И</th>'
         '<th align="right">ВП</th></tr>'
         + _tr("llrr", "1.", "Carlson [D]", "16", "24:31")
         + _tr("llrr", "2.", "Ovechkin [L]", "17", "19:05")
@@ -1008,12 +1008,12 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     ) in text
     assert (
         "<p><b>Вратари</b></p>"
-        '<table compact striped><tr><th>Вратарь</th><th align="right">И</th>'
+        '<table compact><tr><th>Вратарь</th><th align="right">И</th>'
         '<th align="right">В-П-ОТ</th><th align="right">%ОБ</th><th align="right">КН</th></tr>'
         + _tr("lrrrr", "Samsonov", "15", "9-4-2", "91.5%", "2.6")
         + "</table>"
     ) in text
-    assert "<p>Все игроки: /WSH_FULL</p>" in text
+    assert text.endswith("<br>Все игроки: /WSH_FULL</p>")
     assert _callback_data(edited.reply_markup) == [
         str(dialog_states.TEAM_PROFILE_PICK),
         str(dialog_states.CHOOSE_STATS),
@@ -1109,7 +1109,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     # Без колонок места и команды: игрок и показатели.
     assert (
         "<p><b>Нападающие</b></p>"
-        '<table compact striped><tr><th>Игрок</th><th align="right">Г</th>'
+        '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
         '<th align="right">Хит</th><th align="right">Бр</th></tr>'
         + _tr("lrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120")
@@ -1120,7 +1120,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     ) in text
     assert (
         "<p><b>Защитники</b></p>"
-        '<table compact striped><tr><th>Игрок</th><th align="right">Г</th>'
+        '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
         '<th align="right">Хит</th><th align="right">Бл</th></tr>'
         + _tr("lrrrrrr", "Carlson", "5", "25", "16", "24:31", "20", "33")
@@ -1128,7 +1128,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     ) in text
     assert (
         "<p><b>Вратари</b></p>"
-        '<table compact striped><tr><th>Вратарь</th><th align="right">В</th>'
+        '<table compact><tr><th>Вратарь</th><th align="right">В</th>'
         '<th align="right">%ОБ</th><th align="right">КН</th><th align="right">И</th>'
         '<th align="right">Сух</th></tr>'
         + _tr("lrrrrr", "Samsonov", "9", "91.5%", "2.6", "15", "1")
