@@ -166,7 +166,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
         self.assertIn("BOS", text)
-        self.assertIn("<table compact striped>", text)
+        self.assertIn("<table compact>", text)
         self.assertNotIn("<pre>", text)
         self.assertIn(
             '<tr><td align="right">1.</td><td>BOS</td><td align="right">110</td>'

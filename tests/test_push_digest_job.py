@@ -465,7 +465,8 @@ def _order(api):
 
 
 GAME_A, GAME_B = 2026020001, 2026020002
-FOOTER = "\n\nНастроить подписки: /subscriptions"
+# Подвал рассылок — `<footer>` после тела сообщения (Задача 88).
+FOOTER = "<footer>Настроить подписки: /subscriptions</footer>"
 RUS_HEAD = "🔔 По подписке: 🇷🇺 Россия"
 
 
@@ -584,8 +585,8 @@ async def test_country_game_is_short_text_with_card_button_then_goal_album(push_
     assert api.sent_messages == [], "тексты матчей уходят rich-сообщениями"
     messages = api.sent_rich
     assert [m.rich_message.html for m in messages[:2]] == [
-        rich_html(f"{RUS_HEAD}\n\nSCORE {GAME_A}\n\nBLOCK A" + FOOTER),
-        rich_html(f"{RUS_HEAD}\n\nSCORE {GAME_B}\n\nBLOCK B" + FOOTER),
+        rich_html(f"{RUS_HEAD}\n\nSCORE {GAME_A}\n\nBLOCK A") + FOOTER,
+        rich_html(f"{RUS_HEAD}\n\nSCORE {GAME_B}\n\nBLOCK B") + FOOTER,
     ]
     buttons = [m.reply_markup.inline_keyboard for m in messages[:2]]
     assert [[(b.text, b.callback_data) for row in kb for b in row] for kb in buttons] == [
@@ -834,8 +835,8 @@ async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(pu
     [card] = push_env.api.outgoing
     assert card.rich_message.html == rich_html(
         f"🔔 По подписке: TOR · BOS · 🇧🇾 Беларусь · 🇷🇺 Россия\n\nCARD {GAME_A}"
-        "\n\nBLR BLOCK\n\nRUS BLOCK" + FOOTER
-    )
+        "\n\nBLR BLOCK\n\nRUS BLOCK"
+    ) + FOOTER
     assert [b.callback_data for row in card.reply_markup.inline_keyboard for b in row] == [
         f"gv:{GAME_A}:100", f"gv:{GAME_A}:101", f"gv:{GAME_A}:102",
     ]
@@ -887,8 +888,8 @@ async def test_subscriber_of_two_countries_gets_one_short_message_and_each_clip_
     assert _order(push_env.api) == [("message", 111), ("album", 111)]
     [message] = push_env.api.sent_rich
     assert message.rich_message.html == rich_html(
-        f"🔔 По подписке: 🇧🇾 Беларусь · 🇷🇺 Россия\n\nSCORE {GAME_A}\n\nBLR BLOCK\n\nRUS BLOCK" + FOOTER
-    )
+        f"🔔 По подписке: 🇧🇾 Беларусь · 🇷🇺 Россия\n\nSCORE {GAME_A}\n\nBLR BLOCK\n\nRUS BLOCK"
+    ) + FOOTER
     [album] = push_env.api.sent(SendMediaGroup)
     assert [m.media.filename for m in album.media] == ["100.mp4", "102.mp4"]
     assert push_env.downloads == [(GAME_A, 100), (GAME_A, 102)]
@@ -1005,9 +1006,9 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
         await upcoming_env.run(fake_bot, datetime(2026, 10, 24, hour, minute, tzinfo=UTC))
         by_slot.append([(m.chat_id, m.rich_message.html) for m in api.sent_rich[before:]])
 
-    a = rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER)
-    b = rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)
-    c = rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)
+    a = rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR") + FOOTER
+    b = rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL") + FOOTER
+    c = rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA") + FOOTER
     assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
     assert api.sent_messages == [], "превью уходят rich-сообщениями"
     assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
@@ -1021,14 +1022,14 @@ async def test_upcoming_next_game_is_per_subscriber(push_job, upcoming_env, fake
     upcoming_env.sent = {(20, GAME_A)}
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [
-        (111, rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR" + FOOTER)),
-        (222, rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)),
+        (111, rich_html("⏰ <b>Начало в 02:00 МСК</b>\nPREVIEW BOS @ TOR") + FOOTER),
+        (222, rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL") + FOOTER),
     ]
 
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 23, 40, tzinfo=UTC))
     assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich[2:]] == [
-        (111, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)),
-        (222, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA" + FOOTER)),
+        (111, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA") + FOOTER),
+        (222, rich_html("⏰ <b>Начало в 05:00 МСК</b>\nPREVIEW VAN @ SEA") + FOOTER),
     ]
 
 
@@ -1069,7 +1070,7 @@ async def test_upcoming_send_error_moves_on_to_next_game(push_job, upcoming_env,
 
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
     assert [m.rich_message.html for m in api.sent_rich] == [
-        rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL" + FOOTER)
+        rich_html("⏰ <b>Начало в 02:30 МСК</b>\nPREVIEW NYR @ MTL") + FOOTER
     ]
     assert upcoming_env.deactivated == []
 
