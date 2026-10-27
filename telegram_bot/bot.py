@@ -1,6 +1,6 @@
 """Точка входа Telegram-бота: сборка `Dispatcher` aiogram и регистрация хендлеров.
 
-Роль в пайплайне: `bot.py` собирает aiogram 3 `Dispatcher` из трёх роутеров —
+Роль в пайплайне: `bot.py` собирает `Dispatcher` aiogram 3.31 из трёх роутеров —
 standalone-команды и кнопки, диалог `/stats` (FSM `dialog_states.StatsMenu`),
 хвост (`/cancel` вне диалога и свободный текст), — вешает троттлинг нажатий
 (`throttle.py`) и запускает long polling. Сами обработчики живут в `script_bot.py`
