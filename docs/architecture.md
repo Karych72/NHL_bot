@@ -61,7 +61,9 @@ NHL_bot/
 │       ├── 0011_upcoming_games.up.sql   # Подписка «Предстоящие матчи»; отметка матча — общая bot_game_sent (Задача 78)
 │       ├── 0011_upcoming_games.down.sql
 │       ├── 0012_ai_questions.up.sql     # Журнал вопросов к модели и список текущих пользователей для лимита (Задача 81)
-│       └── 0012_ai_questions.down.sql
+│       ├── 0012_ai_questions.down.sql
+│       ├── 0013_goal_clips.up.sql       # Кэш клипов голов: file_id Telegram и подпись по голу (Задача 87)
+│       └── 0013_goal_clips.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -411,7 +413,8 @@ polling, таймаут сессии 300 с ради альбомов видео
 Единственный event loop обслуживает и polling, и обработчики, поэтому блокирующая
 работа выносится в поток: скачивание MP4 + два прохода ffmpeg
 (`video_replay.download_goal_video`, до ~2 минут) вызывается из `stats_handlers`
-через `asyncio.to_thread`, как и `nhl_scoreboard.fetch_score` (`/tonight`). Запросы psycopg2
+через `asyncio.to_thread` — только для клипа, которого ещё нет в кэше `bot_goal_clips` (Задача 87),
+как и `nhl_scoreboard.fetch_score` (`/tonight`). Запросы psycopg2
 пока идут в loop'е синхронно.
 
 ### Троттлинг callback-кнопок: `throttle.py`
