@@ -163,7 +163,7 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
 
     await bot.cmd_leaders(make_message("/leaders"), fake_bot)
     (menu,) = api.sent_rich
-    assert "Лидеры сезона" in body(menu)
+    assert body(menu).startswith("<p><b>Лидеры сезона</b><br>Выберите категорию:</p><footer>Сезон ")
     points_button = _flat_buttons(menu.reply_markup)[0]
     match = re.match(stats_handlers.LEADERS_PICK_CALLBACK_PATTERN, points_button.callback_data)
     assert match
@@ -172,8 +172,9 @@ async def test_leaders_first_page_shows_ranks_one_to_ten_and_only_next_button(
 
     (edited,) = api.edited_texts
     text = body(edited)
-    assert "<p><b>Топ бомбардиров</b>" in text
-    assert "<i>Показаны 1–10 из 25 строк.</i>" in text
+    # Заголовок — одна строка, сезон и маркер страницы — подвал.
+    assert text.startswith("<p><b>Топ бомбардиров</b></p><table")
+    assert text.endswith(" · <i>Показаны 1–10 из 25 строк.</i></footer>")
     assert (
         '<table compact><tr><th align="right"></th><th>Игрок</th><th>Ком</th>'
         '<th align="right">Очки</th><th align="right">И</th><th align="right">Смен</th></tr>'
@@ -981,7 +982,8 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
     (edited,) = api.edited_texts
     text = body(edited)
     assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
-    assert "<b>Washington Capitals</b> (WSH) · сезон" in text
+    # Заголовок — одна строка, сезон — в подвале.
+    assert text.startswith("<p><b>Washington Capitals</b> (WSH)<br>")
     assert "Metropolitan: 2-е место · Eastern: 3-е · лига: 4-е из 4 сыгравших" in text
     assert "Игр: 17 · 10-5-2, 22 очка (64.71%)" in text
     assert "Форма (5 игр, W-L-OTL): 3-2-0 · серия W3" in text
@@ -1013,7 +1015,8 @@ async def test_team_profile_abbreviation_button_shows_places_scorers_and_goalies
         + _tr("lrrrr", "Samsonov", "15", "9-4-2", "91.5%", "2.6")
         + "</table>"
     ) in text
-    assert text.endswith("<br>Все игроки: /WSH_FULL</p>")
+    assert "<details><summary>Обозначения</summary><p>И — игры" in text
+    assert text.endswith(" · все игроки: /WSH_FULL · все команды: /team</footer>")
     assert _callback_data(edited.reply_markup) == [
         str(dialog_states.TEAM_PROFILE_PICK),
         str(dialog_states.CHOOSE_STATS),
@@ -1064,7 +1067,7 @@ async def test_team_abbreviation_command_replies_with_profile_and_link_to_team_l
     bot_module, fake_db_router, make_message, api
 ):
     """`/wsh`: аббревиатуру берёт regex-хендлер (`match`), в профиль она уходит
-    в верхнем регистре; в конце — ссылка на список команд."""
+    в верхнем регистре; в подвале — ссылка на список команд."""
     bot = bot_module("bot")
     cursor = fake_db_router(_PROFILE_ROUTES)
     message = make_message("/wsh")
@@ -1074,7 +1077,7 @@ async def test_team_abbreviation_command_replies_with_profile_and_link_to_team_l
 
     (reply,) = api.sent_rich
     assert "<b>Washington Capitals</b> (WSH)" in body(reply)
-    assert body(reply).endswith("<p>Все команды: /team</p>")
+    assert body(reply).endswith("все команды: /team</footer>")
     team_id_query = next(q for q in cursor.executed if "SELECT team_id FROM teams" in q[0])
     assert "WSH" in team_id_query[1]
 
@@ -1085,7 +1088,8 @@ async def test_team_full_command_lists_every_skater_and_goalie(
 ):
     """`/WSH_FULL` из конца профиля: тот же regex-хендлер; нападающие,
     защитники и вратари отдельными таблицами с колонками экрана страны, полный
-    список без LIMIT (параметр `None`); ссылка назад на профиль."""
+    список без LIMIT (параметр `None`); легенды групп — свёрнутым блоком, ссылка
+    назад на профиль — в подвале."""
     bot = bot_module("bot")
     cursor = fake_db_router([
         ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
@@ -1115,8 +1119,6 @@ async def test_team_full_command_lists_every_skater_and_goalie(
         + _tr("lrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120")
         + _tr("lrrrrrr", "Backstrom", "10", "30", "17", "17:40", "8", "40")
         + "</table>"
-        "<p><i>Г — голы, О — очки, И — игры, ВП — время на льду за игру, Хит — силовые, "
-        "Бр — броски.</i></p>"
     ) in text
     assert (
         "<p><b>Защитники</b></p>"
@@ -1135,7 +1137,10 @@ async def test_team_full_command_lists_every_skater_and_goalie(
         + "</table>"
     ) in text
     assert text.index("Нападающие") < text.index("Защитники") < text.index("Вратари")
-    assert "<p>Профиль клуба: /WSH</p>" in text
+    legend = text.split("<details><summary>Обозначения</summary>", 1)[1].split("</details>", 1)[0]
+    assert legend.startswith("<p>Нападающие: Г — голы, О — очки")
+    assert "<br>Защитники: " in legend and "<br>Вратари: В — победы" in legend
+    assert text.endswith(" · профиль клуба: /WSH · все команды: /team</footer>")
     group_queries = [q for q in cursor.executed if "r.current_team_id = %s" in q[0]]
     assert len(group_queries) == 3
     # Игроки клуба — по team_id параметром, полный список — без LIMIT.
@@ -1225,8 +1230,12 @@ async def test_countries_command_lists_countries_with_buttons(
     await bot.cmd_countries(message, fake_bot)
 
     (reply,) = api.sent_rich
-    assert _tr("rlrrrr", "1.", "🇨🇦 Канада", "5", "100", "40", "20.0") in body(reply)
-    assert "Страна не указана в данных NHL у игроков: 2 (не учтены)" in body(reply)
+    text = body(reply)
+    # Флаг — только на кнопке: эмодзи в ячейках таблиц не ставим.
+    assert _tr("rlrrrr", "1.", "Канада", "5", "100", "40", "20.0") in text
+    assert text.startswith("<p><b>Рейтинг стран</b></p><table")
+    assert "<details><summary>Обозначения</summary><p>Полевые игроки;" in text
+    assert text.endswith("<br>Страна не указана в данных NHL у игроков: 2 (не учтены).</footer>")
     assert [(b.text, b.callback_data) for b in _flat_buttons(reply.reply_markup)] == [
         ("🇨🇦 Канада", "cn:CAN:F:0"),
         ("🇺🇸 США", "cn:USA:F:0"),
@@ -1261,7 +1270,10 @@ async def test_country_page_pages_and_switches_groups(
     await stats_handlers.callback_country(callback, match)
 
     (edited,) = api.edited_texts
-    assert "<b>Защитники: 🇨🇦 Канада</b>" in body(edited)
+    text = body(edited)
+    assert text.startswith("<p><b>🇨🇦 Канада: защитники</b></p><table")
+    assert "<details><summary>Обозначения</summary><p>Г — голы" in text
+    assert text.endswith(" · <i>Показаны 11 из 25 строк.</i></footer>")
     # Все колонки на месте, включая время и силовые.
     assert _tr(
         "rllrrrrrr", "11.", "McDavid", "EDM", "30", "90", "70", "21:30", "40", "30"
