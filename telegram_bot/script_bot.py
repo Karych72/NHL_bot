@@ -1,15 +1,18 @@
 """Inline-меню навигации диалога `/stats`.
 
 Роль в пайплайне: рисует корневое меню и подменю (команды, полевые игроки,
-вратари, расширенная статистика, выбор даты дайджеста) и возвращает следующее
-состояние FSM для `ConversationHandler`, собранного в `bot.py`. Сами выборки
-из БД живут в `stats_handlers.py`.
+вратари, расширенная статистика, выбор даты дайджеста) и переводит диалог в
+следующее состояние FSM (`dialog_states.StatsMenu`); карту «состояние → хендлеры»
+собирает `bot.build_stats_router`. Сами выборки из БД живут в `stats_handlers.py`.
 """
 
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackContext, ConversationHandler
+from aiogram import Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from bot_messages import rich_message
 
 from dialog_states import (
     CHOOSE_STATS,
@@ -17,7 +20,6 @@ from dialog_states import (
     DIGEST_CALENDAR_TODAY,
     DIGEST_CALENDAR_YESTERDAY,
     DIGEST_PICK_DATE,
-    FIRST,
     GOALIE_PERCENTAGE,
     GOALIE_SHOOTOUTS,
     GOALIE_WINS,
@@ -54,7 +56,9 @@ from dialog_states import (
     TEAM_PROCENT_WINS,
     TEAM_PROFILE_PICK,
     TEAM_STATS,
+    StatsMenu,
     build_menu,
+    callback_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,69 +79,53 @@ def stats_main_keyboard_rows() -> list:
     ведут в своё подменю; «Турнирная таблица» шлёт готовую таблицу отдельным
     сообщением (`bot_league_standings` в `stats_handlers.py`)."""
     return [
-        InlineKeyboardButton("Статистика дня", callback_data=str(DAY_DIGEST)),
-        InlineKeyboardButton("Турнирная таблица", callback_data=str(LEAGUE_STANDINGS)),
-        InlineKeyboardButton("Статистика игроков", callback_data=str(PLAYER_STATS)),
-        InlineKeyboardButton("Статистика команд", callback_data=str(TEAM_STATS)),
+        InlineKeyboardButton(text="Статистика дня", callback_data=str(DAY_DIGEST)),
+        InlineKeyboardButton(text="Турнирная таблица", callback_data=str(LEAGUE_STANDINGS)),
+        InlineKeyboardButton(text="Статистика игроков", callback_data=str(PLAYER_STATS)),
+        InlineKeyboardButton(text="Статистика команд", callback_data=str(TEAM_STATS)),
     ]
 
 
 def stats_main_markup() -> InlineKeyboardMarkup:
     """Оборачивает `stats_main_keyboard_rows` в клавиатуру из одной колонки —
     общий вид корневого меню для `/stats`, `stats_root_edit` и `stats_over`."""
-    return InlineKeyboardMarkup(build_menu(stats_main_keyboard_rows(), n_cols=1))
+    return InlineKeyboardMarkup(inline_keyboard=build_menu(stats_main_keyboard_rows(), n_cols=1))
 
 
-async def stats_root_edit(update: Update, context: CallbackContext) -> int:
+async def stats_root_edit(callback: CallbackQuery, state: FSMContext) -> None:
     """Главное меню тем же сообщением (редактирование текста кнопки)."""
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
-    await query.edit_message_text(
-        text=STATS_MENU_INTRO,
-        reply_markup=stats_main_markup(),
-        parse_mode="HTML",
+    await callback.answer()
+    await callback_message(callback).edit_text(
+        rich_message=rich_message(STATS_MENU_INTRO), reply_markup=stats_main_markup(),
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def stats(update: Update, context: CallbackContext) -> int:
-    """Вызывается по команде `/stats`."""
-    message = update.message
-    assert message is not None
-    sent = await message.reply_text(
-        text=STATS_MENU_INTRO,
-        reply_markup=stats_main_markup(),
-        parse_mode="HTML",
-    )
-    # Новое сообщение (`reply_text`, не `edit_message_text`): id записывается,
-    # чтобы /cancel мог снять клавиатуру, если диалог оборвётся до «Готово».
-    # Все последующие экраны FIRST/SECOND/THIRD правят этот же message_id
-    # через edit_message_text — записывать его повторно не нужно.
-    assert context.user_data is not None
-    context.user_data[LAST_MENU_MESSAGE_ID_KEY] = sent.message_id
+async def stats(message: Message, state: FSMContext) -> None:
+    """Вызывается по команде `/stats` — в любом состоянии, в том числе вне диалога."""
+    sent = await message.answer_rich(rich_message(STATS_MENU_INTRO), reply_markup=stats_main_markup())
+    # Новое сообщение (`answer`, не `edit_text`): id записывается, чтобы /cancel мог
+    # снять клавиатуру, если диалог оборвётся до «Готово». Все последующие экраны
+    # диалога правят этот же message_id через edit_text — записывать его повторно не нужно.
+    await state.update_data({LAST_MENU_MESSAGE_ID_KEY: sent.message_id})
     assert message.from_user is not None
     logger.info("User %s started /stats", message.from_user.first_name)
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def stats_over(update: Update, context: CallbackContext) -> int:
+async def stats_over(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Главное меню новым сообщением — предыдущий контент (статы/дайджест) остаётся в чате."""
-    query = update.callback_query
-    assert query is not None and query.message is not None
-    await query.answer()
-    sent = await context.bot.send_message(
-        chat_id=query.message.chat.id,
-        text=STATS_MENU_INTRO,
+    await callback.answer()
+    sent = await bot.send_rich_message(
+        chat_id=callback_message(callback).chat.id,
+        rich_message=rich_message(STATS_MENU_INTRO),
         reply_markup=stats_main_markup(),
-        parse_mode="HTML",
     )
-    assert context.user_data is not None
-    context.user_data[LAST_MENU_MESSAGE_ID_KEY] = sent.message_id
-    return FIRST
+    await state.update_data({LAST_MENU_MESSAGE_ID_KEY: sent.message_id})
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_team_stats(update: Update, context: CallbackContext) -> int:
+async def bot_team_stats(callback: CallbackQuery, state: FSMContext) -> None:
     """Подменю статистики команд: % набранных очков, большинство, меньшинство,
     сводки по конференциям/дивизионам, профиль команды.
 
@@ -145,174 +133,147 @@ async def bot_team_stats(update: Update, context: CallbackContext) -> int:
     TEAM_POWER_KILL/TEAM_CONFERENCE_STATS/TEAM_DIVISION_STATS/
     TEAM_PROFILE_PICK), «« Назад»» ведёт в корень меню (CHOOSE_STATS).
     """
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Статистика процент набранных очков", callback_data=str(TEAM_PROCENT_WINS)),
-        InlineKeyboardButton("Статистика большинства", callback_data=str(TEAM_POWER_PLAY)),
-        InlineKeyboardButton("Статистика меньшинства", callback_data=str(TEAM_POWER_KILL)),
-        InlineKeyboardButton("По конференциям", callback_data=str(TEAM_CONFERENCE_STATS)),
-        InlineKeyboardButton("По дивизионам", callback_data=str(TEAM_DIVISION_STATS)),
-        InlineKeyboardButton("Профиль команды", callback_data=str(TEAM_PROFILE_PICK)),
+        InlineKeyboardButton(text="Статистика процент набранных очков", callback_data=str(TEAM_PROCENT_WINS)),
+        InlineKeyboardButton(text="Статистика большинства", callback_data=str(TEAM_POWER_PLAY)),
+        InlineKeyboardButton(text="Статистика меньшинства", callback_data=str(TEAM_POWER_KILL)),
+        InlineKeyboardButton(text="По конференциям", callback_data=str(TEAM_CONFERENCE_STATS)),
+        InlineKeyboardButton(text="По дивизионам", callback_data=str(TEAM_DIVISION_STATS)),
+        InlineKeyboardButton(text="Профиль команды", callback_data=str(TEAM_PROFILE_PICK)),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=str(CHOOSE_STATS))]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=str(CHOOSE_STATS))]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text="Выберите статистику", reply_markup=reply_markup
+    await callback_message(callback).edit_text(
+        rich_message=rich_message("Выберите статистику"), reply_markup=reply_markup
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_player_stats(update: Update, context: CallbackContext) -> int:
+async def bot_player_stats(callback: CallbackQuery, state: FSMContext) -> None:
     """Выбор типа игроков: полевые (PLAYER_FIELD) или вратари (PLAYER_GOALIE).
     «« Назад»» ведёт в корень меню (CHOOSE_STATS). Страны — команда /countries."""
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Статистика полевых игроков", callback_data=str(PLAYER_FIELD)),
-        InlineKeyboardButton("Статистика вратарей", callback_data=str(PLAYER_GOALIE)),
+        InlineKeyboardButton(text="Статистика полевых игроков", callback_data=str(PLAYER_FIELD)),
+        InlineKeyboardButton(text="Статистика вратарей", callback_data=str(PLAYER_GOALIE)),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=str(CHOOSE_STATS))]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=str(CHOOSE_STATS))]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text="Выберите тип игроков", reply_markup=reply_markup
+    await callback_message(callback).edit_text(
+        rich_message=rich_message("Выберите тип игроков"), reply_markup=reply_markup
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_player_field(update: Update, context: CallbackContext) -> int:
+async def bot_player_field(callback: CallbackQuery, state: FSMContext) -> None:
     """Подменю лидеров среди полевых игроков (очки, голы, ассисты, хиты,
     +-, время на льду, штраф, блоки) плюс переход в расширенную статистику
     (PLAYER_ADVANCED_SUBMENU). «« Назад»» ведёт на выбор типа игроков (NAV_PLAYERS).
     """
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Лидеры по очкам", callback_data=str(PLAYER_POINTS)),
-        InlineKeyboardButton("Лидеры по голам", callback_data=str(PLAYER_GOALS)),
-        InlineKeyboardButton("Лидеры по ассистам", callback_data=str(PLAYER_ASSISTS)),
-        InlineKeyboardButton("Лидеры по хитам", callback_data=str(PLAYER_HITS)),
-        InlineKeyboardButton("Лидеры по показателю +-", callback_data=str(PLAYER_PLUS_MINUS)),
-        InlineKeyboardButton("Лидеры по игровому времени", callback_data=str(PLAYER_ICE_TIME)),
-        InlineKeyboardButton("Лидеры по штрафу", callback_data=str(PLAYER_PENALTIES)),
-        InlineKeyboardButton("Лидеры по блокам", callback_data=str(PLAYER_BLOCKS)),
+        InlineKeyboardButton(text="Лидеры по очкам", callback_data=str(PLAYER_POINTS)),
+        InlineKeyboardButton(text="Лидеры по голам", callback_data=str(PLAYER_GOALS)),
+        InlineKeyboardButton(text="Лидеры по ассистам", callback_data=str(PLAYER_ASSISTS)),
+        InlineKeyboardButton(text="Лидеры по хитам", callback_data=str(PLAYER_HITS)),
+        InlineKeyboardButton(text="Лидеры по показателю +-", callback_data=str(PLAYER_PLUS_MINUS)),
+        InlineKeyboardButton(text="Лидеры по игровому времени", callback_data=str(PLAYER_ICE_TIME)),
+        InlineKeyboardButton(text="Лидеры по штрафу", callback_data=str(PLAYER_PENALTIES)),
+        InlineKeyboardButton(text="Лидеры по блокам", callback_data=str(PLAYER_BLOCKS)),
         InlineKeyboardButton(
-            "Расширенная статистика (SAT, USAT, типы бросков…)",
+            text="Расширенная статистика (SAT, USAT, типы бросков…)",
             callback_data=str(PLAYER_ADVANCED_SUBMENU),
         ),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=NAV_PLAYERS)]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=NAV_PLAYERS)]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text="Выберите тип статистики", reply_markup=reply_markup
+    await callback_message(callback).edit_text(
+        rich_message=rich_message("Выберите тип статистики"), reply_markup=reply_markup
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_player_advanced_menu(update: Update, context: CallbackContext) -> int:
+async def bot_player_advanced_menu(callback: CallbackQuery, state: FSMContext) -> None:
     """Расширенная статистика полевых: Corsi/Fenwick/Goals For %, старт в
     зоне атаки, реализация буллитов и голы по типам броска — каждая кнопка
     своё состояние FSM. «« Назад»» ведёт на статистику полевых (NAV_FIELD).
     """
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Лидеры по Corsi (SAT%)", callback_data=str(PLAYER_SAT_PCT)),
-        InlineKeyboardButton("Лидеры по Fenwick (USAT%)", callback_data=str(PLAYER_USAT_PCT)),
-        InlineKeyboardButton("Лидеры по Goals For %", callback_data=str(PLAYER_GOALS_FOR_PCT)),
-        InlineKeyboardButton("Лидеры по старту в зоне атаки (OZ Start %)", callback_data=str(PLAYER_OZ_START_PCT)),
-        InlineKeyboardButton("Лидеры по реализации буллитов (Shootout %)", callback_data=str(PLAYER_SHOOTOUT_PCT)),
-        InlineKeyboardButton("Голы с кистевого", callback_data=str(PLAYER_SHOT_WRIST)),
-        InlineKeyboardButton("Голы щелчком", callback_data=str(PLAYER_SHOT_SLAP)),
-        InlineKeyboardButton("Голы с полуприёма", callback_data=str(PLAYER_SHOT_SNAP)),
-        InlineKeyboardButton("Голы с бэкхенда", callback_data=str(PLAYER_SHOT_BACKHAND)),
-        InlineKeyboardButton("Голы направлением", callback_data=str(PLAYER_SHOT_TIP_IN)),
-        InlineKeyboardButton("Голы отклонением", callback_data=str(PLAYER_SHOT_DEFLECTED)),
-        InlineKeyboardButton("Голы с за ворот", callback_data=str(PLAYER_SHOT_WRAP_AROUND)),
+        InlineKeyboardButton(text="Лидеры по Corsi (SAT%)", callback_data=str(PLAYER_SAT_PCT)),
+        InlineKeyboardButton(text="Лидеры по Fenwick (USAT%)", callback_data=str(PLAYER_USAT_PCT)),
+        InlineKeyboardButton(text="Лидеры по Goals For %", callback_data=str(PLAYER_GOALS_FOR_PCT)),
+        InlineKeyboardButton(text="Лидеры по старту в зоне атаки (OZ Start %)", callback_data=str(PLAYER_OZ_START_PCT)),
+        InlineKeyboardButton(text="Лидеры по реализации буллитов (Shootout %)", callback_data=str(PLAYER_SHOOTOUT_PCT)),
+        InlineKeyboardButton(text="Голы с кистевого", callback_data=str(PLAYER_SHOT_WRIST)),
+        InlineKeyboardButton(text="Голы щелчком", callback_data=str(PLAYER_SHOT_SLAP)),
+        InlineKeyboardButton(text="Голы с полуприёма", callback_data=str(PLAYER_SHOT_SNAP)),
+        InlineKeyboardButton(text="Голы с бэкхенда", callback_data=str(PLAYER_SHOT_BACKHAND)),
+        InlineKeyboardButton(text="Голы направлением", callback_data=str(PLAYER_SHOT_TIP_IN)),
+        InlineKeyboardButton(text="Голы отклонением", callback_data=str(PLAYER_SHOT_DEFLECTED)),
+        InlineKeyboardButton(text="Голы с за ворот", callback_data=str(PLAYER_SHOT_WRAP_AROUND)),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=NAV_FIELD)]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=NAV_FIELD)]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text="Расширенная статистика полевых", reply_markup=reply_markup
+    await callback_message(callback).edit_text(
+        rich_message=rich_message("Расширенная статистика полевых"), reply_markup=reply_markup
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_player_goalie(update: Update, context: CallbackContext) -> int:
+async def bot_player_goalie(callback: CallbackQuery, state: FSMContext) -> None:
     """Подменю лидеров-вратарей: победы, % отражённых бросков, сухари.
     «« Назад»» ведёт на выбор типа игроков (NAV_PLAYERS)."""
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Лидеры по победам", callback_data=str(GOALIE_WINS)),
-        InlineKeyboardButton("Лидеры по % отр бросков", callback_data=str(GOALIE_PERCENTAGE)),
-        InlineKeyboardButton("Лидеры по сухарям", callback_data=str(GOALIE_SHOOTOUTS)),
+        InlineKeyboardButton(text="Лидеры по победам", callback_data=str(GOALIE_WINS)),
+        InlineKeyboardButton(text="Лидеры по % отр бросков", callback_data=str(GOALIE_PERCENTAGE)),
+        InlineKeyboardButton(text="Лидеры по сухарям", callback_data=str(GOALIE_SHOOTOUTS)),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=NAV_PLAYERS)]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=NAV_PLAYERS)]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text="Выберите тип статистики", reply_markup=reply_markup
+    await callback_message(callback).edit_text(
+        rich_message=rich_message("Выберите тип статистики"), reply_markup=reply_markup
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def bot_digest_date_menu(update: Update, context: CallbackContext) -> int:
+async def bot_digest_date_menu(callback: CallbackQuery, state: FSMContext) -> None:
     """Выбор даты дайджеста перед загрузкой матчей."""
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
+    await callback.answer()
     keyboard = [
-        InlineKeyboardButton("Сегодня", callback_data=str(DIGEST_CALENDAR_TODAY)),
-        InlineKeyboardButton("Вчера", callback_data=str(DIGEST_CALENDAR_YESTERDAY)),
-        InlineKeyboardButton("Выбрать дату", callback_data=str(DIGEST_PICK_DATE)),
+        InlineKeyboardButton(text="Сегодня", callback_data=str(DIGEST_CALENDAR_TODAY)),
+        InlineKeyboardButton(text="Вчера", callback_data=str(DIGEST_CALENDAR_YESTERDAY)),
+        InlineKeyboardButton(text="Выбрать дату", callback_data=str(DIGEST_PICK_DATE)),
     ]
-    footer = [[InlineKeyboardButton("« Назад", callback_data=str(CHOOSE_STATS))]]
+    footer = [[InlineKeyboardButton(text="« Назад", callback_data=str(CHOOSE_STATS))]]
     reply_markup = InlineKeyboardMarkup(
-        build_menu(keyboard, n_cols=1, footer_buttons=footer)
+        inline_keyboard=build_menu(keyboard, n_cols=1, footer_buttons=footer)
     )
-    await query.edit_message_text(
-        text=(
+    await callback_message(callback).edit_text(
+        rich_message=rich_message(
             "Дайджест по завершённым матчам в базе.\n"
             "<i>Сегодня</i> — матчи прошедшей ночи по Москве, <i>Вчера</i> — ночью раньше. "
             "Своя дата — игровой день NHL (дата по Северной Америке)."
         ),
         reply_markup=reply_markup,
-        parse_mode="HTML",
     )
-    return FIRST
+    await state.set_state(StatsMenu.first)
 
 
-async def nav_back_to_players(update: Update, context: CallbackContext) -> int:
-    """Хендлер строкового callback_data `NAV_PLAYERS` («« Назад»» из подменю
-    полевых/вратарей) — просто перерисовывает `bot_player_stats`."""
-    return await bot_player_stats(update, context)
-
-
-async def nav_back_to_field(update: Update, context: CallbackContext) -> int:
-    """Хендлер строкового callback_data `NAV_FIELD` («« Назад»» из расширенной
-    статистики полевых) — перерисовывает `bot_player_field`."""
-    return await bot_player_field(update, context)
-
-
-async def end(update: Update, context: CallbackContext) -> int:
+async def end(callback: CallbackQuery, state: FSMContext) -> None:
     """Завершает разговор: снимаем inline-кнопки, текст статистики в чате оставляем."""
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
-    await query.edit_message_reply_markup(reply_markup=None)
-    return ConversationHandler.END
+    await callback.answer()
+    await callback_message(callback).edit_reply_markup(reply_markup=None)
+    await state.clear()

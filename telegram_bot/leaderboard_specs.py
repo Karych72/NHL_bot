@@ -41,7 +41,7 @@ TEAM_STAT_TITLES: Dict[str, str] = {
 }
 
 # Шапка колонки сортируемого показателя в таблице лидерборда — ключ колонка БД
-# (игроков, вратарей и команд). Коротко: строка `<pre>` не шире экрана телефона.
+# (игроков, вратарей и команд). Коротко: колонка rich-таблицы на телефоне узкая.
 STAT_COLUMN_LABELS: Dict[str, str] = {
     "points": "Очки",
     "goals": "Голы",
@@ -90,3 +90,6 @@ SHOT_STANDALONE_TO_STAT: Dict[str, Tuple[str, str]] = {
     "defl": ("players_shot_types", "goals_deflected"),
     "wrap": ("players_shot_types", "goals_wrap_around"),
 }
+
+# Все кнопки adv:* меню /advanced: кнопки, свободный текст (Задача 81) и его инструмент.
+ADVANCED_METRICS: Dict[str, Tuple[str, str]] = {**ADV_STANDALONE_TO_STAT, **SHOT_STANDALONE_TO_STAT}

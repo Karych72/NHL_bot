@@ -2,8 +2,9 @@
 
 Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
 включение и отключение подписок (дайджест, предстоящие матчи, команда, страна) и отметки
-об отправке — ночи (дайджест, команда) и матча (страна, предстоящие матчи,
-`bot_game_sent`), — защищающие от дублей при получасовых прогонах sync.
+об отправке, защищающие от дублей при получасовых прогонах sync: ночи дайджеста
+(`last_sent_night`), итога матча чату (`bot_chat_game_sent`, Задача 85) и превью матча
+подписке (`bot_game_sent`).
 """
 
 from __future__ import annotations
@@ -120,20 +121,6 @@ def list_active_morning_digest_rows() -> List[Tuple[int, Optional[date]]]:
     return [(int(row["chat_id"][i]), row["last_sent_night"][i]) for i in range(row["count_rows"])]
 
 
-def list_active_team_scores_rows() -> List[Tuple[int, int, Optional[date]]]:
-    """Активные подписки на команду: кортежи (chat_id, team_id, last_sent_night)."""
-    row = fetch_all(
-        "SELECT chat_id, team_id, last_sent_night FROM bot_subscriptions "
-        "WHERE kind = 'team_scores' AND active = TRUE AND team_id IS NOT NULL",
-        None,
-        columns=["chat_id", "team_id", "last_sent_night"],
-    )
-    return [
-        (int(row["chat_id"][i]), int(row["team_id"][i]), row["last_sent_night"][i])
-        for i in range(row["count_rows"])
-    ]
-
-
 def upsert_country(chat_id: int, country: str) -> None:
     """Включает (реактивирует) подписку чата на страну `country`; идемпотентно."""
     with get_connection() as conn:
@@ -148,17 +135,23 @@ def upsert_country(chat_id: int, country: str) -> None:
         conn.commit()
 
 
-def list_active_country_rows() -> List[Tuple[int, int, str]]:
-    """Активные подписки на страны — источник рассылки для `push_digest_job.py`:
-    кортежи (id подписки, chat_id, country)."""
+def list_active_game_rows() -> List[Tuple[int, Optional[int], Optional[str]]]:
+    """Активные подписки на команды и страны — источник рассылки итогов по матчу в
+    `push_digest_job.py`: кортежи (chat_id, team_id, country), у строки задано одно из двух;
+    по чату, страны чата — по алфавиту."""
     row = fetch_all(
-        "SELECT id, chat_id, country FROM bot_subscriptions "
-        "WHERE kind = 'country_players' AND active = TRUE ORDER BY chat_id, country",
+        "SELECT chat_id, team_id, country FROM bot_subscriptions "
+        "WHERE kind IN ('team_scores', 'country_players') AND active = TRUE "
+        "ORDER BY chat_id, country, team_id",
         None,
-        columns=["id", "chat_id", "country"],
+        columns=["chat_id", "team_id", "country"],
     )
     return [
-        (int(row["id"][i]), int(row["chat_id"][i]), row["country"][i])
+        (
+            int(row["chat_id"][i]),
+            None if row["team_id"][i] is None else int(row["team_id"][i]),
+            row["country"][i],
+        )
         for i in range(row["count_rows"])
     ]
 
@@ -176,11 +169,11 @@ def list_active_upcoming_rows() -> List[Tuple[int, int]]:
 
 
 def sent_games(game_ids: List[int]) -> Set[Tuple[int, int]]:
-    """Какие из матчей `game_ids` уже ушли подпискам с рассылкой по матчу (страна,
-    предстоящие матчи): пары (id подписки, game_id) из `bot_game_sent`.
+    """Превью каких из матчей `game_ids` уже ушли подпискам на предстоящие матчи: пары
+    (id подписки, game_id) из `bot_game_sent`.
 
-    Зачем: эти рассылки идут по матчу (Задачи 76, 78) и запускаются после каждого
-    получасового прогона sync — без отметки матч уходил бы каждые полчаса."""
+    Зачем: превью идёт по матчу (Задача 78) и запускается после каждого получасового
+    прогона sync — без отметки матч уходил бы каждые полчаса."""
     row = fetch_all(
         "SELECT subscription_id, game_id FROM bot_game_sent WHERE game_id = ANY(%s)",
         (game_ids,),
@@ -205,22 +198,62 @@ def mark_game_sent(subscription_id: int, game_id: int) -> None:
         conn.commit()
 
 
-def mark_night_sent(chat_id: int, kind: str, team_id: Optional[int], night: date) -> None:
-    """Отмечает, что рассылка `kind` за ночь `night` чату уже ушла.
+def chat_games_sent(game_ids: List[int]) -> Set[Tuple[int, int]]:
+    """Итоги каких из матчей `game_ids` уже ушли в чаты: пары (chat_id, game_id) из
+    `bot_chat_game_sent`.
+
+    Зачем: правило «каждый матч ночи — чату ровно один раз» (Задача 85): сообщение по
+    матчу и дайджест не шлют матч, о котором чату уже ушёл итог по любой подписке."""
+    row = fetch_all(
+        "SELECT chat_id, game_id FROM bot_chat_game_sent WHERE game_id = ANY(%s)",
+        (game_ids,),
+        columns=["chat_id", "game_id"],
+    )
+    return {(int(row["chat_id"][i]), int(row["game_id"][i])) for i in range(row["count_rows"])}
+
+
+def mark_chat_games_sent(chat_id: int, game_ids: List[int]) -> None:
+    """Отмечает, что итоги матчей `game_ids` чату `chat_id` ушли (см. `chat_games_sent`);
+    повторная отметка — no-op."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_chat_game_sent (chat_id, game_id) "
+                "SELECT %s, unnest(%s::bigint[]) ON CONFLICT DO NOTHING",
+                (chat_id, game_ids),
+            )
+        conn.commit()
+
+
+def mark_digest_night_sent(chat_id: int, night: date) -> None:
+    """Отмечает, что дайджест за ночь `night` чату уже ушёл (`last_sent_night`).
 
     Зачем: `push_digest_job.py` запускается после каждого получасового
     прогона sync — без отметки дайджест уходил бы каждые полчаса.
 
     Args:
-        team_id: `None` для morning_digest; команда — для team_scores.
         night: игровая дата ночи (`push_digest_job.night_of`).
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET last_sent_night = %s, updated_at = now() "
-                "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s",
-                (night, chat_id, kind, team_id),
+                "WHERE chat_id = %s AND kind = 'morning_digest'",
+                (night, chat_id),
+            )
+        conn.commit()
+
+
+def deactivate_chat(chat_id: int) -> None:
+    """Гасит все подписки чата `chat_id` (active = FALSE), записи не удаляет.
+
+    Зачем: чат, заблокировавший бота (`TelegramForbiddenError` в рассылке), не получит
+    ничего ни по одной подписке — долбиться в него каждым прогоном незачем."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() WHERE chat_id = %s",
+                (chat_id,),
             )
         conn.commit()
 

@@ -2,16 +2,18 @@
 дайджест дня, лидерборды игроков/команд, турнирная таблица.
 
 Часть `telegram_bot/`, которая читает БД (заполненную `pipeline/`) и
-превращает строки в готовый Telegram-текст; сама отправка, листание
-страниц и клавиатуры живут в `stats_handlers.py`/`script_bot.py`.
+превращает строки в готовый Telegram-текст: построчный HTML с таблицами
+`_table`, который `rich_message()` превращает в rich-сообщение (Bot API 10.1+);
+сама отправка, листание страниц и клавиатуры живут в `stats_handlers.py`/`script_bot.py`.
 """
 
 import html
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from aiogram.types import InputRichMessage
 from psycopg2 import sql
 
 import config
@@ -19,8 +21,11 @@ from database import cached_fetch_all, fetch_all, validate_table, validate_colum
 from leaderboard_specs import STAT_COLUMN_LABELS
 from template_funcs import output_text
 
-# Telegram message text limit (UTF-16 length can differ; stay under safe byte-ish budget)
-TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+# Лимит текста rich-сообщения Telegram (символов). Считается по исходному HTML: он не
+# короче видимого текста, так что сообщение в лимите заведомо проходит. Второй лимит —
+# 500 блоков (абзац, строка таблицы) — обрезкой не охраняется: самый длинный экран
+# (/standings, ~70 блоков) далёк от него, а длинные списки листаются страницами.
+RICH_MESSAGE_MAX_LENGTH = 32768
 
 
 # Subsets of columns allowed in dynamic SQL; keep in sync with ALLOWED_COLUMNS
@@ -170,79 +175,54 @@ def _goal_player_name(lastname: Optional[str], nationality: Optional[str]) -> st
     return name.upper() if nationality == _RUSSIAN_NATIONALITY else name
 
 
-def _aligned_columns(rows: Sequence[Sequence[str]], align: str, sep: str = " ") -> List[str]:
-    """Строки таблицы: каждая колонка добита пробелами до самой широкой ячейки.
+def _table(
+    rows: Sequence[Sequence[str]], align: str, *, playoff_line_after: Optional[int] = None
+) -> str:
+    """Таблица rich-сообщения (Bot API 10.3): первая строка `rows` — шапка, остальные — тело.
 
-    Зачем: Telegram выравнивает пробелами только моноширинный текст (`<pre>`) —
-    общий рендер для списка голов карточки, сравнения в превью матча и таблиц
-    (`_pre_table`, `_pre_table_fit`).
+    Зачем: колонки rich-таблицы Telegram раскладывает сам по ширине экрана — без
+    моноширинного `<pre>`, выравнивания пробелами и выбрасывания колонок под телефон.
+    `compact` — меньшие отступы в ячейках, `striped` — чередование строк для чтения.
+    Таблица — одна строка текста: `rich_message()` делает её отдельным блоком.
 
     Аргументы:
         rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
         align: по символу на колонку — `l` (влево) или `r` (вправо).
-        sep: разделитель колонок; таблицы передают `_TABLE_SEP`.
+        playoff_line_after: после стольких строк тела — строка «линия плей-офф» на всю
+            ширину (турнирная таблица: топ-3 дивизиона, две путёвки Wild Card).
     """
-    widths = [max(len(r[c]) for r in rows) for c in range(len(align))]
-    return [
-        sep.join(
-            cell.rjust(w) if a == "r" else cell.ljust(w)
-            for cell, w, a in zip(r, widths, align)
-        ).rstrip()
-        for r in rows
+    def row(cells: Sequence[str], tag: str) -> str:
+        return "<tr>" + "".join(
+            f'<{tag} align="right">{html.escape(c)}</{tag}>' if a == "r" else f"<{tag}>{html.escape(c)}</{tag}>"
+            for c, a in zip(cells, align)
+        ) + "</tr>"
+
+    head, *body = rows
+    parts = [row(head, "th")]
+    for i, cells in enumerate(body):
+        if i == playoff_line_after:
+            parts.append(f'<tr><td colspan="{len(align)}" align="center"><i>линия плей-офф</i></td></tr>')
+        parts.append(row(cells, "td"))
+    return "<table compact striped>" + "".join(parts) + "</table>"
+
+
+def rich_message(text: str) -> InputRichMessage:
+    """Текст бота → rich-сообщение (Bot API 10.1): каждая непустая строка — абзац `<p>`,
+    строка-таблица (`_table`) — свой блок.
+
+    Зачем: экраны бота уходят rich-сообщениями ради таблиц; в rich-HTML перевод строки —
+    пробел, как в обычном HTML, поэтому строки текста становятся абзацами. Тексты бота
+    держат HTML-теги в пределах строки (шаблоны и сборка в этом модуле), так что каждая
+    строка — законченный фрагмент разметки; иначе Telegram отвергнет сообщение.
+
+    Аргументы: `text` — построчный HTML, как его собирают функции этого модуля.
+    """
+    blocks = [
+        line if line.startswith("<table") else f"<p>{line}</p>"
+        for line in text.split("\n")
+        if line.strip()
     ]
-
-
-# Ширина фамилии в выровненных таблицах (лидерборды, страны): строка в `<pre>`
-# не длиннее ~36 символов — столько помещается на экране телефона без переноса.
-_LEADER_NAME_WIDTH = 10
-
-
-def _clip_cell(text: str, width: int) -> str:
-    """Ячейка таблицы не шире `width`: длинное обрезается с «…» на конце."""
-    return text if len(text) <= width else text[: width - 1] + "…"
-
-
-def _pre_block(lines: Sequence[str]) -> str:
-    """Строки (сырые, без HTML) одним экранированным блоком `<pre>`."""
-    body = "\n".join(lines)
-    return f"<pre>{html.escape(body)}</pre>"
-
-
-# Разделитель колонок `<pre>`-таблиц: на месте пробела, ширину строки не меняет,
-# а соседние числа («Знач И Смен») больше не сливаются (отзыв 2026-10-03).
-_TABLE_SEP = "|"
-
-
-def _pre_table(rows: Sequence[Sequence[str]], align: str) -> str:
-    """`_aligned_columns()` с разделителем `_TABLE_SEP` одним блоком `<pre>`."""
-    return _pre_block(_aligned_columns(rows, align, _TABLE_SEP))
-
-
-# Столько моноширинных символов помещается в строку `<pre>` на экране телефона.
-_MOBILE_PRE_WIDTH = 36
-
-
-def _pre_table_fit(rows: Sequence[Sequence[str]], align: str, drop_order: Sequence[int]) -> str:
-    """`_pre_table()`, ужатая под экран телефона.
-
-    Зачем: строка шире `_MOBILE_PRE_WIDTH` переносится и ломает колонки — вместо
-    переноса таблица теряет наименее важные колонки.
-
-    Аргументы:
-        rows, align: как у `_pre_table()`.
-        drop_order: индексы колонок, которые можно убрать, — от наименее важной;
-            колонки убираются по одной, пока самая длинная строка не влезет.
-    """
-    keep = list(range(len(align)))
-    for col in [None, *drop_order]:
-        if col is not None:
-            keep.remove(col)
-        lines = _aligned_columns(
-            [[r[c] for c in keep] for r in rows], "".join(align[c] for c in keep), _TABLE_SEP
-        )
-        if max(len(line) for line in lines) <= _MOBILE_PRE_WIDTH:
-            break
-    return _pre_block(lines)
+    return InputRichMessage(html="".join(blocks))
 
 
 def _record_str(
@@ -389,44 +369,33 @@ def _score_line(header: Dict[str, str]) -> str:
     )
 
 
-def _goals_pre_block(goal_rows: List[List[str]], assists: List[str]) -> str:
-    """Голы карточки матча одним `<pre>` в ширину телефона: строка гола —
-    время, счёт, автор с позицией и пометками; ассистенты — следующей строкой
-    под автором (в одну строку с ними гол на телефоне переносится).
+def _period_names(period: int, shootout: bool) -> Tuple[str, str]:
+    """Название периода гола в карточке матча: (заголовок блока голов, коротко
+    для кнопки видео) — «2-й период»/«2п», «Овертайм»/«ОТ», «2-й овертайм»/«2ОТ»,
+    «Буллиты»/«Б».
 
     Аргументы:
-        goal_rows: [время, счёт, автор] по голу, сырые строки без HTML.
-        assists: ассистенты того же гола через запятую; пусто — строки нет.
+        period: номер периода из `get_goals_game`; в регулярке 4 — овертайм,
+            5 — серия буллитов (победный буллит лежит голом с временем 00:00).
+        shootout: матч решён буллитами — иначе период 5 значит второй овертайм
+            (плей-офф).
     """
-    indent = " " * (max(len(r[0]) for r in goal_rows) + max(len(r[1]) for r in goal_rows) + 2)
-    lines: List[str] = []
-    for line, names in zip(_aligned_columns(goal_rows, "rll"), assists):
-        lines.append(line)
-        if names:
-            lines.append(indent + names)
-    return _pre_block(lines)
+    if shootout and period == 5:
+        return "Буллиты", "Б"
+    if period <= 3:
+        return f"{period}-й период", f"{period}п"
+    overtime = period - 3
+    if overtime == 1:
+        return "Овертайм", "ОТ"
+    return f"{overtime}-й овертайм", f"{overtime}ОТ"
 
 
 def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     """Return (rendered_text, goal_video_metadata)."""
     game_stats, game_goals = _fetch_game_score_rows(game_id)
     header = _game_score_header(game_stats, game_goals)
-    teams_row = fetch_all(
-        "SELECT home_team_id, away_team_id, day::text FROM games WHERE game_id = %s LIMIT 1",
-        (game_id,),
-        columns=["home_team_id", "away_team_id", "day"],
-    )
-    game_day = teams_row["day"][0] if teams_row["count_rows"] else None
-    away_tid = (
-        int(teams_row["away_team_id"][0])
-        if teams_row["count_rows"] and teams_row["away_team_id"][0] is not None
-        else None
-    )
-    home_tid = (
-        int(teams_row["home_team_id"][0])
-        if teams_row["count_rows"] and teams_row["home_team_id"][0] is not None
-        else None
-    )
+    # is_shootouts читается только при is_overtime — как в `_game_score_header`.
+    shootout = bool(game_stats['is_overtime'][0] and game_stats['is_shootouts'][0])
     game_goalies = fetch_all(
         "SELECT * FROM get_goalies_game(%s)", (game_id,),
         ['shots', 'saves', 'timeonice', 'lastname',
@@ -438,12 +407,21 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
          'goals', 'assists', 'saves', 'shots', 'save_percentage'],
     )
 
-    goal_rows: List[List[str]] = []
-    goal_assists: List[str] = []
+    # Голы обычным текстом по периодам: заголовок периода, строка гола со временем
+    # внутри периода, ассистенты строкой ниже. Не `<pre>`: моноширинные колонки
+    # на телефоне разъезжались от длинной фамилии или крупного шрифта.
+    goal_lines: List[str] = []
     goals_meta = []
     scorer_counts: Dict[str, int] = defaultdict(int)
+    prev_period = None
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
+        title, short = _period_names(p, shootout)
+        if p != prev_period:
+            if goal_lines:
+                goal_lines.append("")
+            goal_lines.append(f"<b>{title}</b>")
+            prev_period = p
         scorer = _goal_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
         pos_raw = game_goals['scorer_position'][i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
@@ -455,30 +433,30 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             game_goals['winner_goal'][i],
         )
 
-        # Время от начала матча; период в строке не пишется — он виден по минуте.
-        time_str = game_goals['goal_time'][i]
-        if p is not None and time_str:
-            t_m = str((p - 1) * 20 + int(time_str.split(':')[0]))
-            t_all = t_m + ':' + time_str.split(':')[1]
-        else:
-            t_all = '?:??'
+        # Время внутри периода; у буллита (всегда 00:00) его нет.
+        time_str = "" if shootout and p == 5 else game_goals['goal_time'][i]
         assist_names = [
             _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
             for key in ("assist_1", "assist_2")
             if game_goals[key][i] is not None
         ]
         score = f"{h}:{a}"
-        goal_rows.append([t_all, score, scorer + (f" [{pos}]" if pos else "") + situation])
-        goal_assists.append(", ".join(assist_names))
+        time_prefix = f"{time_str} · " if time_str else ""
+        goal_lines.append(
+            f"{time_prefix}{score} — "
+            f"{html.escape(scorer + (f' [{pos}]' if pos else '') + situation)}"
+        )
+        if assist_names:
+            goal_lines.append(html.escape(", ".join(assist_names)))
 
         evt = game_goals['goal_event_id'][i]
         if evt is not None:
             goals_meta.append({
                 'game_id': game_goals['goal_game_id'][i],
                 'event_id': evt,
-                'label': f"▶ {score} {scorer} {t_all}",
+                'label': f"▶ {score} {scorer} {short} {time_str}".rstrip(),
             })
-    goals_block = _goals_pre_block(goal_rows, goal_assists) if goal_rows else ""
+    goals_block = "\n".join(goal_lines)
 
     hat_lines = [
         f"<b>Хет-трик</b>: {html.escape(name)} (×{n})"
@@ -486,24 +464,6 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         if n >= 3
     ]
     hat_tricks = "\n".join(hat_lines) if hat_lines else ""
-
-    away_abbr = (game_stats['team_name'][1] or "").strip()
-    home_abbr = (game_stats['team_name'][0] or "").strip()
-    # Форма — до этого матча: игры строго раньше его игрового дня.
-    form_away = (
-        _last_n_form_record(away_tid, 5, before_day=game_day) if away_tid is not None else "—"
-    )
-    form_home = (
-        _last_n_form_record(home_tid, 5, before_day=game_day) if home_tid is not None else "—"
-    )
-    # Порядок команд — как в шапке карточки (хозяева первыми).
-    recent_form = (
-        "<i>Форма (5 игр, W-L-OTL)</i>:\n"
-        f"{html.escape(home_abbr)} {html.escape(form_home)} · "
-        f"{html.escape(away_abbr)} {html.escape(form_away)}"
-        if away_abbr and home_abbr
-        else ""
-    )
 
     # Вратарь — своей строкой (хозяева первыми): в одну строку двое не влезают
     # в ширину телефона.
@@ -554,7 +514,6 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         'goalkeepers': "\n".join(goalie_lines),
         'period_scores': html.escape(header['period_scores']),
         'hat_tricks': hat_tricks,
-        'recent_form': recent_form,
         'three_stars': three_stars,
     }
     return output_text('messages/game_message.txt', to_template), goals_meta
@@ -663,9 +622,7 @@ def _team_game_outcome(
     return "L"
 
 
-def _recent_team_outcomes(
-    team_id: int, limit: int, before_day: Optional[str] = None
-) -> List[str]:
+def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
     сезона команды `team_id`, от новой игры к старой.
 
@@ -679,8 +636,6 @@ def _recent_team_outcomes(
     Аргументы:
         team_id: команда, для которой отбираются игры.
         limit: сколько последних игр взять (`ORDER BY day DESC NULLS LAST, game_id DESC`).
-        before_day: только игры раньше этого игрового дня (`YYYY-MM-DD`) —
-            форма «до матча» в его карточке; None — все игры сезона.
 
     Возвращает: список `"W"`/`"L"`/`"OTL"` длиной `min(limit, сыграно игр)`;
     пустой список, если в текущем сезоне у команды нет завершённых игр.
@@ -691,9 +646,8 @@ def _recent_team_outcomes(
         "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
         "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
-        "AND (%s::date IS NULL OR day < %s::date) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
-        (config.SEASON_ID, team_id, team_id, before_day, before_day, limit),
+        (config.SEASON_ID, team_id, team_id, limit),
         columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
     return [
@@ -708,16 +662,15 @@ def _recent_team_outcomes(
     ]
 
 
-def _last_n_form_record(team_id: int, n: int = 5, before_day: Optional[str] = None) -> str:
+def _last_n_form_record(team_id: int, n: int = 5) -> str:
     """Формат W-L-OTL по последним n завершённым играм (как в таблице очков);
-    без игр — `0-0-0` (первый матч сезона в карточке).
+    без игр — `0-0-0` (команда ещё не играла в сезоне).
 
     Игры и их разряды берёт `_recent_team_outcomes()` (правило NHL 84.2 —
     см. `_team_game_outcome()`), чтобы форма и текущая серия
-    (`_current_streak()`) не могли разойтись в подсчёте ПО. `before_day` —
-    см. `_recent_team_outcomes()`.
+    (`_current_streak()`) не могли разойтись в подсчёте ПО.
     """
-    outcomes = _recent_team_outcomes(team_id, n, before_day)
+    outcomes = _recent_team_outcomes(team_id, n)
     w = outcomes.count("W")
     losses = outcomes.count("L")
     otl = outcomes.count("OTL")
@@ -837,10 +790,9 @@ def _matchup_compare_table(
     ra: Dict[str, Union[int, float, None]],
     rh: Dict[str, Union[int, float, None]],
 ) -> str:
-    """Таблица превью матча `<pre>` в три колонки «метрика|гости|хозяева» с
+    """Таблица превью матча (`_table`) в три колонки «метрика · гости · хозяева» с
     аббревиатурами в шапке — очки, баланс, форма и серия, личные встречи (если
-    были), метрики сезона. Подписи короткие: строка не шире `_MOBILE_PRE_WIDTH`,
-    иначе на телефоне она переносится и колонки разъезжаются (отзыв 2026-10-09).
+    были), метрики сезона.
     """
     def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
         gf, ga = r["goals_per_game"], r["goals_against_per_game"]
@@ -891,7 +843,7 @@ def _matchup_compare_table(
         ("Разница шайб", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
     ]
     rows = [["", away_abbr, home_abbr], *([label, left, right] for label, left, right in pairs)]
-    return _pre_table(rows, "lrr")
+    return _table(rows, "lrr")
 
 
 def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
@@ -902,8 +854,7 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
     модельной оценки (если она опубликована; при раннем выходе, когда обеих
     команд нет в teams_stats, строки нет).
 
-    Разметка HTML (parse_mode=HTML): блок метрик в &lt;pre&gt; — моноширинный шрифт,
-    иначе в обычном тексте Telegram пробелы не выравнивают колонки.
+    Построчный HTML для `rich_message()`: метрики — таблица `_table`.
     """
     a = (away_abbr or "").strip().upper()
     h = (home_abbr or "").strip().upper()
@@ -1025,7 +976,7 @@ def player_stats_with_count(
         offset: сдвиг страницы.
         secondary_sort: вторичная сортировка при равенстве `column_name`.
 
-    Строки — выровненная таблица в `<pre>` (читается на телефоне) с постоянным
+    Строки — таблица rich-сообщения (`_table`) с постоянным
     «хвостом» уже загруженных полей (Задача 18): для вратарей — игры и
     сейвы/броски против, для остальных игровых таблиц — игры/смены (через JOIN
     на players_season_stats для players_advanced_stats/players_shot_types).
@@ -1089,7 +1040,7 @@ def player_stats_with_count(
          "Сейвы" if is_goalie else "Смен"],
     ]
     for i in range(stats['count_rows']):
-        name = _clip_cell(stats['lastname'][i] or "Unknown", _LEADER_NAME_WIDTH)
+        name = stats['lastname'][i] or "Unknown"
         pos = str(stats['roster_position'][i] or "").strip()
         if pos and not is_goalie:
             name += f" [{pos}]"
@@ -1106,9 +1057,7 @@ def player_stats_with_count(
             _format_leader_value(stats['points'][i]), games, extra,
         ])
 
-    # Конец сезона («1353/1483», «100.») не влезает в телефон — первым уходит
-    # хвост (сейвы/смены), затем игры.
-    body = _pre_table_fit(rows, "rllrrr", drop_order=(5, 4)) if stats['count_rows'] else ""
+    body = _table(rows, "rllrrr") if stats['count_rows'] else ""
     if name_stats:
         body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
@@ -1261,40 +1210,37 @@ def _standings_sort_key(team: Dict[str, Union[int, str, float, None]]) -> Tuple:
 
 def _fmt_standings_pct(val: Union[int, float, Decimal, str, None]) -> str:
     if val is None:
-        return "  ---"
+        return "---"
     try:
         fv = float(val)
     except (TypeError, ValueError):
-        return "  ---"
-    return f"{fv:5.1f}"
+        return "---"
+    return f"{fv:.1f}"
 
 
-def _standings_name_width(teams: Sequence[Dict[str, Union[int, str, float, None]]]) -> int:
-    longest = 0
-    for t in teams:
-        nm = str(t.get("short_name") or "").strip()
-        longest = max(longest, len(nm))
-    return max(14, min(longest + 1, 22))
+# Шапка и выравнивание таблиц дивизионов и Wild Card: место, команда, очки, игры, % очков.
+_STANDINGS_HEADER = ["", "Команда", "Очк", "Игр", "%очк"]
+_STANDINGS_ALIGN = "rlrrr"
 
 
-def _fmt_standings_row(
-    team: Dict[str, Union[int, str, float, None]], name_w: int
-) -> str:
-    nm = str(team.get("short_name") or "—").strip()
-    if len(nm) > name_w:
-        nm = nm[: max(1, name_w - 1)] + "…"
-    pts = int(team.get("points") or 0)
-    gp = int(team.get("games_played") or 0)
-    pct = _fmt_standings_pct(team.get("procent_points"))
-    return _TABLE_SEP.join([f"{nm:<{name_w}}", f"{pts:>3}", f"{gp:>3}", pct])
+def _standings_row(label: str, team: Dict[str, Union[int, str, float, None]]) -> List[str]:
+    """Строка таблицы `/standings`: метка места (« 1.», «WC1») и показатели команды."""
+    return [
+        label,
+        str(team.get("short_name") or "—").strip(),
+        str(int(team.get("points") or 0)),
+        str(int(team.get("games_played") or 0)),
+        _fmt_standings_pct(team.get("procent_points")),
+    ]
 
 
-def _wild_card_lines(
+def _wild_card_block(
     by_division: Dict[str, List[Dict[str, Union[int, str, float, None]]]],
     division_order: Tuple[str, ...],
-    name_w: int,
-    row_fmt: Callable[[Dict[str, Union[int, str, float, None]]], str],
-) -> List[str]:
+) -> str:
+    """Гонка за Wild Card конференции: команды вне топ-3 своих дивизионов по очкам —
+    две путёвки и ближайшие претенденты под линией плей-офф; без таких команд —
+    строка-причина."""
     top3_names: set = set()
     conf_teams: List[Dict[str, Union[int, str, float, None]]] = []
     for div in division_order:
@@ -1306,55 +1252,25 @@ def _wild_card_lines(
         t for t in conf_teams if str(t.get("short_name") or "").strip() not in top3_names
     ]
     remaining.sort(key=_standings_sort_key)
-    lines: List[str] = []
     if not remaining:
         if len(conf_teams) < 8:
-            lines.append("    (в выборке < 8 команд конференции — гонка WC не показана)")
-        else:
-            lines.append("    (нет команд вне топ-3 дивизионов)")
-        return lines
-    hdr = _standings_header(name_w)
-    lines.append(hdr)
-    lines.append("-" * len(hdr))
+            return html.escape("(в выборке < 8 команд конференции — гонка WC не показана)")
+        return "(нет команд вне топ-3 дивизионов)"
     # Гонка за Wild Card — две путёвки и ближайшие претенденты, не вся конференция.
-    for i, t in enumerate(remaining[:_WILD_CARD_SHOWN]):
-        if i == 2:
-            # Две путёвки Wild Card: ниже черты — претенденты, а не участники плей-офф.
-            lines.append(_standings_cut_line(hdr))
-        label = f"WC{i + 1}" if i < 2 else f"{i + 1:>2}."
-        lines.append(label + _TABLE_SEP + row_fmt(t))
-    return lines
+    rows = [_STANDINGS_HEADER] + [
+        _standings_row(f"WC{i + 1}" if i < 2 else f"{i + 1}.", t)
+        for i, t in enumerate(remaining[:_WILD_CARD_SHOWN])
+    ]
+    return _table(rows, _STANDINGS_ALIGN, playoff_line_after=2)
 
 
 # Строк в блоке Wild Card: WC1, WC2 и три ближайших претендента под чертой.
 _WILD_CARD_SHOWN = 5
 
 
-def _standings_cut_line(hdr: str) -> str:
-    """Пунктир «линия плей-офф» шириной в шапку блока: выше — места в плей-офф."""
-    return "- - линия плей-офф " + "- " * ((len(hdr) - 19) // 2)
-
-
-def _standings_header(name_w: int) -> str:
-    """Шапка блока таблицы; первые 4 символа — под колонку места (« 1.|», «WC1|»)."""
-    return _TABLE_SEP.join(["   ", f"{'Команда':<{name_w}}", "Очк", "Игр", f"{'%очк':>5}"])
-
-
-def _standings_md_code_block(lines: List[str]) -> str:
-    body = "\n".join(lines).rstrip("\n")
-    return f"```\n{body}\n```"
-
-
-def _standings_html_pre_block(lines: List[str]) -> str:
-    body = html.escape("\n".join(lines).rstrip("\n"))
-    return f"<pre>{body}</pre>"
-
-
-def _build_standings_table_body(
-    teams: List[Dict[str, Union[int, str, float, None]]],
-    *,
-    use_html: bool = False,
-) -> str:
+def _build_standings_table_body(teams: List[Dict[str, Union[int, str, float, None]]]) -> str:
+    """Тело `/standings`: по конференциям — дивизионы (топ-3 над линией плей-офф) и гонка
+    Wild Card; каждая секция — заголовок и таблица `_table` строкой ниже."""
     by_division: Dict[str, List[Dict[str, Union[int, str, float, None]]]] = defaultdict(
         list
     )
@@ -1363,39 +1279,27 @@ def _build_standings_table_body(
         if div:
             by_division[str(div)].append(t)
 
-    name_w = _standings_name_width(teams)
-
-    def row_fmt(team: Dict[str, Union[int, str, float, None]]) -> str:
-        return _fmt_standings_row(team, name_w)
-
     chunks: List[str] = []
-
-    block_fmt = _standings_html_pre_block if use_html else _standings_md_code_block
-    title_fmt = (lambda t: f"<b>{html.escape(t)}</b>") if use_html else (lambda t: f"*{t}*")
 
     # Секция — заголовок вплотную к своему блоку; между секциями пустая строка.
     def append_conference(title: str, div_order: Tuple[str, ...], wc_title: str) -> None:
-        chunks.append(title_fmt(title))
+        chunks.append(f"<b>{html.escape(title)}</b>")
         for div in div_order:
             label = _STANDINGS_DIV_LABEL.get(div, div.upper())
             div_teams = sorted(by_division.get(div) or [], key=_standings_sort_key)
             if div_teams:
-                hdr = _standings_header(name_w)
-                block_lines = [hdr, "-" * len(hdr)]
-                for rank, t in enumerate(div_teams, start=1):
-                    if rank == 4:
-                        # Топ-3 дивизиона проходят в плей-офф напрямую.
-                        block_lines.append(_standings_cut_line(hdr))
-                    block_lines.append(f"{rank:>2}." + _TABLE_SEP + row_fmt(t))
+                # Топ-3 дивизиона проходят в плей-офф напрямую.
+                block = _table(
+                    [_STANDINGS_HEADER] + [_standings_row(f"{rank}.", t) for rank, t in enumerate(div_teams, 1)],
+                    _STANDINGS_ALIGN,
+                    playoff_line_after=3,
+                )
             else:
-                # Дивизион без единой сыгранной игры (частичный сезон,
-                # Задача 36) — текст-причина вместо заголовков пустой
-                # таблицы, тем же стилем, что и заглушка Wild Card ниже.
-                block_lines = ["    (в дивизионе ещё никто не сыграл)"]
-            chunks.append(title_fmt(label) + "\n" + block_fmt(block_lines))
-        chunks.append(title_fmt(wc_title) + "\n" + block_fmt(_wild_card_lines(
-            by_division, div_order, name_w, row_fmt
-        )))
+                # Дивизион без единой сыгранной игры (частичный сезон, Задача 36) —
+                # текст-причина вместо таблицы из одной шапки.
+                block = "(в дивизионе ещё никто не сыграл)"
+            chunks.append(f"<b>{html.escape(label)}</b>\n{block}")
+        chunks.append(f"<b>{html.escape(wc_title)}</b>\n{_wild_card_block(by_division, div_order)}")
 
     append_conference(
         "EASTERN CONFERENCE",
@@ -1454,7 +1358,7 @@ def team_table() -> str:
             'conference_name': stats['conference_name'][i],
         })
 
-    table_body = _build_standings_table_body(teams, use_html=True)
+    table_body = _build_standings_table_body(teams)
     to_template = {
         'season': html.escape(str(config.CURRENT_SEASON)),
         'as_of': html.escape(str(_standings_as_of_day())),
@@ -1482,8 +1386,7 @@ def _team_group_summary(group_by: str, heading: str) -> str:
     меньшинства. Только то, что уже лежит в `teams_stats` — без вычисляемых
     «рейтингов». Не дублирует турнирную таблицу `/standings` (`team_table()`): там
     строка на каждую команду, здесь — усреднение по группе. Строка группы —
-    выровненная таблица в ширину телефона (`_pre_table_fit`: первой уходит число
-    команд). Пустой сезон — текст с причиной, а не пустая таблица (Задача 36).
+    таблица rich-сообщения (`_table`). Пустой сезон — текст с причиной, а не пустая таблица (Задача 36).
 
     Args:
         group_by: `_CONFERENCE_GROUP_BY` или `_DIVISION_GROUP_BY` — единственные
@@ -1536,7 +1439,7 @@ def _team_group_summary(group_by: str, heading: str) -> str:
     ]
     return (
         f"<b>{heading}</b> ({season_esc})\n\n"
-        + _pre_table_fit(rows, "lrrrrr", drop_order=(1,))
+        + _table(rows, "lrrrrr")
         + "\n<i>Средние по команде: О — очки, Г/и — голы за игру, Бол — реализация "
         "большинства, Мен — игра в меньшинстве; Ком — число команд.</i>"
     )
@@ -1674,7 +1577,7 @@ def _skater_label(skaters: Dict, i: int) -> str:
 
 
 def _team_goalies_table(team_id: int) -> str:
-    """Вратари клуба сезона с хотя бы одной игрой — `<pre>`-таблица (игры,
+    """Вратари клуба сезона с хотя бы одной игрой — таблица `_table` (игры,
     В-П-ОТ, %ОБ, КН), пустая строка, если таких нет."""
     goalies = cached_fetch_all(
         "SELECT r.lastname, gs.games, gs.wins, gs.losses, gs.ot, "
@@ -1700,7 +1603,7 @@ def _team_goalies_table(team_id: int) -> str:
         ]
         for i in range(goalies["count_rows"])
     ]
-    return _pre_table(rows, "lrrrr")
+    return _table(rows, "lrrrr")
 
 _TEAM_PROFILE_STATS_COLUMNS = [
     "team_id", "name", "short_name", "division_name", "conference_name", "games_played",
@@ -1814,8 +1717,8 @@ def team_profile(abbrev: str) -> str:
             "pp": _fmt_pct_stat(me["power_play_percentage"]),
             "pk": _fmt_pct_stat(me["penalty_kill_percentage"]),
             "fo": _fmt_pct_stat(me["face_off_win_percentage"]),
-            "scorers_table": _pre_table(scorer_rows, "llrrrr") if scorers["count_rows"] else "",
-            "toi_table": _pre_table(toi_rows, "llrr") if toi_leaders["count_rows"] else "",
+            "scorers_table": _table(scorer_rows, "llrrrr") if scorers["count_rows"] else "",
+            "toi_table": _table(toi_rows, "llrr") if toi_leaders["count_rows"] else "",
             "goalies_table": _team_goalies_table(team_id),
             "legend": _TEAM_STATS_LEGEND,
             "full_command": f"/{html.escape(a)}_FULL",
@@ -1872,9 +1775,10 @@ _COUNTRY_FROM = (
 )
 
 
-def _country_label(code: str) -> str:
+def country_label(code: str) -> str:
     """Метка страны для HTML: флаг + русское название из `COUNTRY_LABELS`,
-    неизвестный код — сам код; результат экранирован."""
+    неизвестный код — сам код; результат экранирован. Нужна и строке «По подписке»
+    рассылки (`push_digest_job`)."""
     return html.escape(COUNTRY_LABELS.get(code, code))
 
 
@@ -1932,8 +1836,7 @@ def country_rankings() -> Tuple[str, List[str]]:
         f"<i>Полевые игроки; страна — национальность игрока по NHL (одна на игрока); "
         f"страны от {COUNTRY_MIN_PLAYERS} игроков. Игр — игроков, О — очки, Г — голы, "
         f"О/и — очков на игрока.</i>\n\n"
-        # Наименее важное — голы, затем очки на игрока.
-        + _pre_table_fit(rows, "rlrrrr", drop_order=(4, 5))
+        + _table(rows, "rlrrrr")
     )
     if unknown:
         text += f"\n\n<i>Страна не указана в данных NHL у игроков: {unknown} (не учтены).</i>"
@@ -1989,13 +1892,12 @@ def _player_group_table(
     *,
     ranked: bool,
 ) -> Tuple[str, int, int]:
-    """Выровненная `<pre>`-таблица игроков одной группы — общая для экрана страны
+    """Таблица игроков одной группы (`_table`) — общая для экрана страны
     и `/BOS_FULL`.
 
     Зачем: у каждой группы свои главные показатели — нападающие: голы, очки,
     игры, время, силовые, броски; защитники — то же с блоками вместо бросков;
-    вратари (с хотя бы одной игрой): победы, %ОБ, КН, игры, сухие. Не влезающие
-    в ширину телефона колонки убираются с наименее важной (`_pre_table_fit`).
+    вратари (с хотя бы одной игрой): победы, %ОБ, КН, игры, сухие.
 
     Аргументы:
         owner: `_BY_COUNTRY` или `_BY_TEAM` — чьи игроки.
@@ -2012,7 +1914,6 @@ def _player_group_table(
         cols = ["lastname", "team", "wins", "sv", "gaa", "games", "shutouts", "total"]
         stats = cached_fetch_all(_GROUP_GOALIES_SQL.format(owner=owner), params, columns=cols)
         name_header, header = "Вратарь", ["В", "%ОБ", "КН", "И", "Сух"]
-        drop_order: Tuple[int, ...] = (4, 2, 3)  # сухие, КН, игры — игры важнее (Задача 50)
         cells = [
             [fmt(stats["wins"][i]), _fmt_pct_stat(stats["sv"][i]),
              _fmt_num_max2(stats["gaa"][i]), fmt(stats["games"][i]), fmt(stats["shutouts"][i])]
@@ -2025,8 +1926,6 @@ def _player_group_table(
         stats = cached_fetch_all(sql_text, params, columns=cols)
         extra_key, extra_label = ("shots", "Бр") if group == "F" else ("blocked", "Бл")
         name_header, header = "Игрок", ["Г", "О", "И", "ВП", "Хит", extra_label]
-        # Важность — из отзыва: голы, очки, игры, время, силовые; броски/блоки — дополнение.
-        drop_order = (5, 4, 3)
         cells = [
             [fmt(stats[k][i]) for k in ("goals", "points", "games", "toi", "hits", extra_key)]
             for i in range(stats["count_rows"])
@@ -2036,13 +1935,13 @@ def _player_group_table(
         return "", 0, 0
 
     def prefix(i: int) -> List[str]:
-        name = _clip_cell(stats["lastname"][i] or "Unknown", _LEADER_NAME_WIDTH)
+        name = stats["lastname"][i] or "Unknown"
         return [f"{offset + i + 1}.", name, stats["team"][i] or "—"] if ranked else [name]
 
     lead = ["", name_header, "Ком"] if ranked else [name_header]
     rows = [lead + header] + [prefix(i) + cells[i] for i in range(n)]
     align = ("rll" if ranked else "l") + "r" * len(header)
-    table = _pre_table_fit(rows, align, [len(lead) + c for c in drop_order])
+    table = _table(rows, align)
     return table, n, int(stats["total"][0])
 
 
@@ -2067,7 +1966,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
         _BY_COUNTRY, code, group, LEADERBOARD_PAGE_SIZE, offset, ranked=True
     )
     body = f"{table}\n<i>{_GROUP_LEGEND[group]}.</i>"
-    heading = f"{PLAYER_GROUPS[group][0]}: {_country_label(code)}"
+    heading = f"{PLAYER_GROUPS[group][0]}: {country_label(code)}"
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
@@ -2144,14 +2043,14 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
-    heading = f"<b>{_country_label(code)}</b>"
+    heading = f"<b>{country_label(code)}</b>"
     return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
 
 
 def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
     """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
     (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
-    Нужно рассылке подписки на страну (`push_digest_job.run_country_broadcast`)."""
+    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`)."""
     return sorted(_country_blocks(code, "g.day", night).items())
 
 
@@ -2167,23 +2066,25 @@ def game_score_line(game_id: int) -> str:
     return _score_line(_game_score_header(*_fetch_game_score_rows(game_id)))
 
 
-def country_night_goals(code: str, night: date) -> List[Tuple[int, int]]:
-    """Голы игроков страны `code` за ночь `night` для видео в рассылке:
-    (game_id, event_id) по порядку игры. Голы без `event_id` и буллиты
-    (`period >= 5` в матче с `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются."""
+def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
+    """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
+    порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
+    в плей-офф 5+ — овертаймы) пропускаются.
+    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) ждёт клипов всех голов
+    матча, а в альбом подписчику страны берёт голы её игроков."""
     goals = fetch_all(
-        "SELECT a.game_id, a.event_id "
+        "SELECT a.game_id, a.event_id, r.nationality "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
-        "JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
-        "WHERE g.day = %s AND r.nationality = %s AND a.event_id IS NOT NULL "
+        "LEFT JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
+        "WHERE g.day = %s AND a.event_id IS NOT NULL "
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
-        (night, code),
-        columns=["game_id", "event_id"],
+        (night,),
+        columns=["game_id", "event_id", "nationality"],
     )
     return [
-        (int(goals["game_id"][i]), int(goals["event_id"][i]))
+        (int(goals["game_id"][i]), int(goals["event_id"][i]), goals["nationality"][i])
         for i in range(goals["count_rows"])
     ]
 
@@ -2203,7 +2104,7 @@ def team_stats_with_count(
     Аргументы: заголовок (пусто — без заголовка), колонка сортировки (из белого
     списка `validate_column`), размер и сдвиг страницы.
 
-    Строки — выровненная таблица в `<pre>` с постоянным «хвостом» уже
+    Строки — таблица rich-сообщения (`_table`) с постоянным «хвостом» уже
     загруженных полей (Задача 18): игры, баланс `wins`-`losses`-`ot` и `points`
     из `teams_stats`. Команда — аббревиатурой: полное имя не помещается в
     строку на экране телефона. Сортировка от хвоста не меняется.
@@ -2245,7 +2146,7 @@ def team_stats_with_count(
             _format_leader_value(stats['record_points'][i]),
         ])
 
-    body = _pre_table(rows, "rlrrrr") if stats['count_rows'] else ""
+    body = _table(rows, "rlrrrr") if stats['count_rows'] else ""
     if name_stats:
         body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
@@ -2420,7 +2321,7 @@ def truncation_marker(
 
 
 def _telegram_cut_budget(
-    note: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH
+    note: str, max_len: int = RICH_MESSAGE_MAX_LENGTH
 ) -> int:
     """Сколько символов исходного текста остаётся под обрезку `truncate_telegram_text`
     при данной сноске `note`.
@@ -2435,10 +2336,9 @@ def _telegram_cut_budget(
         note: сноска, которая будет дописана после обрезки (с учётом
             разделителя "\\n\\n", если он нужен).
         max_len: лимит символов сообщения (по умолчанию
-            `TELEGRAM_MAX_MESSAGE_LENGTH`).
+            `RICH_MESSAGE_MAX_LENGTH`).
     """
-    cut = max_len - len(note) - 3
-    return max(cut, 80)
+    return max(max_len - len(note), 80)
 
 
 def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
@@ -2470,19 +2370,20 @@ def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
 
 def truncate_telegram_text(
     text: str,
-    max_len: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+    max_len: int = RICH_MESSAGE_MAX_LENGTH,
     *,
     footer_note: Optional[str] = None,
 ) -> str:
-    """Режет `text` под лимит Telegram (по умолчанию 4096), добавляя сноску.
+    """Режет `text` под лимит Telegram (по умолчанию — rich-сообщения), добавляя сноску.
 
     Зачем: сообщения Telegram не долетают за лимитом символов; резать нужно с
     запасом под сноску и добавлять её саму, а не отправлять оборванный текст
-    без предупреждения.
+    без предупреждения. Режет по границе строки: строка — абзац или таблица
+    rich-сообщения (`rich_message`), и её обрывок оставил бы незакрытый тег.
 
     Аргументы:
-        text: исходный текст сообщения.
-        max_len: лимит символов (по умолчанию `TELEGRAM_MAX_MESSAGE_LENGTH`).
+        text: исходный текст сообщения (построчный HTML).
+        max_len: лимит символов (по умолчанию `RICH_MESSAGE_MAX_LENGTH`).
         footer_note: сноска, дописываемая после обрезки; по умолчанию — общая
             сноска о лимите Telegram без чисел (`truncation_marker()`).
     """
@@ -2490,4 +2391,4 @@ def truncate_telegram_text(
         return text
     note = footer_note if footer_note is not None else ("\n\n" + truncation_marker())
     cut = _telegram_cut_budget(note, max_len)
-    return text[:cut] + "..." + note
+    return text[: max(text.rfind("\n", 0, cut + 1), 0)] + note

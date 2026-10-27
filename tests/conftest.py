@@ -3,11 +3,13 @@
 Bot fixtures import ``telegram_bot/*.py`` modules by their bare in-repo name
 (mirroring how the bot process itself runs, with ``telegram_bot/`` as cwd and
 on sys.path) and fake the two boundaries its handlers touch: the psycopg2
-connection behind ``database.py``, and the PTB ``Update``/``CallbackContext``
-objects passed into every handler. The DB boundary comes in two flavours:
-``fake_db_connection`` answers every query with one fixed row set, while
-``fake_db_router`` routes per query for whole-scenario runs and additionally
-swaps ``bot_messages.cached_fetch_all`` for a fresh, cache-empty wrapper.
+connection behind ``database.py``, and the HTTP session behind aiogram's ``Bot``
+(``FakeSession``: every Bot API request is recorded and answered like Telegram
+would). Handlers receive real aiogram ``Message``/``CallbackQuery`` objects bound
+to that bot. The DB boundary comes in two flavours: ``fake_db_connection`` answers
+every query with one fixed row set, while ``fake_db_router`` routes per query for
+whole-scenario runs and additionally swaps ``bot_messages.cached_fetch_all`` for a
+fresh, cache-empty wrapper.
 """
 
 from __future__ import annotations
@@ -15,12 +17,17 @@ from __future__ import annotations
 import importlib
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pytest
+from aiogram import Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import CallbackQuery, Message
 
 from tests._modeling_fixtures import write_synthetic_train_dataset
+from tests._telegram_fakes import CHAT_ID, FAKE_TOKEN, USER_ID, FakeSession, _callback_data, _message_data
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TELEGRAM_BOT_DIR = REPO_ROOT / "telegram_bot"
@@ -75,6 +82,8 @@ _REQUIRED_BOT_ENV = {
     "PG_USER": "nhl_bot_test",
     "PG_DATABASE": "nhl_bot_test",
     "SEASON_ID": "20262027",
+    # Только бот (`validate_env("ANTHROPIC_API_KEY")`, Задача 81); рассылке не нужен.
+    "ANTHROPIC_API_KEY": "sk-ant-TEST-NOT-A-REAL-KEY",
 }
 
 
@@ -129,6 +138,9 @@ class FakeConnection:
 
     def cursor(self) -> FakeCursor:
         return self._cursor
+
+    def commit(self) -> None:
+        """Запись (журнал `ai_questions`) коммитит транзакцию; фейку фиксировать нечего."""
 
 
 @pytest.fixture
@@ -235,130 +247,91 @@ def fake_db_router(
     return _patch
 
 
+@pytest.fixture
+def goal_clip_store(
+    bot_module: Callable[[str], Any], monkeypatch: pytest.MonkeyPatch
+) -> Dict[Tuple[int, int], Tuple[str, str]]:
+    """Кэш клипов голов ``bot_goal_clips`` (Задача 87) в памяти — один на рассылку
+    (``push_digest_job``) и кнопку видео (``stats_handlers``), как общая таблица в БД:
+    (game_id, event_id) → (``file_id``, подпись). SQL кэша — в tests/test_db_nhl.py."""
+    store: Dict[Tuple[int, int], Tuple[str, str]] = {}
+
+    def save(game_id: int, event_id: int, file_id: str, caption: str) -> None:
+        store[(game_id, event_id)] = (file_id, caption)
+
+    for name in ("push_digest_job", "stats_handlers"):
+        module = bot_module(name)
+        monkeypatch.setattr(module, "cached_goal_clip", lambda game_id, event_id: store.get((game_id, event_id)))
+        monkeypatch.setattr(module, "save_goal_clip", save)
+    return store
+
+
 # ---------------------------------------------------------------------------
-# Fake Update / CallbackContext (PTB 21.x shape)
+# Telegram boundary: aiogram Bot on a recording HTTP session (tests/_telegram_fakes.py)
 # ---------------------------------------------------------------------------
-#
-# Duck-typed stand-ins, not real `telegram.Update`/`telegram.CallbackQuery`
-# instances: handlers under test only ever touch `.callback_query`/`.message`
-# and a handful of their attributes and methods, and the real objects require
-# constructing several unrelated nested objects (User, Chat, Message, Bot...)
-# just to satisfy __init__.
-#
-# Every Bot API method here is `async def`, mirroring PTB 21.x: handlers await
-# them, so a sync stand-in would blow up on `await`. Recording still happens
-# eagerly inside the coroutine body, so a call that is created but never
-# awaited records nothing — that is deliberate, it keeps a forgotten `await`
-# in a test visible instead of silently passing.
 
-class FakeBot:
-    """Records outgoing calls instead of hitting api.telegram.org."""
-
-    def __init__(self) -> None:
-        self.sent_messages: List[dict] = []
-        self.sent_videos: List[dict] = []
-        self.edited_markups: List[dict] = []
-        self.deleted_messages: List[dict] = []
-        # Исключения, которые бросят следующие вызовы send_message (по одному
-        # на вызов) — ошибки Telegram вроде «Message to be replied not found».
-        self.send_message_errors: List[Exception] = []
-        # То же для delete_message («Message to delete not found»).
-        self.delete_message_errors: List[Exception] = []
-
-    async def send_message(self, **kwargs: Any) -> SimpleNamespace:
-        if self.send_message_errors:
-            raise self.send_message_errors.pop(0)
-        self.sent_messages.append(kwargs)
-        return SimpleNamespace(message_id=len(self.sent_messages))
-
-    async def delete_message(self, **kwargs: Any) -> bool:
-        if self.delete_message_errors:
-            raise self.delete_message_errors.pop(0)
-        self.deleted_messages.append(kwargs)
-        return True
-
-    async def send_video(self, **kwargs: Any) -> SimpleNamespace:
-        self.sent_videos.append(kwargs)
-        return SimpleNamespace(message_id=len(self.sent_videos))
-
-    async def edit_message_reply_markup(self, **kwargs: Any) -> SimpleNamespace:
-        self.edited_markups.append(kwargs)
-        return SimpleNamespace()
-
-
-class FakeCallbackQuery:
-    """Fakes the subset of ``telegram.CallbackQuery`` the handlers use."""
-
-    def __init__(self, data: Optional[str], chat_id: int = 100) -> None:
-        self.data = data
-        # PTB 21.x: CallbackQuery.message is a MaybeInaccessibleMessage, which
-        # carries `.chat` but no `.chat_id` — handlers read `message.chat.id`.
-        #
-        # message_id заведомо не пересекается с нумерацией FakeBot.send_message
-        # (1, 2, 3…): хендлеры, записывающие id меню в user_data, должны класть
-        # туда id ОТПРАВЛЕННОГО сообщения, а не того, по кнопке которого кликнули,
-        # и при совпадающих номерах тест этой подмены не заметил бы.
-        self.message = SimpleNamespace(
-            chat=SimpleNamespace(id=chat_id), message_id=900
-        )
-        self.answers: List[Optional[str]] = []
-        self.edited_texts: List[dict] = []
-        self.edited_markups: List[Any] = []
-
-    async def answer(self, text: Optional[str] = None, **kwargs: Any) -> None:
-        self.answers.append(text)
-
-    async def edit_message_text(self, text: str, **kwargs: Any) -> None:
-        self.edited_texts.append({"text": text, **kwargs})
-
-    async def edit_message_reply_markup(self, reply_markup: Any = None, **kwargs: Any) -> None:
-        self.edited_markups.append(reply_markup)
-
-
-class FakeMessage:
-    """Fakes the subset of ``telegram.Message`` used by text-input handlers."""
-
-    def __init__(self, text: Optional[str], chat_id: int = 100) -> None:
-        self.text = text
-        self.chat_id = chat_id
-        self.replies: List[dict] = []
-        # script_bot.stats() logs message.from_user.first_name; a real
-        # message-triggered Update always carries a from_user.
-        self.from_user = SimpleNamespace(first_name="Test")
-
-    async def reply_text(self, text: str, **kwargs: Any) -> SimpleNamespace:
-        self.replies.append({"text": text, **kwargs})
-        return SimpleNamespace(message_id=len(self.replies))
+@pytest.fixture
+def fake_bot() -> Bot:
+    """aiogram ``Bot`` on a ``FakeSession``: ``fake_bot.session`` holds the requests."""
+    return Bot(FAKE_TOKEN, session=FakeSession())
 
 
 @pytest.fixture
-def fake_context() -> SimpleNamespace:
-    """A CallbackContext-shaped object exposing ``.bot`` (a FakeBot),
-    ``.user_data`` and ``.chat_data`` (plain dicts, as PTB gives every
-    per-user/per-chat handler call)."""
-    return SimpleNamespace(bot=FakeBot(), user_data={}, chat_data={})
+def api(fake_bot: Bot) -> FakeSession:
+    """The recording session of ``fake_bot`` — what the handlers asked Telegram to do."""
+    session = fake_bot.session
+    assert isinstance(session, FakeSession)
+    return session
 
 
 @pytest.fixture
-def make_callback_update() -> Callable[..., SimpleNamespace]:
-    """Factory: build a fake Update carrying a ``callback_query`` with *data*."""
+def fsm_state(fake_bot: Bot) -> FSMContext:
+    """State of the `/stats` dialog for (CHAT_ID, USER_ID), as aiogram hands it to handlers."""
+    return FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=fake_bot.id, chat_id=CHAT_ID, user_id=USER_ID),
+    )
 
-    def _make(data: Optional[str], chat_id: int = 100) -> SimpleNamespace:
-        return SimpleNamespace(callback_query=FakeCallbackQuery(data, chat_id=chat_id))
+
+@pytest.fixture
+def make_message(fake_bot: Bot) -> Callable[..., Message]:
+    """Factory: a user's text message bound to ``fake_bot`` (``message.answer()`` is recorded)."""
+
+    def _make(text: Optional[str], chat_id: int = CHAT_ID, chat_type: str = "private") -> Message:
+        return Message.model_validate(_message_data(text, chat_id, chat_type), context={"bot": fake_bot})
 
     return _make
 
 
 @pytest.fixture
-def make_message_update() -> Callable[..., SimpleNamespace]:
-    """Factory: build a fake Update carrying a plain-text ``message``.
+def make_callback(fake_bot: Bot) -> Callable[..., CallbackQuery]:
+    """Factory: a button press with *data* on a bot message, bound to ``fake_bot``."""
 
-    ``callback_query=None`` mirrors real ``telegram.Update``, where the field
-    is always declared (defaulting to ``None``) even on a message-only update —
-    see ``throttle.enforce_callback_rate_limit``, which reads it unconditionally.
-    """
+    def _make(data: Optional[str], chat_id: int = CHAT_ID, user_id: int = USER_ID) -> CallbackQuery:
+        return CallbackQuery.model_validate(_callback_data(data, chat_id, user_id), context={"bot": fake_bot})
 
-    def _make(text: Optional[str], chat_id: int = 100) -> SimpleNamespace:
-        return SimpleNamespace(message=FakeMessage(text, chat_id=chat_id), callback_query=None)
+    return _make
+
+
+@pytest.fixture
+def make_update() -> Callable[..., Any]:
+    """Factory: a raw ``Update`` for ``Dispatcher.feed_update`` — ``text`` (a message) or
+    ``data`` (a button press); *update_id* grows with every call."""
+    from aiogram.types import Update
+
+    counter = {"id": 0}
+
+    def _make(
+        text: Optional[str] = None, data: Optional[str] = None, chat_id: int = CHAT_ID,
+        chat_type: str = "private", user_id: int = USER_ID,
+    ) -> Update:
+        counter["id"] += 1
+        if data is not None:
+            return Update.model_validate(
+                {"update_id": counter["id"], "callback_query": _callback_data(data, chat_id, user_id)}
+            )
+        return Update.model_validate(
+            {"update_id": counter["id"], "message": _message_data(text, chat_id, chat_type, user_id)}
+        )
 
     return _make

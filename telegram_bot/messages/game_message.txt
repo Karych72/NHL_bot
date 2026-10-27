@@ -1,8 +1,5 @@
 {{ score_line }}
 <i>Периоды: {{ period_scores }}</i>
-{%- if recent_form %}
-{{ recent_form }}
-{%- endif %}
 {%- if hat_tricks %}
 {{ hat_tricks }}
 {%- endif %}

@@ -4,16 +4,34 @@ bot_messages.fetch_all and bot_messages.cached_fetch_all are patched at the
 module boundary; template_funcs is exercised directly against real template
 files under telegram_bot/messages/.
 
-Special attention goes to HTML escaping (Telegram parse_mode="HTML"): player
+Tables are rich-message tables (``_table``); ``_tables()`` below reads them back
+into rows of cell texts, so assertions compare structure, not markup.
+
+Special attention goes to HTML escaping (rich-message HTML): player
 and team names coming out of the DB can contain `<`, `>`, `&`, quotes, or
 ordinary punctuation (`-`, `_`, `*`) and must come back through message
 builders exactly once escaped, never re-formatted or dropped.
 """
 from __future__ import annotations
 
+import html
+import re
+from typing import List
 from unittest.mock import patch
 
 import pytest
+
+
+def _tables(text: str) -> List[List[List[str]]]:
+    """Таблицы rich-сообщения в тексте экрана: таблица — строки, строка — тексты ячеек
+    (теги сняты, HTML-сущности раскрыты); строка «линия плей-офф» — одна ячейка."""
+    return [
+        [
+            [html.unescape(re.sub(r"<[^>]+>", "", cell)) for cell in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row)]
+            for row in re.findall(r"<tr>(.*?)</tr>", table)
+        ]
+        for table in re.findall(r"<table[^>]*>(.*?)</table>", text)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +71,45 @@ def test_output_text_does_not_auto_escape_html(bot_module, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _table() / rich_message() — разметка rich-сообщения (Bot API 10.1+)
+# ---------------------------------------------------------------------------
+
+def test_table_renders_header_alignment_and_escapes_cells(bot_module):
+    bot_messages = bot_module("bot_messages")
+
+    table = bot_messages._table([["", "Команда", "Очк"], ["1.", "A&B <Team>", "10"]], "rlr")
+
+    assert table == (
+        "<table compact striped>"
+        '<tr><th align="right"></th><th>Команда</th><th align="right">Очк</th></tr>'
+        '<tr><td align="right">1.</td><td>A&amp;B &lt;Team&gt;</td><td align="right">10</td></tr>'
+        "</table>"
+    )
+    assert "\n" not in table, "таблица — одна строка текста, один блок rich-сообщения"
+
+
+def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module):
+    bot_messages = bot_module("bot_messages")
+
+    table = bot_messages._table([["#", "К"], ["1.", "A"], ["2.", "B"], ["3.", "C"]], "rl", playoff_line_after=2)
+
+    assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], ["линия плей-офф"], ["3.", "C"]]]
+    assert '<td colspan="2" align="center"><i>линия плей-офф</i></td>' in table
+
+
+def test_rich_message_makes_paragraph_per_line_and_keeps_tables_as_blocks(bot_module):
+    """В rich-HTML перевод строки — пробел: каждая строка текста — свой абзац,
+    пустые строки не дают пустых абзацев, таблица — отдельный блок."""
+    bot_messages = bot_module("bot_messages")
+    table = bot_messages._table([["A"], ["1"]], "r")
+
+    message = bot_messages.rich_message(f"<b>Заголовок</b>\n<i>сезон</i>\n\n{table}\n\nИтог: /help")
+
+    assert message.html == f"<p><b>Заголовок</b></p><p><i>сезон</i></p>{table}<p>Итог: /help</p>"
+    assert (message.markdown, message.blocks) == (None, None)
+
+
+# ---------------------------------------------------------------------------
 # game_message() — HTML escaping of scorer/team/goalie names
 # ---------------------------------------------------------------------------
 
@@ -74,8 +131,6 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "team_name": ["BOS", "TOR<script>alert(1)</script>"],
             "count_rows": 2,
         }
-    if "home_team_id, away_team_id" in q:
-        return {"count_rows": 0}
     if "get_goals_game" in q:
         return {
             "scorer": [_EVIL_SCORER, _EVIL_SCORER, _EVIL_SCORER],
@@ -131,11 +186,10 @@ _THREE_STARS_ROWS = {
 
 @pytest.fixture
 def game_message_text(bot_module):
-    """game_message() itself only calls fetch_all (:106,111,126,145), but it
-    also calls _last_n_form_record() (:236-237), which since Task 9 goes
-    through cached_fetch_all — patch both to the same stub, so an unmocked
-    query fails loudly (the stub's terminal AssertionError) instead of
-    silently escaping to the real database.get_connection()."""
+    """game_message() calls only fetch_all; cached_fetch_all is patched to the
+    same stub too, so a query that sneaks in through the cache fails loudly
+    (the stub's terminal AssertionError) instead of silently escaping to the
+    real database.get_connection()."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
@@ -183,6 +237,93 @@ def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
     _, goals_meta = game_message_text
     assert [g["event_id"] for g in goals_meta] == [10, 11, 12]
     assert all(g["game_id"] == 555 for g in goals_meta)
+
+
+# ---------------------------------------------------------------------------
+# game_message() — голы по периодам (Задача 84)
+# ---------------------------------------------------------------------------
+
+def test_game_message_groups_goals_by_period_and_skips_period_without_goals(
+    game_message_text,
+):
+    """Голы фикстуры — в 1-м и 2-м периодах: заголовка 3-го нет, время внутри периода."""
+    text, _ = game_message_text
+    scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
+    assert (
+        "<b>1-й период</b>\n"
+        f"05:30 · 1:0 — {scorer} [C]\n"
+        "Sm&#x27;th\n"
+        f"10:15 · 2:0 — {scorer} [C] (ББ)\n"
+        "\n"
+        "<b>2-й период</b>\n"
+        f"02:00 · 3:0 — {scorer} [C] (ПВ, ПШ)\n"
+    ) in text
+    assert "3-й период" not in text
+    assert "<pre>" not in text and "Форма" not in text
+
+
+def _overtime_fetch_all(shootout: bool):
+    """Заглушка матча 2:2 после основного времени, решённого в овертайме
+    (`shootout=False`, гол в периоде 4) или буллитами (гол в периоде 5, 00:00)."""
+    def fetch_all(query, params=None, columns=None):
+        q = str(query)
+        if "get_game_stats" in q:
+            stats = _game_message_fetch_all(query, params, columns)
+            return {
+                **stats,
+                "goals": [3, 2],
+                "is_overtime": [True, True],
+                "is_shootouts": [shootout, shootout],
+            }
+        if "get_goals_game" in q:
+            goals = _game_message_fetch_all(query, params, columns)
+            return {
+                **goals,
+                "scorer": ["Kaprizov", "Hughes", "Boldy"],
+                "period": [1, 3, 5 if shootout else 4],
+                "goal_time": ["06:09", "19:39", "00:00" if shootout else "03:12"],
+                "home_score": [1, 1, 2],
+                "away_score": [0, 1, 1],
+                "is_ppg": [False, False, False],
+                "empty_net": [False, False, False],
+                "winner_goal": [False, False, True],
+            }
+        return _game_message_fetch_all(query, params, columns)
+
+    return fetch_all
+
+
+@pytest.mark.parametrize(
+    "shootout, expected_block, expected_label",
+    [
+        (False, "<b>Овертайм</b>\n03:12 · 2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy ОТ 03:12"),
+        # Время буллита (всегда 00:00) не выводится — ни в строке, ни в кнопке.
+        (True, "<b>Буллиты</b>\n2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy Б"),
+    ],
+)
+def test_game_message_titles_overtime_and_shootout_goal(
+    bot_module, shootout, expected_block, expected_label
+):
+    bot_messages = bot_module("bot_messages")
+    stub = _overtime_fetch_all(shootout)
+    with patch.object(bot_messages, "fetch_all", side_effect=stub), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
+        text, goals_meta = bot_messages.game_message(555)
+
+    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
+    assert "2-й период" not in text
+    assert [g["label"] for g in goals_meta] == [
+        "▶ 1:0 Kaprizov 1п 06:09", "▶ 1:1 Hughes 3п 19:39", expected_label,
+    ]
+
+
+def test_period_names_count_playoff_overtimes_from_period_number(bot_module):
+    """Плей-офф (Задача 37C): период 5 без буллитов — второй овертайм, а не «Буллиты»."""
+    bot_messages = bot_module("bot_messages")
+    assert bot_messages._period_names(4, False) == ("Овертайм", "ОТ")
+    assert bot_messages._period_names(5, False) == ("2-й овертайм", "2ОТ")
+    assert bot_messages._period_names(6, False) == ("3-й овертайм", "3ОТ")
+    assert bot_messages._period_names(5, True) == ("Буллиты", "Б")
 
 
 # ---------------------------------------------------------------------------
@@ -455,19 +596,16 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     bot_messages = bot_module("bot_messages")
     text, _ = _render_preview(bot_messages)
 
-    # Одна таблица «метрика|гости|хозяева», аббревиатуры — в шапке колонок,
+    # Одна таблица «метрика · гости · хозяева», аббревиатуры — в шапке колонок,
     # разница шайб со знаком.
-    assert (
-        "<pre>              |  AAA|  BBB\n"
-        "Очки          |   14|    6\n"
-        "% очков       |  70%|  30%\n"
-        "Баланс W-L-OT |7-3-0|3-7-0\n"
-    ) in text
-    assert "Разница шайб  | +1.5| -0.9</pre>" in text
-    # Ни одна строка не шире экрана телефона: иначе Telegram переносит её
-    # и колонки разъезжаются (отзыв 2026-10-09).
-    table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
-    assert max(len(line) for line in table.split("\n")) <= bot_messages._MOBILE_PRE_WIDTH
+    [table] = _tables(text)
+    assert table[:4] == [
+        ["", "AAA", "BBB"],
+        ["Очки", "14", "6"],
+        ["% очков", "70%", "30%"],
+        ["Баланс W-L-OT", "7-3-0", "3-7-0"],
+    ]
+    assert table[-1] == ["Разница шайб", "+1.5", "-0.9"]
     # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
     assert "Оценка модели" not in text
     assert "н/д" not in text
@@ -531,9 +669,10 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
             patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "task": [], "probability": []}):
         text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
 
-    assert "Форма (5 игр) |2-1-0|0-0-0\n" in text
-    assert "Серия         |   W2|    —\n" in text
-    assert "Личные встречи|    0|    1\n" in text
+    [table] = _tables(text)
+    assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
+    assert ["Серия", "W2", "—"] in table
+    assert ["Личные встречи", "0", "1"] in table
 
 
 # ---------------------------------------------------------------------------
@@ -570,8 +709,10 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
         )
     assert has_prev is False
     assert has_next is True
-    # Колонки через «|», колонка показателя подписана им самим, а не «Знач».
-    assert "<pre>   |Игрок      |Ком|Очки| И|Смен\n 1.|Player0 [C]|WSH| 100|82|1500\n" in text
+    # Колонка показателя подписана им самим, а не «Знач».
+    [table] = _tables(text)
+    assert table[:2] == [["", "Игрок", "Ком", "Очки", "И", "Смен"], ["1.", "Player0 [C]", "WSH", "100", "82", "1500"]]
+    assert len(table) == 11
     assert "Показаны 1–10 из 25" in text
 
 
@@ -586,7 +727,7 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
     assert has_prev is True
     assert has_next is True
     assert "Показаны 11–20 из 25" in text
-    assert "11.|Player0 [C]|WSH| 100|82|1500" in text
+    assert _tables(text)[0][1] == ["11.", "Player0 [C]", "WSH", "100", "82", "1500"]
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
@@ -600,7 +741,7 @@ def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
     assert has_prev is True
     assert has_next is False
     assert "Показаны 11–13 из 13" in text
-    assert "11.|Player0 [C]|WSH| 100|82|1500" in text
+    assert _tables(text)[0][1] == ["11.", "Player0 [C]", "WSH", "100", "82", "1500"]
 
 
 def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
@@ -616,7 +757,7 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         )
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert " 1.|Player0 [C]|WSH| 100|82|1500" in text
+    assert _tables(text)[0][1] == ["1.", "Player0 [C]", "WSH", "100", "82", "1500"]
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
@@ -644,7 +785,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
             "Статистика большинства", "power_play_percentage", 0
         )
     assert "Статистика большинства" in text
-    assert "<pre>  |Ком|%бол| И|В-П-ОТ| О\n1.|BOS|55.5|40|30-8-2|62</pre>" in text
+    assert _tables(text) == [[["", "Ком", "%бол", "И", "В-П-ОТ", "О"], ["1.", "BOS", "55.5", "40", "30-8-2", "62"]]]
     assert has_prev is False
     assert has_next is True
     assert "Показаны 1 из 12" in text
@@ -667,7 +808,7 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
-    assert " 1.|T0 |   0|40|10-5-1|0" in text
+    assert _tables(text)[0][1] == ["1.", "T0", "0", "40", "10-5-1", "0"]
 
 
 def test_stat_column_labels_cover_every_leaderboard_column(bot_module):
@@ -702,7 +843,7 @@ def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1.|BOS|  55|40|25-10-5|55" in text
+    assert _tables(text)[0][1] == ["1.", "BOS", "55", "40", "25-10-5", "55"]
 
 
 def test_team_stat_leaderboard_page_null_record_fields_render_dash(
@@ -718,13 +859,14 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", "points", 0)
-    assert "1.|BOS|   —|40| —-—-—|—" in text
+    assert _tables(text)[0][1] == ["1.", "BOS", "—", "40", "—-—-—", "—"]
     assert "None" not in text
 
 
-def test_player_stat_leaderboard_page_season_end_goalie_drops_saves_to_fit_phone(bot_module):
-    """Конец сезона, 10-е место: «10. Vasilevsk… TBL 92.52 58 1353/1483» —
-    37 символов, шире экрана телефона: колонка сейвов уходит, игры остаются."""
+def test_player_stat_leaderboard_page_season_end_goalie_keeps_every_column(bot_module):
+    """Конец сезона, 10-е место: в rich-таблице колонки раскладывает Telegram — сейвы
+    и полная фамилия остаются (в `<pre>` строка шире телефона теряла сейвы, фамилия
+    обрезалась до «Vasilevsk…»)."""
     bot_messages = bot_module("bot_messages")
     rows = {
         "lastname": ["Vasilevskiy"], "roster_position": ["G"],
@@ -736,7 +878,10 @@ def test_player_stat_leaderboard_page_season_end_goalie_drops_saves_to_fit_phone
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 9
         )
-    assert "<pre>   |Вратарь   |Ком|  %ОБ| И\n10.|Vasilevsk…|TBL|92.52|58</pre>" in text
+    assert _tables(text) == [[
+        ["", "Вратарь", "Ком", "%ОБ", "И", "Сейвы"],
+        ["10.", "Vasilevskiy", "TBL", "92.52", "58", "1353/1483"],
+    ]]
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +923,11 @@ def test_conference_summary_escapes_html_in_group_name(
     }
     with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         text = bot_messages.conference_summary()
-    assert "<pre>          |Ком|   О|Г/и|  Бол|  Мен\n&lt;i&gt;Western| 16|50.0|3.0|20.0%|80.0%</pre>" in text
+    assert "<td>&lt;i&gt;Western</td>" in text
+    assert _tables(text) == [[
+        ["", "Ком", "О", "Г/и", "Бол", "Мен"],
+        ["<i>Western", "16", "50.0", "3.0", "20.0%", "80.0%"],
+    ]]
     assert "<i>Western" not in text, "имя конференции должно быть экранировано ровно один раз"
 
 
@@ -795,7 +944,7 @@ def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1.|McDavid [C]|EDM| 153|82|1800" in text
+    assert _tables(text)[0][1] == ["1.", "McDavid [C]", "EDM", "153", "82", "1800"]
 
 
 def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
@@ -815,7 +964,7 @@ def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
-    assert "1.|Rookie [C]|CHI|  10|5|   —" in text
+    assert _tables(text)[0][1] == ["1.", "Rookie [C]", "CHI", "10", "5", "—"]
     assert "None" not in text
 
 
@@ -834,7 +983,7 @@ def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
         )
-    assert "<pre>  |Игрок    |Ком|SAT%| И|Смен\n1.|Makar [D]|COL|58.2|70|1600</pre>" in text
+    assert _tables(text) == [[["", "Игрок", "Ком", "SAT%", "И", "Смен"], ["1.", "Makar [D]", "COL", "58.2", "70", "1600"]]]
 
 
 def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_module):
@@ -850,7 +999,9 @@ def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_mod
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Голы с кистевого", "players_shot_types", "goals_wrist", 0
         )
-    assert "<pre>  |Игрок        |Ком|Голы| И|Смен\n1.|Kucherov [RW]|TBL|  12|78|1700</pre>" in text
+    assert _tables(text) == [[
+        ["", "Игрок", "Ком", "Голы", "И", "Смен"], ["1.", "Kucherov [RW]", "TBL", "12", "78", "1700"],
+    ]]
 
 
 # ---------------------------------------------------------------------------
@@ -967,10 +1118,9 @@ def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
-    assert (
-        "<pre>  |Вратарь   |Ком|  %ОБ| И|    Сейвы\n"
-        "1.|Shesterkin|NYR|0.925|55|1500/1620</pre>"
-    ) in text
+    assert _tables(text) == [[
+        ["", "Вратарь", "Ком", "%ОБ", "И", "Сейвы"], ["1.", "Shesterkin", "NYR", "0.925", "55", "1500/1620"],
+    ]]
 
 
 def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
@@ -990,9 +1140,7 @@ def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
         text, _, _ = bot_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
-    assert (
-        "1.|Backup |CHI|  0|1|  —/—" in text
-    )
+    assert _tables(text)[0][1] == ["1.", "Backup", "CHI", "0", "1", "—/—"]
     assert "None" not in text
 
 
@@ -1035,26 +1183,58 @@ def test_truncate_telegram_text_leaves_short_text_untouched(bot_module):
     assert bot_messages.truncate_telegram_text(text) == text
 
 
-def test_truncate_telegram_text_truncates_and_appends_default_note(bot_module):
+def _lines_over_limit(bot_messages, line: str) -> str:
+    """Построчный текст длиннее лимита rich-сообщения на несколько строк."""
+    return "\n".join([line] * (bot_messages.RICH_MESSAGE_MAX_LENGTH // len(line) + 3))
+
+
+def test_truncate_telegram_text_cuts_whole_lines_and_appends_default_note(bot_module):
     """Дефолтная сноска (без footer_note) приходит из truncation_marker() — тот же
-    хелпер, что и все остальные ветки усечения, а не свой строковый литерал."""
+    хелпер, что и все остальные ветки усечения, а не свой строковый литерал. Режется
+    целыми строками: строка — абзац или таблица rich-сообщения, обрывок оставил бы
+    незакрытый тег."""
     bot_messages = bot_module("bot_messages")
-    long_text = "x" * 5000
+    line = "<b>" + "x" * 90 + "</b>"
+    long_text = _lines_over_limit(bot_messages, line)
     note = "\n\n" + bot_messages.truncation_marker()
+
     result = bot_messages.truncate_telegram_text(long_text)
-    cut = bot_messages._telegram_cut_budget(note)
-    assert result == long_text[:cut] + "..." + note
-    assert len(result) <= bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH
+
+    assert result.endswith(note)
+    kept = result[: -len(note)].split("\n")
+    assert set(kept) == {line}, "только целые строки"
+    assert len(result) <= bot_messages.RICH_MESSAGE_MAX_LENGTH
+    # Ещё одна строка уже не влезла бы — режется не больше необходимого.
+    assert len("\n".join(kept + [line])) > bot_messages._telegram_cut_budget(note)
 
 
 def test_truncate_telegram_text_uses_custom_footer_note(bot_module):
     bot_messages = bot_module("bot_messages")
-    long_text = "y" * 5000
+    long_text = _lines_over_limit(bot_messages, "y" * 100)
     footer_note = "\n\nCUT"
     result = bot_messages.truncate_telegram_text(long_text, footer_note=footer_note)
-    cut = bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH - len(footer_note) - 3
-    assert result == long_text[:cut] + "..." + footer_note
-    assert len(result) <= bot_messages.TELEGRAM_MAX_MESSAGE_LENGTH
+    assert result.endswith("y\n\nCUT")
+    assert len(result) <= bot_messages.RICH_MESSAGE_MAX_LENGTH
+
+
+def test_truncate_telegram_text_keeps_last_line_that_fits_exactly(bot_module):
+    """Строка, конец которой ровно на границе бюджета, помещается — не отбрасывается."""
+    bot_messages = bot_module("bot_messages")
+    text = "\n".join(["a" * 9] * 20)
+    result = bot_messages.truncate_telegram_text(text, max_len=102, footer_note="\n\nN")
+    assert result == "\n".join(["a" * 9] * 10) + "\n\nN"
+    assert len(result) == 102
+
+
+def test_truncate_telegram_text_keeps_a_table_line_whole(bot_module):
+    """Таблица — одна строка текста: её нельзя разрезать посередине, она либо
+    помещается целиком, либо уходит целиком."""
+    bot_messages = bot_module("bot_messages")
+    table = bot_messages._table([["A"]] + [["x" * 50]] * 200, "l")
+    text = "<b>Заголовок</b>\n" + table
+    result = bot_messages.truncate_telegram_text(text, max_len=len(text) - 10)
+    assert "<table" not in result
+    assert result.startswith("<b>Заголовок</b>")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,18 +1251,18 @@ def test_digest_shown_match_count_returns_full_total_when_everything_fits(bot_mo
 def test_digest_shown_match_count_drops_lines_that_do_not_fit_budget(bot_module):
     bot_messages = bot_module("bot_messages")
     long_line = "X" * 500
-    lines = [long_line] * 20  # 20 * 500 = 10000 символов, заведомо больше 4096
-    shown = bot_messages.digest_shown_match_count("Header\n\n", lines, 20)
-    assert 0 < shown < 20
+    lines = [long_line] * 80  # 80 * 500 = 40000 символов, заведомо больше лимита rich
+    shown = bot_messages.digest_shown_match_count("Header\n\n", lines, 80)
+    assert 0 < shown < 80
 
     # ровно shown строк должны укладываться в бюджет truncate_telegram_text с
     # footer_note, построенным на этом же shown …
-    note = "\n\n" + bot_messages.truncation_marker(shown, 20, item_word="матчей")
+    note = "\n\n" + bot_messages.truncation_marker(shown, 80, item_word="матчей")
     cut = bot_messages._telegram_cut_budget(note)
     assert len("Header\n\n" + "\n".join(lines[:shown])) <= cut
 
     # … а на одну строку больше — уже нет (иначе маркер солгал бы про N).
-    note_next = "\n\n" + bot_messages.truncation_marker(shown + 1, 20, item_word="матчей")
+    note_next = "\n\n" + bot_messages.truncation_marker(shown + 1, 80, item_word="матчей")
     cut_next = bot_messages._telegram_cut_budget(note_next)
     assert len("Header\n\n" + "\n".join(lines[: shown + 1])) > cut_next
 
@@ -1370,8 +1550,10 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     text = bot_messages.team_table()
 
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
-    assert wc.index("WC1|T3") < wc.index("WC2|T4") < wc.index("- - линия плей-офф") < wc.index(" 3.|T5")
-    assert "T0" not in wc, "топ-3 дивизиона в гонку Wild Card не входят"
+    [table] = _tables(wc)
+    assert [row[:2] for row in table] == [
+        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], ["линия плей-офф"], ["3.", "T5"],
+    ]
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
 
 
@@ -1393,12 +1575,18 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
     text = bot_messages.team_table()
 
     div = text.split("METROPOLITAN DIVISION", 1)[1].split("WILD CARD — EASTERN", 1)[0]
-    assert div.index(" 3.|T2") < div.index("- - линия плей-офф") < div.index(" 4.|T3")
-    assert div.count("линия плей-офф") == 1
-    # Шапка и строки — колонки через «|», место занимает те же 4 символа.
-    assert "   |Команда       |Очк|Игр| %очк\n" in div
+    [table] = _tables(div)
+    assert table[:6] == [
+        ["", "Команда", "Очк", "Игр", "%очк"],
+        ["1.", "T0", "40", "20", "60.0"],
+        ["2.", "T1", "39", "20", "60.0"],
+        ["3.", "T2", "38", "20", "60.0"],
+        ["линия плей-офф"],
+        ["4.", "T3", "37", "20", "60.0"],
+    ]
+    assert len(table) == 1 + 9 + 1, "шапка, девять команд и одна линия"
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
-    assert " 5.|T7" in wc
+    assert [row[:2] for row in _tables(wc)[0]][-1] == ["5.", "T7"]
     assert "T8" not in wc, "Wild Card обрезан до пяти команд"
 
 # ---------------------------------------------------------------------------
@@ -1439,12 +1627,12 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     text, codes = bot_messages.country_rankings()
 
     assert codes == ["CAN", "XXX"]
-    # Выровненная таблица; неизвестный код показывается как есть, без исключения.
-    assert (
-        "<pre>  |Страна   |Игр|  О| Г| О/и\n"
-        "1.|🇨🇦 Канада|  4|100|40|25.0\n"
-        "2.|XXX      |  3| 30| 9|10.0</pre>"
-    ) in text
+    # Неизвестный код показывается как есть, без исключения.
+    assert _tables(text) == [[
+        ["", "Страна", "Игр", "О", "Г", "О/и"],
+        ["1.", "🇨🇦 Канада", "4", "100", "40", "25.0"],
+        ["2.", "XXX", "3", "30", "9", "10.0"],
+    ]]
     assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
     # Порог уходит в SQL параметром, вратари исключены.
     query, params = cursor.executed[0]
@@ -1486,18 +1674,20 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     assert "🇨🇦 Канада" in text
     assert "Показаны 11 из 25 строк." in text
     # Игры — сразу после голов и очков (Задача 50).
-    assert f"<pre>   |Игрок  |Ком|Г|О|И|   ВП|Хит|{extra_header}\n" in text
-    extra = "20" if group == "F" else " 2"
-    assert f"11.|McDavid|EDM|4|8|7|21:30|  5|{extra}</pre>" in text
+    extra = "20" if group == "F" else "2"
+    assert _tables(text) == [[
+        ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", extra_header],
+        ["11.", "McDavid", "EDM", "4", "8", "7", "21:30", "5", extra],
+    ]]
     assert (has_prev, has_next) == (True, True)
     assert position_sql in cursor.executed[-1][0]
 
 
-def test_country_page_drops_least_important_columns_to_fit_phone_width(
+def test_country_page_keeps_every_column_and_full_last_name(
     bot_module, fake_db_router
 ):
-    """Строка шире экрана телефона: первыми уходят броски, затем силовые — по
-    отзыву они дополнение к голам, очкам, играм и времени; фамилия обрезается."""
+    """Rich-таблицу раскладывает Telegram: длинная фамилия и все колонки остаются
+    (в `<pre>` строка шире телефона теряла броски и силовые, фамилия обрезалась)."""
     bot_messages = bot_module("bot_messages")
     fake_db_router([
         _COUNTRY_RANKING,
@@ -1506,12 +1696,10 @@ def test_country_page_drops_least_important_columns_to_fit_phone_width(
 
     text, _, _ = bot_messages.country_page("CAN", "F", 0)
 
-    table = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
-    assert table.splitlines() == [
-        "  |Игрок     |Ком| Г|  О| И|   ВП",
-        "1.|Nugent-Ho…|EDM|64|153|82|21:30",
-    ]
-    assert all(len(line) <= 36 for line in table.splitlines())
+    assert _tables(text) == [[
+        ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
+        ["1.", "Nugent-Hopkins", "EDM", "64", "153", "82", "21:30", "150", "300"],
+    ]]
 
 
 def test_country_pages_reject_code_outside_ranking_without_touching_sql(
@@ -1535,8 +1723,10 @@ def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db
         ("FROM goalies_season_stats", [("Vejmelka", "UTA", 38, 89.67, 2.74592, 64, 3, 1)]),
     ])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)
-    # С «Сух» строка — 37 символов, шире экрана: сухие уходят первыми.
-    assert "<pre>  |Вратарь |Ком| В|   %ОБ|  КН| И\n1.|Vejmelka|UTA|38|89.67%|2.75|64</pre>" in text
+    assert _tables(text) == [[
+        ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"],
+        ["1.", "Vejmelka", "UTA", "38", "89.67%", "2.75", "64", "3"],
+    ]]
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)

@@ -24,6 +24,12 @@
 |------|--------|-------------|
 | [`stats/team_and_country_stats_plan.md`](./stats/team_and_country_stats_plan.md) | **Частично** | Фаза C реализована (сезонное сравнение команд из `/tonight`), Фаза A частично; Задачи 41 и 42 закрыты — [`archive/closed_tasks.md`](./archive/closed_tasks.md). |
 
+## Оформление сообщений (`rich_messages/`)
+
+| Файл | Статус | Комментарий |
+|------|--------|-------------|
+| [`rich_messages/README.md`](./rich_messages/README.md) | **План** | Перевод `<pre>`-таблиц бота на Rich Messages (Bot API 10.1) и компактные таблицы (10.3); развилки для spike и черновая разбивка RM-0…RM-6. |
+
 ## Датасет и агенты Cursor (`dataset_agents/`)
 
 | Файл | Статус | Комментарий |

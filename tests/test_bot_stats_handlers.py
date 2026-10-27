@@ -1,21 +1,32 @@
 """Unit tests for telegram_bot/stats_handlers.py: parsing of inline-keyboard
 callback_data strings and the pure keyboard builders that produce them.
 
-Handlers are exercised through the conftest fake Update/CallbackContext
-fixtures (no real PTB Update/CallbackQuery objects, no Telegram network call).
-Where a handler calls into bot_messages for DB-backed rendering, that
+Handlers get real aiogram objects (conftest: ``make_callback``/``make_message``
+bound to ``fake_bot``, dialog state ``fsm_state``) and the arguments aiogram's
+dependency injection would pass — the regex ``match`` of the registration filter
+included; what they ask Telegram to do is read back from the recording session
+(``api``). Where a handler calls into bot_messages for DB-backed rendering, that
 collaborator function is patched on stats_handlers' own namespace (the same
 boundary style already used for bot_messages.fetch_all elsewhere in this
-suite) so what's actually under test — callback_data parsing, guard clauses,
-offset arithmetic, BadRequest handling — is isolated from database access.
+suite) so what's actually under test — callback_data parsing, offset arithmetic,
+TelegramBadRequest handling — is isolated from database access.
 """
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendVideo
+
+from tests._telegram_fakes import MENU_MESSAGE_ID, body, rich_html
+
+
+def _bad_request(message: str) -> TelegramBadRequest:
+    """Ответ Telegram 400 с текстом *message*, как его поднимает aiogram."""
+    return TelegramBadRequest(method=SendMessage(chat_id=100, text="x"), message=message)
 
 
 @pytest.fixture(autouse=True)
@@ -181,103 +192,94 @@ def test_page_nav_rows_empty_without_neighbouring_pages(bot_module):
 
 
 # ---------------------------------------------------------------------------
-# callback_stats_player_page
+# callback_stats_player_page / callback_stats_team_page
 # ---------------------------------------------------------------------------
 
+def _match(stats_handlers, pattern_name: str, data: str) -> re.Match:
+    """Совпадение, которое aiogram передаёт хендлеру нажатия (`F.data.regexp(...).as_("match")`)."""
+    match = re.match(getattr(stats_handlers, pattern_name), data)
+    assert match is not None
+    return match
+
+
 @pytest.mark.asyncio
-async def test_stats_player_page_ignores_missing_query_data(bot_module, make_callback_update, fake_context):
+async def test_stats_player_page_answers_without_rendering_for_unknown_stat(
+    bot_module, make_callback, fsm_state, api
+):
+    """Пара (table, column) вне `PLAYER_STAT_TITLES` подходит под паттерн, но не роняет
+    диалог: нажатие получает ответ, страница не перерисовывается, состояние не меняется."""
+    stats_handlers = bot_module("stats_handlers")
+    data = "st:not_a_table:not_a_col:0"
+
+    await stats_handlers.callback_stats_player_page(
+        make_callback(data), fsm_state, _match(stats_handlers, "STAT_PAGE_CALLBACK_PATTERN", data)
+    )
+
+    assert api.answers == [None]
+    assert api.edited_texts == []
+    assert await fsm_state.get_state() is None
+
+
+@pytest.mark.asyncio
+async def test_stats_player_page_parses_offset_and_renders_known_stat(
+    bot_module, make_callback, fsm_state, api
+):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    update = make_callback_update(None)
-
-    result = await stats_handlers.callback_stats_player_page(update, fake_context)
-
-    assert result == dialog_states.SECOND
-    assert update.callback_query.answers == []
-
-
-@pytest.mark.asyncio
-async def test_stats_player_page_ignores_data_not_matching_pattern(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("garbage")
-
-    await stats_handlers.callback_stats_player_page(update, fake_context)
-
-    assert update.callback_query.answers == []
-    assert update.callback_query.edited_texts == []
-
-
-@pytest.mark.asyncio
-async def test_stats_player_page_answers_without_rendering_for_unknown_stat(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("st:not_a_table:not_a_col:0")
-
-    await stats_handlers.callback_stats_player_page(update, fake_context)
-
-    assert update.callback_query.answers == [None]
-    assert update.callback_query.edited_texts == []
-
-
-@pytest.mark.asyncio
-async def test_stats_player_page_parses_offset_and_renders_known_stat(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("st:players_season_stats:points:20")
+    data = "st:players_season_stats:points:20"
 
     with patch.object(
         stats_handlers, "player_stat_leaderboard_page", return_value=("PAGE TEXT", True, True)
     ) as mock_page:
-        await stats_handlers.callback_stats_player_page(update, fake_context)
+        await stats_handlers.callback_stats_player_page(
+            make_callback(data), fsm_state, _match(stats_handlers, "STAT_PAGE_CALLBACK_PATTERN", data)
+        )
 
     mock_page.assert_called_once_with("Лучшие бомбардиры", "players_season_stats", "points", 20)
-    [edit] = update.callback_query.edited_texts
-    assert edit["text"] == "PAGE TEXT"
-    assert edit["parse_mode"] == "HTML"
-    nav_row = edit["reply_markup"].inline_keyboard[0]
+    [edit] = api.edited_texts
+    assert edit.text is None
+    assert body(edit) == rich_html("PAGE TEXT")
+    assert edit.message_id == MENU_MESSAGE_ID, "страница — на месте сообщения с кнопкой"
+    nav_row = edit.reply_markup.inline_keyboard[0]
     assert [b.callback_data for b in nav_row] == [
         "st:players_season_stats:points:0",
         "st:players_season_stats:points:10",
         "st:players_season_stats:points:30",
     ]
-
-
-# ---------------------------------------------------------------------------
-# callback_stats_team_page
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_stats_team_page_ignores_data_not_matching_pattern(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tm:missing-offset")
-
-    await stats_handlers.callback_stats_team_page(update, fake_context)
-
-    assert update.callback_query.answers == []
-    assert update.callback_query.edited_texts == []
+    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
 
 
 @pytest.mark.asyncio
-async def test_stats_team_page_answers_without_rendering_for_unknown_column(bot_module, make_callback_update, fake_context):
+async def test_stats_team_page_answers_without_rendering_for_unknown_column(
+    bot_module, make_callback, fsm_state, api
+):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tm:not_a_column:0")
+    data = "tm:not_a_column:0"
 
-    await stats_handlers.callback_stats_team_page(update, fake_context)
+    await stats_handlers.callback_stats_team_page(
+        make_callback(data), fsm_state, _match(stats_handlers, "TEAM_PAGE_CALLBACK_PATTERN", data)
+    )
 
-    assert update.callback_query.answers == [None]
-    assert update.callback_query.edited_texts == []
+    assert api.answers == [None]
+    assert api.edited_texts == []
 
 
 @pytest.mark.asyncio
-async def test_stats_team_page_parses_column_and_offset(bot_module, make_callback_update, fake_context):
+async def test_stats_team_page_parses_column_and_offset(bot_module, make_callback, fsm_state, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tm:power_play_percentage:30")
+    dialog_states = bot_module("dialog_states")
+    data = "tm:power_play_percentage:30"
 
     with patch.object(
         stats_handlers, "team_stat_leaderboard_page", return_value=("TEAM PAGE", True, False)
     ) as mock_page:
-        await stats_handlers.callback_stats_team_page(update, fake_context)
+        await stats_handlers.callback_stats_team_page(
+            make_callback(data), fsm_state, _match(stats_handlers, "TEAM_PAGE_CALLBACK_PATTERN", data)
+        )
 
     mock_page.assert_called_once_with("Статистика большинства", "power_play_percentage", 30)
-    assert update.callback_query.edited_texts[0]["text"] == "TEAM PAGE"
+    assert body(api.edited_texts[0]) == rich_html("TEAM PAGE")
+    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
 
 
 # ---------------------------------------------------------------------------
@@ -286,362 +288,355 @@ async def test_stats_team_page_parses_column_and_offset(bot_module, make_callbac
 
 @pytest.mark.asyncio
 async def test_standalone_sa_menu_returns_advanced_menu_in_place(
-    bot_module, make_callback_update, fake_context
+    bot_module, make_callback, fake_bot, api
 ):
     stats_handlers = bot_module("stats_handlers")
     help_text = bot_module("help_text")
-    update = make_callback_update("sa:menu")
 
-    await stats_handlers.callback_standalone_sa(update, fake_context)
+    await stats_handlers.callback_standalone_sa(make_callback("sa:menu"), fake_bot)
 
-    [edit] = update.callback_query.edited_texts
-    assert edit["text"] == help_text.ADVANCED_COMMAND_INTRO
-    assert edit["parse_mode"] == "HTML"
-    assert edit["reply_markup"] == stats_handlers.advanced_standalone_keyboard()
-    assert fake_context.bot.sent_messages == [], "меню — в том же сообщении"
+    [edit] = api.edited_texts
+    assert body(edit) == rich_html(help_text.ADVANCED_COMMAND_INTRO)
+    assert edit.reply_markup == stats_handlers.advanced_standalone_keyboard()
+    assert api.outgoing == [], "меню — в том же сообщении"
 
 
 @pytest.mark.asyncio
 async def test_standalone_sa_save_freezes_page_and_sends_copy_with_same_keyboard(
-    bot_module, make_callback_update, fake_context
+    bot_module, fake_bot, api
 ):
     """«Сохранить»: текущая страница остаётся в чате без кнопок (как прежнее
-    «Готово»), её копия с теми же кнопками уходит новым сообщением ниже."""
-    from datetime import datetime, timezone
-
-    from telegram import Chat, Message, MessageEntity
+    «Готово»), её копия (`copyMessage`) с теми же кнопками уходит новым сообщением ниже."""
+    from aiogram.types import CallbackQuery
 
     stats_handlers = bot_module("stats_handlers")
     markup = stats_handlers.standalone_player_stat_keyboard(
         "players_advanced_stats", "sat_pct", 10, has_prev=True, has_next=True
     )
-    head, table = "Лидеры по Corsi", "1.|Makar|COL"
-    text = f"{head}\n\n{table}"
-    update = make_callback_update("sa:save")
-    update.callback_query.message = Message(
-        message_id=900,
-        date=datetime.now(timezone.utc),
-        chat=Chat(100, "private"),
-        text=text,
-        entities=[
-            MessageEntity(MessageEntity.BOLD, 0, len(head)),
-            MessageEntity(MessageEntity.PRE, len(head) + 2, len(table)),
-        ],
-        reply_markup=markup,
+    callback = CallbackQuery.model_validate(
+        {
+            "id": "1",
+            "from": {"id": 200, "is_bot": False, "first_name": "Test"},
+            "chat_instance": "ci",
+            "data": "sa:save",
+            "message": {
+                "message_id": MENU_MESSAGE_ID,
+                "date": datetime.now(timezone.utc),
+                "chat": {"id": 100, "type": "private"},
+                "text": "Лидеры по Corsi",
+                "reply_markup": markup.model_dump(),
+            },
+        },
+        context={"bot": fake_bot},
     )
 
-    await stats_handlers.callback_standalone_sa(update, fake_context)
+    await stats_handlers.callback_standalone_sa(callback, fake_bot)
 
-    assert update.callback_query.edited_markups == [None]
-    [sent] = fake_context.bot.sent_messages
-    assert sent["chat_id"] == 100
-    assert sent["parse_mode"] == "HTML"
-    assert sent["text"] == "<b>Лидеры по Corsi</b>\n\n<pre>1.|Makar|COL</pre>"
-    assert sent["reply_markup"] == markup
-
-
-@pytest.mark.asyncio
-async def test_standalone_sa_ignores_malformed_data(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("sa:whatever")
-
-    await stats_handlers.callback_standalone_sa(update, fake_context)
-
-    assert update.callback_query.answers == [None]
-    assert update.callback_query.edited_texts == []
+    assert api.answers == ["Сохранено"]
+    [frozen] = api.edited_markups
+    assert (frozen.message_id, frozen.reply_markup) == (MENU_MESSAGE_ID, None)
+    [sent] = api.sent(CopyMessage)
+    assert (sent.chat_id, sent.from_chat_id, sent.message_id) == (100, 100, MENU_MESSAGE_ID)
+    assert api.outgoing == [], "копия — copyMessage, а не пересборка текста"
+    assert [[(b.text, b.callback_data) for b in row] for row in sent.reply_markup.inline_keyboard] == [
+        [(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard
+    ]
+    # Сначала копия, потом снятие кнопок: упади отправка — страница останется живой.
+    assert api.requests.index(sent) < api.requests.index(frozen)
 
 
 @pytest.mark.asyncio
-async def test_standalone_sa_answers_without_rendering_unknown_stat(bot_module, make_callback_update, fake_context):
+async def test_standalone_sa_ignores_malformed_data(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("sa:not_a_table:not_a_col:0")
 
-    await stats_handlers.callback_standalone_sa(update, fake_context)
+    await stats_handlers.callback_standalone_sa(make_callback("sa:whatever"), fake_bot)
 
-    assert update.callback_query.answers == [None]
-    assert update.callback_query.edited_texts == []
+    assert api.answers == [None]
+    assert api.edited_texts == []
 
 
 @pytest.mark.asyncio
-async def test_standalone_sa_renders_known_stat_with_menu_and_save_footer(bot_module, make_callback_update, fake_context):
+async def test_standalone_sa_answers_without_rendering_unknown_stat(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("sa:players_season_stats:goals:0")
+
+    await stats_handlers.callback_standalone_sa(make_callback("sa:not_a_table:not_a_col:0"), fake_bot)
+
+    assert api.answers == [None]
+    assert api.edited_texts == []
+
+
+@pytest.mark.asyncio
+async def test_standalone_sa_renders_known_stat_with_menu_and_save_footer(
+    bot_module, make_callback, fake_bot, api
+):
+    stats_handlers = bot_module("stats_handlers")
 
     with patch.object(
         stats_handlers, "player_stat_leaderboard_page", return_value=("GOALS PAGE", False, True)
     ):
-        await stats_handlers.callback_standalone_sa(update, fake_context)
+        await stats_handlers.callback_standalone_sa(make_callback("sa:players_season_stats:goals:0"), fake_bot)
 
-    edit = update.callback_query.edited_texts[0]
-    assert edit["text"] == "GOALS PAGE"
-    assert [b.callback_data for b in edit["reply_markup"].inline_keyboard[-1]] == ["sa:menu", "sa:save"]
+    edit = api.edited_texts[0]
+    assert body(edit) == rich_html("GOALS PAGE")
+    assert [b.callback_data for b in edit.reply_markup.inline_keyboard[-1]] == ["sa:menu", "sa:save"]
 
 
 # ---------------------------------------------------------------------------
-# BadRequest("message is not modified") is swallowed; anything else re-raises
+# «message is not modified» при повторном нажатии глушится; любая другая
+# ошибка правки всплывает (`stats_handlers._edit_page`)
 # ---------------------------------------------------------------------------
 
-# All five handlers below render via the same (text, has_prev, has_next) shape;
-# only the handler under test and its callback_data/collaborator vary.
-_RENDER_RETURN = ("t", False, False)
-
-_BAD_REQUEST_CASES = [
-    ("callback_stats_player_page", "st:players_season_stats:points:0", "player_stat_leaderboard_page"),
-    ("callback_stats_team_page", "tm:procent_points:0", "team_stat_leaderboard_page"),
-    ("callback_standalone_sa", "sa:players_season_stats:points:0", "player_stat_leaderboard_page"),
-    ("callback_leaders_pick", "pl:pick:points", "stat_leaderboard_for_kind"),
-    ("callback_leaderboard_page", "pl:points:0", "stat_leaderboard_for_kind"),
+# Все листаемые экраны рисуют страницу через `_edit_page`; варьируются хендлер, его
+# callback_data, паттерн регистрации (None — хендлер разбирает данные сам) и функция
+# рендера, которую тест подменяет.
+_EDIT_PAGE_CASES = [
+    ("callback_stats_player_page", "st:players_season_stats:points:0", "STAT_PAGE_CALLBACK_PATTERN",
+     "player_stat_leaderboard_page", ("t", False, False)),
+    ("callback_stats_team_page", "tm:procent_points:0", "TEAM_PAGE_CALLBACK_PATTERN",
+     "team_stat_leaderboard_page", ("t", False, False)),
+    ("callback_standalone_sa", "sa:players_season_stats:points:0", None,
+     "player_stat_leaderboard_page", ("t", False, False)),
+    ("callback_leaders_pick", "pl:pick:points", "LEADERS_PICK_CALLBACK_PATTERN",
+     "stat_leaderboard_for_kind", ("t", False, False)),
+    ("callback_leaderboard_page", "pl:points:0", "LEADERBOARD_PAGE_CALLBACK_PATTERN",
+     "stat_leaderboard_for_kind", ("t", False, False)),
+    ("callback_country", "cn:list", "COUNTRY_CALLBACK_PATTERN", "country_rankings", ("t", [])),
 ]
 
 
-@pytest.mark.parametrize("handler_name, data, patched_func", _BAD_REQUEST_CASES)
+async def _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name):
+    """Нажатие листаемого экрана с теми аргументами, которые подставил бы aiogram."""
+    handler = getattr(stats_handlers, name)
+    callback = make_callback(data)
+    kwargs = {}
+    if pattern_name is not None:
+        kwargs["match"] = _match(stats_handlers, pattern_name, data)
+    params = handler.__code__.co_varnames[:handler.__code__.co_argcount]
+    if "state" in params:
+        kwargs["state"] = fsm_state
+    if "bot" in params:
+        kwargs["bot"] = fake_bot
+    await handler(callback, **kwargs)
+
+
+@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
 @pytest.mark.asyncio
-async def test_callback_swallows_message_not_modified(
-    bot_module, make_callback_update, fake_context, handler_name, data, patched_func
+async def test_page_edit_swallows_message_not_modified(
+    bot_module, make_callback, fake_bot, fsm_state, api, name, data, pattern_name, patched_func, rendered
 ):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update(data)
-    handler = getattr(stats_handlers, handler_name)
+    api.fail_next(EditMessageText, _bad_request("Bad Request: message is not modified: specified new "
+                                                "message content and reply markup are exactly the same"))
 
-    async def raise_not_modified(*args, **kwargs):
-        raise BadRequest("Message is not modified")
+    with patch.object(stats_handlers, patched_func, return_value=rendered):
+        await _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name)
 
-    update.callback_query.edit_message_text = raise_not_modified
-
-    with patch.object(stats_handlers, patched_func, return_value=_RENDER_RETURN):
-        await handler(update, fake_context)  # must not raise
-
-    # The handler ran its normal course up to the swallowed edit — it didn't
-    # bail out earlier (e.g. on a guard clause) before ever reaching it.
-    assert update.callback_query.answers == [None]
+    # Хендлер дошёл до правки (не выпал раньше на проверке данных) — и правка не прошла.
+    assert api.answers == [None]
+    assert api.edited_texts == []
 
 
-@pytest.mark.parametrize("handler_name, data, patched_func", _BAD_REQUEST_CASES)
+@pytest.mark.parametrize("name, data, pattern_name, patched_func, rendered", _EDIT_PAGE_CASES)
 @pytest.mark.asyncio
-async def test_callback_reraises_other_bad_request(
-    bot_module, make_callback_update, fake_context, handler_name, data, patched_func
+async def test_page_edit_reraises_other_bad_request(
+    bot_module, make_callback, fake_bot, fsm_state, api, name, data, pattern_name, patched_func, rendered
 ):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update(data)
-    handler = getattr(stats_handlers, handler_name)
+    api.fail_next(EditMessageText, _bad_request("Bad Request: chat not found"))
 
-    async def raise_other(*args, **kwargs):
-        raise BadRequest("Chat not found")
-
-    update.callback_query.edit_message_text = raise_other
-
-    with patch.object(stats_handlers, patched_func, return_value=_RENDER_RETURN):
-        with pytest.raises(BadRequest, match="Chat not found"):
-            await handler(update, fake_context)
+    with patch.object(stats_handlers, patched_func, return_value=rendered):
+        with pytest.raises(TelegramBadRequest, match="chat not found"):
+            await _press_page(stats_handlers, make_callback, fake_bot, fsm_state, name, data, pattern_name)
 
 
 # ---------------------------------------------------------------------------
 # bot_league_standings создаёт НОВОЕ сообщение (`send_message`, не
-# `edit_message_text`) с клавиатурой меню (« Главное меню» → CHOOSE_STATS) —
-# его message_id должен попасть в user_data так же, как у остальных мест,
-# создающих новое сообщение с живой FSM-клавиатурой.
+# `edit_text`) с клавиатурой меню (« Главное меню» → CHOOSE_STATS) —
+# его message_id должен попасть в данные диалога так же, как у остальных мест,
+# создающих новое сообщение с живой клавиатурой диалога.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_league_standings_records_new_message_id_for_cancel(
-    bot_module, make_callback_update, fake_context
+    bot_module, make_callback, fsm_state, fake_bot, api
 ):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    update = make_callback_update(str(dialog_states.LEAGUE_STANDINGS))
 
     with patch.object(stats_handlers, "team_table", return_value="TABLE"):
-        result = await stats_handlers.bot_league_standings(update, fake_context)
+        await stats_handlers.bot_league_standings(
+            make_callback(str(dialog_states.LEAGUE_STANDINGS)), fsm_state, fake_bot
+        )
 
-    assert result == dialog_states.FIRST
-    sent = fake_context.bot.sent_messages[0]
-    assert sent["text"] == "TABLE"
-    [row] = sent["reply_markup"].inline_keyboard
+    assert await fsm_state.get_state() == dialog_states.StatsMenu.first.state
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("TABLE")
+    [row] = sent.reply_markup.inline_keyboard
     assert row[0].callback_data == str(dialog_states.CHOOSE_STATS)
-    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 # ---------------------------------------------------------------------------
 # callback_tonight_game
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_tonight_game_ignores_non_tn_prefixed_data(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("other:1:2:3")
-
-    await stats_handlers.callback_tonight_game(update, fake_context)
-
-    assert fake_context.bot.sent_messages == []
-    assert update.callback_query.answers == []
+@pytest.fixture(autouse=True)
+def fresh_tonight_registry(bot_module, monkeypatch):
+    """Реестр ответов `/tonight` — модульный словарь процесса; каждому тесту — пустой."""
+    monkeypatch.setattr(bot_module("stats_handlers"), "_tonight_sent", {})
 
 
-@pytest.mark.asyncio
-async def test_tonight_game_reports_malformed_button(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tn:1:DET")  # missing the home-team part
-
-    await stats_handlers.callback_tonight_game(update, fake_context)
-
-    assert fake_context.bot.sent_messages[0]["text"] == "Некорректная кнопка."
+async def _tap_tonight(stats_handlers, make_callback, fake_bot, data="tn:555:DET:NYR"):
+    match = _match(stats_handlers, "TONIGHT_GAME_CALLBACK_PATTERN", data)
+    await stats_handlers.callback_tonight_game(make_callback(data), fake_bot, match)
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_reports_non_integer_game_id(bot_module, make_callback_update, fake_context):
+async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_callback, fake_bot):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tn:abc:DET:NYR")
-
-    await stats_handlers.callback_tonight_game(update, fake_context)
-
-    assert fake_context.bot.sent_messages[0]["text"] == "Некорректная кнопка."
-
-
-@pytest.mark.asyncio
-async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tn:555:DET:NYR")
 
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "send_game_card_message") as mock_send_card:
-        await stats_handlers.callback_tonight_game(update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    mock_send_card.assert_awaited_once_with(fake_context, 100, 555)
+    mock_send_card.assert_awaited_once_with(fake_bot, 100, 555)
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(bot_module, make_callback_update, fake_context):
+async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
+    bot_module, make_callback, fake_bot, api
+):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("tn:555:DET:NYR")
 
     with patch.object(stats_handlers, "game_exists", return_value=False), \
             patch.object(stats_handlers, "matchup_season_preview", return_value="PREVIEW") as mock_preview, \
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
-        await stats_handlers.callback_tonight_game(update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
     mock_preview.assert_called_once_with(555, "DET", "NYR")
-    assert fake_context.bot.sent_messages[0]["text"] == "PREVIEW"
-    assert fake_context.bot.sent_messages[0]["parse_mode"] == "HTML"
-
-
-async def _tap_tonight(stats_handlers, make_callback_update, fake_context, data="tn:555:DET:NYR"):
-    await stats_handlers.callback_tonight_game(make_callback_update(data), fake_context)
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("PREVIEW")
 
 
 @pytest.mark.asyncio
 async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
-    bot_module, make_callback_update, fake_context
+    bot_module, make_callback, fake_bot, api
 ):
     """Повторное нажатие той же кнопки — не вторая карточка, а ответ-цитата на
     уже отправленную; третье нажатие убирает прошлую ссылку, чтобы ссылки не
     копились (отзыв 2026-10-03)."""
     stats_handlers = bot_module("stats_handlers")
-    sent = fake_context.bot.sent_messages
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-        assert [m["text"] for m in sent] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT]
-        assert sent[1]["reply_parameters"].message_id == 1, "цитата — на первую карточку"
-        assert fake_context.bot.deleted_messages == []
+        sent = api.outgoing
+        assert [body(m) for m in sent] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
+        assert sent[1].reply_parameters.message_id == 1, "цитата — на первую карточку"
+        assert api.sent(DeleteMessage) == []
 
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    assert [m["text"] for m in sent].count("CARD") == 1
-    assert sent[2]["reply_parameters"].message_id == 1
-    assert fake_context.bot.deleted_messages == [{"chat_id": 100, "message_id": 2}]
+    sent = api.outgoing
+    assert [body(m) for m in sent].count(rich_html("CARD")) == 1
+    assert sent[2].reply_parameters.message_id == 1
+    assert [(d.chat_id, d.message_id) for d in api.sent(DeleteMessage)] == [(100, 2)]
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_resends_card_when_original_was_deleted(
-    bot_module, make_callback_update, fake_context
-):
+async def test_tonight_game_resends_card_when_original_was_deleted(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
-    sent = fake_context.bot.sent_messages
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        fake_context.bot.send_message_errors.append(BadRequest("Message to be replied not found"))
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        api.fail_next(SendMessage, _bad_request("Bad Request: message to be replied not found"))
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
         # Следующее нажатие ссылается уже на новую карточку.
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    assert [m["text"] for m in sent] == ["CARD", "CARD", stats_handlers._TONIGHT_ALREADY_SENT]
-    assert sent[2]["reply_parameters"].message_id == 2
+    sent = api.outgoing
+    assert [body(m) for m in sent] == [rich_html("CARD"), rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
+    assert sent[2].reply_parameters.message_id == 2
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_resend_removes_pointer_to_deleted_card(
-    bot_module, make_callback_update, fake_context
-):
+async def test_tonight_game_resend_removes_pointer_to_deleted_card(bot_module, make_callback, fake_bot, api):
     """Карточку удалили, а ссылка на неё осталась — при повторной отправке
     карточки ссылка на удалённую тоже удаляется."""
     stats_handlers = bot_module("stats_handlers")
-    sent = fake_context.bot.sent_messages
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        fake_context.bot.send_message_errors.append(BadRequest("Message to be replied not found"))
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        api.fail_next(SendMessage, _bad_request("Bad Request: message to be replied not found"))
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    assert [m["text"] for m in sent] == ["CARD", stats_handlers._TONIGHT_ALREADY_SENT, "CARD"]
-    assert fake_context.bot.deleted_messages == [{"chat_id": 100, "message_id": 2}]
+    assert [body(m) for m in api.outgoing] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT, rich_html("CARD")]
+    assert [(d.chat_id, d.message_id) for d in api.sent(DeleteMessage)] == [(100, 2)]
 
 
 @pytest.mark.asyncio
 async def test_tonight_game_pointer_delete_tolerates_only_gone_messages(
-    bot_module, make_callback_update, fake_context
+    bot_module, make_callback, fake_bot, api
 ):
     """Прошлую ссылку уже удалили — нажатие проходит; посторонняя ошибка
     удаления всплывает."""
     stats_handlers = bot_module("stats_handlers")
-    sent = fake_context.bot.sent_messages
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        fake_context.bot.delete_message_errors.append(BadRequest("Message to delete not found"))
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        assert len(sent) == 3, "третье нажатие отправило ссылку, ошибка удаления не помешала"
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        api.fail_next(DeleteMessage, _bad_request("Bad Request: message to delete not found"))
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        assert len(api.outgoing) == 3, "третье нажатие отправило ссылку, ошибка удаления не помешала"
 
-        fake_context.bot.delete_message_errors.append(BadRequest("Chat not found"))
-        with pytest.raises(BadRequest, match="Chat not found"):
-            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        api.fail_next(DeleteMessage, _bad_request("Bad Request: chat not found"))
+        with pytest.raises(TelegramBadRequest, match="chat not found"):
+            await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_pointer_reraises_unrelated_bad_request(
-    bot_module, make_callback_update, fake_context
-):
+async def test_tonight_game_pointer_reraises_unrelated_bad_request(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
-        await _tap_tonight(stats_handlers, make_callback_update, fake_context)
-        fake_context.bot.send_message_errors.append(BadRequest("Chat not found"))
-        with pytest.raises(BadRequest, match="Chat not found"):
-            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+        await _tap_tonight(stats_handlers, make_callback, fake_bot)
+        api.fail_next(SendMessage, _bad_request("Bad Request: chat not found"))
+        with pytest.raises(TelegramBadRequest, match="chat not found"):
+            await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
 
 @pytest.mark.asyncio
-async def test_tonight_game_card_after_preview_is_a_new_answer(
-    bot_module, make_callback_update, fake_context
-):
+async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_callback, fake_bot, api):
     """Превью (матча ещё нет в БД) и карточка — разные ответы: после загрузки
     матча то же нажатие шлёт карточку, а не ссылку на превью."""
     stats_handlers = bot_module("stats_handlers")
-    sent = fake_context.bot.sent_messages
     with patch.object(stats_handlers, "matchup_season_preview", return_value="PREVIEW"), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
         with patch.object(stats_handlers, "game_exists", return_value=False):
-            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+            await _tap_tonight(stats_handlers, make_callback, fake_bot)
         with patch.object(stats_handlers, "game_exists", return_value=True):
-            await _tap_tonight(stats_handlers, make_callback_update, fake_context)
+            await _tap_tonight(stats_handlers, make_callback, fake_bot)
         # Другой матч — свой ответ, не ссылка.
         with patch.object(stats_handlers, "game_exists", return_value=True):
-            await _tap_tonight(stats_handlers, make_callback_update, fake_context, "tn:556:BOS:MIN")
+            await _tap_tonight(stats_handlers, make_callback, fake_bot, "tn:556:BOS:MIN")
 
-    assert [m["text"] for m in sent] == ["PREVIEW", "CARD", "CARD"]
+    assert [body(m) for m in api.outgoing] == [rich_html("PREVIEW"), rich_html("CARD"), rich_html("CARD")]
+
+
+@pytest.mark.asyncio
+async def test_tonight_answers_are_kept_per_chat(bot_module, make_callback, fake_bot, api):
+    """Ответ, отправленный в одном чате, не превращает нажатие в другом чате в ссылку."""
+    stats_handlers = bot_module("stats_handlers")
+    data = "tn:555:DET:NYR"
+    match = _match(stats_handlers, "TONIGHT_GAME_CALLBACK_PATTERN", data)
+    with patch.object(stats_handlers, "game_exists", return_value=True), \
+            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+        await stats_handlers.callback_tonight_game(make_callback(data, chat_id=100), fake_bot, match)
+        await stats_handlers.callback_tonight_game(make_callback(data, chat_id=101), fake_bot, match)
+
+    assert [(m.chat_id, body(m)) for m in api.outgoing] == [(100, rich_html("CARD")), (101, rich_html("CARD"))]
 
 
 # ---------------------------------------------------------------------------
@@ -649,34 +644,17 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_expand_digest_game_ignores_wrong_prefix(bot_module, make_callback_update, fake_context):
+async def test_expand_digest_game_opens_card_for_valid_id(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("other:1")
-
-    await stats_handlers.callback_expand_digest_game(update, fake_context)
-
-    assert fake_context.bot.sent_messages == []
-
-
-@pytest.mark.asyncio
-async def test_expand_digest_game_reports_non_integer_id(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("dg:not-an-int")
-
-    await stats_handlers.callback_expand_digest_game(update, fake_context)
-
-    assert fake_context.bot.sent_messages[0]["text"] == "Некорректная ссылка на матч."
-
-
-@pytest.mark.asyncio
-async def test_expand_digest_game_opens_card_for_valid_id(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("dg:777")
+    data = "dg:777"
 
     with patch.object(stats_handlers, "send_game_card_message") as mock_send:
-        await stats_handlers.callback_expand_digest_game(update, fake_context)
+        await stats_handlers.callback_expand_digest_game(
+            make_callback(data), fake_bot, _match(stats_handlers, "DIGEST_EXPAND_CALLBACK_PATTERN", data)
+        )
 
-    mock_send.assert_awaited_once_with(fake_context, 100, 777)
+    mock_send.assert_awaited_once_with(fake_bot, 100, 777)
+    assert api.answers == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -684,56 +662,36 @@ async def test_expand_digest_game_opens_card_for_valid_id(bot_module, make_callb
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_leaders_pick_ignores_category_outside_fixed_set(bot_module, make_callback_update, fake_context):
+async def test_leaders_pick_renders_chosen_category_from_offset_zero(bot_module, make_callback, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("pl:pick:wins")  # not points|goals|assists
-
-    with patch.object(stats_handlers, "stat_leaderboard_for_kind") as mock_kind:
-        await stats_handlers.callback_leaders_pick(update, fake_context)
-
-    mock_kind.assert_not_called()
-    assert update.callback_query.answers == []
-
-
-@pytest.mark.asyncio
-async def test_leaders_pick_renders_chosen_category_from_offset_zero(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("pl:pick:goals")
+    data = "pl:pick:goals"
 
     with patch.object(
         stats_handlers, "stat_leaderboard_for_kind", return_value=("GOALS PAGE", False, True)
     ) as mock_kind:
-        await stats_handlers.callback_leaders_pick(update, fake_context)
+        await stats_handlers.callback_leaders_pick(
+            make_callback(data), _match(stats_handlers, "LEADERS_PICK_CALLBACK_PATTERN", data)
+        )
 
     mock_kind.assert_called_once_with("goals", 0)
-    assert update.callback_query.edited_texts[0]["text"] == "GOALS PAGE"
+    assert body(api.edited_texts[0]) == rich_html("GOALS PAGE")
 
 
 @pytest.mark.asyncio
-async def test_leaderboard_page_parses_kind_and_offset_from_data(bot_module, make_callback_update, fake_context):
+async def test_leaderboard_page_parses_kind_and_offset_from_data(bot_module, make_callback, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("pl:assists:30")
+    data = "pl:assists:30"
 
     with patch.object(
         stats_handlers, "stat_leaderboard_for_kind", return_value=("PAGE", True, False)
     ) as mock_kind:
-        await stats_handlers.callback_leaderboard_page(update, fake_context)
+        await stats_handlers.callback_leaderboard_page(
+            make_callback(data), _match(stats_handlers, "LEADERBOARD_PAGE_CALLBACK_PATTERN", data)
+        )
 
     mock_kind.assert_called_once_with("assists", 30)
-    nav = update.callback_query.edited_texts[0]["reply_markup"].inline_keyboard[0]
+    nav = api.edited_texts[0].reply_markup.inline_keyboard[0]
     assert [b.callback_data for b in nav] == ["pl:assists:0", "pl:assists:20"]
-
-
-@pytest.mark.asyncio
-async def test_leaderboard_page_ignores_unmatched_data(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("pl:invalid_kind:0")
-
-    with patch.object(stats_handlers, "stat_leaderboard_for_kind") as mock_kind:
-        await stats_handlers.callback_leaderboard_page(update, fake_context)
-
-    mock_kind.assert_not_called()
-    assert update.callback_query.answers == []
 
 
 # ---------------------------------------------------------------------------
@@ -741,41 +699,48 @@ async def test_leaderboard_page_ignores_unmatched_data(bot_module, make_callback
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_standalone_adv_close_clears_markup(bot_module, make_callback_update, fake_context):
+async def test_standalone_adv_close_clears_markup(bot_module, make_callback, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("adv:close")
+    data = "adv:close"
 
-    await stats_handlers.callback_standalone_adv(update, fake_context)
+    await stats_handlers.callback_standalone_adv(
+        make_callback(data), _match(stats_handlers, "ADVANCED_CALLBACK_PATTERN", data)
+    )
 
-    assert update.callback_query.edited_markups == [None]
+    [edit] = api.edited_markups
+    assert (edit.message_id, edit.reply_markup) == (MENU_MESSAGE_ID, None)
 
 
 @pytest.mark.asyncio
-async def test_standalone_adv_ignores_unknown_key(bot_module, make_callback_update, fake_context):
+async def test_standalone_adv_resolves_known_key_to_its_stat(bot_module, make_callback, api):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("adv:zzz")
-
-    with patch.object(stats_handlers, "player_stat_leaderboard_page") as mock_page:
-        await stats_handlers.callback_standalone_adv(update, fake_context)
-
-    mock_page.assert_not_called()
-    assert update.callback_query.answers == []
-
-
-@pytest.mark.asyncio
-async def test_standalone_adv_resolves_known_key_to_its_stat(bot_module, make_callback_update, fake_context):
-    stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("adv:sat")
+    data = "adv:sat"
 
     with patch.object(
         stats_handlers, "player_stat_leaderboard_page", return_value=("PAGE", False, True)
     ) as mock_page:
-        await stats_handlers.callback_standalone_adv(update, fake_context)
+        await stats_handlers.callback_standalone_adv(
+            make_callback(data), _match(stats_handlers, "ADVANCED_CALLBACK_PATTERN", data)
+        )
 
     mock_page.assert_called_once_with(
         "Лидеры по Corsi (SAT %)", "players_advanced_stats", "sat_pct", 0
     )
-    assert update.callback_query.edited_texts[0]["text"] == "PAGE"
+    assert body(api.edited_texts[0]) == rich_html("PAGE")
+
+
+def test_advanced_pattern_covers_exactly_menu_keys_and_close(bot_module):
+    """Кнопки `adv:` — ровно ключи `ADVANCED_METRICS` и `close`: кнопка меню без
+    хендлера молчала бы, а ключ без статистики уронил бы хендлер."""
+    stats_handlers = bot_module("stats_handlers")
+    leaderboard_specs = bot_module("leaderboard_specs")
+    buttons = [
+        b.callback_data for row in stats_handlers.advanced_standalone_keyboard().inline_keyboard for b in row
+    ]
+    assert {d.split(":", 1)[1] for d in buttons} == set(leaderboard_specs.ADVANCED_METRICS)
+    for key in [*leaderboard_specs.ADVANCED_METRICS, "close"]:
+        assert re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, f"adv:{key}")
+    assert not re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, "adv:zzz")
 
 
 # ---------------------------------------------------------------------------
@@ -785,19 +750,19 @@ async def test_standalone_adv_resolves_known_key_to_its_stat(bot_module, make_ca
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_send_game_card_message_reports_missing_game(bot_module, fake_context):
+async def test_send_game_card_message_reports_missing_game(bot_module, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=False), \
             patch.object(stats_handlers, "game_message") as mock_game_message:
-        await stats_handlers.send_game_card_message(fake_context, chat_id=42, game_id=999)
+        await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
     mock_game_message.assert_not_called()
-    [sent] = fake_context.bot.sent_messages
-    assert sent["text"] == "Такого матча нет в базе бота."
+    [sent] = api.sent_messages
+    assert sent.text == "Такого матча нет в базе бота."
 
 
 @pytest.mark.asyncio
-async def test_send_game_card_message_builds_goal_video_buttons_when_no_markup_given(bot_module, fake_context):
+async def test_send_game_card_message_builds_goal_video_buttons(bot_module, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     goals_meta = [
         {"label": "1:0 Ovechkin 5:30", "game_id": 999, "event_id": 1},
@@ -805,65 +770,56 @@ async def test_send_game_card_message_builds_goal_video_buttons_when_no_markup_g
     ]
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", goals_meta)):
-        await stats_handlers.send_game_card_message(fake_context, chat_id=42, game_id=999)
+        await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
-    [sent] = fake_context.bot.sent_messages
-    assert sent["text"] == "GAME TEXT"
-    assert sent["chat_id"] == 42
-    buttons = [b for row in sent["reply_markup"].inline_keyboard for b in row]
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("GAME TEXT")
+    assert sent.chat_id == 42
+    buttons = [b for row in sent.reply_markup.inline_keyboard for b in row]
     assert [b.callback_data for b in buttons] == ["gv:999:1", "gv:999:2"]
+    assert all(re.match(stats_handlers.GOAL_VIDEO_CALLBACK_PATTERN, b.callback_data) for b in buttons)
 
 
 @pytest.mark.asyncio
-async def test_send_game_card_message_uses_no_markup_when_no_goals(bot_module, fake_context):
+async def test_send_game_card_message_uses_no_markup_when_no_goals(bot_module, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", [])):
-        await stats_handlers.send_game_card_message(fake_context, chat_id=42, game_id=999)
+        await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
-    [sent] = fake_context.bot.sent_messages
-    assert sent["reply_markup"] is None
-
-
-@pytest.mark.asyncio
-async def test_send_game_card_message_prefers_explicit_reply_markup(bot_module, fake_context):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    stats_handlers = bot_module("stats_handlers")
-    custom_markup = InlineKeyboardMarkup([[InlineKeyboardButton("custom", callback_data="x")]])
-    goals_meta = [{"label": "1:0", "game_id": 999, "event_id": 1}]
-    with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", goals_meta)):
-        await stats_handlers.send_game_card_message(
-            fake_context, chat_id=42, game_id=999, reply_markup=custom_markup
-        )
-
-    [sent] = fake_context.bot.sent_messages
-    assert sent["reply_markup"] is custom_markup
+    [sent] = api.sent_rich
+    assert sent.reply_markup is None
 
 
 # ---------------------------------------------------------------------------
 # handle_goal_video
 # ---------------------------------------------------------------------------
 
+async def _tap_goal(stats_handlers, make_callback, fake_bot, data="gv:100:200"):
+    match = _match(stats_handlers, "GOAL_VIDEO_CALLBACK_PATTERN", data)
+    await stats_handlers.handle_goal_video(make_callback(data), fake_bot, match)
+
+
 @pytest.mark.asyncio
-async def test_goal_video_reports_unavailable_when_download_fails(bot_module, make_callback_update, fake_context):
+async def test_goal_video_reports_unavailable_when_download_fails(
+    bot_module, make_callback, fake_bot, api, goal_clip_store
+):
     stats_handlers = bot_module("stats_handlers")
-    update = make_callback_update("gv:100:200")
 
     with patch.object(stats_handlers, "download_goal_video", return_value=None) as mock_download:
-        result = await stats_handlers.handle_goal_video(update, fake_context)
+        await _tap_goal(stats_handlers, make_callback, fake_bot)
 
     mock_download.assert_called_once_with(100, 200)
-    assert result == stats_handlers.SECOND
-    assert fake_context.bot.sent_messages[0]["text"] == "Видео пока недоступно."
-    assert update.callback_query.answers == ["Загружаю видео гола..."]
+    assert api.sent_messages[0].text == "Видео пока недоступно."
+    assert api.answers == ["Загружаю видео гола..."]
 
 
 @pytest.mark.asyncio
 async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
-    bot_module, make_callback_update, fake_context, tmp_path
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
 ):
+    from aiogram.types import FSInputFile
+
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
     video_path = tmp_path / "clip.mp4"
@@ -874,46 +830,65 @@ async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
         path=str(video_path), caption="🚨 <b>W. Borgen</b>",
         width=640, height=360, duration=5, thumb_path=str(thumb_path),
     )
-    update = make_callback_update("gv:100:200")
 
     with patch.object(stats_handlers, "download_goal_video", return_value=delivery):
-        result = await stats_handlers.handle_goal_video(update, fake_context)
+        await _tap_goal(stats_handlers, make_callback, fake_bot)
 
-    assert result == stats_handlers.SECOND
-    [sent] = fake_context.bot.sent_videos
-    assert sent["supports_streaming"] is True
-    assert sent["width"] == 640
-    assert sent["height"] == 360
-    assert sent["duration"] == 5
-    assert "thumbnail" in sent
-    assert sent["caption"] == "🚨 <b>W. Borgen</b>"
-    assert sent["parse_mode"] == "HTML"
+    [sent] = api.sent(SendVideo)
+    assert sent.chat_id == 100
+    assert sent.supports_streaming is True
+    assert (sent.width, sent.height, sent.duration) == (640, 360, 5)
+    assert isinstance(sent.video, FSInputFile) and sent.video.path == str(video_path)
+    assert isinstance(sent.thumbnail, FSInputFile) and sent.thumbnail.path == str(thumb_path)
+    assert sent.caption == "🚨 <b>W. Borgen</b>"
+    assert sent.parse_mode == "HTML"
     assert not video_path.exists(), "clip must be deleted after sending"
     assert not thumb_path.exists(), "thumbnail must be deleted after sending"
+    assert goal_clip_store == {(100, 200): ("fid-1", "🚨 <b>W. Borgen</b>")}, "file_id — в кэш"
 
 
 @pytest.mark.asyncio
 async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
-    bot_module, make_callback_update, fake_context, tmp_path
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
 ):
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"fake-mp4")
     delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="")
-    update = make_callback_update("gv:100:200")
-
-    async def raise_send(**kwargs):
-        raise RuntimeError("network down")
-
-    fake_context.bot.send_video = raise_send
+    api.fail_next(SendVideo, RuntimeError("network down"))
 
     with patch.object(stats_handlers, "download_goal_video", return_value=delivery):
-        result = await stats_handlers.handle_goal_video(update, fake_context)
+        await _tap_goal(stats_handlers, make_callback, fake_bot)
 
-    assert result == stats_handlers.SECOND
-    assert fake_context.bot.sent_messages[-1]["text"] == "Ошибка при отправке видео."
+    assert api.sent(SendVideo) == []
+    assert api.sent_messages[-1].text == "Ошибка при отправке видео."
     assert not video_path.exists(), "clip must be deleted even when send_video() raises"
+    assert goal_clip_store == {}
+
+
+@pytest.mark.asyncio
+async def test_goal_video_reuploads_once_when_telegram_rejects_cached_file_id(
+    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store, caplog
+):
+    """Задача 87: протухший ``file_id`` из кэша — ошибка в логе, клип скачивается и
+    загружается заново, кэш получает новый ``file_id``."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake-mp4")
+    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="<b>GOAL</b>")
+    goal_clip_store[(100, 200)] = ("stale", "<b>GOAL</b>")
+    api.fail_next(SendVideo, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+
+    with patch.object(stats_handlers, "download_goal_video", return_value=delivery) as mock_download:
+        await _tap_goal(stats_handlers, make_callback, fake_bot)
+
+    mock_download.assert_called_once_with(100, 200)
+    [sent] = api.sent(SendVideo)
+    assert sent.video.path == str(video_path)
+    assert goal_clip_store == {(100, 200): ("fid-1", "<b>GOAL</b>")}
+    assert [r.levelname for r in caplog.records if "rejected cached clip" in r.getMessage()] == ["ERROR"]
 
 
 def _replay(**goal):
@@ -1009,63 +984,63 @@ def test_download_goal_video_fails_loudly_without_ffmpeg_before_any_network(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_digest_custom_date_rejects_bad_format(bot_module, make_message_update, fake_context):
+async def test_digest_custom_date_rejects_bad_format(bot_module, make_message, fsm_state, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    update = make_message_update("not-a-date")
+    await fsm_state.set_state(dialog_states.StatsMenu.third)
 
-    result = await stats_handlers.bot_digest_custom_date(update, fake_context)
+    await stats_handlers.bot_digest_custom_date(make_message("not-a-date"), fsm_state, fake_bot)
 
-    assert result == stats_handlers.THIRD
-    reply = update.message.replies[0]
-    assert "YYYY-MM-DD" in reply["text"]
+    assert await fsm_state.get_state() == dialog_states.StatsMenu.third.state
+    [reply] = api.sent_rich
+    assert "YYYY-MM-DD" in body(reply)
     # Дно без клавиатуры — тупик (CLAUDE.md, Задача 5): пользователь должен
     # иметь кнопку выхода, а не только текстовое упоминание /cancel.
-    buttons = [b for row in reply["reply_markup"].inline_keyboard for b in row]
+    buttons = [b for row in reply.reply_markup.inline_keyboard for b in row]
     assert buttons[0].callback_data == stats_handlers.DIGEST_BACK_FROM_DATE_CALLBACK
-    # Это НОВОЕ сообщение (reply_text) — его id записан, чтобы /cancel мог
-    # снять клавиатуру с него.
-    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+    # Это НОВОЕ сообщение — его id записан, чтобы /cancel мог снять клавиатуру с него.
+    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 @pytest.mark.asyncio
-async def test_digest_custom_date_dispatches_digest_for_valid_date(bot_module, make_message_update, fake_context):
+async def test_digest_custom_date_dispatches_digest_for_valid_date(
+    bot_module, make_message, fsm_state, fake_bot, api
+):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
-    update = make_message_update("2025-12-01")
+    await fsm_state.set_state(dialog_states.StatsMenu.third)
 
     with patch.object(
         stats_handlers, "day_digest", return_value=("2025-12-01", [(1, "text", [])])
     ) as mock_digest:
-        result = await stats_handlers.bot_digest_custom_date(update, fake_context)
+        await stats_handlers.bot_digest_custom_date(make_message("2025-12-01"), fsm_state, fake_bot)
 
     mock_digest.assert_called_once_with("2025-12-01")
-    assert result == stats_handlers.SECOND
+    assert await fsm_state.get_state() == dialog_states.StatsMenu.second.state
     # dispatch_day_digest_messages ran for real (not mocked) — assert on what
     # it actually sent, not just that something was sent.
-    sent = fake_context.bot.sent_messages[0]
-    assert sent["text"] == "text"
-    assert sent["chat_id"] == 100
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("text")
+    assert sent.chat_id == 100
     # Родитель результата дайджеста — меню дайджеста (DAY_DIGEST), не корень;
     # сообщение новое (send_message) — id записан для /cancel. Единственный
     # реальный матч без кнопок видео гола рендерится build_menu(..., n_cols=1)
     # — каждая кнопка на своей строке.
-    nav_rows = sent["reply_markup"].inline_keyboard[-3:]
+    nav_rows = sent.reply_markup.inline_keyboard[-3:]
     assert [row[0].callback_data for row in nav_rows] == [
         str(dialog_states.DAY_DIGEST),
         str(dialog_states.CHOOSE_STATS),
         str(dialog_states.END_CONVERSATION),
     ]
-    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 # ---------------------------------------------------------------------------
 # dispatch_day_digest_messages — the two branches not covered by the
-# bot_digest_custom_date test above: "no real games" (gid == 0, built at
-# stats_handlers.py:473) and multi-game (2+ real games, built starting at
-# stats_handlers.py:515). Each is a physically separate code path — its own
-# nav_markup/send_message call — but both attach the same 3-button footer and
-# record the same way, so one parametrized test asserts both.
+# bot_digest_custom_date test above: "no real games" (gid == 0) and multi-game
+# (2+ real games). Each is a physically separate code path — its own
+# send_message call — but both attach the same 3-button footer and record the
+# same way, so one parametrized test asserts both.
 # ---------------------------------------------------------------------------
 
 def _digest_db_routes(home, away):
@@ -1101,65 +1076,61 @@ def digest_labels_db(fake_db_router):
     ],
 )
 async def test_dispatch_day_digest_nav_targets_digest_menu_and_records_id(
-    bot_module, fake_context, digest_labels_db, games
+    bot_module, fake_bot, api, fsm_state, digest_labels_db, games
 ):
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
 
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=True,
-    )
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games, dialog=fsm_state)
 
-    sent = fake_context.bot.sent_messages[0]
-    nav_row = sent["reply_markup"].inline_keyboard[-1]
+    [sent] = api.sent_rich
+    nav_row = sent.reply_markup.inline_keyboard[-1]
     assert [b.callback_data for b in nav_row] == [
         str(dialog_states.DAY_DIGEST),
         str(dialog_states.CHOOSE_STATS),
         str(dialog_states.END_CONVERSATION),
     ]
-    assert fake_context.user_data[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
+    assert (await fsm_state.get_data())[dialog_states.LAST_MENU_MESSAGE_ID_KEY] == 1
 
 
 @pytest.mark.asyncio
-async def test_dispatch_day_digest_standalone_call_does_not_record_menu_message_id(
-    bot_module, fake_context, digest_labels_db
+async def test_dispatch_day_digest_outside_dialog_sends_hint_instead_of_navigation(
+    bot_module, fake_bot, api, digest_labels_db
 ):
-    """`/today` вызывает с `attach_conv_nav_on_last=False` — вне
-    диалога `/stats`, никакая FSM-клавиатура не рисуется, поэтому и записывать
-    в `user_data` нечего (иначе /cancel начал бы снимать клавиатуру с чужого,
-    не диалогового сообщения)."""
+    """`/today` и рассылка зовут без `dialog` — вне диалога `/stats`: ни кнопок навигации
+    диалога (они никуда не ведут), ни записи id меню, а подсказка «Ещё: …» последним
+    сообщением."""
     stats_handlers = bot_module("stats_handlers")
     dialog_states = bot_module("dialog_states")
     games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
 
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
-    )
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    assert dialog_states.LAST_MENU_MESSAGE_ID_KEY not in fake_context.user_data
-    assert fake_context.bot.sent_messages[-1]["text"] == stats_handlers._DIGEST_MORE_HINT
+    [summary] = api.sent_rich
+    [hint] = api.sent_messages
+    nav_data = {str(dialog_states.DAY_DIGEST), str(dialog_states.CHOOSE_STATS), str(dialog_states.END_CONVERSATION)}
+    assert not nav_data & {b.callback_data for row in summary.reply_markup.inline_keyboard for b in row}
+    assert hint.text == stats_handlers._DIGEST_MORE_HINT
 
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons_in_three_columns(
-    bot_module, fake_context, digest_labels_db
+    bot_module, fake_bot, api, digest_labels_db
 ):
     stats_handlers = bot_module("stats_handlers")
     games = [(i, f"<b>H{i} 1:0 A{i}</b>\nдетали", []) for i in range(1, 5)]
 
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
-    )
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    summary = fake_context.bot.sent_messages[0]
+    summary = api.sent_rich[0]
     # Матчи разделены пустой строкой (DIGEST_GAME_SEPARATOR).
-    assert (
+    assert rich_html(
         "1. <b>H1 1:0 A1</b>\n  1:0, 0:0, 0:0\n\n"
         "2. <b>H2 1:0 A2</b>\n  1:0, 0:0, 0:0\n\n"
         "3. <b>H3 1:0 A3</b>"
-    ) in summary["text"]
-    assert "Кнопка матча — полная карточка и видео голов." in summary["text"]
-    rows = summary["reply_markup"].inline_keyboard
+    ) in body(summary)
+    assert "Кнопка матча — полная карточка и видео голов." in body(summary)
+    rows = summary.reply_markup.inline_keyboard
     assert [len(r) for r in rows] == [3, 1]
     assert [b.text for r in rows for b in r] == [f"{n}. AAA – BBB" for n in range(1, 5)]
     assert [b.callback_data for r in rows for b in r] == [f"dg:{n}" for n in range(1, 5)]
@@ -1169,22 +1140,20 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
 
 # ---------------------------------------------------------------------------
 # dispatch_day_digest_messages — truncation marker on the multi-game summary
-# (Задача 11: граница Telegram 4096 отбрасывает заголовки матчей молча без
+# (Задача 11: граница rich-сообщения 32768 отбрасывает заголовки матчей молча без
 # маркера «показаны N из M»).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
-    bot_module, fake_context, digest_labels_db
+    bot_module, fake_bot, api, digest_labels_db
 ):
     stats_handlers = bot_module("stats_handlers")
     games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
 
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
-    )
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    sent_text = fake_context.bot.sent_messages[0]["text"]
+    sent_text = body(api.sent_rich[0])
     assert "Показаны" not in sent_text
     assert "1. <b>H1 1:0 A1</b>" in sent_text
     assert "2. <b>H2 1:0 A2</b>" in sent_text
@@ -1192,14 +1161,16 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
 @pytest.mark.asyncio
 async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
-    bot_module, fake_context, fake_db_router
+    bot_module, fake_bot, api, fake_db_router
 ):
     """Сводка дня, которая не влезает в лимит Telegram, должна честно сказать,
     сколько из всех матчей дня реально попало в текст, а не молчать про
     отброшенные заголовки."""
     stats_handlers = bot_module("stats_handlers")
-    fake_db_router(_digest_db_routes(lambda gid: "Х" * 40, lambda gid: "Y" * 40))
-    total_games = 80
+    # Длинные названия, а не сотни матчей: обрезка по символам должна сработать раньше
+    # лимита в 500 блоков (абзацев), который она не охраняет.
+    fake_db_router(_digest_db_routes(lambda gid: "Х" * 120, lambda gid: "Y" * 120))
+    total_games = 200
     games = [
         (
             i + 1,
@@ -1209,12 +1180,12 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
         for i in range(total_games)
     ]
 
-    await stats_handlers.dispatch_day_digest_messages(
-        fake_context, 100, "2025-12-01", games, attach_conv_nav_on_last=False,
-    )
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
-    sent_text = fake_context.bot.sent_messages[0]["text"]
-    assert len(sent_text) <= 4096
+    sent_text = body(api.sent_rich[0])
+    # Лимит rich-сообщения — на текст, а не на разметку: теги `<p>` не считаются.
+    assert len(re.sub(r"</?p>", "", sent_text)) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
+    assert sent_text.count("<p>") <= 500, "лимит Telegram — 500 блоков"
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None
     shown, total = int(match.group(1)), int(match.group(2))
@@ -1228,7 +1199,9 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
 
 
 # ---------------------------------------------------------------------------
-# Callback regex patterns directly — malformed/malicious shapes must not match
+# Callback regex patterns directly — malformed/malicious shapes must not match.
+# Хендлер вызывается только на данных, прошедших паттерн регистрации, поэтому
+# проверка формы данных живёт здесь, а не в хендлерах.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -1271,3 +1244,22 @@ def test_stat_page_callback_pattern_matches_only_well_formed_data(bot_module, da
 def test_team_page_callback_pattern_matches_only_well_formed_data(bot_module, data, expected):
     stats_handlers = bot_module("stats_handlers")
     assert bool(re.match(stats_handlers.TEAM_PAGE_CALLBACK_PATTERN, data)) is expected
+
+
+@pytest.mark.parametrize(
+    "pattern_name, data, expected",
+    [
+        ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:777", True),
+        ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:not-an-int", False),
+        ("LEADERS_PICK_CALLBACK_PATTERN", "pl:pick:goals", True),
+        ("LEADERS_PICK_CALLBACK_PATTERN", "pl:pick:wins", False),  # категории вне Очки/Голы/Передачи
+        ("LEADERBOARD_PAGE_CALLBACK_PATTERN", "pl:assists:30", True),
+        ("LEADERBOARD_PAGE_CALLBACK_PATTERN", "pl:invalid_kind:0", False),
+        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001:55", True),
+        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001", False),  # без события
+        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:x:55", False),
+    ],
+)
+def test_other_button_patterns_match_only_well_formed_data(bot_module, pattern_name, data, expected):
+    stats_handlers = bot_module("stats_handlers")
+    assert bool(re.match(getattr(stats_handlers, pattern_name), data)) is expected
