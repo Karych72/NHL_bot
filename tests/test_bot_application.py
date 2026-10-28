@@ -270,7 +270,8 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     bot = bot_module("bot")
     asked: List[str] = []
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, with_stats: bool = False) -> Any:
+        assert with_stats is False, "чат вне белого списка Задачи 83"
         asked.append(text)
         return bot.ai_router.Reply(text="ответ модели", tool=None, params={})
 

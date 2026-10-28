@@ -56,7 +56,7 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train modeling-publish env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data ai-eval all-tests lint typecheck lock ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train modeling-publish env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data ai-eval ai-stats-eval all-tests lint typecheck lock ci-local
 
 setup:
 	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
@@ -110,6 +110,8 @@ db-tables:
 		echo "  $$f"; \
 		$(PSQL) -v ON_ERROR_STOP=1 -f $$f; \
 	done
+	@echo "  data_tables/ai_reader_grants.sql"
+	@$(PSQL) -v ON_ERROR_STOP=1 -f data_tables/ai_reader_grants.sql
 
 db-tables-local:
 	$(MAKE) db-tables PG_USER="$$(id -un)"
@@ -197,6 +199,12 @@ test-db-data:
 # нужен ANTHROPIC_API_KEY — поэтому вне ci-local. Порог — 90% совпадений.
 ai-eval:
 	@$(PY) scripts/ai_router_eval.py
+
+# То же для ответов на статистические вопросы (Задача 83): весь цикл ai_stats (SQL, ревью)
+# против настоящих API и БД, стоимость из usage. Порог — 90% верных, ни одной неверной цифры
+# в ответе, прошедшем ревью.
+ai-stats-eval:
+	@$(PY) scripts/ai_stats_eval.py
 
 # Полный прогон: быстрые тесты + проверки схемы БД (нужны PostgreSQL и DDL, см. README).
 all-tests: test-fast test-db

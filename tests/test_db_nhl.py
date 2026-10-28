@@ -1044,6 +1044,7 @@ class TestAiQuestionsSql(unittest.TestCase):
         chats = [self.NEW_CHAT, self.EXISTING_CHAT]
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute("DELETE FROM ai_questions WHERE chat_id = ANY(%s)", (chats,))
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", (chats,))
             cur.execute("DELETE FROM ai_existing_users WHERE chat_id = ANY(%s)", (chats,))
 
     def test_limit_counts_todays_questions_by_moscow_day(self):
@@ -1074,6 +1075,256 @@ class TestAiQuestionsSql(unittest.TestCase):
                 (self.NEW_CHAT,),
             )
             self.assertEqual(cur.fetchall(), [("leaders", {"category": "goals"}, Decimal("0.004000"))])
+
+    def test_stats_questions_count_once_through_ai_stats_log(self):
+        """Вопрос статистики (Задача 83) списывает одну единицу: строка `ai_stats_log`;
+        выбор `stats_question` маршрутизатором и сбой в журнале 83 в счёт не идут."""
+        ai = self.ai
+        ai._log_question(self.NEW_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for outcome in ("answer", "error", "ceiling"):
+                cur.execute(
+                    "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, latency_ms) "
+                    "VALUES (%s, 'голы', false, %s, 5)",
+                    (self.NEW_CHAT, outcome),
+                )
+        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 2)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiStatsWindow(unittest.TestCase):
+    """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
+    строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""
+
+    CHAT = -999000084
+    OTHER = -999000085
+
+    def setUp(self):
+        import ai_stats
+
+        self.ai = ai_stats
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", ([self.CHAT, self.OTHER],))
+
+    def _add(self, chat, question, outcome, minutes_ago, answer=None):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, answer, latency_ms, "
+                "asked_at) VALUES (%s, %s, false, %s, %s, 1, now() - %s * interval '1 minute')",
+                (chat, question, outcome, answer or f"ответ {question}", minutes_ago),
+            )
+
+    def _questions(self, chat):
+        return [p["question"] for p in self.ai.recent_pairs(chat)]
+
+    def test_window_applies_to_every_row_not_only_the_newest(self):
+        self._add(self.CHAT, "давний", "answer", 180)
+        self.assertEqual(self._questions(self.CHAT), [], "все строки вне окна")
+
+        self._add(self.CHAT, "почти вышел", "answer", 29.5)
+        self._add(self.OTHER, "чужой", "answer", 1)
+        self.assertEqual(self._questions(self.CHAT), ["почти вышел"], "давняя пара за окном не тянется")
+
+        self._add(self.CHAT, "сбой", "error", 2)
+        self._add(self.CHAT, "уточнение", "clarify", 1, answer="Какой Хьюз?")
+        pairs = self.ai.recent_pairs(self.CHAT)
+        self.assertEqual([p["question"] for p in pairs], ["почти вышел", "уточнение"], "от старых к новым")
+        self.assertEqual(pairs[-1]["outcome"], "clarify")
+        self.assertEqual(pairs[-1]["answer"], "Какой Хьюз?")
+
+    def test_window_closes_after_thirty_minutes_and_keeps_three_pairs(self):
+        self._add(self.CHAT, "вышел", "answer", 30.5)
+        self.assertEqual(self._questions(self.CHAT), [])
+        for i, minutes in enumerate((20, 15, 10, 5)):
+            self._add(self.CHAT, f"в{i}", "answer", minutes)
+        self.assertEqual(self._questions(self.CHAT), ["в1", "в2", "в3"])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiReaderRole(unittest.TestCase):
+    """Роль `nhl_ai_reader` (Задача 83, миграция 0015) — граница безопасности для SQL, который
+    пишет модель: читает только таблицы данных, не пишет и не создаёт, не видит таблиц бота."""
+
+    @staticmethod
+    def _reader():
+        return psycopg2.connect(
+            host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+            database=config.PG_DATABASE,
+        )
+
+    def _error_code(self, sql: str, before: str = "") -> str:
+        """pgcode ошибки, с которой роль встречает *sql* (опционально после *before*)."""
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            # Автокоммит: SET действует со следующей транзакции, а не с уже открытой.
+            conn.autocommit = True
+            if before:
+                cur.execute(before)
+            with self.assertRaises(psycopg2.Error) as raised:
+                cur.execute(sql)
+            return raised.exception.pgcode
+
+    def test_reads_data_tables_with_role_defaults(self):
+        import ai_stats
+
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            self.assertEqual(cur.fetchone()[0], "5s")
+            cur.execute("SHOW default_transaction_read_only")
+            self.assertEqual(cur.fetchone()[0], "on")
+            for table in ai_stats.AI_TABLES:
+                cur.execute(f"SELECT count(*) FROM {table}")
+                self.assertGreaterEqual(cur.fetchone()[0], 0)
+
+    def test_grants_are_exactly_select_on_ai_tables(self):
+        import ai_stats
+
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name, privilege_type FROM information_schema.role_table_grants "
+                "WHERE grantee = 'nhl_ai_reader' AND table_schema = 'public'"
+            )
+            grants = cur.fetchall()
+        self.assertEqual({p for _, p in grants}, {"SELECT"})
+        self.assertEqual({t for t, _ in grants}, set(ai_stats.AI_TABLES))
+
+    def test_bot_tables_are_invisible(self):
+        for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
+                      "ai_existing_users", "prediction_log", "game_predictions", "schema_migrations"):
+            self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
+
+    def test_cannot_write_or_create_even_with_read_only_switched_off(self):
+        off = "SET default_transaction_read_only = off"
+        for sql in ("INSERT INTO games (game_id, season_id) VALUES (-1, 20212022)",
+                    "UPDATE games SET day = day", "DELETE FROM games",
+                    "CREATE TABLE ai_reader_probe (x int)", "DROP TABLE games"):
+            # Права роли держат сами, без read-only сессии...
+            self.assertEqual(self._error_code(sql, off), "42501", sql)
+            # ...а read-only по умолчанию — вторая линия защиты.
+            self.assertIn(self._error_code(sql), ("25006", "42501"), sql)
+
+    def test_cannot_switch_to_another_role(self):
+        self.assertEqual(self._error_code("SET ROLE postgres"), "42501")
+
+    def test_run_readonly_turns_denials_and_timeout_into_model_errors(self):
+        import ai_stats
+
+        denied = ai_stats.run_readonly("SELECT * FROM bot_subscriptions")
+        self.assertIsNone(denied.rows)
+        self.assertIn("permission denied", denied.error)
+        slow = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("statement timeout", slow.error)
+        # count(*) — одна строка и на пустой схеме CI (данных там нет).
+        ok = ai_stats.run_readonly("SELECT count(*) FROM games;")
+        self.assertIsNone(ok.error)
+        self.assertEqual(ok.rows, 1)
+
+    def test_run_readonly_rejects_multi_statement_attacks(self):
+        """SQL модели — один SELECT: ни `SET`, ни `COMMIT`, ни запись не проходят, как бы их ни
+        склеивали точкой с запятой (simple query выполнил бы все операторы подряд)."""
+        import time
+
+        import ai_stats
+
+        def large_objects() -> int:
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM pg_largeobject_metadata")
+                return cur.fetchone()[0]
+
+        def role_settings():
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT rolconfig FROM pg_roles WHERE rolname = 'nhl_ai_reader'")
+                return cur.fetchone()[0]
+
+        before, settings = large_objects(), role_settings()
+        started = time.monotonic()
+        attacks = (
+            # Закрывающая скобка и `;` внутри: обёртку обходят, если `;` пропустить.
+            "SELECT 1) AS x; SET statement_timeout=0; SELECT pg_sleep(7) FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET transaction_read_only=off; "
+            "SELECT lo_from_bytea(0,'\\x41'::bytea); COMMIT; SELECT 1 FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET default_transaction_read_only=off; COMMIT; "
+            "ALTER ROLE nhl_ai_reader SET statement_timeout = 0; COMMIT; SELECT 1 FROM (SELECT 1",
+            "SET statement_timeout = 0; SELECT pg_sleep(7)",
+            "SELECT set_config('statement_timeout', '0', false); SELECT pg_sleep(7)",
+            "SET transaction_read_only = off; CREATE TEMP TABLE probe (x int); "
+            "INSERT INTO probe VALUES (1); SELECT * FROM probe",
+            "SET transaction_read_only = off; SELECT lo_from_bytea(0, '\\x41'); COMMIT; SELECT 1",
+            "SELECT lo_from_bytea(0, '\\x41')",
+            "WITH ins AS (INSERT INTO games (game_id, season_id) VALUES (-1, 20212022) RETURNING 1) "
+            "SELECT * FROM ins",
+        )
+        for sql in attacks:
+            outcome = ai_stats.run_readonly(sql)
+            self.assertIsNotNone(outcome.error, sql)
+            self.assertIsNone(outcome.rows, sql)
+        self.assertLess(time.monotonic() - started, 5, "таймаут не обойдён: pg_sleep(7) не выполнялся")
+        self.assertEqual(large_objects(), before, "large object не создан")
+        self.assertEqual(role_settings(), settings, "роль не изменила свои настройки")
+
+    def test_run_readonly_limits_result_volume(self):
+        """Объём выдачи: огромная строка не доходит до бота (отброшена SQL-ом), крупные ячейки и
+        весь результат обрезаются; модель получает не больше `RESULT_CHARS` символов."""
+        import json
+
+        import ai_stats
+
+        # Python по размеру не фильтрует: 0 строк значит, что строку отбросил сам SQL. Размер —
+        # любой больше ROW_BYTES; гигабайты только замедляют прогон на раннере CI.
+        huge = ai_stats.run_readonly("SELECT repeat('x', 1000000) AS v FROM generate_series(1, 3)")
+        self.assertEqual(huge.rows, 0, "строка длиннее ROW_BYTES отброшена на стороне SQL")
+        self.assertLessEqual(len(huge.text), ai_stats.RESULT_CHARS)
+        # Колонка с именем `q` не подменяет собой строку в фильтре размера.
+        named_q = ai_stats.run_readonly(
+            "SELECT 'x' AS q, repeat('y', 1000000) AS big FROM generate_series(1, 3)"
+        )
+        self.assertEqual(named_q.rows, 0)
+        null_q = json.loads(ai_stats.run_readonly("SELECT NULL::int AS q, 5 AS goals").text)
+        self.assertEqual(null_q["rows"], [[None, 5]], "NULL в колонке q не отбрасывает строку")
+
+        cells = ai_stats.run_readonly("SELECT repeat('y', 3000) AS v FROM generate_series(1, 50)")
+        payload = json.loads(cells.text)
+        self.assertEqual(len(payload["rows"][0][0]), ai_stats.CELL_CHARS + 1)
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(cells.text), ai_stats.RESULT_CHARS)
+
+        # Без таблиц данных: на схеме CI они пусты.
+        ordinary = json.loads(ai_stats.run_readonly(
+            "SELECT g AS game_id, current_date + g AS day FROM generate_series(1, 3) AS g"
+        ).text)
+        self.assertEqual((len(ordinary["rows"]), ordinary["truncated"]), (3, False))
+
+    def test_watchdog_cancels_a_query_even_if_server_timeout_is_off(self):
+        """Сторожевой таймер клиента — страховка на случай, если серверный `statement_timeout`
+        сброшен: соединение без таймаута, а запрос всё равно отменяется."""
+        import time
+        from unittest.mock import patch
+
+        import ai_stats
+
+        def no_server_timeout():
+            return psycopg2.connect(
+                host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+                database=config.PG_DATABASE, options="-c statement_timeout=0",
+            )
+
+        started = time.monotonic()
+        with patch.object(ai_stats, "_reader_connection", no_server_timeout), \
+                patch.object(ai_stats, "STATEMENT_TIMEOUT_SEC", 1):
+            outcome = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("canceling statement", outcome.error)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

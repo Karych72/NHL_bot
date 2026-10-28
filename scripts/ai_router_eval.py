@@ -32,7 +32,7 @@ MIN_ACCURACY = 0.9
 async def main() -> int:
     cases = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines()]
     params = ai_router.request_params("")
-    prefix = await ai_router._client().messages.count_tokens(**params)
+    prefix = await ai_router.client().messages.count_tokens(**params)
     passed, costs = 0, []
     for case in cases:
         response = await ai_router.call_model(case["q"])
