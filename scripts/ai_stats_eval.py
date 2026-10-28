@@ -40,7 +40,10 @@ import config  # noqa: E402
 from database import get_connection  # noqa: E402
 
 EVAL_SET = Path(__file__).with_suffix(".jsonl")
-EVAL_CHAT = -999000083
+# Служебные чаты прогона: каждой цепочке и каждому одиночному вопросу — свой, чтобы история окна
+# не текла между кейсами; журнал чистится в начале и после печати итогов.
+EVAL_CHAT_BASE = -999000100
+EVAL_CHATS = 1000
 MIN_ACCURACY = 0.9
 
 # Рамочные числа: даты, сезоны, годы, «последних N игр».
@@ -131,16 +134,17 @@ def expected(case: dict) -> list:
 def clear_log() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = %s", (EVAL_CHAT,))
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id BETWEEN %s AND %s",
+                        (EVAL_CHAT_BASE - EVAL_CHATS, EVAL_CHAT_BASE))
         conn.commit()
 
 
-def last_row() -> dict:
+def last_row(chat_id: int) -> dict:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT outcome, draft, verdict, cost_usd, latency_ms, steps FROM ai_stats_log "
-                "WHERE chat_id = %s ORDER BY id DESC LIMIT 1", (EVAL_CHAT,),
+                "SELECT outcome, draft, verdict, verdict_reason, cost_usd, latency_ms, steps "
+                "FROM ai_stats_log WHERE chat_id = %s ORDER BY id DESC LIMIT 1", (chat_id,),
             )
             columns = [d[0] for d in cur.description]
             return dict(zip(columns, cur.fetchone()))
@@ -152,48 +156,49 @@ async def main() -> int:
     clarify_model = clarify_reviewer = probes = probes_caught = 0
     costs, latencies = [], []
     clear_log()
-    try:
-        for case in cases:
-            if "after" not in case:
-                clear_log()
-            captured.clear()
-            text = await ai_stats.answer(EVAL_CHAT, case["q"], ai_stats.recent_pairs(EVAL_CHAT))
-            row = last_row()
-            kinds = case["kind"] if isinstance(case["kind"], list) else [case["kind"]]
-            costs.append(float(row["cost_usd"]))
-            latencies.append(row["latency_ms"])
-            ok = row["outcome"] in kinds
-            note = ""
-            if row["outcome"] == "clarify":
-                if row["verdict"] == "clarify":
-                    clarify_reviewer += 1
-                else:
-                    clarify_model += 1
-            if case.get("reviewer_probe"):
-                probes += 1
-                probes_caught += row["verdict"] == "clarify"
-            if "answer" in kinds:
-                wants = expected(case)
-                if row["outcome"] == "answer":
-                    problems, manual = judge(text, case["q"], wants, captured)
-                    if problems:
-                        ok = False
-                        wrong_passed += 1
-                        note = f"{problems}  [НЕВЕРНАЯ ЦИФРА ПРОШЛА РЕВЬЮ]"
-                    if manual:
-                        manual_total += 1
-                        note += f"  [ПРОВЕРИТЬ ВРУЧНУЮ: {manual}]"
-                if row["outcome"] == "clarify" and row["draft"] and judge(row["draft"], case["q"], wants, captured)[0]:
-                    caught += 1
-                    note = "(ревью поймало неверный черновик)"
-            passed += ok
-            print(f"{'OK  ' if ok else 'FAIL'} [{case['id']}] {case['q']!r} -> {row['outcome']} "
-                  f"вердикт={row['verdict']} ${float(row['cost_usd']):.4f} {row['latency_ms']} мс {note}")
-            print(f"       «{text}»")
-            for step in row["steps"]:
+    chats: dict = {}
+    for case in cases:
+        chat_id = chats[case["after"]] if "after" in case else EVAL_CHAT_BASE - len(chats)
+        chats[case["id"]] = chat_id
+        captured.clear()
+        text = await ai_stats.answer(chat_id, case["q"], ai_stats.recent_pairs(chat_id))
+        row = last_row(chat_id)
+        kinds = case["kind"] if isinstance(case["kind"], list) else [case["kind"]]
+        costs.append(float(row["cost_usd"]))
+        latencies.append(row["latency_ms"])
+        ok = row["outcome"] in kinds
+        note = ""
+        if row["outcome"] == "clarify":
+            if row["verdict"] == "clarify":
+                clarify_reviewer += 1
+            else:
+                clarify_model += 1
+        if case.get("reviewer_probe"):
+            probes += 1
+            probes_caught += row["verdict"] == "clarify"
+        if "answer" in kinds:
+            wants = expected(case)
+            if row["outcome"] == "answer":
+                problems, manual = judge(text, case["q"], wants, captured)
+                if problems:
+                    ok = False
+                    wrong_passed += 1
+                    note = f"{problems}  [НЕВЕРНАЯ ЦИФРА ПРОШЛА РЕВЬЮ]"
+                if manual:
+                    manual_total += 1
+                    note += f"  [ПРОВЕРИТЬ ВРУЧНУЮ: {manual}]"
+            if row["outcome"] == "clarify" and row["draft"] and judge(row["draft"], case["q"], wants, captured)[0]:
+                caught += 1
+                note = "(ревью поймало неверный черновик)"
+        passed += ok
+        print(f"{'OK  ' if ok else 'FAIL'} [{case['id']}] {case['q']!r} -> {row['outcome']} "
+              f"вердикт={row['verdict']} ({row['verdict_reason']}) ${float(row['cost_usd']):.4f} {row['latency_ms']} мс {note}")
+        print(f"       «{text}»")
+        for step in row["steps"]:
+            if step["tool"] == "review":
+                print(f"       review: {step['verdict']} — {step['reason']}")
+            else:
                 print(f"       {step['tool']}: {step['input'].get('sql') or step['input']}")
-    finally:
-        clear_log()
     accuracy = passed / len(cases)
     print(f"\nВерных: {passed}/{len(cases)} = {accuracy:.0%} (порог {MIN_ACCURACY:.0%})")
     print(f"Неверных цифр в ответах, прошедших ревью: {wrong_passed} (должно быть 0)")
@@ -204,7 +209,9 @@ async def main() -> int:
     print(f"Стоимость вопроса: средняя ${sum(costs) / len(costs):.4f}, максимальная ${max(costs):.4f}; "
           f"задержка: средняя {sum(latencies) / len(latencies) / 1000:.1f} с, "
           f"максимальная {max(latencies) / 1000:.1f} с")
-    return 0 if accuracy >= MIN_ACCURACY and wrong_passed == 0 else 1
+    exit_code = 0 if accuracy >= MIN_ACCURACY and wrong_passed == 0 else 1
+    clear_log()
+    return exit_code
 
 
 if __name__ == "__main__":

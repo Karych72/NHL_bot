@@ -34,9 +34,10 @@ CREATE TABLE ai_stats_log(
     continuation        boolean NOT NULL,
     -- answer — ответ прошёл ревью; clarify — вместо черновика ушло уточнение ревьюера;
     -- no_data / off_topic — финал модели без ревью; ceiling — потолок попыток, вызовов или
-    -- стоимости; error — сбой API или БД (лимит не списывает).
+    -- стоимости; rejected — ревьюер дважды отклонил черновик (fix), пользователю ушло «переформулируйте»;
+    -- error — сбой API или БД (лимит не списывает).
     outcome             text NOT NULL CHECK (outcome IN
-                            ('answer', 'clarify', 'no_data', 'off_topic', 'ceiling', 'error')),
+                            ('answer', 'clarify', 'no_data', 'off_topic', 'ceiling', 'rejected', 'error')),
     -- Каждый вызов инструмента: имя, вход, число строк или ошибка SQL.
     steps               jsonb NOT NULL DEFAULT '[]',
     draft               text,

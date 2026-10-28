@@ -217,8 +217,10 @@ async def test_reviewed_ok_draft_goes_to_user_and_is_logged(stats, make_message,
     assert (row["outcome"], row["verdict"], row["draft"], row["answer"]) == (
         "answer", "ok", "Овечкин: 42 гола", "Овечкин: 42 гола",
     )
-    assert row["steps"] == [{"tool": "run_sql", "input": {"sql": "SELECT goals FROM players_season_stats"},
-                             "rows": 1, "error": None}]
+    assert row["steps"] == [
+        {"tool": "run_sql", "input": {"sql": "SELECT goals FROM players_season_stats"}, "rows": 1, "error": None},
+        {"tool": "review", "draft": "Овечкин: 42 гола", "verdict": "ok", "reason": "сходится"},
+    ]
     assert [c["role"] for c in row["calls"]] == ["answer", "answer", "review"]
     assert row["cost_usd"] == pytest.approx(3 * (100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
     review = s.model.calls[-1]
@@ -287,7 +289,7 @@ async def test_sql_error_goes_back_to_model_and_next_attempt_passes(stats, make_
     assert first["is_error"] and 'column "gols" does not exist' in first["content"]
     assert not second["is_error"]
     row = _logged(s.cursor)
-    assert [(st["rows"], st["error"] is not None) for st in row["steps"]] == [(None, True), (1, False)]
+    assert [(st["rows"], st["error"] is not None) for st in row["steps"] if st["tool"] == "run_sql"] == [(None, True), (1, False)]
 
 
 @pytest.mark.asyncio
@@ -549,7 +551,7 @@ async def test_player_overview_collects_season_form_and_point_streak(stats, make
          _finish("answer", "Обзор"), _verdict()],
         reader={
             "FROM rosters": PLAYER,
-            "FROM players_season_stats": (["season_id", "games", "points"], [(20262027, 8, 9), (20252026, 82, 90)]),
+            "FROM players_season_stats": (["season_id", "games", "points"], [(20262027, 4, 9), (20252026, 82, 90)]),
             "FROM game_player_stats": (
                 ["day", "goals", "assists", "points", "shots"],
                 [("2026-10-27", 1, 1, 2, 4), ("2026-10-25", 0, 1, 1, 3), ("2026-10-23", 0, 0, 0, 2),
@@ -575,7 +577,7 @@ async def test_player_overview_goalie_has_own_set(stats, make_message, fake_bot,
         reader={
             "FROM rosters": (PLAYER_COLUMNS, [(8478048, "Igor Shesterkin", "Shesterkin", "G", "NYR"),
                                               (1, "Other Shesterkin", "Shesterkin", "D", "BOS")]),
-            "FROM goalies_season_stats": (["season_id", "save_percentage"], [(20262027, 91.2)]),
+            "FROM goalies_season_stats": (["season_id", "games", "save_percentage"], [(20262027, 1, 91.2)]),
             "FROM game_goalie_stats": (["day", "shots_against", "saves", "goals_against"], [("2026-10-27", 30, 28, 2)]),
         },
     )
@@ -597,7 +599,7 @@ async def test_player_overview_returns_candidates_for_namesakes(stats, make_mess
                 row for row in [(1, "Jack Hughes", "Hughes", "C", "NJD"), (2, "Luke Hughes", "Hughes", "D", "NJD")]
                 if params[1] is None or row[0] == params[1]
             ]),
-            "FROM players_season_stats": (["season_id", "points"], [(20262027, 3)]),
+            "FROM players_season_stats": (["season_id", "games", "points"], [(20262027, 0, 3)]),
             "FROM game_player_stats": (["day", "goals", "assists", "points", "shots"], []),
         },
     )
@@ -763,3 +765,94 @@ def test_long_cells_and_whole_result_are_clipped_and_flagged(stats):
 def test_short_result_is_not_flagged(stats):
     ai = stats([], reader={"FROM (": (["a"], [("abc",), (5,)])}).ai_stats
     assert json.loads(ai.run_readonly("SELECT a FROM t").text)["truncated"] is False
+
+
+# ---------------------------------------------------------------------------
+# Вердикт fix: одна повторная попытка с замечанием ревьюера
+# ---------------------------------------------------------------------------
+
+def _fix(reason: str = "в черновике 43, в результате 42"):
+    return _verdict("fix", "", reason)
+
+
+@pytest.mark.asyncio
+async def test_fix_gives_model_the_remark_and_second_draft_is_reviewed(stats, make_message, fake_bot, api):
+    s = stats([], reader={"SELECT 1": (["goals"], [(42,)])})
+    # Очередь ответов и ревью общая: sql, finish, ревью-fix, sql, finish, ревью-ok.
+    s.model.results[:] = [_sql(), _finish(text="Овечкин: 43 гола"), _fix(),
+                          _sql(), _finish(text="Овечкин: 42 гола"), _verdict()]
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply("Овечкин: 42 гола")], "ушёл только исправленный черновик"
+    assert len(s.model.calls) == 6
+    remark = _tool_results(s.model.calls[3])[-1]
+    assert remark["is_error"] and "в черновике 43, в результате 42" in remark["content"]
+    assert "последняя попытка" in remark["content"]
+    row = _logged(s.cursor)
+    assert (row["outcome"], row["draft"], row["verdict"]) == ("answer", "Овечкин: 42 гола", "ok")
+    reviews = [st for st in row["steps"] if st["tool"] == "review"]
+    assert [(r["draft"], r["verdict"]) for r in reviews] == [
+        ("Овечкин: 43 гола", "fix"), ("Овечкин: 42 гола", "ok"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_second_fix_tells_user_to_rephrase_and_no_draft_leaks(stats, make_message, fake_bot, api):
+    s = stats([], reader={"SELECT 1": (["goals"], [(42,)])})
+    s.model.results[:] = [_sql(), _finish(text="Черновик 43"), _fix(),
+                          _finish(text="Черновик 44"), _fix("всё ещё не сходится")]
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply(s.ai_stats.REJECTED_TEXT)]
+    assert "Черновик" not in replies[0]
+    row = _logged(s.cursor)
+    assert (row["outcome"], row["draft"], row["verdict"], row["verdict_reason"]) == (
+        "rejected", "Черновик 44", "fix", "всё ещё не сходится",
+    )
+    drafts = [st["draft"] for st in row["steps"] if st["tool"] == "review"]
+    assert drafts == ["Черновик 43", "Черновик 44"], "оба отклонённых черновика в журнале"
+
+
+@pytest.mark.asyncio
+async def test_ceiling_during_retry_after_fix_uses_rejected_text(stats, make_message, fake_bot, api):
+    # Пять обзоров, finish и ревью-fix — это семь вызовов: на повтор потолка вызовов уже нет.
+    overview = _response(_use("player_overview", last_name="Nobody", team="", player_id=None))
+    s = stats([], reader={"FROM rosters": (PLAYER_COLUMNS, [])})
+    s.model.results[:] = [overview] * 5 + [_finish(text="Чернов"), _fix()]
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply(s.ai_stats.REJECTED_TEXT)]
+    row = _logged(s.cursor)
+    assert (row["outcome"], row["draft"]) == ("ceiling", "Чернов")
+
+
+@pytest.mark.asyncio
+async def test_clarify_verdict_still_replaces_draft_without_retry(stats, make_message, fake_bot, api):
+    s = stats([_finish(text="Черновик"), _verdict("clarify", "Какой Хьюз?", "два Хьюза")])
+    assert await _ask(s, make_message, fake_bot, api) == [_as_reply("Какой Хьюз?")]
+    assert len(s.model.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fix_without_reason_is_a_protocol_error(stats, make_message, fake_bot, api):
+    s = stats([_finish(), _verdict("fix", "", " ")])
+    assert await _ask(s, make_message, fake_bot, api) == [_as_reply(s.ai_stats.ERROR_TEXT)]
+
+
+@pytest.mark.asyncio
+async def test_incomplete_game_log_is_flagged_and_streak_withheld(stats, make_message, fake_bot, api):
+    s = stats(
+        [_response(_use("player_overview", last_name="Kucherov", team="", player_id=None)),
+         _finish("off_topic", "x")],
+        reader={
+            "FROM rosters": (PLAYER_COLUMNS, [(1, "Nikita Kucherov", "Kucherov", "R", "TBL")]),
+            "FROM players_season_stats": (["season_id", "games", "points"], [(20262027, 6, 8)]),
+            "FROM game_player_stats": (["day", "goals", "assists", "points", "shots"],
+                                       [("2026-10-27", 1, 1, 2, 4), ("2026-10-25", 0, 1, 1, 3), ("2026-10-23", 0, 0, 0, 2)]),
+        },
+    )
+    await _ask(s, make_message, fake_bot, api)
+
+    payload = json.loads(_tool_results(s.model.calls[1])[0]["content"])
+    assert payload["game_log_incomplete"] == "лог игр неполный: 3 из 6"
+    assert "point_streak_games" not in payload

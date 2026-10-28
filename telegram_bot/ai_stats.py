@@ -64,6 +64,8 @@ CALL_TIMEOUT = 60.0
 
 ERROR_TEXT = "Не удалось ответить, попробуйте командой: /help"
 CEILING_TEXT = "Не удалось ответить, уточните вопрос"
+# Ревьюер дважды отклонил ответ как ошибочный (`fix`) или потолок кончился на повторной попытке.
+REJECTED_TEXT = "Не удалось ответить точно — попробуйте переформулировать вопрос"
 
 PROMPTS = Path(__file__).parent / "prompts"
 DATA_TABLES = Path(__file__).resolve().parent.parent / "data_tables"
@@ -135,6 +137,7 @@ class _Run:
         self.calls: List[Dict[str, Any]] = []
         self.evidence: List[str] = []
         self.draft: Optional[str] = None
+        self.rejected = False  # черновик уже отклонён ревьюером (`fix`)
         self.cost = 0.0
         self.max_call_cost = 0.0
         self.sql_attempts = 0
@@ -171,9 +174,9 @@ def _tools() -> List[Dict[str, Any]]:
 
 def _verdict_tools() -> List[Dict[str, Any]]:
     return [ai_router.tool_schema(
-        "verdict", "Решение ревьюера: ok или clarify.",
+        "verdict", "Решение ревьюера: ok, clarify (вопрос неоднозначен) или fix (в черновике ошибка).",
         {
-            "verdict": {"type": "string", "enum": ["ok", "clarify"]},
+            "verdict": {"type": "string", "enum": ["ok", "clarify", "fix"]},
             "clarify_question": {"type": "string"},
             "reason": {"type": "string"},
         },
@@ -347,16 +350,25 @@ def player_overview(last_name: str, team: str, player_id: Optional[int]) -> Tupl
         if goalie:
             cur.execute(_OVERVIEW_GOALIE_GAMES_SQL, (player["player_id"], season))
             payload["last_10_games"] = _dicts(cur)
+            played = next((r["games"] for r in payload["seasons"] if r["season_id"] == season), 0)
+            if len(payload["last_10_games"]) < min(10, played):
+                payload["game_log_incomplete"] = (
+                    f"лог игр неполный: {len(payload['last_10_games'])} из {min(10, played)}"
+                )
         else:
             cur.execute(_OVERVIEW_SKATER_GAMES_SQL, (player["player_id"], season))
             games = _dicts(cur)
             payload["last_10_games"] = games[:10]
-            streak = 0
-            for game in games:
-                if game["points"] <= 0:
-                    break
-                streak += 1
-            payload["point_streak_games"] = streak
+            played = next((r["games"] for r in payload["seasons"] if r["season_id"] == season), 0)
+            if len(games) < played:
+                payload["game_log_incomplete"] = f"лог игр неполный: {len(games)} из {played}"
+            else:
+                streak = 0
+                for game in games:
+                    if game["points"] <= 0:
+                        break
+                    streak += 1
+                payload["point_streak_games"] = streak
     return _dump(payload), f"игрок {player['name']}, строк последних игр: {len(payload['last_10_games'])}"
 
 
@@ -456,7 +468,8 @@ async def _execute(run: _Run, tool: Any) -> Tuple[str, bool]:
 
 
 async def _review(run: _Run, user_text: str, draft: str) -> Dict[str, Any]:
-    """Вызов ревьюера: вопрос с историей, выполненное и черновик → вердикт `ok`/`clarify`."""
+    """Вызов ревьюера: вопрос с историей, выполненное и черновик → вердикт `ok`/`clarify`/`fix`;
+    каждый вердикт — шаг журнала (черновики отклонённых там и остаются)."""
     content = (
         f"{user_text}\n\n<результат>\n" + "\n\n".join(run.evidence)
         + f"\n</результат>\n\n<черновик>\n{draft}\n</черновик>"
@@ -468,37 +481,52 @@ async def _review(run: _Run, user_text: str, draft: str) -> Dict[str, Any]:
     verdict = _tool_use(response).input
     if verdict["verdict"] == "clarify" and not verdict["clarify_question"].strip():
         raise _ProtocolError("ревьюер выбрал clarify без вопроса")
+    if verdict["verdict"] == "fix" and not verdict["reason"].strip():
+        raise _ProtocolError("ревьюер выбрал fix без причины")
+    run.steps.append({"tool": "review", "draft": draft, "verdict": verdict["verdict"],
+                      "reason": verdict["reason"]})
     return dict(verdict)
 
 
 async def _dialog(run: _Run, user_text: str, has_history: bool) -> _Result:
-    """Цикл «модель → инструмент» до `finish`; для `answer` — ревью черновика."""
+    """Цикл «модель → инструмент» до `finish`; для `answer` — ревью черновика.
+
+    Вердикт `fix` (в черновике ошибка, вопрос однозначен) возвращает модели замечание ревьюера и
+    даёт ОДНУ повторную попытку в тех же потолках; новый черновик снова идёт на ревью. Второй `fix`
+    — исход `rejected`. Отклонённый черновик пользователю не показывается никогда.
+    """
     messages: List[Dict[str, Any]] = [{"role": "user", "content": user_text}]
     system = _system("stats_answer.md")
     while True:
         response = await _call(run, "answer", system, _tools(), messages)
         tool = _tool_use(response)
         if tool.name == "finish":
-            break
-        if run.cost > COST_CEILING:
-            # Бюджет уже пробит: не выполняем и этот шаг (следующий вызов всё равно остановится).
-            raise _Ceiling
-        result, is_error = await _execute(run, tool)
+            kind, text = tool.input["kind"], tool.input["text"]
+            continuation = has_history and tool.input["continuation"]
+            if kind != "answer":
+                return _Result(kind, text, continuation)
+            run.draft = text
+            verdict = await _review(run, user_text, text)
+            if verdict["verdict"] == "ok":
+                return _Result("answer", text, continuation, text, "ok", verdict["reason"])
+            if verdict["verdict"] == "clarify":
+                return _Result("clarify", verdict["clarify_question"], continuation, text,
+                               "clarify", verdict["reason"])
+            if run.rejected:
+                return _Result("rejected", REJECTED_TEXT, continuation, text, "fix", verdict["reason"])
+            run.rejected = True
+            result = (f"Ревьюер отклонил черновик: {verdict['reason']}. Исправь ответ (при "
+                      "необходимости выполни ещё запрос) и вызови finish снова; это последняя попытка.")
+            is_error = True
+        else:
+            if run.cost > COST_CEILING:
+                # Бюджет уже пробит: не выполняем и этот шаг (следующий вызов всё равно остановится).
+                raise _Ceiling
+            result, is_error = await _execute(run, tool)
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": [{
             "type": "tool_result", "tool_use_id": tool.id, "content": result, "is_error": is_error,
         }]})
-    kind, text = tool.input["kind"], tool.input["text"]
-    continuation = has_history and tool.input["continuation"]
-    if kind != "answer":
-        return _Result(kind, text, continuation)
-    run.draft = text
-    verdict = await _review(run, user_text, text)
-    if verdict["verdict"] == "ok":
-        return _Result("answer", text, continuation, text, "ok", verdict["reason"])
-    return _Result(
-        "clarify", verdict["clarify_question"], continuation, text, "clarify", verdict["reason"]
-    )
 
 
 def _log(chat_id: int, question: str, run: _Run, started: float, result: _Result,
@@ -544,7 +572,7 @@ async def answer(chat_id: int, question: str, history: List[Dict[str, Any]]) -> 
     try:
         result = await _dialog(run, _user_text(question, history), bool(history))
     except _Ceiling:
-        result = _Result("ceiling", CEILING_TEXT, draft=run.draft)
+        result = _Result("ceiling", REJECTED_TEXT if run.rejected else CEILING_TEXT, draft=run.draft)
         logger.warning("Потолок ответа 83: chat_id=%s, SQL=%s, вызовов=%s, $%.4f",
                        chat_id, run.sql_attempts, len(run.calls), run.cost)
     except Exception as exc:
