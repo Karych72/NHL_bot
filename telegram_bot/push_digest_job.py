@@ -9,7 +9,7 @@
 Матч подписанной команды или с игроками подписанной страны — одним сообщением под подписки
 чата, на первом прогоне после конца матча, когда NHL выложила клипы всех его голов, а к
 11:00 МСК — с тем, что есть: есть команда — полная карточка с блоками стран, только
-страны — счёт и блоки стран с кнопкой карточки, за ними видео голов этих стран.
+страны — счёт и блоки стран с кнопкой карточки; за сообщением — видео голов этих стран.
 Дайджест — остальные матчи ночи, как только загружен последний её матч, а к 11:00 МСК — в
 любом случае (Задача 63); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Предстоящие матчи (Задача 78) — на каждом прогоне с 15:30 МСК одно превью: ближайший ещё
@@ -422,41 +422,20 @@ def _albums(clips: List[_Clip]) -> List[List[_Clip]]:
     return albums
 
 
-async def _send_country_game(
-    bot: Bot,
-    chat_id: int,
-    text: str,
-    game_id: int,
-    goals: List[Tuple[int, int]],
-) -> None:
-    """Матч рассылки только по странам (Задачи 76, 85): короткое сообщение ``text`` (счёт и
-    игроки стран) с кнопкой полной карточки матча, за ним видео голов этих стран альбомом.
+async def _send_goal_clips(bot: Bot, chat_id: int, goals: List[Tuple[int, int]]) -> None:
+    """Видео голов игроков подписанных стран альбомом — вслед за сообщением о матче, полной
+    карточкой или коротким сообщением стран (Задачи 76, 85).
 
-    Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет. Подпись альбома —
-    описания всех его голов (``_album_caption``): кто забил, с чьих передач, когда. Клипы, не
-    влезающие в один запрос (``_albums``), идут несколькими альбомами подряд;
-    одиночный клип — ``send_video``: альбом требует минимум два медиа. Клип из кэша
-    ``bot_goal_clips`` уходит по ``file_id``; ``file_id`` загруженных видео туда
-    записывается (Задача 87). Альбом, в котором Telegram отверг ``file_id`` из кэша, —
+    Подпись альбома — описания всех его голов (``_album_caption``): кто забил, с чьих
+    передач, когда. Клипы, не влезающие в один запрос (``_albums``), идут несколькими
+    альбомами подряд; одиночный клип — ``send_video``: альбом требует минимум два медиа.
+    Клип из кэша ``bot_goal_clips`` уходит по ``file_id``; ``file_id`` загруженных видео
+    туда записывается (Задача 87). Альбом, в котором Telegram отверг ``file_id`` из кэша, —
     ошибка в лог и одна повторная отправка с загрузкой клипов заново.
 
-    Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — построчный HTML сообщения
-    с подвалом (уходит rich-сообщением, ``rich_message``);
-    ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов стран в
-    матче, каждый один раз.
+    Аргументы: ``bot``; ``chat_id`` — получатель; ``goals`` — (game_id, event_id) голов
+    стран в матче, каждый один раз.
     """
-    card_button = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}")
-        ]]
-    )
-    await _throttled(
-        lambda: bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(text),
-            reply_markup=card_button,
-        ),
-        chat_id,
-    )
     for album in _albums(await _prepare_goal_clips(goals)):
         try:
             await _send_album(bot, chat_id, album)
@@ -531,7 +510,8 @@ async def run_game_broadcast(
     строка — счёт матча (видна в уведомлении), подписки «По подписке: …» и ссылка на
     их настройку — подвал. Есть подписанная команда — полная
     карточка с кнопками видео голов и блоками стран под ней; только страны — счёт и блоки
-    стран с кнопкой карточки, за ними видео голов игроков этих стран (``_send_country_game``).
+    стран с кнопкой карточки. За сообщением в обоих случаях — видео голов игроков
+    подписанных стран альбомом (``_send_goal_clips``).
     Матч уходит на первом прогоне sync, когда он уже в ``games`` и NHL выложила клипы всех
     его голов; ``final`` (крайний срок ночи) — с тем, что есть. Отметка — пара (чат, матч)
     в ``bot_chat_game_sent``, ставится после любой попытки: сбой Telegram на одном матче
@@ -564,31 +544,37 @@ async def run_game_broadcast(
             # уведомлении, идёт счёт матча.
             footer = rich_footer(f"По подписке: {' · '.join(labels)}\n{SUBSCRIPTIONS_FOOTER}")
             blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
+            countries = {country for country, _ in subs.countries}
             try:
                 if subs.teams:
                     if game_id not in cards:
                         cards[game_id] = game_message(game_id)
                     text, goals_meta = cards[game_id]
-                    await _throttled(
-                        partial(
-                            bot.send_rich_message,
-                            chat_id=chat_id,
-                            rich_message=rich_message(f"{text}{blocks}\n{footer}"),
-                            reply_markup=goal_video_markup(goals_meta),
-                        ),
-                        chat_id,
-                    )
+                    markup = goal_video_markup(goals_meta)
                 else:
                     if game_id not in score_lines:
                         score_lines[game_id] = game_score_line(game_id)
-                    countries = {country for country, _ in subs.countries}
-                    await _send_country_game(
-                        bot,
-                        chat_id,
-                        f"{score_lines[game_id]}{blocks}\n{footer}",
-                        game_id,
-                        [goal for goal, nationality in goals[game_id] if nationality in countries],
+                    text = score_lines[game_id]
+                    # Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет.
+                    markup = InlineKeyboardMarkup(
+                        inline_keyboard=[[
+                            InlineKeyboardButton(
+                                text="Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}"
+                            )
+                        ]]
                     )
+                await _throttled(
+                    partial(
+                        bot.send_rich_message,
+                        chat_id=chat_id,
+                        rich_message=rich_message(f"{text}{blocks}\n{footer}"),
+                        reply_markup=markup,
+                    ),
+                    chat_id,
+                )
+                await _send_goal_clips(
+                    bot, chat_id, [goal for goal, nationality in goals[game_id] if nationality in countries]
+                )
             except TelegramForbiddenError:
                 logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
                 deactivate_chat(chat_id)
