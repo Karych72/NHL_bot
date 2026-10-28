@@ -831,8 +831,9 @@ async def test_game_broadcast_deactivates_only_the_blocked_chat(push_env):
 async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(push_env):
     """Задача 85, правило человека 2026-10-25: подписчик RUS, BLR, обеих команд встречи и
     «Матчей» получает о матче одно сообщение — полную карточку с блоками обеих стран и
-    строкой подписок; видео каждого гола — одной кнопкой, без альбомов; дайджест этого
-    матча не содержит. Повторный прогон ничего не дублирует."""
+    строкой подписок и кнопкой видео каждого гола, за ней альбомом голы игроков
+    подписанных стран (гол чужой страны — только кнопкой); дайджест этого матча не
+    содержит. Повторный прогон ничего не дублирует."""
     push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "BLR"), (GAME_A, 102, "CAN")]
     push_env.subscribed = {
         111: {GAME_A: push_env.subs(["TOR", "BOS"], [("BLR", "BLR BLOCK"), ("RUS", "RUS BLOCK")])}
@@ -841,7 +842,8 @@ async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(pu
     for _ in range(2):
         await push_env.job.broadcast_if_due(push_env.bot, _msk(8, 0))
 
-    [card] = push_env.api.outgoing
+    assert _order(push_env.api) == [("message", 111), ("album", 111)]
+    [card] = push_env.api.sent_rich
     assert card.rich_message.html == rich_html(
         f"CARD {GAME_A}\n\nBLR BLOCK\n\nRUS BLOCK"
     ) + "<footer>По подписке: TOR · BOS · Беларусь · Россия<br>Настроить подписки: /subscriptions</footer>"
@@ -849,9 +851,24 @@ async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(pu
     assert [b.callback_data for row in card.reply_markup.inline_keyboard for b in row] == [
         f"gv:{GAME_A}:100", f"gv:{GAME_A}:101", f"gv:{GAME_A}:102",
     ]
-    assert push_env.downloads == []
+    [album] = push_env.api.sent(SendMediaGroup)
+    assert [m.media.filename for m in album.media] == ["100.mp4", "101.mp4"]
+    assert push_env.downloads == [(GAME_A, 100), (GAME_A, 101)]
     assert push_env.marked == [(111, GAME_A)]
     assert push_env.last_sent == {111: NIGHT}, "дайджест отмечен, но пуст — не ушёл"
+
+
+@pytest.mark.asyncio
+async def test_team_subscriber_without_countries_gets_the_card_without_clips(push_env):
+    """Подписка только на команду: карточка с кнопками видео, без альбома и без скачивания
+    клипов — даже если голы забили игроки страны, на которую у чата подписки нет."""
+    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN")]
+    subs = push_env.subs(["MIN"], [])
+    await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {111: {GAME_A: subs}})
+
+    assert _order(push_env.api) == [("message", 111)]
+    assert push_env.downloads == []
+    assert push_env.marked == [(111, GAME_A)]
 
 
 @pytest.mark.asyncio
