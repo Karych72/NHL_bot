@@ -414,8 +414,8 @@ async def test_game_card_reports_missing_game_without_running_card_queries(
 
     await bot.cmd_start(message, fake_bot, _start_command("game_1"))
 
-    (sent,) = api.sent_messages
-    assert sent.text == "Такого матча нет в базе бота."
+    (sent,) = api.outgoing
+    assert body(sent) == rich_html("Такого матча нет в базе бота.")
     assert sent.reply_markup is None
     assert len(cursor.executed) == 1, "после game_exists() == False запросов карточки быть не должно"
 
@@ -557,12 +557,12 @@ async def test_today_on_empty_season_reports_no_finished_matches(
     # Пустая ночь — пометка и откат на последний игровой день в базе; в пустом
     # сезоне нет и его.
     notice, sent = api.outgoing
-    assert notice.text == (
+    assert body(notice) == rich_html(
         "Прошедшей ночью (2026-10-02) матчей в базе нет — показываю последний игровой день."
     )
     text = body(sent)
     assert text.startswith(rich_html("В базе пока нет завершенных матчей."))
-    assert sent in api.sent_rich and notice in api.sent_messages
+    assert api.sent_messages == []
     assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 
@@ -576,8 +576,8 @@ async def test_game_card_on_empty_season_reports_missing_game(
 
     await bot.cmd_start(message, fake_bot, _start_command("game_1"))
 
-    (sent,) = api.sent_messages
-    assert sent.text == "Такого матча нет в базе бота."
+    (sent,) = api.outgoing
+    assert body(sent) == rich_html("Такого матча нет в базе бота.")
 
 
 @pytest.mark.asyncio

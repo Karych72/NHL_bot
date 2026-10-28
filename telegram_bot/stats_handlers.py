@@ -342,7 +342,9 @@ async def send_game_card_message(bot: Bot, chat_id: int, game_id: int) -> Messag
     сообщение. Подписчику страны под карточкой — блок игроков каждой его страны,
     сыгравших в матче (Задача 76)."""
     if not game_exists(game_id):
-        return await bot.send_message(chat_id=chat_id, text="Такого матча нет в базе бота.")
+        return await bot.send_rich_message(
+            chat_id=chat_id, rich_message=rich_message("Такого матча нет в базе бота.")
+        )
     text, goals_meta = game_message(game_id)
     for country in get_chat_subscriptions(chat_id).countries:
         block = country_game_block(country, game_id)
@@ -469,9 +471,9 @@ async def _point_to_tonight_answer(bot: Bot, chat_id: int, entry: List[Optional[
     answer_id, pointer_id = entry
     assert answer_id is not None
     try:
-        pointer = await bot.send_message(
+        pointer = await bot.send_rich_message(
             chat_id=chat_id,
-            text=_TONIGHT_ALREADY_SENT,
+            rich_message=rich_message(_TONIGHT_ALREADY_SENT),
             reply_parameters=ReplyParameters(message_id=answer_id),
         )
     except TelegramBadRequest as exc:
@@ -561,7 +563,7 @@ async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) 
     # единственный event loop бота до ~2 минут (см. video_replay).
     delivery = await asyncio.to_thread(download_goal_video, game_id, event_id)
     if delivery is None:
-        await bot.send_message(chat_id=chat_id, text="Видео пока недоступно.")
+        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message("Видео пока недоступно."))
         return
 
     try:
@@ -578,7 +580,9 @@ async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) 
         )
     except Exception:
         logger.exception("Failed to send goal video")
-        await bot.send_message(chat_id=chat_id, text="Ошибка при отправке видео.")
+        await bot.send_rich_message(
+            chat_id=chat_id, rich_message=rich_message("Ошибка при отправке видео.")
+        )
     else:
         assert sent.video is not None  # ответ на отправку видео всегда содержит video
         save_goal_clip(game_id, event_id, sent.video.file_id, delivery.caption)

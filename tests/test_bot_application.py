@@ -282,7 +282,7 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     await _feed(dispatcher, fake_bot, make_update("таблица Востока", chat_id=-5, chat_type="group"))
 
     assert asked == ["как сыграл Колорадо"]
-    assert [m.text for m in api.sent_messages] == ["ответ модели"]
+    assert [body(m) for m in api.outgoing] == [rich_html("ответ модели")]
 
 
 @pytest.mark.asyncio
@@ -327,8 +327,9 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
         _feed(dispatcher, fake_bot, make_update(data="tn:555:DET:NYR")) for _ in range(2)
     ))
 
-    assert len(api.sent_rich) == 1, "карточка — одна"
-    [pointer] = api.sent_messages
+    card, pointer = api.sent_rich  # карточка — одна, второе сообщение — ссылка на неё
+    assert body(card) == rich_html("CARD")
+    assert body(pointer) == rich_html(sh._TONIGHT_ALREADY_SENT)
     assert pointer.reply_parameters.message_id == 1, "второй тап — ссылка на неё"
 
 
