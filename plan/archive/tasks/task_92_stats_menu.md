@@ -7,7 +7,7 @@
 `keyboards.py`); тесты; `docs/architecture.md`, `docs/telegram_bot.md`.
 **Зависит от:** 86 (aiogram), 89 (rich-стиль меню).
 **Источник:** запрос человека 2026-10-27 — «`/stats` очень много дублирует». Реестр —
-[`../open_tasks.md`](../open_tasks.md).
+[`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

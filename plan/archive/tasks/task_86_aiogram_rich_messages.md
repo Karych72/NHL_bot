@@ -7,8 +7,8 @@
 `tests/test_skater_reports_bot.py`), `docs/architecture.md`.
 **Зависит от:** —
 **Источник:** запрос человека 2026-10-26 («трансформация сообщений обновлённым API, чтобы
-сообщения круто смотрелись»), план — [`../rich_messages/README.md`](../rich_messages/README.md);
-решение человека — полный переезд на aiogram одной сессией. Реестр — [`../open_tasks.md`](../open_tasks.md).
+сообщения круто смотрелись»), план — [`../rich_messages/README.md`](../../rich_messages/README.md);
+решение человека — полный переезд на aiogram одной сессией. Реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
@@ -19,7 +19,7 @@ Rich Messages (Bot API 10.1) с компактными таблицами (`is_c
 ## Зачем и на что влияет
 
 - `<pre>`-таблицы на телефоне разваливаются: строка шире ~36 символов переносится
-  ([`../rich_messages/img_35.png`](../rich_messages/img_35.png) — превью SEA @ DET), а подгонка под ширину стоила обрезанных
+  ([`../rich_messages/img_35.png`](../../rich_messages/img_35.png) — превью SEA @ DET), а подгонка под ширину стоила обрезанных
   фамилий и выброшенных колонок. Rich-таблицу Telegram раскладывает сам.
 - python-telegram-bot отстал: последняя версия 22.8 — Bot API 10.0, поддержка 10.1 приостановлена
   до рефакторинга библиотеки (issue #5261). aiogram 3.31 вышел через два дня после Bot API 10.3 и
@@ -51,7 +51,7 @@ Rich Messages (Bot API 10.1) с компактными таблицами (`is_c
    `Dispatcher.feed_update`.
 
 **Критерии приёмки:** `make ci-local` зелёный; ревью Opus пройдено; живая проверка на dev-боте по
-чек-листу [`../rich_messages/README.md`](../rich_messages/README.md) (таблицы на трёх клиентах, меню
+чек-листу [`../rich_messages/README.md`](../../rich_messages/README.md) (таблицы на трёх клиентах, меню
 `/stats` rich → rich, «Сохранить», плотность абзацев, ночные рассылки, пустые ячейки шапки).
 
 **Подводные камни:** старые клиенты Telegram могут не показать rich-сообщения; в rich-HTML

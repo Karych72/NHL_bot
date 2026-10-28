@@ -7,7 +7,7 @@
 клиентах) — исходные данные для spike.
 **Источник:** запрос человека 2026-10-27 — все сообщения в rich-стиле, «но чтобы он был не
 вызывающим», логику можно менять. План этапа и черновик правил —
-[`../rich_messages/README.md`](../rich_messages/README.md) §«Этап 2». Реестр — [`../open_tasks.md`](../open_tasks.md).
+[`../rich_messages/README.md`](../../rich_messages/README.md) §«Этап 2». Реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

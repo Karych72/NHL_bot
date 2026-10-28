@@ -6,8 +6,8 @@
 (тексты рассылок), `telegram_bot/stats_handlers.py` (`dispatch_day_digest_messages`), тесты.
 **Зависит от:** 88 (правила и общая разметка), **85** (рассылки без дублей перестраивают
 сообщения по матчам и дайджест — оформлять их до неё значит делать дважды).
-**Источник:** запрос человека 2026-10-27, план — [`../rich_messages/README.md`](../rich_messages/README.md)
-§«Этап 2». Реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** запрос человека 2026-10-27, план — [`../rich_messages/README.md`](../../rich_messages/README.md)
+§«Этап 2». Реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
