@@ -5,8 +5,8 @@
 (`team_table`, `team_list_text`, лидерборды, страны), `telegram_bot/bot.py` (`team_profile_text`), `telegram_bot/messages/`
 (`team_profile.txt`, `league_table.txt`), тексты меню `/stats` и `/advanced`, тесты экранов.
 **Зависит от:** 88 (правила и общая разметка).
-**Источник:** запрос человека 2026-10-27, план — [`../rich_messages/README.md`](../rich_messages/README.md)
-§«Этап 2». Реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** запрос человека 2026-10-27, план — [`../rich_messages/README.md`](../../rich_messages/README.md)
+§«Этап 2». Реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

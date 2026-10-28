@@ -7,7 +7,7 @@
 тесты, `docs/telegram_bot.md` §«Стиль сообщений».
 **Зависит от:** 88 (правила и общая разметка).
 **Источник:** запрос человека 2026-10-27 — «все сообщения» в rich-стиле; план —
-[`../rich_messages/README.md`](../rich_messages/README.md) §«Этап 2». Реестр — [`../open_tasks.md`](../open_tasks.md).
+[`../rich_messages/README.md`](../../rich_messages/README.md) §«Этап 2». Реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
