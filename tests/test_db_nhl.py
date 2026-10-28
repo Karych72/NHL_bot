@@ -497,8 +497,10 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         return Bot(FAKE_TOKEN, session=FakeSession())
 
     async def _press(self, data):
-        """Нажатие кнопки `data`: (подсказка, текст экрана, [(подпись, callback_data)])."""
+        """Нажатие кнопки `data`: (подсказка, HTML экрана, [(подпись, callback_data)])."""
         from aiogram.types import CallbackQuery
+
+        from tests._telegram_fakes import body
 
         fake_bot = self._fake_bot()
         callback = CallbackQuery.model_validate(
@@ -519,10 +521,12 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         buttons = [] if edit.reply_markup is None else [
             (b.text, b.callback_data) for row in edit.reply_markup.inline_keyboard for b in row
         ]
-        return fake_bot.session.answers[0], edit.text, buttons
+        return fake_bot.session.answers[0], body(edit), buttons
 
     async def test_open_menu_on_empty_chat(self):
         from aiogram.types import Message
+
+        from tests._telegram_fakes import body
 
         fake_bot = self._fake_bot()
         message = Message.model_validate(
@@ -533,10 +537,14 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             context={"bot": fake_bot},
         )
         await self.bot.cmd_subscriptions(message, fake_bot)
-        [reply] = fake_bot.session.sent_messages
-        text, markup = reply.text, reply.reply_markup
-        self.assertIn("Пока ничего нет.", text)
-        self.assertIn("Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.", text)
+        self.assertEqual(fake_bot.session.sent_messages, [], "меню — rich-сообщение (Задача 91)")
+        [reply] = fake_bot.session.sent_rich
+        text, markup = body(reply), reply.reply_markup
+        self.assertTrue(text.startswith("<p><b>Ваши подписки</b><br>Пока ничего нет.</p>"))
+        # Когда приходят рассылки — служебное, подвал.
+        self.assertTrue(text.endswith(
+            "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
+        ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
         self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1])
         self.assertEqual(
@@ -549,7 +557,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
     async def test_digest_toggle_writes_row_and_never_duplicates(self):
         hint, text, buttons = await self._press("sub:d")
         self.assertEqual(hint, "Дайджест включён")
-        self.assertIn("✅ Утренний дайджест", text)
+        self.assertIn("<ul><li>Утренний дайджест</li></ul>", text)
         self.assertEqual(buttons[0], ("✅ Дайджест", "sub:d"))
         self.assertEqual(self._rows(), [("morning_digest", None, None, True)])
 
@@ -564,11 +572,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
     async def test_upcoming_toggle_writes_row_and_summary_line(self):
         """Задача 78: «Предстоящие матчи» — переключатель как у дайджеста, строка сводки
-        «⏰ Предстоящие матчи» только у включённой подписки; дайджест не задевает."""
+        «Предстоящие матчи» только у включённой подписки; дайджест не задевает."""
         self.assertRegex("sub:u", self.bot.SUBSCRIPTIONS_CALLBACK_PATTERN)
         hint, text, buttons = await self._press("sub:u")
         self.assertEqual(hint, "Предстоящие матчи включены")
-        self.assertIn("⏰ Предстоящие матчи", text)
+        self.assertIn("<li>Предстоящие матчи</li>", text)
         self.assertNotIn("Утренний дайджест", text)
         self.assertEqual(buttons[:2], [("➕ Дайджест", "sub:d"), ("✅ Предстоящие матчи", "sub:u")])
         self.assertEqual(self._rows(), [("upcoming_games", None, None, True)])
@@ -576,8 +584,8 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         await self._press("sub:d")
         hint, text, buttons = await self._press("sub:u")
         self.assertEqual(hint, "Предстоящие матчи выключены")
-        self.assertNotIn("⏰", text)
-        self.assertIn("✅ Утренний дайджест", text)
+        self.assertNotIn("<li>Предстоящие матчи</li>", text)
+        self.assertIn("<li>Утренний дайджест</li>", text)
         self.assertEqual(buttons[1], ("➕ Предстоящие матчи", "sub:u"))
         self.assertEqual(
             self._rows(),
@@ -594,7 +602,12 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             [("Atlantic", "sub:D:0"), ("Metropolitan", "sub:D:1"), ("Central", "sub:D:2"),
              ("Pacific", "sub:D:3"), ("« Назад", "sub:m")],
         )
-        _, _, buttons = await self._press("sub:D:1")
+        _, text, buttons = await self._press("sub:D:1")
+        self.assertEqual(
+            text,
+            "<p><b>Metropolitan</b></p>"
+            "<footer>Нажмите на команду, чтобы подписаться или отписаться.</footer>",
+        )
         self.assertEqual(
             buttons,
             [("AAA", "sub:t:1:900011"), ("BBB", "sub:t:1:900012"), ("« К дивизионам", "sub:T")],
@@ -608,7 +621,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         _, _, buttons = await self._press("sub:T")
         self.assertIn(("Metropolitan (1)", "sub:D:1"), buttons)
         _, text, buttons = await self._press("sub:m")
-        self.assertIn("🏒 Команды: BBB", text)
+        self.assertIn("<li>Команды: BBB</li>", text)
         self.assertIn(("🏒 Команды (1)", "sub:T"), buttons)
 
         hint, _, buttons = await self._press("sub:t:1:900012")
@@ -631,7 +644,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         )
 
         _, text, buttons = await self._press("sub:x")
-        self.assertIn("🌍 Страны: RUS", text)
+        self.assertIn("<li>Страны: RUS</li>", text)
         self.assertEqual(buttons, [], "«Готово» снимает клавиатуру")
 
     async def test_subscribed_country_outside_ranking_can_be_switched_off(self):
@@ -652,7 +665,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(self.repo, "upsert_chat_kind", side_effect=psycopg2.Error("boom")):
             with self.assertLogs(self.bot.logger, level="ERROR"):
                 _, text, buttons = await self._press("sub:d")
-        self.assertEqual(text, self.bot._SUBSCRIPTIONS_DB_ERROR)
+        self.assertEqual(text, f"<p>{self.bot._SUBSCRIPTIONS_DB_ERROR}</p>")
         self.assertEqual(buttons, [])
         self.assertEqual(self._rows(), [])
 
