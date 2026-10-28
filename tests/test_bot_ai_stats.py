@@ -667,7 +667,7 @@ def test_model_sql_is_wrapped_into_a_single_select(stats):
     s.ai_stats.run_readonly("WITH x AS (SELECT 2) SELECT * FROM x")
 
     first, second = s.sql
-    limit = "WHERE octet_length(q::text) <= 4000 LIMIT 51"
+    limit = "WHERE octet_length(ROW(q.*)::text) <= 4000 LIMIT 51"
     assert first == f"SELECT * FROM (\nSELECT 1 -- комментарий\n) AS q {limit}"
     assert second == f"SELECT * FROM (\nWITH x AS (SELECT 2) SELECT * FROM x\n) AS q {limit}"
 

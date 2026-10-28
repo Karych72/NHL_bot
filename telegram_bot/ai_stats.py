@@ -237,8 +237,8 @@ def run_readonly(sql: str) -> _SqlOutcome:
     1. любая `;` в теле запроса (после снятия хвостовых) — ошибка запроса: psycopg2 шлёт simple
        query, где через `;` идут несколько операторов (`SELECT 1) AS x; SET …; SELECT … FROM (SELECT 1`
        обошла бы одну лишь обёртку); без `;` второго оператора нет;
-    2. запрос оборачивается в `SELECT * FROM (<sql>) AS q WHERE octet_length(q::text) <= ROW_BYTES
-       LIMIT n` — `SET`, `COMMIT`, `INSERT` в подзапросе синтаксическая ошибка;
+    2. запрос оборачивается в `SELECT * FROM (<sql>) AS q WHERE octet_length(ROW(q.*)::text) <=
+       ROW_BYTES LIMIT n` — `SET`, `COMMIT`, `INSERT` в подзапросе синтаксическая ошибка;
     3. права роли (только `SELECT` на таблицы данных) и read-only транзакция;
     4. сторожевой таймер клиента отменяет запрос через `STATEMENT_TIMEOUT_SEC + 1` с, что бы ни
        случилось с серверным `statement_timeout`.
@@ -258,7 +258,8 @@ def run_readonly(sql: str) -> _SqlOutcome:
     if ";" in body:
         message = "Ошибка SQL: точка с запятой допустима только в конце — нужен один SELECT"
         return _SqlOutcome(message, None, message)
-    wrapped = (f"SELECT * FROM (\n{body}\n) AS q WHERE octet_length(q::text) <= {ROW_BYTES} "
+    # `ROW(q.*)`, а не `q`: колонка с именем `q` подменила бы собой всю строку.
+    wrapped = (f"SELECT * FROM (\n{body}\n) AS q WHERE octet_length(ROW(q.*)::text) <= {ROW_BYTES} "
                f"LIMIT {ROW_LIMIT + 1}")
     with closing(_reader_connection()) as conn, conn.cursor() as cur:
         watchdog = threading.Timer(STATEMENT_TIMEOUT_SEC + 1, conn.cancel)

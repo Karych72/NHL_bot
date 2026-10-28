@@ -1286,7 +1286,14 @@ class TestAiReaderRole(unittest.TestCase):
         self.assertLessEqual(len(huge.text), ai_stats.RESULT_CHARS)
         giant = ai_stats.run_readonly("SELECT repeat('x', 200000000) AS v FROM generate_series(1, 3)")
         self.assertEqual(giant.rows, 0)
+        # Колонка с именем `q` не подменяет собой строку в фильтре размера.
+        named_q = ai_stats.run_readonly(
+            "SELECT 'x' AS q, repeat('y', 200000000) AS big FROM generate_series(1, 3)"
+        )
+        self.assertEqual(named_q.rows, 0)
         self.assertLess(time.monotonic() - started, 8)
+        null_q = json.loads(ai_stats.run_readonly("SELECT NULL::int AS q, 5 AS goals").text)
+        self.assertEqual(null_q["rows"], [[None, 5]], "NULL в колонке q не отбрасывает строку")
 
         cells = ai_stats.run_readonly("SELECT repeat('y', 3000) AS v FROM generate_series(1, 50)")
         payload = json.loads(cells.text)
