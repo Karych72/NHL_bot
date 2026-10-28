@@ -179,7 +179,11 @@ async def test_digest_for_date_asks_that_day_and_sends_it(ai, make_message, fake
 
     assert any("games WHERE day" in q and p[0] == "2026-10-19" for q, p in cursor.executed)
     sent = api.sent_rich[0]
-    assert body(sent) == rich_html("За 2026-10-19 завершенных матчей не найдено.")
+    text = body(sent)
+    assert text.startswith(rich_html("За 2026-10-19 завершенных матчей не найдено."))
+    # Подсказка «Ещё: …» — подвал этого же сообщения, а не отдельное сообщение.
+    assert text.endswith("</footer>") and "<footer>Ещё: /tonight" in text
+    assert api.sent_messages == []
     assert sent.reply_markup is None, "у дня без матчей кнопок нет"
 
 

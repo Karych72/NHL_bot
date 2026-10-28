@@ -359,13 +359,14 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
     stats_handlers = bot_module("stats_handlers")
 
     with patch.object(stats_handlers, "game_exists", return_value=False), \
-            patch.object(stats_handlers, "matchup_season_preview", return_value="PREVIEW") as mock_preview, \
+            patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")) as mock_preview, \
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
     mock_preview.assert_called_once_with(555, "DET", "NYR")
     [sent] = api.sent_rich
-    assert body(sent) == rich_html("PREVIEW")
+    # Тело превью, затем подвал: «Сезон …» уехал из заголовка в <footer>.
+    assert body(sent) == rich_html("PREVIEW") + "<footer>Сезон 2026/27</footer>"
 
 
 @pytest.mark.asyncio
@@ -462,7 +463,7 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
     """Превью (матча ещё нет в БД) и карточка — разные ответы: после загрузки
     матча то же нажатие шлёт карточку, а не ссылку на превью."""
     stats_handlers = bot_module("stats_handlers")
-    with patch.object(stats_handlers, "matchup_season_preview", return_value="PREVIEW"), \
+    with patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
         with patch.object(stats_handlers, "game_exists", return_value=False):
             await _tap_tonight(stats_handlers, make_callback, fake_bot)
@@ -472,7 +473,9 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
         with patch.object(stats_handlers, "game_exists", return_value=True):
             await _tap_tonight(stats_handlers, make_callback, fake_bot, "tn:556:BOS:MIN")
 
-    assert [body(m) for m in api.outgoing] == [rich_html("PREVIEW"), rich_html("CARD"), rich_html("CARD")]
+    assert [body(m) for m in api.outgoing] == [
+        rich_html("PREVIEW") + "<footer>Сезон 2026/27</footer>", rich_html("CARD"), rich_html("CARD"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -833,16 +836,20 @@ def digest_labels_db(fake_db_router):
 async def test_dispatch_day_digest_ends_with_hint_and_carries_only_match_buttons(
     bot_module, fake_bot, api, digest_labels_db, games
 ):
-    """Дайджест (`/today`, ИИ, рассылка): сообщение матчей, затем подсказка «Ещё: …»;
-    кнопки — только карточки матчей (`dg:`) и видео голов (`gv:`)."""
+    """Дайджест (`/today`, ИИ, рассылка): подсказка «Ещё: …» — подвал последнего (единственного)
+    сообщения, отдельного сообщения нет; кнопки — только карточки матчей (`dg:`) и видео голов (`gv:`)."""
     stats_handlers = bot_module("stats_handlers")
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
     [digest] = api.sent_rich
-    [hint] = api.sent_messages
-    assert hint.text == stats_handlers._DIGEST_MORE_HINT
-    assert api.requests.index(digest) < api.requests.index(hint)
+    assert api.sent_messages == [], "подсказка — подвал, а не отдельное сообщение"
+    text = body(digest)
+    assert text.endswith("</footer>")
+    assert text.count("<footer>") == 1
+    footer = text.rsplit("<footer>", 1)[1]
+    assert "Ещё: /tonight" in footer
+    assert footer.endswith("Настроить подписки: /subscriptions</footer>")
     rows = digest.reply_markup.inline_keyboard if digest.reply_markup else []
     data = [b.callback_data for row in rows for b in row]
     assert all(d.startswith(("dg:", "gv:")) for d in data)
@@ -859,13 +866,20 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
     summary = api.sent_rich[0]
-    # Матчи разделены пустой строкой (DIGEST_GAME_SEPARATOR).
+    text = body(summary)
+    # Заголовок — жирный, дата и число матчей — в подвале, не в заголовке.
+    assert text.startswith("<p><b>Матчи ночи</b></p>")
+    # Матчи разделены пустой строкой (DIGEST_GAME_SEPARATOR); строка матча без <b>,
+    # периоды — курсивом.
     assert rich_html(
-        "1. <b>H1 1:0 A1</b>\n  1:0, 0:0, 0:0\n\n"
-        "2. <b>H2 1:0 A2</b>\n  1:0, 0:0, 0:0\n\n"
-        "3. <b>H3 1:0 A3</b>"
-    ).removesuffix("</p>") + "<br>" in body(summary)
-    assert "Кнопка матча — полная карточка и видео голов." in body(summary)
+        "1. H1 1:0 A1\n  <i>1:0, 0:0, 0:0</i>\n\n"
+        "2. H2 1:0 A2\n  <i>1:0, 0:0, 0:0</i>\n\n"
+        "3. H3 1:0 A3"
+    ).removesuffix("</p>") + "<br>" in text
+    footer = text.rsplit("<footer>", 1)[1]
+    assert text.endswith("</footer>")
+    assert footer.startswith("Игровой день 2025-12-01 · матчей: 4<br>Кнопка матча — полная карточка и видео голов.<br>")
+    assert "Настроить подписки: /subscriptions" in footer
     rows = summary.reply_markup.inline_keyboard
     assert [len(r) for r in rows] == [3, 1]
     assert [b.text for r in rows for b in r] == [f"{n}. AAA – BBB" for n in range(1, 5)]
@@ -891,8 +905,8 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
 
     sent_text = body(api.sent_rich[0])
     assert "Показаны" not in sent_text
-    assert "1. <b>H1 1:0 A1</b>" in sent_text
-    assert "2. <b>H2 1:0 A2</b>" in sent_text
+    assert "1. H1 1:0 A1" in sent_text
+    assert "2. H2 1:0 A2" in sent_text
 
 
 @pytest.mark.asyncio
@@ -928,11 +942,16 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     shown, total = int(match.group(1)), int(match.group(2))
     assert total == total_games
     assert 0 < shown < total_games
-    # Обрезка — целыми матчами (строка матча в <b> и строка периодов): ни
-    # одного незакрытого тега (Telegram отверг бы HTML) и ни одного матча без
-    # строки периодов. <b> ещё у заголовка «Матчи …».
-    assert sent_text.count("<b>") == sent_text.count("</b>") == 1 + shown
-    assert sent_text.count("  1:0, 0:0, 0:0") == shown
+    # Обрезка — целыми матчами (строка периодов в <i>): ни одного незакрытого тега
+    # (Telegram отверг бы HTML) и ни одного матча без строки периодов.
+    # <b> — только у заголовка «Матчи ночи».
+    assert sent_text.count("<b>") == sent_text.count("</b>") == 1
+    # Курсив — строки периодов и сам маркер усечения.
+    assert sent_text.count("<i>") == sent_text.count("</i>") == shown + 1
+    assert sent_text.count("  <i>1:0, 0:0, 0:0</i>") == shown
+    # Маркер усечения — первая строка подвала (служебное), подвал на месте в конце.
+    assert f"<footer><i>Показаны {shown} из {total} матчей.</i><br>Игровой день " in sent_text
+    assert sent_text.endswith("</footer>")
 
 
 # ---------------------------------------------------------------------------

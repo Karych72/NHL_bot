@@ -65,7 +65,7 @@ if _HERE not in sys.path:
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MSK,
-    country_label,
+    country_name,
     country_night_blocks,
     day_digest,
     game_message,
@@ -318,7 +318,7 @@ async def run_morning_digest_broadcast(
                 day_label,
                 rest,
                 inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
-                heading="Матчи" if len(rest) == len(games) else "Остальные матчи ночи",
+                heading="Матчи ночи" if len(rest) == len(games) else "Остальные матчи ночи",
             )
             try:
                 try:
@@ -441,7 +441,7 @@ async def _send_country_game(
     ошибка в лог и одна повторная отправка с загрузкой клипов заново.
 
     Аргументы: ``bot``; ``chat_id`` — получатель; ``text`` — построчный HTML сообщения
-    (уходит rich-сообщением, ``rich_message``, с подвалом ``rich_footer(SUBSCRIPTIONS_FOOTER)``);
+    с подвалом (уходит rich-сообщением, ``rich_message``);
     ``game_id`` — матч (для кнопки); ``goals`` — (game_id, event_id) голов стран в
     матче, каждый один раз.
     """
@@ -452,7 +452,7 @@ async def _send_country_game(
     )
     await _throttled(
         lambda: bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(f"{text}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"),
+            chat_id=chat_id, rich_message=rich_message(text),
             reply_markup=card_button,
         ),
         chat_id,
@@ -528,7 +528,8 @@ async def run_game_broadcast(
 
     Зачем: правило «каждый матч ночи — чату ровно один раз» (Задача 85): сколько бы
     подписок ни вело на матч (команда, страны), сообщение одно и собрано под них. Первая
-    строка — «По подписке: …» с этими подписками. Есть подписанная команда — полная
+    строка — счёт матча (видна в уведомлении), подписки «По подписке: …» и ссылка на
+    их настройку — подвал. Есть подписанная команда — полная
     карточка с кнопками видео голов и блоками стран под ней; только страны — счёт и блоки
     стран с кнопкой карточки, за ними видео голов игроков этих стран (``_send_country_game``).
     Матч уходит на первом прогоне sync, когда он уже в ``games`` и NHL выложила клипы всех
@@ -557,9 +558,11 @@ async def run_game_broadcast(
                 logger.info("game_id=%s: клипы ещё не выложены, ждём", game_id)
                 continue
             labels = [html.escape(team) for team in subs.teams] + [
-                country_label(country) for country, _ in subs.countries
+                html.escape(country_name(country)) for country, _ in subs.countries
             ]
-            head = f"🔔 По подписке: {' · '.join(labels)}"
+            # Причина и ссылка на подписки — подвал: первой строкой, видной в
+            # уведомлении, идёт счёт матча.
+            footer = rich_footer(f"По подписке: {' · '.join(labels)}\n{SUBSCRIPTIONS_FOOTER}")
             blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
             try:
                 if subs.teams:
@@ -570,9 +573,7 @@ async def run_game_broadcast(
                         partial(
                             bot.send_rich_message,
                             chat_id=chat_id,
-                            rich_message=rich_message(
-                                f"{head}\n\n{text}{blocks}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"
-                            ),
+                            rich_message=rich_message(f"{text}{blocks}\n{footer}"),
                             reply_markup=goal_video_markup(goals_meta),
                         ),
                         chat_id,
@@ -584,7 +585,7 @@ async def run_game_broadcast(
                     await _send_country_game(
                         bot,
                         chat_id,
-                        f"{head}\n\n{score_lines[game_id]}{blocks}",
+                        f"{score_lines[game_id]}{blocks}\n{footer}",
                         game_id,
                         [goal for goal, nationality in goals[game_id] if nationality in countries],
                     )
@@ -641,23 +642,26 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     if not games:
         return
     sent = sent_games([game[0] for game in games])
-    previews: Dict[int, str] = {}
+    previews: Dict[int, Tuple[str, str]] = {}
     for subscription_id, chat_id in list_active_upcoming_rows():
         nxt = next((g for g in games if (subscription_id, g[0]) not in sent), None)
         if nxt is None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = (
-                f"⏰ <b>Начало в {start.astimezone(MSK):%H:%M} МСК</b>\n"
-                + matchup_season_preview(game_id, away, home)
-            )
+            previews[game_id] = matchup_season_preview(game_id, away, home)
+        body, footer = previews[game_id]
+        # Первая строка — время начала: её видно в уведомлении.
+        text = (
+            f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
+            + rich_footer(f"{footer}\n{SUBSCRIPTIONS_FOOTER}")
+        )
         try:
             await _throttled(
                 partial(
                     bot.send_rich_message,
                     chat_id=chat_id,
-                    rich_message=rich_message(f"{previews[game_id]}\n{rich_footer(SUBSCRIPTIONS_FOOTER)}"),
+                    rich_message=rich_message(text),
                 ),
                 chat_id,
             )

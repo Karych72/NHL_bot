@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from bot_messages import rich_footer
+
 NHL_API_BASE = "https://api-web.nhle.com/v1"
 
 # US/Eastern — один согласованный пояс для времени старта в выводе.
@@ -109,8 +111,9 @@ def _format_msk_ahead_hours(dh: float) -> str:
 
 def tonight_reply_intro(payload: dict) -> str:
     """
-    Текст ответа /tonight без списка матчей (матчи только кнопками).
-    Разметка HTML (Telegram): <b>жирный</b>; дата и числа из API — через html.escape.
+    Текст ответа /tonight без списка матчей (матчи только кнопками): заголовок с датой,
+    подсказка и разница времени; источник расписания — подвал (`rich_footer`).
+    Построчный HTML для `rich_message()`; дата и числа из API — через html.escape.
     """
     raw_current = payload.get("currentDate") or "—"
     current_esc = html.escape(str(raw_current))
@@ -118,19 +121,17 @@ def tonight_reply_intro(payload: dict) -> str:
     if not games:
         return f"На {current_esc} в расписании NHL матчей нет."
 
-    n = len(games)
-    dh = msk_hours_ahead_of_et_now()
-    dh_s = _format_msk_ahead_hours(dh)
-    n_esc = html.escape(str(n))
-    dh_esc = html.escape(dh_s)
+    dh_esc = html.escape(_format_msk_ahead_hours(msk_hours_ahead_of_et_now()))
     return (
-        f"Матчи NHL на календарный день лиги <b>{current_esc}</b> "
-        f"(актуальное расписание с сайта NHL, не из базы бота).\n\n"
-        f"Ниже <b>{n_esc}</b> кнопок — выберите матч: откроется карточка из базы "
-        f"(если игра уже загружена) или сравнение сезонных показателей команд.\n\n"
-        f"На кнопках время старта в <b>ET</b> (восточное время США). "
-        f"<b>Москва сейчас на {dh_esc} ч впереди ET</b> "
-        f"(разница меняется при переводе часов в США; в России постоянно UTC+3)."
+        f"<b>Матчи NHL на {current_esc}</b>\n"
+        "Выберите матч кнопкой: сыгранный откроется карточкой из базы, ещё не сыгранный — "
+        "сравнением сезонных показателей команд.\n"
+        f"На кнопках время старта по ET (восточное время США); Москва сейчас на {dh_esc} ч "
+        "впереди.\n"
+        + rich_footer(
+            "Расписание — с сайта NHL, не из базы бота. Разница с Москвой меняется при "
+            "переводе часов в США."
+        )
     )
 
 

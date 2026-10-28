@@ -253,8 +253,11 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(len(bot.session.sent_messages), 1, "подсказка «Ещё: …»")
-        self.assertEqual(sent[0].rich_message.html, rich_html("Полная карточка"))
+        self.assertEqual(bot.session.sent_messages, [], "подсказка «Ещё: …» — подвал, не сообщение")
+        html_ = sent[0].rich_message.html
+        self.assertTrue(html_.startswith(rich_html("Полная карточка")))
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("<footer>Ещё: /tonight", html_)
         [[video]] = sent[0].reply_markup.inline_keyboard
         self.assertEqual(video.callback_data, "gv:1:2")
 
@@ -269,16 +272,19 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
         ), patch.object(
-            stats_handlers, "day_digest_summary_body", return_value=["1. <b>Home Away</b>", "2. B C"]
+            stats_handlers, "day_digest_summary_body", return_value=["1. Home Away", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
                 bot, chat_id=42, day_label="2025-03-01", games=games
             )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(len(bot.session.sent_messages), 1, "подсказка «Ещё: …»")
-        self.assertIn("2 игр", sent[0].rich_message.html)
-        self.assertIn("<p>1. <b>Home Away</b></p>", sent[0].rich_message.html)
+        self.assertEqual(bot.session.sent_messages, [], "подсказка «Ещё: …» — подвал, не сообщение")
+        html_ = sent[0].rich_message.html
+        self.assertTrue(html_.startswith("<p><b>Матчи ночи</b></p>"))
+        self.assertIn("<p>1. Home Away</p>", html_)
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("<footer>Игровой день 2025-03-01 · матчей: 2<br>", html_)
         kb = sent[0].reply_markup.inline_keyboard
         self.assertEqual([[b.text for b in row] for row in kb], [["1. HOM – AWY", "2. B – C"]])
 
@@ -289,11 +295,13 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         await stats_handlers.dispatch_day_digest_messages(
             bot, chat_id=7, day_label="2025-01-01", games=games
         )
-        self.assertEqual(len(bot.session.outgoing), 2)
+        self.assertEqual(len(bot.session.outgoing), 1)
         (rich,) = bot.session.sent_rich
-        (hint,) = bot.session.sent_messages
-        self.assertEqual(rich.rich_message.html, rich_html("Нет матчей"))
-        self.assertIn("/stats", hint.text)
+        self.assertEqual(bot.session.sent_messages, [])
+        html_ = rich.rich_message.html
+        self.assertTrue(html_.startswith(rich_html("Нет матчей")))
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("/stats", html_.rsplit("<footer>", 1)[1])
 
 
 if __name__ == "__main__":
