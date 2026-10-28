@@ -769,19 +769,19 @@ class TestCountryNightSql(unittest.TestCase):
         block_game = "\n".join([
             "<b>ZZZ</b>",
             "",
-            "<b>Скорер&lt;</b> (HOM, ц)",
+            "Скорер&lt; (HOM, ц)",
             "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
             "",
-            "<b>Крыло</b> (HOM)",
+            "Крыло (HOM)",
             "0+1 · −1 · 2 бр. · 3 хита · 15:30",
             "",
-            "<b>Защитник</b> (HOM, защ)",
+            "Защитник (HOM, защ)",
             "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
             "",
-            "<b>Стенка</b> (HOM)",
+            "Стенка (HOM)",
             "30/33 · 90.91% · 59:47",
         ])
-        block_game2 = "<b>ZZZ</b>\n\n<b>Гость</b> (AWY)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
+        block_game2 = "<b>ZZZ</b>\n\nГость (AWY)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
             self.messages.country_night_blocks("ZZZ", self.NIGHT),
             [(self.GAME, block_game), (self.GAME2, block_game2)],
