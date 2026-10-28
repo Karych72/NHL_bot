@@ -814,6 +814,18 @@ async def test_second_fix_tells_user_to_rephrase_and_no_draft_leaks(stats, make_
 
 
 @pytest.mark.asyncio
+async def test_non_answer_finish_after_fix_does_not_bypass_review(stats, make_message, fake_bot, api):
+    s = stats([], reader={"SELECT 1": (["goals"], [(42,)])})
+    s.model.results[:] = [_sql(), _finish(text="Черновик 43"), _fix(),
+                          _finish(kind="no_data", text="Данных нет, но было 43")]
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply(s.ai_stats.REJECTED_TEXT)]
+    row = _logged(s.cursor)
+    assert (row["outcome"], row["draft"]) == ("rejected", "Черновик 43")
+
+
+@pytest.mark.asyncio
 async def test_ceiling_during_retry_after_fix_uses_rejected_text(stats, make_message, fake_bot, api):
     # Пять обзоров, finish и ревью-fix — это семь вызовов: на повтор потолка вызовов уже нет.
     overview = _response(_use("player_overview", last_name="Nobody", team="", player_id=None))

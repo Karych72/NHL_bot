@@ -503,6 +503,10 @@ async def _dialog(run: _Run, user_text: str, has_history: bool) -> _Result:
         if tool.name == "finish":
             kind, text = tool.input["kind"], tool.input["text"]
             continuation = has_history and tool.input["continuation"]
+            if kind != "answer" and run.rejected:
+                # После `fix` текст без ревью не уходит: `no_data` мог унести ту же неверную цифру.
+                return _Result("rejected", REJECTED_TEXT, continuation, run.draft, "fix",
+                               "после замечания ревьюера модель ушла от ответа: " + kind)
             if kind != "answer":
                 return _Result(kind, text, continuation)
             run.draft = text
