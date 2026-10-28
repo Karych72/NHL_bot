@@ -11,7 +11,7 @@ import html
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple, Union
 
 from aiogram.types import InputRichMessage
 from psycopg2 import sql
@@ -176,7 +176,11 @@ def _goal_player_name(lastname: Optional[str], nationality: Optional[str]) -> st
 
 
 def _table(
-    rows: Sequence[Sequence[str]], align: str, *, playoff_line_after: Optional[int] = None
+    rows: Sequence[Sequence[str]],
+    align: str,
+    *,
+    playoff_line_after: Optional[int] = None,
+    bold: Collection[Tuple[int, int]] = (),
 ) -> str:
     """Таблица rich-сообщения (Bot API 10.3): первая строка `rows` — шапка, остальные — тело.
 
@@ -191,19 +195,22 @@ def _table(
         align: по символу на колонку — `l` (влево) или `r` (вправо).
         playoff_line_after: после стольких строк тела — строка «линия плей-офф» на всю
             ширину (турнирная таблица: топ-3 дивизиона, две путёвки Wild Card).
+        bold: ячейки тела жирным — пары (строка тела, колонка), с нуля; то, на что
+            экран отвечает (лучшее значение превью матча).
     """
-    def row(cells: Sequence[str], tag: str) -> str:
-        return "<tr>" + "".join(
-            f'<{tag} align="right">{html.escape(c)}</{tag}>' if a == "r" else f"<{tag}>{html.escape(c)}</{tag}>"
-            for c, a in zip(cells, align)
-        ) + "</tr>"
+    def row(cells: Sequence[str], tag: str, r: int = -1) -> str:
+        def cell(c: str, a: str, col: int) -> str:
+            text = f"<b>{html.escape(c)}</b>" if (r, col) in bold else html.escape(c)
+            return f'<{tag} align="right">{text}</{tag}>' if a == "r" else f"<{tag}>{text}</{tag}>"
+
+        return "<tr>" + "".join(cell(c, a, col) for col, (c, a) in enumerate(zip(cells, align))) + "</tr>"
 
     head, *body = rows
     parts = [row(head, "th")]
     for i, cells in enumerate(body):
         if i == playoff_line_after:
             parts.append(f'<tr><td colspan="{len(align)}" align="center"><i>линия плей-офф</i></td></tr>')
-        parts.append(row(cells, "td"))
+        parts.append(row(cells, "td", i))
     attrs = "compact striped" if len(body) > _STRIPED_MIN_ROWS else "compact"
     return f"<table {attrs}>" + "".join(parts) + "</table>"
 
@@ -273,9 +280,11 @@ def rich_footer(text: str) -> str:
     клиенты рисуют мельче и серее содержания (`docs/telegram_bot.md` §«Стиль сообщений»,
     правило 3).
 
-    Аргументы: `text` — построчный HTML подвала; строки соединяются `<br>`.
+    Аргументы: `text` — построчный HTML подвала; строки соединяются `<br>`. Подвал без
+    строк (превью матча, команды которого не сопоставлены) — пустая строка, не `<footer></footer>`.
     """
-    return "<footer>" + "<br>".join(line for line in text.split("\n") if line.strip()) + "</footer>"
+    lines = [line for line in text.split("\n") if line.strip()]
+    return "<footer>" + "<br>".join(lines) + "</footer>" if lines else ""
 
 
 def rich_details(summary: str, text: str) -> str:
@@ -327,8 +336,9 @@ def _format_three_star_line(
     shots: Optional[int],
     save_percentage: Optional[float],
 ) -> str:
-    """Одна строка блока «Звёзды матча»: `★1 Kaprizov (MIN) — 1+0` для полевого
-    игрока, `★1 Thompson (VGK) — 33/34, 97.1%` для вратаря. Различение — по
+    """Одна строка блока «Звёзды матча»: `1. Kaprizov (MIN) — 1+0` для полевого
+    игрока, `1. Thompson (VGK) — 33/34, 97.1%` для вратаря (номер звезды — без «★»:
+    символы в теле сообщения не ставим, `docs/telegram_bot.md` §«Стиль сообщений»). Различение — по
     позиции из `rosters` (`G` → вратарь). Отсутствующая фамилия → `Unknown`
     (как для голов, `bot_messages.py:187`); отсутствующая статистика (NULL) —
     строка без хвоста после «—». Каждое поле из БД проходит `html.escape()`.
@@ -347,7 +357,7 @@ def _format_three_star_line(
     elif goals is not None and assists is not None:
         tail = f"{html.escape(str(goals))}+{html.escape(str(assists))}"
 
-    line = f"★{star_str} {name} ({abbr})"
+    line = f"{star_str}. {name} ({abbr})"
     return f"{line} — {tail}" if tail else line
 
 
@@ -541,7 +551,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     goals_block = "\n".join(goal_lines)
 
     hat_lines = [
-        f"<b>Хет-трик</b>: {html.escape(name)} (×{n})"
+        f"Хет-трик: {html.escape(name)} (×{n})"
         for name, n in scorer_counts.items()
         if n >= 3
     ]
@@ -856,7 +866,7 @@ def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
         parts.append(f"тотал больше 5.5 — {pct['over_5_5']}%")
     if not parts:
         return None
-    return "🤖 Оценка модели: " + ", ".join(parts)
+    return "Оценка модели (не совет): " + ", ".join(parts)
 
 
 def _fmt_signed(val: Union[int, float, None]) -> str:
@@ -864,6 +874,11 @@ def _fmt_signed(val: Union[int, float, None]) -> str:
     явно, как минус."""
     s = _fmt_num_max2(val)
     return f"+{s}" if val is not None and float(val) > 0 else s
+
+
+# Метка строки пропущенных голов превью: по ней `_matchup_compare_table` выделяет
+# меньшее значение, а не большее.
+_GOALS_AGAINST_LABEL = "Пропущено/игра"
 
 
 def _matchup_compare_table(
@@ -874,7 +889,8 @@ def _matchup_compare_table(
 ) -> str:
     """Таблица превью матча (`_table`) в три колонки «метрика · гости · хозяева» с
     аббревиатурами в шапке — очки, баланс, форма и серия, личные встречи (если
-    были), метрики сезона.
+    были), метрики сезона. Лучшее из двух значений метрики — жирным (у пропущенных
+    голов — меньшее); баланс, форма и серия и равные значения — без выделения.
     """
     def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
         gf, ga = r["goals_per_game"], r["goals_against_per_game"]
@@ -902,7 +918,7 @@ def _matchup_compare_table(
     pairs += [
         ("Голы за игру", _fmt_num_max2(ra["goals_per_game"]), _fmt_num_max2(rh["goals_per_game"])),
         (
-            "Пропущено/игра",
+            _GOALS_AGAINST_LABEL,
             _fmt_num_max2(ra["goals_against_per_game"]),
             _fmt_num_max2(rh["goals_against_per_game"]),
         ),
@@ -924,24 +940,42 @@ def _matchup_compare_table(
         ),
         ("Разница шайб", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
     ]
+
+    def number(value: str) -> Optional[float]:
+        try:
+            return float(value.rstrip("%"))
+        except ValueError:  # «—» — значения нет; баланс, форма и серия — не числа
+            return None
+
+    bold = []
+    for r, (label, left, right) in enumerate(pairs):
+        lv, rv = number(left), number(right)
+        if lv is None or rv is None or lv == rv:
+            continue
+        if label == _GOALS_AGAINST_LABEL:  # единственная метрика, где меньше — лучше
+            lv, rv = -lv, -rv
+        bold.append((r, 1 if lv > rv else 2))
     rows = [["", away_abbr, home_abbr], *([label, left, right] for label, left, right in pairs)]
-    return _table(rows, "lrr")
+    return _table(rows, "lrr", bold=bold)
 
 
-def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
+def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tuple[str, str]:
     """
     Сезонное сравнение по teams.abbreviation (= abbrev из NHL API).
 
-    `game_id` — игра из расписания: по нему в конец превью добавляется строка
+    `game_id` — игра из расписания: по нему в подвал превью добавляется строка
     модельной оценки (если она опубликована; при раннем выходе, когда обеих
     команд нет в teams_stats, строки нет).
 
-    Построчный HTML для `rich_message()`: метрики — таблица `_table`.
+    Возвращает: (тело — построчный HTML для `rich_message()`, метрики — таблица
+    `_table`; строки подвала для `rich_footer()` — сезон и оценка модели). Подвал
+    отдельно: вызывающий дописывает в него свои строки (рассылка — ссылку на
+    подписки), а подвал у сообщения один и последний.
     """
     a = (away_abbr or "").strip().upper()
     h = (home_abbr or "").strip().upper()
     if not a or not h or a == "?" or h == "?":
-        return "Не удалось сопоставить команды с данными в базе."
+        return "Не удалось сопоставить команды с данными в базе.", ""
 
     esc_a = html.escape(away_abbr)
     esc_h = html.escape(home_abbr)
@@ -993,26 +1027,23 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
             "face_off_win_percentage": stats["face_off_win_percentage"][i],
         }
 
-    header = f"<b>{esc_a} @ {esc_h}</b> — сезон {season_esc}\n"
+    header = f"<b>{esc_a} @ {esc_h}</b>"
+    footer = f"Сезон {season_esc}"
 
     def _one_line_team_html(ab: str, row: Optional[Dict[str, Union[int, float, None]]]) -> str:
         eab = html.escape(ab)
         if not row:
-            return f"<b>{eab}</b>: нет строки в базе для сезона."
+            return f"{eab}: нет строки в базе для сезона."
         rec_line = _team_record_line(
             row["wins"], row["losses"], row["ot"], row["points"], row["procent_points"]
         )
-        return f"<b>{eab}</b> — {rec_line}"
+        return f"{eab} — {rec_line}"
 
     ra, rh = by_abbr.get(a), by_abbr.get(h)
     if ra is None and rh is None:
-        return (
-            header
-            + f"Команд <b>{esc_a}</b> и <b>{esc_h}</b> нет в базе бота для этого сезона "
-            f"({season_esc})."
-        )
+        return f"{header}\nКоманд {esc_a} и {esc_h} нет в базе бота для этого сезона.", footer
 
-    parts: List[str] = [header.rstrip("\n")]
+    parts: List[str] = [header]
     if ra is None or rh is None:
         parts.append(_one_line_team_html(away_abbr, ra))
         parts.append(_one_line_team_html(home_abbr, rh))
@@ -1021,10 +1052,9 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> str:
 
     prediction = _model_prediction_line(game_id, esc_h)
     if prediction:
-        parts.append("")
-        parts.append(prediction)
+        footer += f"\n{prediction}"
 
-    return "\n".join(parts)
+    return "\n".join(parts), footer
 
 
 LEADERBOARD_PAGE_SIZE = 10
@@ -1715,9 +1745,20 @@ _COUNTRY_FROM = (
 
 def country_label(code: str) -> str:
     """Метка страны для HTML: флаг + русское название из `COUNTRY_LABELS`,
-    неизвестный код — сам код; результат экранирован. Нужна и строке «По подписке»
-    рассылки (`push_digest_job`)."""
+    неизвестный код — сам код; результат экранирован. Флаг — метка в начале
+    сообщения (заголовок экрана страны)."""
     return html.escape(COUNTRY_LABELS.get(code, code))
+
+
+def country_name(code: str) -> str:
+    """Название страны без флага, сырой строкой (в HTML — через `html.escape`): метка
+    `COUNTRY_LABELS` — всегда «флаг название», неизвестный код — сам код.
+
+    Зачем: эмодзи только как метка в начале сообщения (`docs/telegram_bot.md`
+    §«Стиль сообщений», правило 5) — в ячейках таблиц, заголовках блоков страны и
+    подвале рассылки (`push_digest_job`) флага нет.
+    """
+    return COUNTRY_LABELS[code].split(" ", 1)[1] if code in COUNTRY_LABELS else code
 
 
 def _country_ranking() -> List[Tuple[str, int, int, int]]:
@@ -1766,10 +1807,7 @@ def country_rankings() -> Tuple[str, List[str]]:
         columns=["n"],
     )["n"][0]
     rows = [["", "Страна", "Игр", "О", "Г", "О/и"]] + [
-        # Без флага: эмодзи в ячейках таблиц не ставим (стиль, правило 5); метка
-        # `COUNTRY_LABELS` — всегда «флаг название», неизвестный код — без флага.
-        [f"{i}.", COUNTRY_LABELS[code].split(" ", 1)[1] if code in COUNTRY_LABELS else code,
-         str(players), str(points), str(goals),
+        [f"{i}.", country_name(code), str(players), str(points), str(goals),
          f"{points / players:.1f}"]
         for i, (code, players, points, goals) in enumerate(ranking, start=1)
     ]
@@ -1936,7 +1974,7 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
     ещё вбрасывания, у защитников — блоки вместо хитов."""
     position = s["position"][i]
     mark = {"C": ", ц", "D": ", защ"}.get(position, "")
-    head = f"<b>{html.escape(s['lastname'][i])}</b> ({html.escape(s['team'][i] or '?')}{mark})"
+    head = f"{html.escape(s['lastname'][i])} ({html.escape(s['team'][i] or '?')}{mark})"
     parts = [
         f"{s['goals'][i] or 0}+{s['assists'][i] or 0}",
         f"{s['plus_minus'][i] or 0:+d}".replace("-", "−"),
@@ -1956,7 +1994,7 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
 
 def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int, str]:
     """Блок страны `code` по матчам выборки `scope = value` (`g.day` или `g.game_id`):
-    game_id → HTML. Заголовок — флаг и страна, у игрока две строки — имя и
+    game_id → HTML. Заголовок — страна (жирным, без флага), у игрока две строки — имя и
     статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
     затем вратари. Матча, где никто из страны не играл, в словаре нет."""
     skaters = fetch_all(
@@ -1985,13 +2023,12 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
         pct = goalies["save_percentage"][i]
         players[int(goalies["game_id"][i])] += [
             "",
-            f"<b>{html.escape(goalies['lastname'][i])}</b> "
-            f"({html.escape(goalies['team'][i] or '?')})",
+            f"{html.escape(goalies['lastname'][i])} ({html.escape(goalies['team'][i] or '?')})",
             f"{goalies['saves'][i] if goalies['saves'][i] is not None else '—'}/"
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
-    heading = f"<b>{country_label(code)}</b>"
+    heading = f"<b>{html.escape(country_name(code))}</b>"
     return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
 
 
@@ -2200,8 +2237,8 @@ def day_digest_summary_body(game_ids: Sequence[int]) -> List[str]:
     """Сжатая сводка дайджеста: по элементу на матч, номер совпадает с номером
     на кнопке матча (`digest_game_button_labels`).
 
-    Зачем так: матч — «1. <b>Хозяева 3:2 Гости</b>» обычным шрифтом по левому
-    краю, счёт по периодам — строкой ниже с отступом. Моноширинное выравнивание
+    Зачем так: матч — «1. Хозяева 3:2 Гости» обычным шрифтом по левому краю (жирный —
+    только заголовок сводки), счёт по периодам — курсивом строкой ниже с отступом. Моноширинное выравнивание
     команд по счёту на телефоне выглядело криво (отзыв 2026-10-03), а в одной
     строке с командами счёт по периодам не влезает в ширину экрана.
 
@@ -2214,9 +2251,9 @@ def day_digest_summary_body(game_ids: Sequence[int]) -> List[str]:
     """
     headers = [_game_score_header(*_fetch_game_score_rows(gid)) for gid in game_ids]
     return [
-        f"{i}. <b>{html.escape(h['home'].strip())} {html.escape(h['home_score'])}:"
-        f"{html.escape(h['away_score'])} {html.escape(h['away'].strip())}</b>\n"
-        f"{_FIGURE_SPACE * 2}{html.escape(h['period_scores'] + h['extra'])}"
+        f"{i}. {html.escape(h['home'].strip())} {html.escape(h['home_score'])}:"
+        f"{html.escape(h['away_score'])} {html.escape(h['away'].strip())}\n"
+        f"{_FIGURE_SPACE * 2}<i>{html.escape(h['period_scores'] + h['extra'])}</i>"
         for i, h in enumerate(headers, start=1)
     ]
 
@@ -2304,7 +2341,7 @@ def _telegram_cut_budget(
     return max(max_len - len(note), 80)
 
 
-def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
+def digest_shown_match_count(header: str, lines: List[str], total: int, *, tail: str = "") -> int:
     """Сколько заголовков матчей из `lines` уместится в сводке дайджеста после
     обрезки `truncate_telegram_text` по лимиту Telegram.
 
@@ -2316,6 +2353,8 @@ def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
     Аргументы:
         header: неизменяемая часть сводки перед списком заголовков матчей
             (включает завершающие переносы строк).
+        tail: неизменяемая часть после списка (подвал с переносом перед ним); маркер
+            «показаны N из M» в бюджете учитывается отдельно.
         lines: заголовки матчей, по одному на матч (может быть многострочным),
             в порядке отображения.
         total: всего матчей в выборке дня — M в маркере.
@@ -2324,7 +2363,7 @@ def digest_shown_match_count(header: str, lines: List[str], total: int) -> int:
     while shown > 0:
         note = "\n\n" + truncation_marker(shown, total, item_word="матчей")
         cut = _telegram_cut_budget(note)
-        prefix_len = len(header) + len(DIGEST_GAME_SEPARATOR.join(lines[:shown]))
+        prefix_len = len(header) + len(DIGEST_GAME_SEPARATOR.join(lines[:shown])) + len(tail)
         if prefix_len <= cut:
             return shown
         shown -= 1

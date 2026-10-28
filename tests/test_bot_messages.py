@@ -153,6 +153,13 @@ def test_rich_message_keeps_footer_details_and_list_as_own_blocks(bot_module):
     )
 
 
+def test_rich_footer_without_lines_adds_no_empty_footer(bot_module):
+    """Пустой подвал (превью несопоставленных команд) — без `<footer></footer>`."""
+    bot_messages = bot_module("bot_messages")
+
+    assert bot_messages.rich_message("Текст\n" + bot_messages.rich_footer("\n")).html == "<p>Текст</p>"
+
+
 # ---------------------------------------------------------------------------
 # game_message() — HTML escaping of scorer/team/goalie names
 # ---------------------------------------------------------------------------
@@ -268,7 +275,8 @@ def test_game_message_escapes_assist_name_with_apostrophe(game_message_text):
 
 def test_game_message_renders_hat_trick_line_with_escaped_name(game_message_text):
     text, _ = game_message_text
-    assert "<b>Хет-трик</b>: O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* (×3)" in text
+    assert "\nХет-трик: O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* (×3)\n" in text
+    assert "<b>Хет-трик" not in text, "хет-трик — обычный текст, не жирный (стиль §9)"
 
 
 def test_game_message_escapes_goalie_lastname(game_message_text):
@@ -377,22 +385,22 @@ def test_period_names_count_playoff_overtimes_from_period_number(bot_module):
 def test_game_message_renders_three_stars_heading_and_three_lines(game_message_text):
     text, _ = game_message_text
     assert "<b>Звёзды матча</b>" in text
-    # "★" встречается и в блоке голов (отметка победного гола) — считаем
-    # только звёзды матча, за заголовком блока.
+    # Звёзды — нумерованные строки «1. …», без «★» (символов в теле сообщения нет).
     block = text.split("<b>Звёзды матча</b>", 1)[1]
-    assert block.count("★") == 3
+    assert [line[:3] for line in block.strip().splitlines()] == ["1. ", "2. ", "3. "]
+    assert "★" not in block
 
 
 def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
     text, _ = game_message_text
-    assert "★1 Kaprizov (MIN) — 1+0" in text
+    assert "\n1. Kaprizov (MIN) — 1+0\n" in text
 
 
 def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
     game_message_text,
 ):
     text, _ = game_message_text
-    assert "★2 Thompson (VGK) — 33/34, 97.1%" in text
+    assert "\n2. Thompson (VGK) — 33/34, 97.1%\n" in text
 
 
 def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
@@ -400,7 +408,7 @@ def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
 ):
     text, _ = game_message_text
     assert (
-        "★3 O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
+        "3. O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
         "(TOR&lt;script&gt;alert(1)&lt;/script&gt;)"
     ) in text
     assert "<script>alert(1)</script>" not in text
@@ -426,8 +434,6 @@ def test_game_message_omits_three_stars_block_when_no_rows(bot_module):
         text, _ = bot_messages.game_message(555)
 
     assert "Звёзды матча" not in text
-    # "★" сам по себе не показателен: он же отмечает победный гол в блоке
-    # голов (winner_mark, независимая от этой задачи функциональность).
     assert "Kaprizov" not in text and "Thompson" not in text
 
 
@@ -559,13 +565,15 @@ def test_last_n_form_record_rule_84_2_ot_empty_net_goal_counts_as_loss(bot_modul
 def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text = bot_messages.matchup_season_preview(1, "", "NYR")
+        text, footer = bot_messages.matchup_season_preview(1, "", "NYR")
     assert "Не удалось сопоставить" in text
+    assert footer == ""
     mock_fetch.assert_not_called()
 
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text = bot_messages.matchup_season_preview(1, "?", "?")
+        text, footer = bot_messages.matchup_season_preview(1, "?", "?")
     assert "Не удалось сопоставить" in text
+    assert footer == ""
     mock_fetch.assert_not_called()
 
 
@@ -573,16 +581,18 @@ def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+        text, footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+    assert text.startswith("<b>AAA @ BBB</b>\n")
     assert "нет в базе бота" in text
-    assert "<b>AAA</b>" in text and "<b>BBB</b>" in text
+    assert "<b>AAA</b>" not in text and "<b>BBB</b>" not in text, "аббревиатуры в тексте — без <b>"
+    assert footer.startswith("Сезон ")
 
 
 def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text = bot_messages.matchup_season_preview(1, "<i>AB", "CD&EF")
+        text, _footer = bot_messages.matchup_season_preview(1, "<i>AB", "CD&EF")
     assert "&lt;i&gt;AB" in text
     assert "CD&amp;EF" in text
     assert "<i>AB" not in text
@@ -611,7 +621,7 @@ def _preview_stats_row(home="BBB"):
 def _render_preview(bot_messages, predictions=None, home="BBB", game_id=777):
     """Превью AAA @ home; `predictions` — строки `game_predictions` {task: p} (None = записей нет).
 
-    Возвращает (текст, mock uncached `fetch_all`).
+    Возвращает ((тело, подвал), mock uncached `fetch_all`).
     """
     stats_row = _preview_stats_row(home)
 
@@ -632,14 +642,18 @@ def _render_preview(bot_messages, predictions=None, home="BBB", game_id=777):
     }
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
             patch.object(bot_messages, "fetch_all", return_value=pred) as mock_fetch:
-        text = bot_messages.matchup_season_preview(game_id, "AAA", home)
-    return text, mock_fetch
+        parts = bot_messages.matchup_season_preview(game_id, "AAA", home)
+    return parts, mock_fetch
 
 
 def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module):
     bot_messages = bot_module("bot_messages")
-    text, _ = _render_preview(bot_messages)
+    (text, footer), _ = _render_preview(bot_messages)
 
+    # Тело открывает матч без «— сезон …»: сезон ушёл в подвал.
+    assert text.startswith("<b>AAA @ BBB</b>")
+    assert "сезон" not in text.splitlines()[0]
+    assert footer.splitlines()[0].startswith("Сезон ")
     # Одна таблица «метрика · гости · хозяева», аббревиатуры — в шапке колонок,
     # разница шайб со знаком.
     [table] = _tables(text)
@@ -651,15 +665,56 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     ]
     assert table[-1] == ["Разница шайб", "+1.5", "-0.9"]
     # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
-    assert "Оценка модели" not in text
+    assert "Оценка модели" not in text + footer
     assert "н/д" not in text
 
 
-def test_matchup_season_preview_appends_win_and_total_as_last_line(bot_module):
+def test_matchup_season_preview_bolds_best_value_per_metric(bot_module):
+    """Лучшее значение метрики — `<b>` внутри ячейки; у «Пропущено/игра» лучшее — меньшее;
+    равные значения и строки баланса/формы/серии без выделения."""
     bot_messages = bot_module("bot_messages")
-    text, mock_fetch = _render_preview(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
+    (text, _footer), _ = _render_preview(bot_messages)
 
-    assert text.splitlines()[-1] == "🤖 Оценка модели: победа BBB — 57%, тотал больше 5.5 — 47%"
+    rows = {
+        re.sub(r"<[^>]+>", "", cells[0]): cells[1:]
+        for cells in (re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row)
+                      for row in re.findall(r"<tr>(.*?)</tr>", text))
+        if cells
+    }
+    assert rows["Очки"] == ["<b>14</b>", "6"]
+    assert rows["Пропущено/игра"] == ["<b>2</b>", "3"], "меньше пропущено — лучше"
+    assert rows["Баланс W-L-OT"] == ["7-3-0", "3-7-0"], "баланс не выделяется"
+
+
+def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
+    bot_messages = bot_module("bot_messages")
+    stats_row = {**_preview_stats_row(), "points": [10, 10]}
+
+    def fake_cached(query, params=None, columns=None):
+        q = str(query)
+        if "teams_stats ts" in q:
+            return stats_row
+        if "team_id FROM teams" in q:
+            return {"count_rows": 0, "team_id": []}
+        raise AssertionError(f"unexpected query: {q}")
+
+    pred = {"count_rows": 0, "task": [], "probability": []}
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
+            patch.object(bot_messages, "fetch_all", return_value=pred):
+        text, _footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+
+    [points] = [r for r in re.findall(r"<tr>(.*?)</tr>", text) if ">Очки<" in r]
+    assert "<b>" not in points
+
+
+def test_matchup_season_preview_appends_win_and_total_to_footer(bot_module):
+    bot_messages = bot_module("bot_messages")
+    (text, footer), mock_fetch = _render_preview(
+        bot_messages, {"over_5_5": 0.468, "home_win": 0.574}
+    )
+
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа BBB — 57%, тотал больше 5.5 — 47%"
+    assert "Оценка модели" not in text and "🤖" not in footer
     # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
     query, params = mock_fetch.call_args.args[:2]
     assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
@@ -669,16 +724,16 @@ def test_matchup_season_preview_appends_win_and_total_as_last_line(bot_module):
 def test_matchup_season_preview_shows_total_without_win(bot_module):
     """Гейт победы не пройден — строки home_win нет, тотал выходит один."""
     bot_messages = bot_module("bot_messages")
-    text, _ = _render_preview(bot_messages, {"over_5_5": 0.55})
+    (_text, footer), _ = _render_preview(bot_messages, {"over_5_5": 0.55})
 
-    assert text.splitlines()[-1] == "🤖 Оценка модели: тотал больше 5.5 — 55%"
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): тотал больше 5.5 — 55%"
 
 
 def test_matchup_season_preview_escapes_home_abbrev_in_prediction_line(bot_module):
     bot_messages = bot_module("bot_messages")
-    text, _ = _render_preview(bot_messages, {"home_win": 0.5}, home="B&B")
+    (_text, footer), _ = _render_preview(bot_messages, {"home_win": 0.5}, home="B&B")
 
-    assert text.splitlines()[-1] == "🤖 Оценка модели: победа B&amp;B — 50%"
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
@@ -711,7 +766,7 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
             patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "task": [], "probability": []}):
-        text = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+        text, _footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
 
     [table] = _tables(text)
     assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
@@ -1304,10 +1359,10 @@ def _goal_row(period, home, away):
             False, False, False, False, 1, 1)
 
 
-def test_day_digest_summary_body_bold_matchup_and_indented_periods(bot_module, fake_db_router):
-    """Матч — «N. <b>Хозяева счёт Гости</b>» обычным шрифтом по левому краю
+def test_day_digest_summary_body_plain_matchup_and_italic_indented_periods(bot_module, fake_db_router):
+    """Матч — «N. Хозяева счёт Гости» обычным шрифтом по левому краю, без <b>
     (моноширинное выравнивание по счёту выглядело криво, отзыв 2026-10-03);
-    периоды и OT — второй строкой с отступом figure space."""
+    периоды и OT — вторая строка курсивом с отступом figure space."""
     bot_messages = bot_module("bot_messages")
     stats = {
         1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers"),
@@ -1327,8 +1382,8 @@ def test_day_digest_summary_body_bold_matchup_and_indented_periods(bot_module, f
     body = bot_messages.day_digest_summary_body([1, 2])
 
     assert body == [
-        "1. <b>Flyers 0:2 Penguins</b>\n  0:1, 0:0, 0:1",
-        "2. <b>Maple Leafs 2:1 Kings</b>\n  1:0, 0:1, 0:0, 1:0 (OT)",
+        "1. Flyers 0:2 Penguins\n  <i>0:1, 0:0, 0:1</i>",
+        "2. Maple Leafs 2:1 Kings\n  <i>1:0, 0:1, 0:0, 1:0 (OT)</i>",
     ]
 
 
@@ -1349,8 +1404,9 @@ def test_day_digest_summary_body_keeps_scores_unpadded_and_escapes_names(
 
     lines = bot_messages.day_digest_summary_body([1, 2])
 
-    assert lines[0].startswith("1. <b>A 10:2 B</b>\n")
-    assert lines[1].startswith("2. <b>C&amp;C 3:2 D</b>\n")
+    assert lines[0].startswith("1. A 10:2 B\n")
+    assert lines[1].startswith("2. C&amp;C 3:2 D\n")
+    assert all("<b>" not in line for line in lines), "строка матча без <b> (стиль §9)"
 
 
 def test_digest_game_button_labels_number_games_in_summary_order_with_home_first(
