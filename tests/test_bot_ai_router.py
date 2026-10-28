@@ -115,7 +115,7 @@ def _as_reply(text: str) -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "command", ["today", "standings", "stats", "team_stats", "team", "countries", "advanced", "help"]
+    "command", ["today", "standings", "stats", "team_stats", "team", "countries", "help"]
 )
 async def test_open_command_replies_like_the_command(
     ai, make_message, fake_bot, api, monkeypatch, command
@@ -157,8 +157,8 @@ async def test_team_profile_replies_like_team_command(
          "STAT_SCREEN_CALLBACK_PATTERN", True),
         ("country_players", {"country": "RUS"}, "callback_country", "cn:RUS:F:0",
          "COUNTRY_CALLBACK_PATTERN", False),
-        ("advanced_metric", {"metric": "sat"}, "callback_standalone_adv", "adv:sat",
-         "ADVANCED_CALLBACK_PATTERN", False),
+        ("advanced_metric", {"metric": "sat"}, "callback_stat_screen", "sa:players_advanced_stats:sat_pct:0",
+         "STAT_SCREEN_CALLBACK_PATTERN", True),
     ],
 )
 async def test_screen_tool_sends_what_the_button_draws(

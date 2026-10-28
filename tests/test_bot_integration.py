@@ -486,7 +486,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
 # ---------------------------------------------------------------------------
 # Задача 36: сезон с 0 и с 1–3 игровыми днями — /standings, /stats, /today,
-# карточка матча, /advanced.
+# карточка матча, расширенная статистика /stats.
 #
 # Факт из прогона загрузчика на скретч-БД (season-load-full, SEASON_ID=20262027,
 # 2026-09-28, до старта сезона): при 0 сыгранных играх лиги пустует не только
@@ -580,6 +580,24 @@ async def test_game_card_on_empty_season_reports_missing_game(
     assert body(sent) == rich_html("Такого матча нет в базе бота.")
 
 
+async def _press(stats_handlers, make_callback, fake_bot, data: str) -> None:
+    """Нажатие кнопки меню статистики: `callback_data` проходит паттерн, как в роутере."""
+    match = re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, data)
+    assert match, data
+    await stats_handlers.callback_stat_screen(make_callback(data), fake_bot, match)
+
+
+async def _open_first_advanced_metric(bot, stats_handlers, make_message, make_callback, fake_bot, api):
+    """`/stats` → «Расширенная статистика» → первая кнопка подменю (SAT %)."""
+    await bot.cmd_stats(make_message("/stats"), fake_bot)
+    advanced = _flat_buttons(api.sent_rich[0].reply_markup)[-1]
+    assert advanced.callback_data == "sa:menu"
+    await _press(stats_handlers, make_callback, fake_bot, advanced.callback_data)
+    sat_button = _flat_buttons(api.edited_texts[0].reply_markup)[0]
+    assert sat_button.callback_data == "sa:players_advanced_stats:sat_pct:0"
+    await _press(stats_handlers, make_callback, fake_bot, sat_button.callback_data)
+
+
 @pytest.mark.asyncio
 async def test_advanced_pick_on_empty_season_reports_no_data(
     bot_module, fake_db_router, make_message, make_callback, fake_bot, api
@@ -588,15 +606,9 @@ async def test_advanced_pick_on_empty_season_reports_no_data(
     stats_handlers = bot_module("stats_handlers")
     fake_db_router(_EMPTY_SEASON_ROUTES)
 
-    await bot.cmd_advanced(make_message("/advanced"), fake_bot)
-    sat_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
-    assert sat_button.callback_data == "adv:sat"
-    match = re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, sat_button.callback_data)
-    assert match
+    await _open_first_advanced_metric(bot, stats_handlers, make_message, make_callback, fake_bot, api)
 
-    await stats_handlers.callback_standalone_adv(make_callback(sat_button.callback_data), match)
-
-    (edited,) = api.edited_texts
+    _menu, edited = api.edited_texts
     assert "Нет данных в этом диапазоне." in body(edited)
 
 
@@ -689,14 +701,9 @@ async def test_advanced_pick_on_partial_season_reports_no_data_below_games_thres
     stats_handlers = bot_module("stats_handlers")
     cursor = fake_db_router(_PARTIAL_ADVANCED_ROUTES)
 
-    await bot.cmd_advanced(make_message("/advanced"), fake_bot)
-    sat_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
-    match = re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, sat_button.callback_data)
-    assert match
+    await _open_first_advanced_metric(bot, stats_handlers, make_message, make_callback, fake_bot, api)
 
-    await stats_handlers.callback_standalone_adv(make_callback(sat_button.callback_data), match)
-
-    (edited,) = api.edited_texts
+    _menu, edited = api.edited_texts
     assert "Нет данных в этом диапазоне." in body(edited)
     # «Нет данных» — реально из-за порога games >= 20 в самом запросе
     # (_pss_join_sql), а не по случайному совпадению пустого маршрута. Порог

@@ -1086,7 +1086,7 @@ def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_mod
 # cached_fetch_all и никогда не смотрят на составленный SQL — если бы
 # _leaderboard_tail_columns/_pss_join_sql молча свалили хвост игроков на
 # алиас `pl` вместо `pss` (или потеряли ветку JOIN для players_shot_types),
-# они остались бы зелёными, а `/advanced` упал бы в проде ошибкой Postgres
+# они остались бы зелёными, а расширенная статистика упала бы в проде ошибкой Postgres
 # «missing FROM-clause entry for table pss». Ниже — fake_db_router
 # (tests/conftest.py:202): патчит только границу БД, композиция SQL реальная,
 # и `cursor.executed` отдаёт фактический текст запроса на assert.

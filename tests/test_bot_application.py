@@ -82,12 +82,12 @@ def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
     assert [h.callback for h in handlers] == [
         bot.cmd_start, bot.cmd_help, bot.cmd_today, bot.cmd_tonight, bot.cmd_standings,
         bot.cmd_team, bot.cmd_team_profile, bot.cmd_stats, bot.cmd_team_stats, bot.cmd_countries,
-        bot.cmd_advanced, bot.cmd_subscriptions,
+        bot.cmd_subscriptions,
     ]
     assert isinstance(handlers[0].filters[0].callback, CommandStart)
     assert _commands(router) == [
         "start", "help", "today", "tonight", "standings", "team", "stats", "team_stats", "countries",
-        "advanced", "subscriptions",
+        "subscriptions",
     ]
 
 
@@ -101,7 +101,6 @@ def test_standalone_buttons_and_their_order(bot_module, dispatcher) -> None:
         (bot.SUBSCRIPTIONS_CALLBACK_PATTERN, bot.callback_subscriptions),
         (sh.TONIGHT_GAME_CALLBACK_PATTERN, sh.callback_tonight_game),
         (sh.COUNTRY_CALLBACK_PATTERN, sh.callback_country),
-        (r"^adv:(sat|usat|gf|oz|so|wrist|slap|snap|back|tip|defl|wrap|close)$", sh.callback_standalone_adv),
         (r"^gv:(\d+):(\d+)$", sh.handle_goal_video),
     ]
 
@@ -172,8 +171,8 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
     for handler in registered:
         assert asyncio.iscoroutinefunction(handler.callback), f"{handler.callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: standalone — 12 команд и 7 кнопок; хвост — 1.
-    assert len(registered) == 19 + 1
+    # Страховка от «проверили пустой список»: standalone — 11 команд и 6 кнопок; хвост — 1.
+    assert len(registered) == 17 + 1
     assert {h.callback.__module__ for h in registered} == {"bot", "stats_handlers"}
 
 
@@ -294,7 +293,7 @@ async def test_spam_presses_are_stopped_before_any_handler(
     throttle = bot_module("throttle")
     throttle._hits.clear()
     for _ in range(throttle.CALLBACK_RATE_LIMIT + 1):
-        await _feed(dispatcher, fake_bot, make_update(data="adv:close"))
+        await _feed(dispatcher, fake_bot, make_update(data="st:save"))
     throttle._hits.clear()
 
     assert len(api.edited_markups) == throttle.CALLBACK_RATE_LIMIT

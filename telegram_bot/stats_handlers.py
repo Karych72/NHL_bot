@@ -1,5 +1,5 @@
-"""Клавиатуры пагинации и callback-хендлеры статистики: меню и таблицы `/stats`,
-`/advanced` и `/team_stats`, дайджест дня, `/countries`, кнопка матча `/tonight`.
+"""Клавиатуры пагинации и callback-хендлеры статистики: меню и таблицы `/stats`
+(с подменю расширенной статистики) и `/team_stats`, дайджест дня, `/countries`, кнопка матча `/tonight`.
 
 Часть `telegram_bot/`, который читает БД (заполненную `pipeline/`) и рисует меню поверх
 неё: здесь — листание длинных таблиц статистики через inline-кнопки и отправка карточек
@@ -74,7 +74,7 @@ TONIGHT_GAME_CALLBACK_PATTERN = r"^tn:(\d+):([^:]+):([^:]+)$"
 # страница группы игроков страны, cn:list — назад к рейтингу стран
 COUNTRY_CALLBACK_PATTERN = r"^cn:(?:list|([A-Z]{3}):([FDG]):(\d+))$"
 
-# Таблицы /stats (st), /advanced (sa) и /team_stats (tm): <префикс>:<ключ>:<offset> — страница,
+# Таблицы /stats (st), его подменю расширенной статистики (sa) и /team_stats (tm): <префикс>:<ключ>:<offset> — страница,
 # <префикс>:menu — меню команды, <префикс>:save — копия страницы ниже. Ключ у st и sa —
 # <таблица>:<колонка> из PLAYER_STAT_TITLES, у tm — ключ TEAM_STAT_SPECS (lookbehind по префиксу).
 _PLAYER_STAT_KEYS = "|".join(f"{table}:{column}" for table, column in PLAYER_STAT_TITLES)
@@ -82,9 +82,6 @@ _TEAM_STAT_KEYS = "|".join(TEAM_STAT_SPECS)
 STAT_SCREEN_CALLBACK_PATTERN = (
     rf"^(st|sa|tm):(?:(menu|save)|((?<=st:|sa:)(?:{_PLAYER_STAT_KEYS})|(?<=tm:)(?:{_TEAM_STAT_KEYS})):(\d+))$"
 )
-
-# Меню /advanced: adv:<ключ ADVANCED_METRICS> открывает статистику, adv:close снимает кнопки
-ADVANCED_CALLBACK_PATTERN = rf"^adv:({'|'.join(ADVANCED_METRICS)}|close)$"
 
 # Кнопка видео гола карточки матча: gv:<game_id>:<event_id>
 GOAL_VIDEO_CALLBACK_PATTERN = r"^gv:(\d+):(\d+)$"
@@ -125,7 +122,7 @@ async def _edit_page(callback: CallbackQuery, text: str, markup: InlineKeyboardM
 
     Зачем: повторное нажатие кнопки текущей страницы Telegram отвергает «message is
     not modified» — это штатный случай, он глушится; любая другая ошибка всплывает.
-    Общая для всех листаемых экранов: таблиц `/stats`, `/advanced`, `/team_stats`, `/countries`.
+    Общая для всех листаемых экранов: таблиц `/stats` и его расширенной статистики, `/team_stats`, `/countries`.
 
     Аргументы: `callback` — нажатие, `text` — HTML страницы, `markup` — её клавиатура.
     """
@@ -137,10 +134,10 @@ async def _edit_page(callback: CallbackQuery, text: str, markup: InlineKeyboardM
 
 
 def stats_menu_keyboard() -> InlineKeyboardMarkup:
-    """Меню `/stats` одним экраном: основные метрики полевых и вратарей, затем
-    расширенные и голы по типу броска (`MAIN_STAT_ROWS`, `ADVANCED_ROWS`). Кнопка —
+    """Меню `/stats`: основные метрики полевых и вратарей (`MAIN_STAT_ROWS`), кнопка —
     `st:<таблица>:<колонка>:0`; первый ряд (очки, голы, передачи) — самые частые
-    вопросы, он выделен цветом — единственный акцент меню."""
+    вопросы, он выделен цветом — единственный акцент меню. Последняя кнопка
+    `sa:menu` открывает подменю расширенной статистики (`advanced_menu_keyboard`)."""
     rows = [
         [
             InlineKeyboardButton(
@@ -151,23 +148,23 @@ def stats_menu_keyboard() -> InlineKeyboardMarkup:
         ]
         for i, row in enumerate(MAIN_STAT_ROWS)
     ]
-    rows += [
+    rows.append([InlineKeyboardButton(text="Расширенная статистика »", callback_data="sa:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def advanced_menu_keyboard() -> InlineKeyboardMarkup:
+    """Подменю расширенной статистики из `/stats`: метрики и голы по типам бросков
+    (`ADVANCED_ROWS`), кнопка — `sa:<таблица>:<колонка>:0`; «« Назад» (`st:menu`)
+    возвращает основное меню `/stats` в том же сообщении."""
+    rows = [
         [
-            InlineKeyboardButton(text=label, callback_data="st:{}:{}:0".format(*ADVANCED_METRICS[key]))
+            InlineKeyboardButton(text=label, callback_data="sa:{}:{}:0".format(*ADVANCED_METRICS[key]))
             for label, key in row
         ]
         for row in ADVANCED_ROWS
     ]
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="st:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def advanced_standalone_keyboard() -> InlineKeyboardMarkup:
-    """Меню `/advanced`: расширенные метрики и голы по типам бросков (`ADVANCED_ROWS`).
-    Каждая кнопка — `adv:<key>`, который разбирает `callback_standalone_adv`."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=label, callback_data=f"adv:{key}") for label, key in row]
-        for row in ADVANCED_ROWS
-    ])
 
 
 def team_stats_keyboard() -> InlineKeyboardMarkup:
@@ -181,19 +178,19 @@ def team_stats_keyboard() -> InlineKeyboardMarkup:
 # Префикс callback_data таблицы → текст и клавиатура меню её команды («« К списку»).
 _STAT_MENUS: Dict[str, Tuple[str, Callable[[], InlineKeyboardMarkup]]] = {
     "st": (STATS_COMMAND_INTRO, stats_menu_keyboard),
-    "sa": (ADVANCED_COMMAND_INTRO, advanced_standalone_keyboard),
+    "sa": (ADVANCED_COMMAND_INTRO, advanced_menu_keyboard),
     "tm": (TEAM_STATS_COMMAND_INTRO, team_stats_keyboard),
 }
 
 
 def stat_page_reply(prefix: str, key: str, offset: int) -> Tuple[str, InlineKeyboardMarkup]:
-    """Страница таблицы `/stats`, `/advanced` или `/team_stats` и её клавиатура.
+    """Страница таблицы `/stats`, его расширенной статистики или `/team_stats` и её клавиатура.
 
-    Зачем одна на три команды: страницы различаются только данными и меню, куда ведёт
+    Зачем одна на три меню: страницы различаются только данными и меню, куда ведёт
     «« К списку»; листание (`_page_nav_rows`) и «Сохранить» у них общие.
 
     Аргументы:
-        prefix: `st`, `sa` или `tm` — команда, из меню которой открыта таблица.
+        prefix: `st`, `sa` или `tm` — меню, из которого открыта таблица.
         key: у `st`/`sa` — `<таблица>:<колонка>` (ключ `PLAYER_STAT_TITLES`), у `tm` —
             ключ `TEAM_STAT_SPECS`.
         offset: сдвиг страницы.
@@ -215,8 +212,8 @@ def stat_page_reply(prefix: str, key: str, offset: int) -> Tuple[str, InlineKeyb
 
 
 async def callback_stat_screen(callback: CallbackQuery, bot: Bot, match: re.Match) -> None:
-    """Кнопки таблиц `/stats`, `/advanced` и `/team_stats` (`match` — совпадение
-    `STAT_SCREEN_CALLBACK_PATTERN`): `<префикс>:menu` — меню команды на месте страницы;
+    """Кнопки таблиц `/stats`, его расширенной статистики и `/team_stats` (`match` — совпадение
+    `STAT_SCREEN_CALLBACK_PATTERN`): `<префикс>:menu` — меню на месте страницы (`sa:menu` — и переход в подменю из `/stats`);
     `<префикс>:save` — страница остаётся в чате без кнопок, её копия с теми же кнопками
     уходит ниже; `<префикс>:<ключ>:<offset>` — страница таблицы (ключ уже проверен паттерном).
     """
@@ -240,21 +237,6 @@ async def callback_stat_screen(callback: CallbackQuery, bot: Bot, match: re.Matc
         return
     text, markup = stat_page_reply(prefix, key, int(offset))
     await _edit_page(callback, text, markup)
-
-
-async def callback_standalone_adv(callback: CallbackQuery, match: re.Match) -> None:
-    """Обрабатывает нажатие кнопки меню `/advanced` (`adv:<key>`, `match` — совпадение
-    `ADVANCED_CALLBACK_PATTERN`): `adv:close` снимает клавиатуру, иначе по ключу из
-    `ADVANCED_METRICS` открывается первая страница этой статистики — дальше она
-    листается уже как `sa:...` (см. `stat_page_reply`).
-    """
-    await callback.answer()
-    key = match.group(1)
-    if key == "close":
-        await callback_message(callback).edit_reply_markup(reply_markup=None)
-        return
-    text, kb = stat_page_reply("sa", "{}:{}".format(*ADVANCED_METRICS[key]), 0)
-    await callback_message(callback).edit_text(rich_message=rich_message(text), reply_markup=kb)
 
 
 def country_rankings_reply() -> Tuple[str, InlineKeyboardMarkup]:
