@@ -39,6 +39,7 @@ from bot_messages import (
     game_message,
     matchup_season_preview,
     player_stat_leaderboard_page,
+    rich_footer,
     rich_message,
     team_stat_leaderboard_page,
     truncate_telegram_text,
@@ -302,7 +303,7 @@ async def callback_country(callback: CallbackQuery, match: re.Match) -> None:
 
 # --- Day digest: один матч — полная карточка; несколько — сводка + кнопки матчей ---
 
-# Подсказка после дайджеста (из /today, ИИ и утренней рассылки).
+# Подсказка в подвале последнего сообщения дайджеста (из /today, ИИ и утренней рассылки).
 _DIGEST_MORE_HINT = (
     "Ещё: /tonight — расписание NHL, /standings — таблица, /stats — лидеры игроков, "
     "/team_stats — статистика команд, /team — команды, /help — справка.\n"
@@ -359,16 +360,17 @@ async def dispatch_day_digest_messages(
     games: List[Tuple[int, str, List[Dict]]],
     *,
     inter_message_sleep_sec: Optional[float] = None,
-    heading: str = "Матчи",
+    heading: str = "Матчи ночи",
 ) -> None:
-    """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота;
-    в конце — подсказка «Ещё: …».
+    """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота.
+    Подсказка «Ещё: …» и ссылка на подписки — подвал этого же сообщения, а не отдельное
+    сообщение: служебное тише содержания (`docs/telegram_bot.md` §«Стиль сообщений»).
 
     Аргументы:
         bot, chat_id: куда слать.
         day_label, games: ответ `day_digest()`.
-        heading: заголовок сводки перед датой; рассылка без уже присланных чату матчей —
-            «Остальные матчи ночи» (Задача 85).
+        heading: заголовок сводки (дата и число матчей — в подвале); рассылка без уже
+            присланных чату матчей — «Остальные матчи ночи» (Задача 85).
         inter_message_sleep_sec: пауза после каждого сообщения (рассылка).
     """
 
@@ -376,51 +378,41 @@ async def dispatch_day_digest_messages(
         if inter_message_sleep_sec is not None and inter_message_sleep_sec > 0:
             await asyncio.sleep(inter_message_sleep_sec)
 
-    async def _finish() -> None:
-        """Конец дайджеста: пауза, подсказка «Ещё: …», пауза."""
-        await _pause()
-        await bot.send_message(chat_id=chat_id, text=_DIGEST_MORE_HINT)
-        await _pause()
-
+    hint = rich_footer(_DIGEST_MORE_HINT)
     real_games = [(gid, text, meta) for gid, text, meta in games if gid != 0]
 
     if not real_games:
         _, text, _ = games[0]
         safe_text = html.escape(text) if text else ""
-        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(safe_text))
-        await _finish()
+        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(f"{safe_text}\n{hint}"))
+        await _pause()
         return
 
     if len(real_games) == 1:
         _gid, text, goals_meta = real_games[0]
         await bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(text), reply_markup=goal_video_markup(goals_meta),
+            chat_id=chat_id, rich_message=rich_message(f"{text}\n{hint}"),
+            reply_markup=goal_video_markup(goals_meta),
         )
-        await _finish()
+        await _pause()
         return
 
     day_str = day_label or "—"
     game_ids = [gid for gid, _t, _m in real_games]
     lines = day_digest_summary_body(game_ids)
-    body = DIGEST_GAME_SEPARATOR.join(lines)
-    header = (
-        f"<b>{heading} {html.escape(day_str)}</b> ({len(real_games)} игр)\n\n"
+    header = f"<b>{html.escape(heading)}</b>\n\n"
+    footer = (
+        f"Игровой день {html.escape(day_str)} · матчей: {len(real_games)}\n"
+        f"Кнопка матча — полная карточка и видео голов.\n{_DIGEST_MORE_HINT}"
     )
-    intro = (
-        f"{header}{body}\n\n"
-        "<i>Кнопка матча — полная карточка и видео голов.</i>"
-    )
-    # Матч сводки несёт HTML-тег <b>: резать его по символам
-    # нельзя — Telegram отвергнет незакрытый тег. Не влезло — оставляем
-    # целые матчи, сколько уместилось, и маркер «показаны N из M».
+    # Матч сводки несёт HTML-теги: резать его по символам нельзя — Telegram
+    # отвергнет незакрытый тег. Не влезло — оставляем целые матчи, сколько
+    # уместилось, и маркер «показаны N из M» первой строкой подвала.
     total_games = len(real_games)
-    shown_games = digest_shown_match_count(header, lines, total_games)
+    shown_games = digest_shown_match_count(header, lines, total_games, tail=f"\n{rich_footer(footer)}")
     if shown_games < total_games:
-        summary_text = header + DIGEST_GAME_SEPARATOR.join(lines[:shown_games]) + "\n\n" + truncation_marker(
-            shown_games, total_games, item_word="матчей"
-        )
-    else:
-        summary_text = intro
+        footer = truncation_marker(shown_games, total_games, item_word="матчей") + f"\n{footer}"
+    summary_text = header + DIGEST_GAME_SEPARATOR.join(lines[:shown_games]) + f"\n{rich_footer(footer)}"
 
     expand_buttons = [
         InlineKeyboardButton(text=label, callback_data=f"{DIGEST_EXPAND_PREFIX}{gid}")
@@ -431,7 +423,7 @@ async def dispatch_day_digest_messages(
         rich_message=rich_message(summary_text),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=build_menu(expand_buttons, n_cols=3)),
     )
-    await _finish()
+    await _pause()
 
 
 # Ответы на кнопки матчей /tonight по чатам: chat_id → (game_id, карточка ли это) →
@@ -518,7 +510,8 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
         # Проза без счётных элементов — сноска без чисел, но текст берётся из
         # того же единственного хелпера (truncate_telegram_text по умолчанию),
         # а не из литерала, продублированного здесь и в bot.py.
-        text = truncate_telegram_text(matchup_season_preview(game_id, away, home))
+        body, footer = matchup_season_preview(game_id, away, home)
+        text = f"{truncate_telegram_text(body)}\n{rich_footer(footer)}"
         answer = await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(text))
     sent[key] = [answer.message_id, None]
 

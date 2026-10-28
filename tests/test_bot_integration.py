@@ -334,19 +334,20 @@ async def test_game_card_renders_full_card(
         "<b>3-й период</b>\n"
         "04:10 · 2:2 — Pastrnak [RW]\n"
         "Marchand\n"
-        "18:03 · 3:2 — PANARIN [LW] (ПШ)\n"
-        "\n"
-        "<b>Броски</b>: 31 - 27"
-    ).removesuffix("</p>") + "<br>" in text, "броски открывают раздел итогов матча"
-    assert "<b>Броски</b>: 31 - 27" in text
-    assert "<b>Штрафное время</b>: 8 - 6" in text
-    assert "<br>" + rich_html(
-        "<b>Вратари</b>\nShesterkin — 25/27, 92.59%, 60:00\n"
+        "18:03 · 3:2 — PANARIN [LW] (ПШ)"
+    ) in text, "голы по периодам — отдельные абзацы"
+    # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари.
+    assert rich_html(
+        "Броски: 31 - 27 · штрафное время: 8 - 6\n"
+        "Вратари:\n"
+        "Shesterkin — 25/27, 92.59%, 60:00\n"
         "Swayman — 28/31, 90.32%, 60:00"
-    ).removeprefix("<p>") in text, "вратари — в разделе итогов, после штрафов"
+    ) in text
+    assert "<b>Броски" not in text and "<b>Штрафное" not in text and "<b>Вратари" not in text
+    assert text.index("<b>3-й период</b>") < text.index("Броски:") < text.index("<b>Звёзды матча</b>")
     assert text.endswith(
-        "<p><b>Звёзды матча</b><br>★1 Panarin (NYR) — 2+1<br>"
-        "★2 Shesterkin (NYR) — 25/27, 92.59%<br>★3 Marchand (BOS) — 1+0</p>"
+        "<p><b>Звёзды матча</b><br>1. Panarin (NYR) — 2+1<br>"
+        "2. Shesterkin (NYR) — 25/27, 92.59%<br>3. Marchand (BOS) — 1+0</p>"
     ), "без подписки на страну блока страны нет"
 
 
@@ -369,12 +370,14 @@ async def test_game_card_of_country_subscriber_ends_with_country_block(
     await bot.cmd_start(message, fake_bot, _start_command(f"game_{GAME_ONE}"))
 
     (sent,) = api.sent_rich
-    assert body(sent).endswith("<br>" + rich_html(
-        "★3 Marchand (BOS) — 1+0\n\n"
-        "<b>🇷🇺 Россия</b>\n\n"
-        "<b>Panarin</b> (NYR)\n"
+    text = body(sent)
+    assert text.endswith("<br>" + rich_html(
+        "3. Marchand (BOS) — 1+0\n\n"
+        "<b>Россия</b>\n\n"
+        "Panarin (NYR)\n"
         "2+1 · +2 · 5 бр. · 0 хитов · 20:15"
     ).removeprefix("<p>")), "блок страны — после звёзд матча, отдельным разделом"
+    assert "🇷🇺" not in text, "заголовок страны без флага"
     block_queries = [p for q, p in cursor.executed if "r.nationality" in q]
     assert block_queries == [(GAME_ONE, "RUS")] * 2, "блок — по этому матчу и этой стране"
 
@@ -426,7 +429,6 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
     bot_module, fake_db_router, make_message, fake_bot, api, monkeypatch
 ):
     bot = bot_module("bot")
-    stats_handlers = bot_module("stats_handlers")
     cursor = fake_db_router(_DIGEST_ROUTES)
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: _TODAY)
     message = make_message("/today")
@@ -434,20 +436,24 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
     await bot.cmd_today(message, fake_bot)
 
     (summary,) = api.sent_rich
-    (hint,) = api.sent_messages
+    assert api.sent_messages == [], "подсказка — подвал сводки, не отдельное сообщение"
     summary_html = body(summary)
-    assert "<b>Матчи 2026-04-01</b> (2 игр)" in summary_html
-    # Матчи — жирной строкой, периоды под ней (абзац на строку).
+    assert summary_html.startswith("<p><b>Матчи ночи</b></p>")
+    # Матчи — строкой без <b>, периоды под ней курсивом (абзац на матч).
     assert rich_html(
-        "1. <b>NYR 3:2 BOS</b>\n  1:0, 1:1, 1:1\n\n"
-        "2. <b>TOR 1:0 MTL</b>\n  1:0, 0:0, 0:0\n\n"
+        "1. NYR 3:2 BOS\n  <i>1:0, 1:1, 1:1</i>\n\n"
+        "2. TOR 1:0 MTL\n  <i>1:0, 0:0, 0:0</i>"
     ) in summary_html
-    assert "Кнопка матча — полная карточка и видео голов." in summary_html
+    # Подвал в конце: игровой день и число матчей, пояснение кнопок, подсказка «Ещё: …».
+    footer = summary_html.rsplit("<footer>", 1)[1]
+    assert summary_html.endswith("</footer>")
+    assert footer.startswith("Игровой день 2026-04-01 · матчей: 2<br>")
+    assert "Кнопка матча — полная карточка и видео голов." in footer
+    assert "Ещё: /tonight" in footer
     # Кнопки несут те же номера, что и сводка, и команды вместо «Матч N».
     buttons = _flat_buttons(summary.reply_markup)
     assert [b.text for b in buttons] == ["1. NYR – BOS", "2. TOR – MTL"]
     assert [b.callback_data for b in buttons] == [f"dg:{GAME_ONE}", f"dg:{GAME_TWO}"]
-    assert hint.text == stats_handlers._DIGEST_MORE_HINT
     day_query = next(q for q in cursor.executed if "SELECT DISTINCT game_id" in q[0])
     assert day_query[1][0] == _TODAY
 
@@ -550,13 +556,14 @@ async def test_today_on_empty_season_reports_no_finished_matches(
 
     # Пустая ночь — пометка и откат на последний игровой день в базе; в пустом
     # сезоне нет и его.
-    notice, sent, hint = api.outgoing
+    notice, sent = api.outgoing
     assert notice.text == (
         "Прошедшей ночью (2026-10-02) матчей в базе нет — показываю последний игровой день."
     )
-    assert body(sent) == rich_html("В базе пока нет завершенных матчей.")
-    assert sent in api.sent_rich and notice in api.sent_messages and hint in api.sent_messages
-    assert "/stats" in hint.text
+    text = body(sent)
+    assert text.startswith(rich_html("В базе пока нет завершенных матчей."))
+    assert sent in api.sent_rich and notice in api.sent_messages
+    assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 
 @pytest.mark.asyncio
@@ -740,9 +747,10 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     await bot.cmd_today(message, fake_bot)
 
     (sent,) = api.sent_rich
-    (hint,) = api.sent_messages
-    assert "<b>TOR 1:3 NYR</b>" in body(sent)
-    assert "/stats" in hint.text
+    assert api.sent_messages == []
+    text = body(sent)
+    assert "<b>TOR 1:3 NYR</b>" in text
+    assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 
 # ---------------------------------------------------------------------------

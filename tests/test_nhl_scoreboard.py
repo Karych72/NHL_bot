@@ -28,8 +28,12 @@ class TonightIntroAndButtonsTest(unittest.TestCase):
         text = self.mod.tonight_reply_intro(self.fixture)
         self.assertIn("2026-04-04", text)
         self.assertIn("Москва", text)
-        self.assertIn("впереди ET", text)
+        self.assertRegex(text, r"Москва сейчас на \d+ ч впереди")
         self.assertNotIn("DET @ NYR", text)
+        # Заголовок жирный первой строкой, источник расписания — подвалом в конце.
+        self.assertTrue(text.startswith("<b>Матчи NHL на 2026-04-04</b>\n"))
+        self.assertTrue(text.endswith("</footer>"))
+        self.assertIn("<footer>Расписание — с сайта NHL", text)
 
     def test_button_labels_match_and_time(self):
         games = self.mod.slate_games_sorted(self.fixture)
