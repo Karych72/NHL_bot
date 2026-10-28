@@ -13,10 +13,11 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 import anthropic
 import psycopg2
@@ -47,6 +48,11 @@ WINDOW_MINUTES = 30
 HISTORY_PAIRS = 3
 ROW_LIMIT = 50
 EFFORT = "medium"
+# Клиент маршрутизатора (15 с, мало выхода) для диалога на effort medium тесен: мышление плюс вызов
+# инструмента — до нескольких тысяч токенов выхода, на 8192 ($0.08 на выходе) вызов укладывается
+# в потолок стоимости; 60 с — запас при ~100 токенов/с и один повтор клиента.
+MAX_TOKENS = 8192
+CALL_TIMEOUT = 60.0
 
 ERROR_TEXT = "Не удалось ответить, попробуйте командой: /help"
 CEILING_TEXT = "Не удалось ответить, уточните вопрос"
@@ -54,11 +60,12 @@ CEILING_TEXT = "Не удалось ответить, уточните вопр�
 PROMPTS = Path(__file__).parent / "prompts"
 DATA_TABLES = Path(__file__).resolve().parent.parent / "data_tables"
 
+# Игроки сезона целиком (около тысячи строк): фамилию сравнивает Python (`_fold`) — без диакритики
+# и апострофов, чего `lower()` в SQL не умеет, а новое расширение (unaccent) не ставим.
 _OVERVIEW_PLAYERS_SQL = (
-    "SELECT r.player_id, r.name, r.position, t.abbreviation AS team FROM rosters r "
+    "SELECT r.player_id, r.name, r.lastname, r.position, t.abbreviation AS team FROM rosters r "
     "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
-    "WHERE r.season_id = %s AND lower(r.lastname) = lower(%s) "
-    "AND (%s = '' OR upper(t.abbreviation) = upper(%s)) ORDER BY r.name"
+    "WHERE r.season_id = %s AND (%s IS NULL OR r.player_id = %s) ORDER BY r.name"
 )
 _OVERVIEW_SKATER_SEASONS_SQL = (
     "SELECT season_id, games, goals, assists, points, power_play_points, game_winning_goals, "
@@ -84,10 +91,11 @@ _OVERVIEW_GOALIE_GAMES_SQL = (
     "JOIN games g ON g.game_id = ggs.game_id WHERE ggs.player_id = %s AND g.season_id = %s "
     "ORDER BY g.day DESC, g.game_id DESC LIMIT 10"
 )
+# `asked_at` по умолчанию `now()` в момент записи строки, то есть это время ответа, а не вопроса:
+# окно считается от него без поправки на задержку. Окно — условие каждой строки, а не новейшей.
 _HISTORY_SQL = (
-    "SELECT question, outcome, steps, answer, "
-    "(asked_at + latency_ms * interval '1 millisecond') > now() - %s * interval '1 minute' "
-    "AS fresh FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error' "
+    "SELECT question, outcome, steps, answer FROM ai_stats_log "
+    "WHERE chat_id = %s AND outcome <> 'error' AND asked_at > now() - %s * interval '1 minute' "
     "ORDER BY asked_at DESC LIMIT %s"
 )
 
@@ -112,13 +120,15 @@ class _Result(NamedTuple):
 
 
 class _Run:
-    """Состояние одного вопроса: шаги, вызовы модели, накопленная стоимость."""
+    """Состояние одного вопроса: шаги, вызовы модели, накопленная стоимость, готовый черновик."""
 
     def __init__(self) -> None:
         self.steps: List[Dict[str, Any]] = []
         self.calls: List[Dict[str, Any]] = []
         self.evidence: List[str] = []
+        self.draft: Optional[str] = None
         self.cost = 0.0
+        self.max_call_cost = 0.0
         self.sql_attempts = 0
 
 
@@ -126,14 +136,18 @@ def _tools() -> List[Dict[str, Any]]:
     """Инструменты диалога; порядок и текст стабильны ради кэша префикса."""
     return [
         ai_router.tool_schema(
-            "run_sql", "Выполнить один SELECT к базе (read-only, до 50 строк).",
+            "run_sql", f"Выполнить один SELECT к базе (read-only, до {ROW_LIMIT} строк).",
             {"sql": {"type": "string"}},
         ),
         ai_router.tool_schema(
             "player_overview",
-            "Готовая выборка по игроку текущего сезона. team — аббревиатура клуба для "
-            "однофамильцев, иначе пустая строка.",
-            {"last_name": {"type": "string"}, "team": {"type": "string"}},
+            "Готовая выборка по игроку текущего сезона. Сначала last_name (латиницей) и, если "
+            "известен, team (аббревиатура клуба, иначе пустая строка), player_id — null. Если "
+            "вернулись кандидаты, вызови снова с player_id выбранного.",
+            {
+                "last_name": {"type": "string"}, "team": {"type": "string"},
+                "player_id": {"type": ["integer", "null"]},
+            },
         ),
         ai_router.tool_schema(
             "finish", "Последний ход: ответ пользователю.",
@@ -176,7 +190,7 @@ def _system(prompt_file: str) -> List[Dict[str, Any]]:
     """Системный блок с `cache_control`: промпт роли + аннотация + схема. Без даты — префикс
     кэшируется; сегодняшняя дата идёт в сообщении пользователя."""
     text = "\n\n".join([
-        (PROMPTS / prompt_file).read_text(),
+        (PROMPTS / prompt_file).read_text().replace("{ROW_LIMIT}", str(ROW_LIMIT)),
         (PROMPTS / "stats_schema_notes.md").read_text(),
         "## Схема таблиц\n\n" + _schema(),
     ])
@@ -208,13 +222,21 @@ class _SqlOutcome(NamedTuple):
 def run_readonly(sql: str) -> _SqlOutcome:
     """Выполнить SQL модели ролью только на чтение; до `ROW_LIMIT` строк.
 
+    Запрос оборачивается в `SELECT * FROM (<sql>) AS q LIMIT n`: в подзапросе нет места второму
+    оператору, `SET`, `COMMIT` и `INSERT … RETURNING`/`WITH … INSERT` — всё это синтаксическая
+    ошибка, то есть модель получает ровно один SELECT. Дальше держат права роли и read-only
+    транзакция; `statement_timeout` защищает только ресурсы.
+
     Ошибка самого запроса (синтаксис, нет колонки, нет прав, таймаут `QueryCanceled`) —
-    не сбой: текст ошибки уходит модели, это её попытка. Сбой соединения (в том числе
-    `OperationalError` посреди запроса) поднимается выше.
+    не сбой: текст ошибки уходит модели, это её попытка. Сбой соединения и прочие
+    `OperationalError` (в том числе классы 53 и 54 — нехватка ресурсов, превышение лимитов)
+    поднимаются выше как сбой БД.
     """
+    body = re.sub(r"[;\s]+$", "", sql)
+    wrapped = f"SELECT * FROM (\n{body}\n) AS q LIMIT {ROW_LIMIT + 1}"
     with closing(_reader_connection()) as conn, conn.cursor() as cur:
         try:
-            cur.execute(sql)
+            cur.execute(wrapped)
             fetched = cur.fetchmany(ROW_LIMIT + 1)
             columns = [d[0] for d in cur.description]
         except QueryCanceled as exc:
@@ -235,22 +257,34 @@ def _dicts(cur) -> List[Dict[str, Any]]:
     return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
-def player_overview(last_name: str, team: str) -> Tuple[str, str]:
+def _fold(name: str) -> str:
+    """Фамилия для сравнения: без диакритики, апострофов и регистра (Stützle = stutzle)."""
+    name = name.replace("ł", "l").replace("Ł", "L").replace("ø", "o").replace("Ø", "O")
+    base = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in base if c.isalpha() and not unicodedata.combining(c)).lower()
+
+
+def player_overview(last_name: str, team: str, player_id: Optional[int]) -> Tuple[str, str]:
     """Фиксированная выборка по игроку текущего сезона (маршрут О, обзор игрока).
 
-    Находит игрока в `rosters` по фамилии (и клубу для однофамильцев); для полевого — сезон и
-    прошлый сезон, последние 10 игр, серия игр с очками; для вратаря — свой набор. Нашлось
-    несколько — возвращает кандидатов модели. Все запросы идут под read-only ролью.
+    Находит игрока в `rosters` по `player_id`, а без него — по фамилии (без диакритики) и клубу;
+    для полевого — сезон и прошлый сезон, последние 10 игр, серия игр с очками; для вратаря —
+    свой набор. Нашлось несколько (однофамильцы, в том числе одного клуба) — возвращает
+    кандидатов с `player_id`, модель вызывает снова с выбранным. Запросы идут под read-only ролью.
 
     Returns:
         Пара (JSON для модели, короткая сводка для журнала).
     """
-    if config.SEASON_ID is None:
-        raise RuntimeError("SEASON_ID не задан: обзор игрока не собрать")
-    season, previous = config.SEASON_ID, config.SEASON_ID - 10001
+    season, previous = cast(int, config.SEASON_ID), cast(int, config.SEASON_ID) - 10001
     with closing(_reader_connection()) as conn, conn.cursor() as cur:
-        cur.execute(_OVERVIEW_PLAYERS_SQL, (season, last_name.strip(), team.strip(), team.strip()))
+        cur.execute(_OVERVIEW_PLAYERS_SQL, (season, player_id, player_id))
         players = _dicts(cur)
+        if player_id is None:
+            wanted, club = _fold(last_name), team.strip().upper()
+            players = [p for p in players if _fold(p["lastname"]) == wanted
+                       and (not club or (p["team"] or "").upper() == club)]
+        for p in players:
+            del p["lastname"]
         if len(players) != 1:
             if players:
                 return _dump({"candidates": players}), f"кандидатов: {len(players)}"
@@ -279,30 +313,22 @@ def player_overview(last_name: str, team: str) -> Tuple[str, str]:
                     break
                 streak += 1
             payload["point_streak_games"] = streak
-    return _dump(payload), f"игрок {player['name']}, игр в сезоне: {len(payload['last_10_games'])}+"
+    return _dump(payload), f"игрок {player['name']}, строк последних игр: {len(payload['last_10_games'])}"
 
 
 def recent_pairs(chat_id: int) -> List[Dict[str, Any]]:
-    """Последние `HISTORY_PAIRS` ответов 83 этому чату, от старых к новым; пусто, если с
-    последнего ответа прошло больше `WINDOW_MINUTES` (вне окна история не передаётся).
-    Строки с `outcome = 'error'` не в счёт: ответа пользователь не получил."""
+    """Ответы 83 этому чату за последние `WINDOW_MINUTES` (не больше `HISTORY_PAIRS`), от старых
+    к новым. Окно — условие каждой строки: вне окна история не передаётся вовсе. Пустой список —
+    окно закрыто. Строки с `outcome = 'error'` не в счёт: ответа пользователь не получил."""
     rows = fetch_all(
-        _HISTORY_SQL, (WINDOW_MINUTES, chat_id, HISTORY_PAIRS),
-        columns=["question", "outcome", "steps", "answer", "fresh"],
+        _HISTORY_SQL, (chat_id, WINDOW_MINUTES, HISTORY_PAIRS),
+        columns=["question", "outcome", "steps", "answer"],
     )
-    if not rows["count_rows"] or not rows["fresh"][0]:
-        return []
     pairs = [
         {"question": q, "outcome": o, "steps": s, "answer": a}
         for q, o, s, a in zip(rows["question"], rows["outcome"], rows["steps"], rows["answer"])
     ]
     return pairs[::-1]
-
-
-def in_window(chat_id: int) -> bool:
-    """Был ли у чата ответ 83 за последние `WINDOW_MINUTES`: тогда сообщение сразу идёт в
-    `answer` (продолжение или новый вопрос решает модель), маршрутизатор 81 не зовётся."""
-    return bool(recent_pairs(chat_id))
 
 
 def _user_text(question: str, history: List[Dict[str, Any]]) -> str:
@@ -325,21 +351,23 @@ async def _call(run: _Run, role: str, system: Any, tools: List[Dict[str, Any]],
     """Один вызов модели с учётом потолков; расход попадает в `run.calls`.
 
     Raises:
-        _Ceiling: вызовов уже `CALL_CEILING` или стоимость вопроса дошла до `COST_CEILING`.
+        _Ceiling: вызовов уже `CALL_CEILING` или следующий вызов, по самому дорогому из
+            предыдущих, пробил бы `COST_CEILING`. Готовый ответ модели потолок не отбрасывает.
     """
-    if len(run.calls) >= CALL_CEILING or run.cost >= COST_CEILING:
+    if len(run.calls) >= CALL_CEILING or run.cost + run.max_call_cost >= COST_CEILING:
         raise _Ceiling
     # Принудительный tool_choice (any/tool) Sonnet 5.5 отвергает: инструмент требует промпт,
     # а его отсутствие — _ProtocolError.
     params: Dict[str, Any] = {
-        "model": ai_router.MODEL, "max_tokens": 4096, "output_config": {"effort": EFFORT},
+        "model": ai_router.MODEL, "max_tokens": MAX_TOKENS, "output_config": {"effort": EFFORT},
         "system": system, "tools": tools, "messages": messages,
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
     }
-    response = await ai_router.client().messages.create(**params)
+    response = await ai_router.client().with_options(timeout=CALL_TIMEOUT).messages.create(**params)
     usage = response.usage
     cost = ai_router.cost_usd(usage)
     run.cost += cost
+    run.max_call_cost = max(run.max_call_cost, cost)
     run.calls.append({
         "role": role, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
         "cache_read_tokens": usage.cache_read_input_tokens or 0,
@@ -375,7 +403,7 @@ async def _execute(run: _Run, tool: Any) -> Tuple[str, bool]:
         return outcome.text, outcome.error is not None
     if tool.name == "player_overview":
         text, summary = await asyncio.to_thread(
-            player_overview, tool.input["last_name"], tool.input["team"]
+            player_overview, tool.input["last_name"], tool.input["team"], tool.input["player_id"]
         )
         run.steps.append({"tool": "player_overview", "input": dict(tool.input), "result": summary})
         run.evidence.append(f"Обзор игрока {dict(tool.input)}: {text}")
@@ -405,11 +433,11 @@ async def _dialog(run: _Run, user_text: str, has_history: bool) -> _Result:
     system = _system("stats_answer.md")
     while True:
         response = await _call(run, "answer", system, _tools(), messages)
-        if run.cost > COST_CEILING:
-            raise _Ceiling
         tool = _tool_use(response)
         if tool.name == "finish":
             break
+        if run.cost > COST_CEILING:
+            raise _Ceiling
         result, is_error = await _execute(run, tool)
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": [{
@@ -419,6 +447,7 @@ async def _dialog(run: _Run, user_text: str, has_history: bool) -> _Result:
     continuation = has_history and tool.input["continuation"]
     if kind != "answer":
         return _Result(kind, text, continuation)
+    run.draft = text
     verdict = await _review(run, user_text, text)
     if verdict["verdict"] == "ok":
         return _Result("answer", text, continuation, text, "ok", verdict["reason"])
@@ -447,34 +476,40 @@ def _log(chat_id: int, question: str, run: _Run, started: float, result: _Result
         conn.commit()
 
 
-async def answer(chat_id: int, question: str) -> str:
+async def answer(chat_id: int, question: str, history: List[Dict[str, Any]]) -> str:
     """Ответить на вопрос о статистике: текст для пользователя.
 
     Зачем: вопросы без готового экрана (прошлые сезоны, игрок против команды, личные встречи).
-    Внутри окна `WINDOW_MINUTES` после прошлого ответа в запрос идут последние
-    `HISTORY_PAIRS` пар «вопрос–ответ», продолжение это или новый вопрос решает модель; ответ на
-    уточнение считается продолжением всегда. Потолки (`SQL_ATTEMPTS`, `CALL_CEILING`,
-    `COST_CEILING`) — `CEILING_TEXT`; сбой API или БД — `ERROR_TEXT`, ошибка в лог и журнал.
+    Если окно `WINDOW_MINUTES` открыто, в запрос идут последние `HISTORY_PAIRS` пар «вопрос–ответ»,
+    продолжение это или новый вопрос решает модель; ответ на уточнение считается продолжением
+    всегда. Потолки (`SQL_ATTEMPTS`, `CALL_CEILING`, `COST_CEILING`) — `CEILING_TEXT`; сбой API или
+    БД — `ERROR_TEXT`. Любое исключение после старта цикла пишет строку `error` в журнал; ожидаемые
+    (API, БД, протокол модели) к тому же превращаются в `ERROR_TEXT`, прочие поднимаются дальше.
 
     Аргументы:
         chat_id: чат из белого списка.
         question: текст сообщения как есть.
+        history: `recent_pairs(chat_id)`, прочитанные вызывающим (он же по ним выбирает маршрут);
+            пустой список — окно закрыто или вопрос пришёл от маршрутизатора.
     """
     started = time.monotonic()
-    history = recent_pairs(chat_id)
     after_clarify = bool(history) and history[-1]["outcome"] == "clarify"
     run = _Run()
     error = None
     try:
         result = await _dialog(run, _user_text(question, history), bool(history))
     except _Ceiling:
-        result = _Result("ceiling", CEILING_TEXT)
+        result = _Result("ceiling", CEILING_TEXT, draft=run.draft)
         logger.warning("Потолок ответа 83: chat_id=%s, SQL=%s, вызовов=%s, $%.4f",
                        chat_id, run.sql_attempts, len(run.calls), run.cost)
-    except (anthropic.APIError, psycopg2.Error, _ProtocolError) as exc:
+    except Exception as exc:
         request_id = exc.request_id if isinstance(exc, anthropic.APIStatusError) else None
         logger.exception("Ошибка ответа 83, chat_id=%s, request_id=%s", chat_id, request_id)
         error = f"{type(exc).__name__}: {exc}" + (f" request_id={request_id}" if request_id else "")
-        result = _Result("error", ERROR_TEXT)
+        _log(chat_id, question, run, started, _Result("error", ERROR_TEXT, draft=run.draft),
+             after_clarify, error)
+        if isinstance(exc, (anthropic.APIError, psycopg2.Error, _ProtocolError)):
+            return ERROR_TEXT
+        raise
     _log(chat_id, question, run, started, result, result.continuation or after_clarify, error)
     return result.text

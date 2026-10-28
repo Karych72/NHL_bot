@@ -75,14 +75,14 @@ class FakeMessages:
 
 
 class FakeReaderCursor:
-    def __init__(self, handler: Callable[[str], Any], executed: List[str]) -> None:
+    def __init__(self, handler: Callable[..., Any], executed: List[str]) -> None:
         self.handler, self.executed = handler, executed
         self.columns: List[str] = []
         self.rows: List[tuple] = []
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.executed.append(sql)
-        self.columns, self.rows = self.handler(sql)
+        self.columns, self.rows = self.handler(sql, params)
 
     def fetchmany(self, size: int) -> List[tuple]:
         return self.rows[:size]
@@ -102,7 +102,7 @@ class FakeReaderCursor:
 
 
 class FakeReaderConnection:
-    def __init__(self, handler: Callable[[str], Any], executed: List[str]) -> None:
+    def __init__(self, handler: Callable[..., Any], executed: List[str]) -> None:
         self.cursor_ = FakeReaderCursor(handler, executed)
 
     def cursor(self) -> FakeReaderCursor:
@@ -135,18 +135,25 @@ def stats(bot_module, fake_db_router, monkeypatch):
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
         if router is None:
             # Свежая история открывает окно (маршрутизатор не зовётся), иначе он выберет stats_question.
-            window_open = bool(history) and history[0][4]
-            router = [] if window_open or not allowed else [_response(_use("stats_question"))]
+            router = [] if history or not allowed else [_response(_use("stats_question"))]
         model = FakeMessages(responses, router)
-        monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=model))
+        model.options = []
+
+        def with_options(**kwargs):
+            model.options.append(kwargs)
+            return SimpleNamespace(messages=model)
+
+        monkeypatch.setattr(
+            ai_router, "client", lambda: SimpleNamespace(messages=model, with_options=with_options)
+        )
         executed: List[str] = []
 
-        def handler(sql: str):
+        def handler(sql: str, params: Any = None):
             for fragment, result in (reader or {}).items():
                 if fragment in sql:
                     if isinstance(result, Exception):
                         raise result
-                    return result
+                    return result(params) if callable(result) else result
             raise AssertionError(f"SQL не описан сценарием: {sql}")
 
         def connect():
@@ -219,16 +226,16 @@ async def test_reviewed_ok_draft_goes_to_user_and_is_logged(stats, make_message,
 async def test_clarify_verdict_sends_question_and_withholds_draft(stats, make_message, fake_bot, api):
     s = stats(
         [_sql(), _finish(text="У Овечкина 42 гола"),
-         _verdict("clarify", "Вы про регулярку или с плей-офф?", "в базе нет плей-офф")],
+         _verdict("clarify", "Вы про Джека или про Люка Хьюза?", "в базе два Хьюза в одном клубе")],
         reader={"SELECT 1": (["x"], [(1,)])},
     )
     replies = await _ask(s, make_message, fake_bot, api)
 
-    assert replies == [_as_reply("Вы про регулярку или с плей-офф?")]
+    assert replies == [_as_reply("Вы про Джека или про Люка Хьюза?")]
     assert "42 гола" not in " ".join(replies)
     row = _logged(s.cursor)
     assert (row["outcome"], row["draft"], row["answer"], row["verdict_reason"]) == (
-        "clarify", "У Овечкина 42 гола", "Вы про регулярку или с плей-офф?", "в базе нет плей-офф",
+        "clarify", "У Овечкина 42 гола", "Вы про Джека или про Люка Хьюза?", "в базе два Хьюза в одном клубе",
     )
 
 
@@ -339,8 +346,8 @@ async def test_cost_ceiling_stops_before_tool_runs(stats, make_message, fake_bot
 
 @pytest.mark.asyncio
 async def test_call_ceiling_is_seven_model_calls(stats, make_message, fake_bot, api):
-    overview = _response(_use("player_overview", last_name="Nobody", team=""))
-    s = stats([overview] * 8, reader={"FROM rosters": (["player_id", "name", "position", "team"], [])})
+    overview = _response(_use("player_overview", last_name="Nobody", team="", player_id=None))
+    s = stats([overview] * 8, reader={"FROM rosters": (PLAYER_COLUMNS, [])})
     replies = await _ask(s, make_message, fake_bot, api)
 
     assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
@@ -401,19 +408,21 @@ async def test_reviewer_clarify_without_question_is_an_error(stats, make_message
 # Окно продолжения диалога
 # ---------------------------------------------------------------------------
 
-def _past(outcome: str = "answer", fresh: bool = True, question: str = "голы Овечкина",
+def _past(outcome: str = "answer", question: str = "голы Овечкина",
           sql: str = "SELECT sum(goals) FROM players_season_stats", answer: str = "42 гола"):
     steps = [{"tool": "run_sql", "input": {"sql": sql}, "rows": 1, "error": None}]
-    return (question, outcome, steps, answer, fresh)
+    return (question, outcome, steps, answer)
 
 
 @pytest.mark.asyncio
 async def test_outside_window_history_is_not_sent(stats, make_message, fake_bot, api):
-    s = stats([_finish("off_topic", "x", continuation=True)], history=[_past(fresh=False)])
+    """Окно закрыто (история пуста; границу окна на настоящей БД проверяет
+    `TestAiStatsWindow` в tests/test_db_nhl.py): в запросе нет истории, продолжения нет."""
+    s = stats([_finish("off_topic", "x", continuation=True)], history=[])
     await _ask(s, make_message, fake_bot, api)
 
     content = s.model.calls[0]["messages"][0]["content"]
-    assert "<история>" not in content and "голы Овечкина" not in content
+    assert "<история>" not in content
     assert _logged(s.cursor)["continuation"] is False, "без истории продолжением быть нечему"
 
 
@@ -432,7 +441,7 @@ async def test_inside_window_last_pairs_with_sql_are_sent_oldest_first(stats, ma
     assert "ответ на него" not in content
     assert _logged(s.cursor)["continuation"] is True
     history_queries = {p for q, p in s.cursor.executed if q.startswith("SELECT question")}
-    assert history_queries == {(30, CHAT_ID, 3)}, "окно 30 минут, три пары"
+    assert history_queries == {(CHAT_ID, 30, 3)}, "окно 30 минут, три пары"
 
 
 @pytest.mark.asyncio
@@ -454,13 +463,6 @@ async def test_reply_to_clarification_is_forced_continuation(stats, make_message
 
     assert "Предыдущий ответ был уточнением" in s.model.calls[0]["messages"][0]["content"]
     assert _logged(s.cursor)["continuation"] is True
-
-
-def test_error_rows_do_not_open_the_window(stats):
-    s = stats([])
-    s.ai_stats.recent_pairs(CHAT_ID)
-    (query,) = [q for q, _ in s.cursor.executed if "FROM ai_stats_log" in q]
-    assert "outcome <> 'error'" in query
 
 
 # ---------------------------------------------------------------------------
@@ -530,13 +532,14 @@ async def test_daily_limit_covers_whitelisted_chat(stats, make_message, fake_bot
 # Обзор игрока
 # ---------------------------------------------------------------------------
 
-PLAYER = (["player_id", "name", "position", "team"], [(8471214, "Kirill Kaprizov", "L", "MIN")])
+PLAYER_COLUMNS = ["player_id", "name", "lastname", "position", "team"]
+PLAYER = (PLAYER_COLUMNS, [(8471214, "Kirill Kaprizov", "Kaprizov", "L", "MIN")])
 
 
 @pytest.mark.asyncio
 async def test_player_overview_collects_season_form_and_point_streak(stats, make_message, fake_bot, api):
     s = stats(
-        [_response(_use("player_overview", last_name="Kaprizov", team="")),
+        [_response(_use("player_overview", last_name="Kaprizov", team="", player_id=None)),
          _finish("answer", "Обзор"), _verdict()],
         reader={
             "FROM rosters": PLAYER,
@@ -562,9 +565,10 @@ async def test_player_overview_collects_season_form_and_point_streak(stats, make
 @pytest.mark.asyncio
 async def test_player_overview_goalie_has_own_set(stats, make_message, fake_bot, api):
     s = stats(
-        [_response(_use("player_overview", last_name="Shesterkin", team="NYR")), _finish("off_topic", "x")],
+        [_response(_use("player_overview", last_name="Shesterkin", team="NYR", player_id=None)), _finish("off_topic", "x")],
         reader={
-            "FROM rosters": (PLAYER[0], [(8478048, "Igor Shesterkin", "G", "NYR")]),
+            "FROM rosters": (PLAYER_COLUMNS, [(8478048, "Igor Shesterkin", "Shesterkin", "G", "NYR"),
+                                              (1, "Other Shesterkin", "Shesterkin", "D", "BOS")]),
             "FROM goalies_season_stats": (["season_id", "save_percentage"], [(20262027, 91.2)]),
             "FROM game_goalie_stats": (["day", "shots_against", "saves", "goals_against"], [("2026-10-27", 30, 28, 2)]),
         },
@@ -573,19 +577,41 @@ async def test_player_overview_goalie_has_own_set(stats, make_message, fake_bot,
 
     payload = json.loads(_tool_results(s.model.calls[1])[0]["content"])
     assert "point_streak_games" not in payload and payload["last_10_games"][0]["saves"] == 28
-    assert any("upper(t.abbreviation) = upper" in q for q in s.sql), "клуб сужает однофамильцев"
+    assert payload["player"]["team"] == "NYR", "клуб сужает однофамильцев"
 
 
 @pytest.mark.asyncio
 async def test_player_overview_returns_candidates_for_namesakes(stats, make_message, fake_bot, api):
     s = stats(
-        [_response(_use("player_overview", last_name="Ovechkin", team="")), _finish("clarify", "Какой?")],
-        reader={"FROM rosters": (PLAYER[0], [(1, "Alex Ovechkin", "L", "WSH"), (2, "Sergei Ovechkin", "R", "BOS")])},
+        [_response(_use("player_overview", last_name="Hughes", team="NJD", player_id=None)),
+         _response(_use("player_overview", last_name="Hughes", team="NJD", player_id=2)),
+         _finish("off_topic", "x")],
+        reader={
+            "FROM rosters": lambda params: (PLAYER_COLUMNS, [
+                row for row in [(1, "Jack Hughes", "Hughes", "C", "NJD"), (2, "Luke Hughes", "Hughes", "D", "NJD")]
+                if params[1] is None or row[0] == params[1]
+            ]),
+            "FROM players_season_stats": (["season_id", "points"], [(20262027, 3)]),
+            "FROM game_player_stats": (["day", "goals", "assists", "points", "shots"], []),
+        },
     )
     await _ask(s, make_message, fake_bot, api)
 
-    payload = json.loads(_tool_results(s.model.calls[1])[0]["content"])
-    assert [c["name"] for c in payload["candidates"]] == ["Alex Ovechkin", "Sergei Ovechkin"]
+    first, second = (json.loads(r["content"]) for r in _tool_results(s.model.calls[2]))
+    assert [c["name"] for c in first["candidates"]] == ["Jack Hughes", "Luke Hughes"]
+    assert [c["player_id"] for c in first["candidates"]] == [1, 2]
+    assert "lastname" not in first["candidates"][0]
+    assert second["player"]["name"] == "Luke Hughes", "player_id выбирает однофамильца одного клуба"
+
+
+@pytest.mark.parametrize(("stored", "asked"), [
+    ("Stützle", "Stutzle"), ("Slafkovský", "slafkovsky"), ("O'Reilly", "OReilly"),
+    ("Lafrenière", "LAFRENIERE"), ("Kaprizov", "Kaprizov"),
+])
+def test_last_name_match_ignores_diacritics_apostrophes_and_case(bot_module, stored, asked):
+    ai_stats = bot_module("ai_stats")
+    assert ai_stats._fold(stored) == ai_stats._fold(asked)
+    assert ai_stats._fold("Hughes") != ai_stats._fold("Tkachuk")
 
 
 # ---------------------------------------------------------------------------
@@ -623,3 +649,71 @@ def test_chat_ids_env_parsing(bot_module, monkeypatch):
     monkeypatch.setenv("AI_STATS_CHAT_IDS", "100,abc")
     with pytest.raises(ValueError, match="AI_STATS_CHAT_IDS"):
         config._env_chat_ids("AI_STATS_CHAT_IDS")
+
+
+# ---------------------------------------------------------------------------
+# Один SELECT, потолок стоимости, журнал при сбоях, настройки вызова
+# ---------------------------------------------------------------------------
+
+def test_model_sql_is_wrapped_into_a_single_select(stats):
+    s = stats([], reader={"FROM (": (["n"], [(1,)])})
+    s.ai_stats.run_readonly("SELECT 1 -- комментарий\n;  ")
+    s.ai_stats.run_readonly("SET statement_timeout = 0; SELECT pg_sleep(7)")
+
+    first, second = s.sql
+    assert first == "SELECT * FROM (\nSELECT 1 -- комментарий\n) AS q LIMIT 51"
+    assert second.startswith("SELECT * FROM (\nSET statement_timeout = 0; SELECT"), (
+        "несколько операторов остаются внутри подзапроса: Postgres отвергнет их синтаксисом"
+    )
+
+
+@pytest.mark.asyncio
+async def test_calls_use_long_timeout_and_room_for_thinking(stats, make_message, fake_bot, api):
+    s = stats([_finish("off_topic", "x")])
+    await _ask(s, make_message, fake_bot, api)
+
+    assert s.model.options == [{"timeout": 60.0}]
+    assert s.model.calls[0]["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_projected_cost_stops_before_a_call_that_would_break_ceiling(stats, make_message, fake_bot, api):
+    # Первый вызов $0.06 (30 000 входных токенов): ещё один такой же пробил бы $0.10.
+    s = stats([_response(_use("run_sql", sql="SELECT 1"), tokens=30_000), _finish("off_topic", "x")],
+              reader={"SELECT 1": (["x"], [(1,)])})
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
+    assert len(s.model.calls) == 1 and len(s.sql) == 1
+    row = _logged(s.cursor)
+    assert row["outcome"] == "ceiling" and row["cost_usd"] < 0.10
+
+
+@pytest.mark.asyncio
+async def test_ready_finish_is_not_thrown_away_when_it_crosses_the_ceiling(stats, make_message, fake_bot, api):
+    s = stats([_response(_use("finish", kind="no_data", continuation=False, text="Нет"), tokens=60_000)])
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply("Нет")]
+    assert _logged(s.cursor)["outcome"] == "no_data"
+
+
+@pytest.mark.asyncio
+async def test_draft_is_logged_when_review_hits_the_ceiling(stats, make_message, fake_bot, api):
+    s = stats([_response(_use("finish", kind="answer", continuation=False, text="Черновик 42"), tokens=60_000)])
+    replies = await _ask(s, make_message, fake_bot, api)
+
+    assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
+    row = _logged(s.cursor)
+    assert (row["outcome"], row["draft"]) == ("ceiling", "Черновик 42")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_is_logged_and_raised(stats, make_message, fake_bot):
+    # Ответ без обязательного поля: наш код упадёт KeyError — громко, но строка журнала останется.
+    s = stats([_response(_use("finish", kind="answer", continuation=False))])
+    with pytest.raises(KeyError):
+        await s.bot.on_free_text(make_message("вопрос"), fake_bot)
+
+    row = _logged(s.cursor)
+    assert row["outcome"] == "error" and row["error"].startswith("KeyError")

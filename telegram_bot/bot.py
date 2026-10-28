@@ -493,12 +493,13 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         await message.answer_rich(rich_message(ai_router.LIMIT_TEXT))
         return
     stats_allowed = chat_id in config.AI_STATS_CHAT_IDS
-    if stats_allowed and ai_stats.in_window(chat_id):
-        await _answer_stats(message, text)
+    history = ai_stats.recent_pairs(chat_id) if stats_allowed else []
+    if history:
+        await _answer_stats(message, text, history)
         return
     reply = await ai_router.ask(chat_id, text, with_stats=stats_allowed)
     if reply.tool == "stats_question":
-        await _answer_stats(message, text)
+        await _answer_stats(message, text, history)
         return
     if reply.tool is None:
         # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
@@ -507,9 +508,9 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     await AI_SCREENS[reply.tool](message, bot, reply.params)
 
 
-async def _answer_stats(message: Message, question: str) -> None:
+async def _answer_stats(message: Message, question: str, history: List[Dict[str, Any]]) -> None:
     """Ответ на статистический вопрос (`ai_stats.answer`); текст модели экранируется."""
-    reply = await ai_stats.answer(message.chat.id, question)
+    reply = await ai_stats.answer(message.chat.id, question, history)
     await message.answer_rich(rich_message(html.escape(reply)))
 
 

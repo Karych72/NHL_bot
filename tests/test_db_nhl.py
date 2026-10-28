@@ -1096,6 +1096,63 @@ class TestAiQuestionsSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestAiStatsWindow(unittest.TestCase):
+    """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
+    строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""
+
+    CHAT = -999000084
+    OTHER = -999000085
+
+    def setUp(self):
+        import ai_stats
+
+        self.ai = ai_stats
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", ([self.CHAT, self.OTHER],))
+
+    def _add(self, chat, question, outcome, minutes_ago, answer=None):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, answer, latency_ms, "
+                "asked_at) VALUES (%s, %s, false, %s, %s, 1, now() - %s * interval '1 minute')",
+                (chat, question, outcome, answer or f"ответ {question}", minutes_ago),
+            )
+
+    def _questions(self, chat):
+        return [p["question"] for p in self.ai.recent_pairs(chat)]
+
+    def test_window_applies_to_every_row_not_only_the_newest(self):
+        self._add(self.CHAT, "давний", "answer", 180)
+        self.assertEqual(self._questions(self.CHAT), [], "все строки вне окна")
+
+        self._add(self.CHAT, "почти вышел", "answer", 29.5)
+        self._add(self.OTHER, "чужой", "answer", 1)
+        self.assertEqual(self._questions(self.CHAT), ["почти вышел"], "давняя пара за окном не тянется")
+
+        self._add(self.CHAT, "сбой", "error", 2)
+        self._add(self.CHAT, "уточнение", "clarify", 1, answer="Какой Хьюз?")
+        pairs = self.ai.recent_pairs(self.CHAT)
+        self.assertEqual([p["question"] for p in pairs], ["почти вышел", "уточнение"], "от старых к новым")
+        self.assertEqual(pairs[-1]["outcome"], "clarify")
+        self.assertEqual(pairs[-1]["answer"], "Какой Хьюз?")
+
+    def test_window_closes_after_thirty_minutes_and_keeps_three_pairs(self):
+        self._add(self.CHAT, "вышел", "answer", 30.5)
+        self.assertEqual(self._questions(self.CHAT), [])
+        for i, minutes in enumerate((20, 15, 10, 5)):
+            self._add(self.CHAT, f"в{i}", "answer", minutes)
+        self.assertEqual(self._questions(self.CHAT), ["в1", "в2", "в3"])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestAiReaderRole(unittest.TestCase):
     """Роль `nhl_ai_reader` (Задача 83, миграция 0015) — граница безопасности для SQL, который
     пишет модель: читает только таблицы данных, не пишет и не создаёт, не видит таблиц бота."""
@@ -1168,8 +1225,40 @@ class TestAiReaderRole(unittest.TestCase):
         self.assertIn("permission denied", denied.error)
         slow = ai_stats.run_readonly("SELECT pg_sleep(30)")
         self.assertIn("statement timeout", slow.error)
-        ok = ai_stats.run_readonly("SELECT game_id FROM games LIMIT 2")
+        ok = ai_stats.run_readonly("SELECT game_id FROM games LIMIT 2;")
         self.assertIsNone(ok.error)
+        self.assertEqual(ok.rows, 2)
+
+    def test_run_readonly_rejects_multi_statement_attacks(self):
+        """SQL модели — один SELECT: ни `SET`, ни `COMMIT`, ни запись не проходят, как бы их ни
+        склеивали точкой с запятой (simple query выполнил бы все операторы подряд)."""
+        import time
+
+        import ai_stats
+
+        def large_objects() -> int:
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM pg_largeobject_metadata")
+                return cur.fetchone()[0]
+
+        before = large_objects()
+        started = time.monotonic()
+        attacks = (
+            "SET statement_timeout = 0; SELECT pg_sleep(7)",
+            "SELECT set_config('statement_timeout', '0', false); SELECT pg_sleep(7)",
+            "SET transaction_read_only = off; CREATE TEMP TABLE probe (x int); "
+            "INSERT INTO probe VALUES (1); SELECT * FROM probe",
+            "SET transaction_read_only = off; SELECT lo_from_bytea(0, '\\x41'); COMMIT; SELECT 1",
+            "SELECT lo_from_bytea(0, '\\x41')",
+            "WITH ins AS (INSERT INTO games (game_id, season_id) VALUES (-1, 20212022) RETURNING 1) "
+            "SELECT * FROM ins",
+        )
+        for sql in attacks:
+            outcome = ai_stats.run_readonly(sql)
+            self.assertIsNotNone(outcome.error, sql)
+            self.assertIsNone(outcome.rows, sql)
+        self.assertLess(time.monotonic() - started, 5, "таймаут не обойдён: pg_sleep(7) не выполнялся")
+        self.assertEqual(large_objects(), before, "large object не создан")
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

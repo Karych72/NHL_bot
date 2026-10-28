@@ -5,7 +5,9 @@
 -- Роль кластерная, а базы nhl_dev и postgres живут в одном кластере: создаётся один раз.
 -- Пароля нет: Postgres в compose на trust (порт на 127.0.0.1, Задача 82), права роли
 -- ограничивают независимо от аутентификации; ни в какую роль она не входит, сменить пользователя
--- SQL модели не может. Таймаут и «только чтение» — и на роли, и в параметрах соединения бота.
+-- SQL модели не может. Граница безопасности — права роли (только SELECT на таблицы данных), запрос
+-- модели, обёрнутый ботом в один SELECT, и read-only транзакция (на роли и в параметрах
+-- соединения бота); statement_timeout защищает ресурсы, а не границу.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nhl_ai_reader') THEN
@@ -15,7 +17,7 @@ END $$;
 ALTER ROLE nhl_ai_reader SET statement_timeout = '5s';
 ALTER ROLE nhl_ai_reader SET default_transaction_read_only = on;
 
--- GRANT CONNECT и SELECT на таблицы данных (общий файл с `make db-tables`).
+-- USAGE на схему и SELECT на таблицы данных (общий файл с `make db-tables`).
 \ir ../ai_reader_grants.sql
 
 -- Строка на вопрос, дошедший до ai_stats.answer. Суточный лимит (ai_router.questions_left)

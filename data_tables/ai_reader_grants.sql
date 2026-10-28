@@ -1,5 +1,5 @@
--- Права роли nhl_ai_reader (Задача 83): SELECT только на таблицы данных NHL. Список — единственный
--- источник; его же сверяет tests/test_db_nhl.py с ai_stats.AI_TABLES. Таблиц бота (bot_*, ai_*,
+-- Права роли nhl_ai_reader (Задача 83): USAGE на схему и SELECT только на таблицы данных NHL. Список — единственный
+-- источник (CONNECT выдавать не нужно: он у PUBLIC по умолчанию); его же сверяет tests/test_db_nhl.py с ai_stats.AI_TABLES. Таблиц бота (bot_*, ai_*,
 -- prediction_log, schema_migrations) здесь нет и быть не должно: роль — граница безопасности для SQL,
 -- который пишет модель. game_predictions не выдана: бот не даёт прогнозов (plan/ai_questions).
 --
@@ -13,7 +13,6 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nhl_ai_reader') THEN
         RETURN;
     END IF;
-    EXECUTE format('GRANT CONNECT ON DATABASE %I TO nhl_ai_reader', current_database());
     GRANT USAGE ON SCHEMA public TO nhl_ai_reader;
     FOREACH t IN ARRAY ARRAY[
         'games', 'teams', 'teams_stats', 'rosters', 'players_season_stats',
