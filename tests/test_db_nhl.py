@@ -1241,9 +1241,20 @@ class TestAiReaderRole(unittest.TestCase):
                 cur.execute("SELECT count(*) FROM pg_largeobject_metadata")
                 return cur.fetchone()[0]
 
-        before = large_objects()
+        def role_settings():
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT rolconfig FROM pg_roles WHERE rolname = 'nhl_ai_reader'")
+                return cur.fetchone()[0]
+
+        before, settings = large_objects(), role_settings()
         started = time.monotonic()
         attacks = (
+            # Закрывающая скобка и `;` внутри: обёртку обходят, если `;` пропустить.
+            "SELECT 1) AS x; SET statement_timeout=0; SELECT pg_sleep(7) FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET transaction_read_only=off; "
+            "SELECT lo_from_bytea(0,'\\x41'::bytea); COMMIT; SELECT 1 FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET default_transaction_read_only=off; COMMIT; "
+            "ALTER ROLE nhl_ai_reader SET statement_timeout = 0; COMMIT; SELECT 1 FROM (SELECT 1",
             "SET statement_timeout = 0; SELECT pg_sleep(7)",
             "SELECT set_config('statement_timeout', '0', false); SELECT pg_sleep(7)",
             "SET transaction_read_only = off; CREATE TEMP TABLE probe (x int); "
@@ -1259,6 +1270,28 @@ class TestAiReaderRole(unittest.TestCase):
             self.assertIsNone(outcome.rows, sql)
         self.assertLess(time.monotonic() - started, 5, "таймаут не обойдён: pg_sleep(7) не выполнялся")
         self.assertEqual(large_objects(), before, "large object не создан")
+        self.assertEqual(role_settings(), settings, "роль не изменила свои настройки")
+
+    def test_watchdog_cancels_a_query_even_if_server_timeout_is_off(self):
+        """Сторожевой таймер клиента — страховка на случай, если серверный `statement_timeout`
+        сброшен: соединение без таймаута, а запрос всё равно отменяется."""
+        import time
+        from unittest.mock import patch
+
+        import ai_stats
+
+        def no_server_timeout():
+            return psycopg2.connect(
+                host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+                database=config.PG_DATABASE, options="-c statement_timeout=0",
+            )
+
+        started = time.monotonic()
+        with patch.object(ai_stats, "_reader_connection", no_server_timeout), \
+                patch.object(ai_stats, "STATEMENT_TIMEOUT_SEC", 1):
+            outcome = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("canceling statement", outcome.error)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

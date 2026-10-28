@@ -10,11 +10,12 @@
 `after` — продолжение диалога: журнал чата не чистится. `reviewer_probe` — вопрос, на котором
 модель легко ответит сама, а уточнить должен ревьюер.
 
-Оценка ответа по набору чисел, а не по вхождению: каждое число ответа, кроме рамочных (годы,
-сезоны, даты, «последних N», числа из самого вопроса), должно быть в `expect` или в результате
-SQL/обзора, который модель реально получила (с допуском на округление); все числа `expect` должны
-быть в ответе. Иначе ответ неверный; если он при этом прошёл ревью — это «неверная цифра в
-ответе, прошедшем ревью», и порог требует нуля таких.
+Оценка ответа по набору чисел, а не по вхождению. Все ожидаемые числа и слова `expect` должны
+быть в ответе, иначе он неверный; если он при этом прошёл ревью — это «неверная цифра в ответе,
+прошедшем ревью», порог требует нуля таких. Каждое число ответа, кроме рамочных (годы, сезоны,
+даты, «последних N», числа из вопроса), которого нет в `expect` и в результате SQL/обзора,
+который модель реально получила (с допуском на округление), печатается отдельно как «проверить
+вручную» (выдумка или арифметика модели) и в порог не входит.
 
 Запуск: `make ai-stats-eval`. Код выхода 1 — верных меньше 90% или есть неверная цифра в ответе,
 прошедшем ревью.
@@ -27,7 +28,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Tuple
 
 import psycopg2
 
@@ -44,7 +45,7 @@ MIN_ACCURACY = 0.9
 
 # Рамочные числа: даты, сезоны, годы, «последних N игр».
 _FRAME = re.compile(
-    r"\d{4}-\d{2}-\d{2}|\d{4}/\d{2,4}|(?<!\d)(?:19|20)\d{2}(?!\d)|(?<=последних )\d+|(?<=последние )\d+",
+    r"\d{4}-\d{2}-\d{2}|\d{4}[/\-–]\d{2,4}|(?<!\d)(?:19|20)\d{2}(?!\d)|(?<=последних )\d+|(?<=последние )\d+",
     re.I,
 )
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -85,12 +86,16 @@ def close(value: float, other: float, decimals: int) -> bool:
     return abs(value - other) <= 0.5 * 10 ** -decimals + 1e-9
 
 
-def judge(text: str, question: str, wants: list, evidence: List[str]) -> List[str]:
-    """Что не так с ответом: пустой список — всё верно.
+def judge(text: str, question: str, wants: list, evidence: List[str]) -> Tuple[List[str], List[str]]:
+    """Оценка ответа: (неверное, проверить вручную).
 
-    Слова из *wants* — подстрока без учёта регистра; числа — по набору (см. шапку модуля).
+    Неверное — нет ожидаемого слова или числа из *wants* (слова — подстрока без учёта регистра).
+    Проверить вручную — число, которого нет ни в *wants*, ни в результатах SQL, ни в вопросе:
+    это может быть выдумка, а может быть арифметика модели (разность, доля), без человека не
+    различить.
     """
-    problems = []
+    problems: List[str] = []
+    manual: List[str] = []
     got = _NUMBER.findall(_plain(text))
     expected_numbers: List[float] = []
     for item in wants:
@@ -105,8 +110,8 @@ def judge(text: str, question: str, wants: list, evidence: List[str]) -> List[st
     allowed = expected_numbers + seen + [float(n) for n in _NUMBER.findall(_plain(question))]
     for raw in got:
         if not any(close(float(raw), a, _decimals(raw)) for a in allowed):
-            problems.append(f"число {raw} не из результата SQL")
-    return problems
+            manual.append(f"число {raw} не из результата SQL")
+    return problems, manual
 
 
 def expected(case: dict) -> list:
@@ -143,7 +148,7 @@ def last_row() -> dict:
 
 async def main() -> int:
     cases = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines()]
-    passed = wrong_passed = caught = 0
+    passed = wrong_passed = caught = manual_total = 0
     clarify_model = clarify_reviewer = probes = probes_caught = 0
     costs, latencies = [], []
     clear_log()
@@ -169,12 +174,16 @@ async def main() -> int:
                 probes_caught += row["verdict"] == "clarify"
             if "answer" in kinds:
                 wants = expected(case)
-                problems = judge(text, case["q"], wants, captured) if row["outcome"] == "answer" else []
-                if row["outcome"] == "answer" and problems:
-                    ok = False
-                    wrong_passed += 1
-                    note = f"{problems}  [НЕВЕРНАЯ ЦИФРА ПРОШЛА РЕВЬЮ]"
-                if row["outcome"] == "clarify" and row["draft"] and judge(row["draft"], case["q"], wants, captured):
+                if row["outcome"] == "answer":
+                    problems, manual = judge(text, case["q"], wants, captured)
+                    if problems:
+                        ok = False
+                        wrong_passed += 1
+                        note = f"{problems}  [НЕВЕРНАЯ ЦИФРА ПРОШЛА РЕВЬЮ]"
+                    if manual:
+                        manual_total += 1
+                        note += f"  [ПРОВЕРИТЬ ВРУЧНУЮ: {manual}]"
+                if row["outcome"] == "clarify" and row["draft"] and judge(row["draft"], case["q"], wants, captured)[0]:
                     caught += 1
                     note = "(ревью поймало неверный черновик)"
             passed += ok
@@ -188,6 +197,7 @@ async def main() -> int:
     accuracy = passed / len(cases)
     print(f"\nВерных: {passed}/{len(cases)} = {accuracy:.0%} (порог {MIN_ACCURACY:.0%})")
     print(f"Неверных цифр в ответах, прошедших ревью: {wrong_passed} (должно быть 0)")
+    print(f"Ответов с числами не из результата (проверить вручную): {manual_total}")
     print(f"Неверных черновиков поймало ревью: {caught}")
     print(f"Уточнений: от модели {clarify_model}, от ревьюера {clarify_reviewer}; "
           f"на вопросах-ловушках для ревьюера он уточнил {probes_caught} из {probes}")

@@ -12,6 +12,7 @@ import functools
 import json
 import logging
 import re
+import threading
 import time
 import unicodedata
 from contextlib import closing
@@ -47,6 +48,7 @@ COST_CEILING = 0.10
 WINDOW_MINUTES = 30
 HISTORY_PAIRS = 3
 ROW_LIMIT = 50
+STATEMENT_TIMEOUT_SEC = 5
 EFFORT = "medium"
 # Клиент маршрутизатора (15 с, мало выхода) для диалога на effort medium тесен: мышление плюс вызов
 # инструмента — до нескольких тысяч токенов выхода, на 8192 ($0.08 на выходе) вызов укладывается
@@ -190,7 +192,8 @@ def _system(prompt_file: str) -> List[Dict[str, Any]]:
     """Системный блок с `cache_control`: промпт роли + аннотация + схема. Без даты — префикс
     кэшируется; сегодняшняя дата идёт в сообщении пользователя."""
     text = "\n\n".join([
-        (PROMPTS / prompt_file).read_text().replace("{ROW_LIMIT}", str(ROW_LIMIT)),
+        (PROMPTS / prompt_file).read_text()
+        .replace("{ROW_LIMIT}", str(ROW_LIMIT)).replace("{SQL_ATTEMPTS}", str(SQL_ATTEMPTS)),
         (PROMPTS / "stats_schema_notes.md").read_text(),
         "## Схема таблиц\n\n" + _schema(),
     ])
@@ -207,7 +210,7 @@ def _reader_connection():
     return psycopg2.connect(
         host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
         database=config.PG_DATABASE,
-        options="-c statement_timeout=5000 -c default_transaction_read_only=on",
+        options=f"-c statement_timeout={STATEMENT_TIMEOUT_SEC * 1000} -c default_transaction_read_only=on",
     )
 
 
@@ -222,19 +225,31 @@ class _SqlOutcome(NamedTuple):
 def run_readonly(sql: str) -> _SqlOutcome:
     """Выполнить SQL модели ролью только на чтение; до `ROW_LIMIT` строк.
 
-    Запрос оборачивается в `SELECT * FROM (<sql>) AS q LIMIT n`: в подзапросе нет места второму
-    оператору, `SET`, `COMMIT` и `INSERT … RETURNING`/`WITH … INSERT` — всё это синтаксическая
-    ошибка, то есть модель получает ровно один SELECT. Дальше держат права роли и read-only
-    транзакция; `statement_timeout` защищает только ресурсы.
+    Защита в четыре слоя, ни один не опирается на промпт:
+    1. любая `;` в теле запроса (после снятия хвостовых) — ошибка запроса: psycopg2 шлёт simple
+       query, где через `;` идут несколько операторов (`SELECT 1) AS x; SET …; SELECT … FROM (SELECT 1`
+       обошла бы одну лишь обёртку); без `;` второго оператора нет;
+    2. запрос оборачивается в `SELECT * FROM (<sql>) AS q LIMIT n` — `SET`, `COMMIT`, `INSERT`
+       в подзапросе синтаксическая ошибка;
+    3. права роли (только `SELECT` на таблицы данных) и read-only транзакция;
+    4. сторожевой таймер клиента отменяет запрос через `STATEMENT_TIMEOUT_SEC + 1` с, что бы ни
+       случилось с серверным `statement_timeout`.
+    Роль может менять собственные настройки (`ALTER ROLE … SET`) — запретить это в PG16 нельзя,
+    поэтому защита — п. 1 и 4, а параметры соединения задаются заново на каждом подключении.
 
-    Ошибка самого запроса (синтаксис, нет колонки, нет прав, таймаут `QueryCanceled`) —
+    Ошибка самого запроса (синтаксис, `;`, нет колонки, нет прав, таймаут `QueryCanceled`) —
     не сбой: текст ошибки уходит модели, это её попытка. Сбой соединения и прочие
     `OperationalError` (в том числе классы 53 и 54 — нехватка ресурсов, превышение лимитов)
     поднимаются выше как сбой БД.
     """
     body = re.sub(r"[;\s]+$", "", sql)
+    if ";" in body:
+        message = "Ошибка SQL: точка с запятой допустима только в конце — нужен один SELECT"
+        return _SqlOutcome(message, None, message)
     wrapped = f"SELECT * FROM (\n{body}\n) AS q LIMIT {ROW_LIMIT + 1}"
     with closing(_reader_connection()) as conn, conn.cursor() as cur:
+        watchdog = threading.Timer(STATEMENT_TIMEOUT_SEC + 1, conn.cancel)
+        watchdog.start()
         try:
             cur.execute(wrapped)
             fetched = cur.fetchmany(ROW_LIMIT + 1)
@@ -245,6 +260,8 @@ def run_readonly(sql: str) -> _SqlOutcome:
             raise
         except psycopg2.Error as exc:
             return _SqlOutcome(f"Ошибка SQL: {str(exc).strip()}", None, str(exc).strip())
+        finally:
+            watchdog.cancel()
     rows = [list(r) for r in fetched[:ROW_LIMIT]]
     payload: Dict[str, Any] = {"columns": columns, "rows": rows, "truncated": len(fetched) > ROW_LIMIT}
     if not rows:
@@ -437,6 +454,7 @@ async def _dialog(run: _Run, user_text: str, has_history: bool) -> _Result:
         if tool.name == "finish":
             break
         if run.cost > COST_CEILING:
+            # Бюджет уже пробит: не выполняем и этот шаг (следующий вызов всё равно остановится).
             raise _Ceiling
         result, is_error = await _execute(run, tool)
         messages.append({"role": "assistant", "content": response.content})

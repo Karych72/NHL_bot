@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
@@ -79,6 +80,7 @@ class FakeReaderCursor:
         self.handler, self.executed = handler, executed
         self.columns: List[str] = []
         self.rows: List[tuple] = []
+        self.cancelled = threading.Event()
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.executed.append(sql)
@@ -110,6 +112,9 @@ class FakeReaderConnection:
 
     def close(self) -> None:
         return None
+
+    def cancel(self) -> None:
+        self.cursor_.cancelled.set()
 
 
 @pytest.fixture
@@ -658,13 +663,11 @@ def test_chat_ids_env_parsing(bot_module, monkeypatch):
 def test_model_sql_is_wrapped_into_a_single_select(stats):
     s = stats([], reader={"FROM (": (["n"], [(1,)])})
     s.ai_stats.run_readonly("SELECT 1 -- комментарий\n;  ")
-    s.ai_stats.run_readonly("SET statement_timeout = 0; SELECT pg_sleep(7)")
+    s.ai_stats.run_readonly("WITH x AS (SELECT 2) SELECT * FROM x")
 
     first, second = s.sql
     assert first == "SELECT * FROM (\nSELECT 1 -- комментарий\n) AS q LIMIT 51"
-    assert second.startswith("SELECT * FROM (\nSET statement_timeout = 0; SELECT"), (
-        "несколько операторов остаются внутри подзапроса: Postgres отвергнет их синтаксисом"
-    )
+    assert second == "SELECT * FROM (\nWITH x AS (SELECT 2) SELECT * FROM x\n) AS q LIMIT 51"
 
 
 @pytest.mark.asyncio
@@ -717,3 +720,28 @@ async def test_unexpected_exception_is_logged_and_raised(stats, make_message, fa
 
     row = _logged(s.cursor)
     assert row["outcome"] == "error" and row["error"].startswith("KeyError")
+
+
+def test_semicolon_inside_query_is_a_model_error_and_never_reaches_the_db(stats):
+    s = stats([])
+    attack = "SELECT 1) AS x; SET statement_timeout=0; SELECT pg_sleep(7) FROM (SELECT 1"
+    outcome = s.ai_stats.run_readonly(attack)
+
+    assert outcome.error and "точка с запятой" in outcome.text and outcome.rows is None
+    assert s.sql == []
+
+
+def test_watchdog_cancels_a_hung_query(stats, monkeypatch):
+    s = stats([], reader={"FROM (": (["n"], [])})
+    monkeypatch.setattr(s.ai_stats, "STATEMENT_TIMEOUT_SEC", -0.95)  # таймер на 0.05 с
+    hang = psycopg2.errors.QueryCanceled("canceling statement due to user request")
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+        assert self.cancelled.wait(5), "таймер не отменил запрос"
+        raise hang
+
+    monkeypatch.setattr(FakeReaderCursor, "execute", execute)
+    outcome = s.ai_stats.run_readonly("SELECT pg_sleep(30)")
+
+    assert outcome.rows is None and "user request" in outcome.error
