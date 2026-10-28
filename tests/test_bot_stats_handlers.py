@@ -20,7 +20,9 @@ from unittest.mock import patch
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendVideo
+from aiogram.methods import (
+    CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendRichMessage, SendVideo,
+)
 
 from tests._telegram_fakes import MENU_MESSAGE_ID, body, rich_html
 
@@ -383,7 +385,7 @@ async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
         sent = api.outgoing
-        assert [body(m) for m in sent] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
+        assert [body(m) for m in sent] == [rich_html("CARD"), rich_html(stats_handlers._TONIGHT_ALREADY_SENT)]
         assert sent[1].reply_parameters.message_id == 1, "цитата — на первую карточку"
         assert api.sent(DeleteMessage) == []
 
@@ -401,13 +403,15 @@ async def test_tonight_game_resends_card_when_original_was_deleted(bot_module, m
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
-        api.fail_next(SendMessage, _bad_request("Bad Request: message to be replied not found"))
+        api.fail_next(SendRichMessage, _bad_request("Bad Request: message to be replied not found"))
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         # Следующее нажатие ссылается уже на новую карточку.
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
     sent = api.outgoing
-    assert [body(m) for m in sent] == [rich_html("CARD"), rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT]
+    assert [body(m) for m in sent] == [
+        rich_html("CARD"), rich_html("CARD"), rich_html(stats_handlers._TONIGHT_ALREADY_SENT),
+    ]
     assert sent[2].reply_parameters.message_id == 2
 
 
@@ -420,10 +424,12 @@ async def test_tonight_game_resend_removes_pointer_to_deleted_card(bot_module, m
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
-        api.fail_next(SendMessage, _bad_request("Bad Request: message to be replied not found"))
+        api.fail_next(SendRichMessage, _bad_request("Bad Request: message to be replied not found"))
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    assert [body(m) for m in api.outgoing] == [rich_html("CARD"), stats_handlers._TONIGHT_ALREADY_SENT, rich_html("CARD")]
+    assert [body(m) for m in api.outgoing] == [
+        rich_html("CARD"), rich_html(stats_handlers._TONIGHT_ALREADY_SENT), rich_html("CARD"),
+    ]
     assert [(d.chat_id, d.message_id) for d in api.sent(DeleteMessage)] == [(100, 2)]
 
 
@@ -453,7 +459,7 @@ async def test_tonight_game_pointer_reraises_unrelated_bad_request(bot_module, m
     with patch.object(stats_handlers, "game_exists", return_value=True), \
             patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
-        api.fail_next(SendMessage, _bad_request("Bad Request: chat not found"))
+        api.fail_next(SendRichMessage, _bad_request("Bad Request: chat not found"))
         with pytest.raises(TelegramBadRequest, match="chat not found"):
             await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
@@ -573,8 +579,7 @@ async def test_send_game_card_message_reports_missing_game(bot_module, fake_bot,
         await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
 
     mock_game_message.assert_not_called()
-    [sent] = api.sent_messages
-    assert sent.text == "Такого матча нет в базе бота."
+    assert [body(m) for m in api.outgoing] == [rich_html("Такого матча нет в базе бота.")]
 
 
 @pytest.mark.asyncio
@@ -626,7 +631,7 @@ async def test_goal_video_reports_unavailable_when_download_fails(
         await _tap_goal(stats_handlers, make_callback, fake_bot)
 
     mock_download.assert_called_once_with(100, 200)
-    assert api.sent_messages[0].text == "Видео пока недоступно."
+    assert [body(m) for m in api.outgoing] == [rich_html("Видео пока недоступно.")]
     assert api.answers == ["Загружаю видео гола..."]
 
 
@@ -678,7 +683,7 @@ async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
         await _tap_goal(stats_handlers, make_callback, fake_bot)
 
     assert api.sent(SendVideo) == []
-    assert api.sent_messages[-1].text == "Ошибка при отправке видео."
+    assert body(api.outgoing[-1]) == rich_html("Ошибка при отправке видео.")
     assert not video_path.exists(), "clip must be deleted even when send_video() raises"
     assert goal_clip_store == {}
 

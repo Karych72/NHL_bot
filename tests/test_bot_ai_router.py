@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from types import SimpleNamespace
 from typing import Any, List
@@ -94,11 +95,18 @@ async def _ask(bot, make_message, fake_bot, text: str = "вопрос") -> None:
     await bot.on_free_text(make_message(text), fake_bot)
 
 
-def _plain(messages) -> list:
-    """Ответы пользователю без HTML-разметки и кнопок — как текст модели или служебные фразы:
-    `<` в тексте модели не должен ломать отправку."""
-    assert all(m.parse_mode != "HTML" and m.reply_markup is None for m in messages)
-    return [m.text for m in messages]
+def _replies(api) -> list:
+    """Тела ответов пользователю — текст модели или служебная фраза: rich без кнопок,
+    обычных сообщений нет (Задача 91)."""
+    assert not api.sent_messages
+    assert all(m.reply_markup is None for m in api.sent_rich)
+    return [body(m) for m in api.sent_rich]
+
+
+def _as_reply(text: str) -> str:
+    """Ожидаемое тело ответа на *text*: текст экранирован — `<` в тексте модели не должен
+    ломать rich-HTML."""
+    return rich_html(html.escape(text))
 
 
 # ---------------------------------------------------------------------------
@@ -204,13 +212,13 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
 
 @pytest.mark.asyncio
 async def test_text_answer_goes_to_user_and_to_log(ai, make_message, fake_bot, api):
-    bot, cursor, messages = ai(_response(_text("Рейнджерс или Айлендерс?")))
+    bot, cursor, messages = ai(_response(_text("Рейнджерс или Айлендерс? <уточните>")))
     await _ask(bot, make_message, fake_bot, "как сыграл Нью-Йорк")
 
-    assert _plain(api.sent_messages) == ["Рейнджерс или Айлендерс?"]
+    assert _replies(api) == ["<p>Рейнджерс или Айлендерс? &lt;уточните&gt;</p>"]
     row = _logged(cursor)
     assert (row["outcome"], row["answer"], row["question"]) == (
-        "text", "Рейнджерс или Айлендерс?", "как сыграл Нью-Йорк",
+        "text", "Рейнджерс или Айлендерс? <уточните>", "как сыграл Нью-Йорк",
     )
     assert row["cost_usd"] == pytest.approx((100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
     (call,) = messages.calls
@@ -236,7 +244,7 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
     bot, _, _ = ai(_response(stop_reason="refusal"))
     await _ask(bot, make_message, fake_bot)
 
-    assert _plain(api.sent_messages) == [bot_module("ai_router").UNSUPPORTED_TEXT]
+    assert _replies(api) == [_as_reply(bot_module("ai_router").UNSUPPORTED_TEXT)]
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +264,7 @@ async def test_daily_limit_is_20_for_existing_users_and_5_for_new(
 
     assert bool(messages.calls) is model_called
     if not model_called:
-        assert _plain(api.sent_messages) == [bot_module("ai_router").LIMIT_TEXT]
+        assert _replies(api) == [_as_reply(bot_module("ai_router").LIMIT_TEXT)]
         assert not any(q.startswith("INSERT") for q, _ in cursor.executed)
 
 
@@ -277,7 +285,7 @@ async def test_api_failure_tells_user_to_use_commands_and_is_logged(
     bot, cursor, _ = ai(_server_error())
     await _ask(bot, make_message, fake_bot)
 
-    assert _plain(api.sent_messages) == [bot_module("ai_router").FAILURE_TEXT]
+    assert _replies(api) == [_as_reply(bot_module("ai_router").FAILURE_TEXT)]
     row = _logged(cursor)
     assert (row["outcome"], row["request_id"]) == ("error", "req_500")
     assert row["error"].startswith("InternalServerError")

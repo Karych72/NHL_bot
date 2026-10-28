@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import html
 import logging
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
@@ -27,6 +28,8 @@ from throttle import enforce_callback_rate_limit
 from bot_messages import (
     country_rankings,
     day_digest,
+    rich_footer,
+    rich_list,
     rich_message,
     last_night_day,
     season_teams_by_division,
@@ -147,9 +150,9 @@ async def cmd_tonight(message: Message, bot: Bot) -> None:
         payload = await asyncio.to_thread(fetch_score, league_today())
     except ScoreboardFetchError:
         logger.exception("NHL score request failed")
-        await message.answer(
+        await message.answer_rich(rich_message(
             "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже."
-        )
+        ))
         return
     games = slate_games_sorted(payload)
     # Проза без счётных элементов — сноска без чисел приходит из хелпера
@@ -176,9 +179,9 @@ async def cmd_today(message: Message, bot: Bot) -> None:
     night = last_night_day()
     day_label, games = day_digest(night)
     if all(gid == 0 for gid, _text, _meta in games):
-        await message.answer(
+        await message.answer_rich(rich_message(
             f"Прошедшей ночью ({night}) матчей в базе нет — показываю последний игровой день."
-        )
+        ))
         day_label, games = day_digest()
     await dispatch_day_digest_messages(bot, message.chat.id, day_label, games)
 
@@ -228,7 +231,7 @@ _DELIVERY_NOTE = (
     "Итоги ночи приходят, когда загружены все её матчи, не позже 11:00 МСК.\n"
     "Превью матчей дня — с 15:30 МСК, по одному раз в полчаса."
 )
-_SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните `make db-migrate` на вашей БД PostgreSQL."
+_SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните make db-migrate на вашей БД PostgreSQL."
 
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
 # `sub:u` предстоящие матчи (Задача 78), `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
@@ -255,19 +258,19 @@ def _subscriptions_main_screen(
     digest: bool, upcoming: bool, team_abbrevs: List[str], countries: List[str]
 ) -> _Screen:
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
-    (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю."""
-    lines = ["Ваши подписки"]
+    (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю.
+    Текст — построчный HTML для `rich_message()`: подписки — список, расписание — подвал."""
+    items = []
     if digest:
-        lines.append("✅ Утренний дайджест")
+        items.append("Утренний дайджест")
     if upcoming:
-        lines.append("⏰ Предстоящие матчи")
+        items.append("Предстоящие матчи")
     if team_abbrevs:
-        lines.append("🏒 Команды: " + ", ".join(team_abbrevs))
+        items.append("Команды: " + ", ".join(team_abbrevs))
     if countries:
-        lines.append("🌍 Страны: " + ", ".join(countries))
-    if len(lines) == 1:
-        lines.append("Пока ничего нет.")
-    lines.append(_DELIVERY_NOTE)
+        items.append("Страны: " + ", ".join(countries))
+    lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
+    lines.append(rich_footer(_DELIVERY_NOTE))
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
@@ -291,7 +294,10 @@ def _subscriptions_divisions_screen(
         buttons.append(InlineKeyboardButton(text=label, callback_data=f"sub:D:{i}"))
     rows = build_menu(buttons, n_cols=_DIVISION_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="sub:m")])
-    return "Команды: выберите дивизион.", InlineKeyboardMarkup(inline_keyboard=rows)
+    return (
+        "<b>Команды</b>\n" + rich_footer("Выберите дивизион."),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 def _subscriptions_teams_screen(
@@ -306,7 +312,8 @@ def _subscriptions_teams_screen(
     rows = build_menu(buttons, n_cols=_TEAM_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton(text="« К дивизионам", callback_data="sub:T")])
     return (
-        f"{division}: нажмите на команду, чтобы подписаться или отписаться.",
+        f"<b>{html.escape(division)}</b>\n"
+        + rich_footer("Нажмите на команду, чтобы подписаться или отписаться."),
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -321,7 +328,7 @@ def _subscriptions_countries_screen(codes: List[str], chosen: List[str]) -> _Scr
     rows = build_menu(buttons, n_cols=_COUNTRY_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="sub:m")])
     return (
-        "Страны: нажмите на страну, чтобы подписаться или отписаться.",
+        "<b>Страны</b>\n" + rich_footer("Нажмите на страну, чтобы подписаться или отписаться."),
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -345,9 +352,9 @@ async def cmd_subscriptions(message: Message, bot: Bot) -> None:
         text, markup = _subscriptions_main_screen_for(message.chat.id)
     except psycopg2.Error:
         logger.exception("subscriptions DB error")
-        await message.answer(_SUBSCRIPTIONS_DB_ERROR)
+        await message.answer_rich(rich_message(_SUBSCRIPTIONS_DB_ERROR))
         return
-    await message.answer(text, reply_markup=markup)
+    await message.answer_rich(rich_message(text), reply_markup=markup)
 
 
 def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
@@ -422,10 +429,12 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
     except psycopg2.Error:
         logger.exception("subscriptions DB error")
         await callback.answer()
-        await message.edit_text(_SUBSCRIPTIONS_DB_ERROR)
+        await message.edit_text(rich_message=rich_message(_SUBSCRIPTIONS_DB_ERROR))
         return
     await callback.answer(hint)
-    await message.edit_text(text, reply_markup=None if action == "x" else markup)
+    await message.edit_text(
+        rich_message=rich_message(text), reply_markup=None if action == "x" else markup
+    )
 
 
 # Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
@@ -485,11 +494,12 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     """
     chat_id = message.chat.id
     if ai_router.questions_left(chat_id) <= 0:
-        await message.answer(ai_router.LIMIT_TEXT)
+        await message.answer_rich(rich_message(ai_router.LIMIT_TEXT))
         return
     reply = await ai_router.ask(chat_id, message.text or "")
     if reply.tool is None:
-        await message.answer(reply.text or ai_router.UNSUPPORTED_TEXT)
+        # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
+        await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
         return
     await AI_SCREENS[reply.tool](message, bot, reply.params)
 
