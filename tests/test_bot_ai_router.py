@@ -78,7 +78,7 @@ def ai(bot_module, fake_db_router, monkeypatch):
         # Журнал пишет через `get_connection`, импортированный в ai_router по имени.
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
         messages = FakeMessages(result)
-        monkeypatch.setattr(ai_router, "_client", lambda: SimpleNamespace(messages=messages))
+        monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
         return bot, cursor, messages
 
     return _make

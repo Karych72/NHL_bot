@@ -23,6 +23,7 @@ NHL_bot/
 ├── requirements.txt / requirements-dev.txt / requirements-modeling.txt  # Lock-файлы, генерируются `make lock` (не редактировать)
 │
 ├── data_tables/                        # DDL — схемы всех таблиц PostgreSQL
+│   ├── ai_reader_grants.sql            # GRANT SELECT роли nhl_ai_reader на таблицы данных: миграция 0015 (\ir) и `make db-tables` (Задача 83)
 │   ├── t.all_goals.sql
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
@@ -65,7 +66,9 @@ NHL_bot/
 │       ├── 0013_goal_clips.up.sql       # Кэш клипов голов: file_id Telegram и подпись по голу (Задача 87)
 │       ├── 0013_goal_clips.down.sql
 │       ├── 0014_chat_game_sent.up.sql   # Отметка «итог матча ушёл в чат» по паре (чат, матч) (Задача 85)
-│       └── 0014_chat_game_sent.down.sql
+│       ├── 0014_chat_game_sent.down.sql
+│       ├── 0015_ai_stats.up.sql         # Роль nhl_ai_reader (только чтение) и журнал ai_stats_log (Задача 83)
+│       └── 0015_ai_stats.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -101,6 +104,8 @@ NHL_bot/
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── ai_router_eval.py               # `make ai-eval`: контрольный набор свободного текста против Claude API (Задача 81)
 │   ├── ai_router_eval.jsonl            # Фразы набора с ожидаемым экраном или текстовым ответом
+│   ├── ai_stats_eval.py                # `make ai-stats-eval`: контрольный набор статистических вопросов против Claude API и БД (Задача 83)
+│   ├── ai_stats_eval.jsonl             # Вопросы с ожидаемыми числами (точечные, обзоры игроков, нет данных, уточнения, цепочки)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
 │   └── verify_skater_reports_schema.sql
@@ -120,6 +125,8 @@ NHL_bot/
 │   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит в сутки, журнал ai_questions (Задача 81)
+│   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
+│   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
 │   ├── keyboards.py                    # build_menu(), callback_message() — общие помощники кнопок
@@ -444,6 +451,31 @@ polling, таймаут сессии 300 с ради альбомов видео
 или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
 командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
 `tests/test_bot_ai_router.py`.
+
+### Ответы на статистические вопросы: `ai_stats.py` (Задача 83)
+
+Чатам из белого списка (`AI_STATS_CHAT_IDS`) маршрутизатор 81 получает ещё инструмент
+`stats_question`; выбранный (или любое сообщение в течение 30 минут после ответа 83) уходит в
+`ai_stats.answer`. Это один диалог `claude-sonnet-5-5` (effort `medium`) с инструментами:
+`run_sql` (один SELECT, до 50 строк; ошибка SQL, в том числе таймаут, возвращается модели как
+попытка), `player_overview` (фиксированная выборка по игроку текущего сезона: сезон и прошлый,
+10 последних игр, серия с очками; для вратаря свой набор) и `finish` (`answer` / `no_data` /
+`off_topic` / `clarify` и признак продолжения). Принудительный `tool_choice` Sonnet 5.5 не
+принимает, поэтому инструмент на каждом ходу требует промпт, а ответ без него — громкий сбой.
+Черновик `answer` проверяет отдельный вызов с промптом ревьюера (инструмент `verdict`):
+`ok` — черновик пользователю, `clarify` — вместо него вопрос ревьюера.
+
+SQL идёт под ролью `nhl_ai_reader` (миграция 0015; `SELECT` на таблицы данных из
+`data_tables/ai_reader_grants.sql`, `statement_timeout` 5 с и `default_transaction_read_only`
+на роли и в параметрах соединения) — граница безопасности, а не промпт. Потолки на вопрос: 4
+SQL-попытки, 7 вызовов модели, $0.10 по `usage`; сверх них — «уточните вопрос» и исход
+`ceiling`. Промпты и аннотация схемы лежат в `telegram_bot/prompts/`; схема для модели
+собирается из `data_tables/t.*.sql` разрешённых таблиц (`ai_stats.AI_TABLES`), системный блок
+кэшируется, дата — в сообщении пользователя. Журнал — `ai_stats_log` (шаги, черновик, вердикт,
+вызовы со стоимостью); он же источник истории (последние 3 пары) и учитывается в суточном
+лимите `ai_router.questions_left`. Проверки: `tests/test_bot_ai_stats.py` (цикл с подменённой
+моделью), `TestAiReaderRole` в `tests/test_db_nhl.py` (роль на настоящей БД), `make
+ai-stats-eval` (контрольный набор против настоящего API).
 
 ### Меню статистики: `/stats`, `/team_stats`
 

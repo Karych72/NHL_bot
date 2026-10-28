@@ -150,5 +150,22 @@ def _env_float(name: str, default: float) -> float:
         ) from None
 
 
+def _env_chat_ids(name: str) -> frozenset:
+    """Список `chat_id` через запятую; пусто — пустое множество. Кривое значение —
+    `ValueError` с именем переменной, без её значения."""
+    try:
+        return frozenset(int(part) for part in os.getenv(name, "").split(",") if part.strip())
+    except ValueError:
+        raise ValueError(
+            f"Некорректное значение переменной окружения {name}: ожидаются chat_id через запятую"
+        ) from None
+
+
+# Белый список чатов, которым доступны ответы ИИ на статистические вопросы (Задача 83);
+# пусто — функция выключена. SQL модели идёт под ролью только на чтение (миграция 0015);
+# хост, порт и база — те же `PG_*`.
+AI_STATS_CHAT_IDS = _env_chat_ids("AI_STATS_CHAT_IDS")
+AI_PG_USER = _env("AI_PG_USER", "nhl_ai_reader")
+
 ENABLE_PUSH_DIGEST = _env_bool("ENABLE_PUSH_DIGEST", False)
 PUSH_SEND_INTERVAL_SEC = _env_float("PUSH_SEND_INTERVAL_SEC", 0.05)

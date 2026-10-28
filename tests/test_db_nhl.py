@@ -1044,6 +1044,7 @@ class TestAiQuestionsSql(unittest.TestCase):
         chats = [self.NEW_CHAT, self.EXISTING_CHAT]
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute("DELETE FROM ai_questions WHERE chat_id = ANY(%s)", (chats,))
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", (chats,))
             cur.execute("DELETE FROM ai_existing_users WHERE chat_id = ANY(%s)", (chats,))
 
     def test_limit_counts_todays_questions_by_moscow_day(self):
@@ -1074,6 +1075,101 @@ class TestAiQuestionsSql(unittest.TestCase):
                 (self.NEW_CHAT,),
             )
             self.assertEqual(cur.fetchall(), [("leaders", {"category": "goals"}, Decimal("0.004000"))])
+
+    def test_stats_questions_count_once_through_ai_stats_log(self):
+        """Вопрос статистики (Задача 83) списывает одну единицу: строка `ai_stats_log`;
+        выбор `stats_question` маршрутизатором и сбой в журнале 83 в счёт не идут."""
+        ai = self.ai
+        ai._log_question(self.NEW_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for outcome in ("answer", "error", "ceiling"):
+                cur.execute(
+                    "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, latency_ms) "
+                    "VALUES (%s, 'голы', false, %s, 5)",
+                    (self.NEW_CHAT, outcome),
+                )
+        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 2)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiReaderRole(unittest.TestCase):
+    """Роль `nhl_ai_reader` (Задача 83, миграция 0015) — граница безопасности для SQL, который
+    пишет модель: читает только таблицы данных, не пишет и не создаёт, не видит таблиц бота."""
+
+    @staticmethod
+    def _reader():
+        return psycopg2.connect(
+            host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+            database=config.PG_DATABASE,
+        )
+
+    def _error_code(self, sql: str, before: str = "") -> str:
+        """pgcode ошибки, с которой роль встречает *sql* (опционально после *before*)."""
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            # Автокоммит: SET действует со следующей транзакции, а не с уже открытой.
+            conn.autocommit = True
+            if before:
+                cur.execute(before)
+            with self.assertRaises(psycopg2.Error) as raised:
+                cur.execute(sql)
+            return raised.exception.pgcode
+
+    def test_reads_data_tables_with_role_defaults(self):
+        import ai_stats
+
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            self.assertEqual(cur.fetchone()[0], "5s")
+            cur.execute("SHOW default_transaction_read_only")
+            self.assertEqual(cur.fetchone()[0], "on")
+            for table in ai_stats.AI_TABLES:
+                cur.execute(f"SELECT count(*) FROM {table}")
+                self.assertGreaterEqual(cur.fetchone()[0], 0)
+
+    def test_grants_are_exactly_select_on_ai_tables(self):
+        import ai_stats
+
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name, privilege_type FROM information_schema.role_table_grants "
+                "WHERE grantee = 'nhl_ai_reader' AND table_schema = 'public'"
+            )
+            grants = cur.fetchall()
+        self.assertEqual({p for _, p in grants}, {"SELECT"})
+        self.assertEqual({t for t, _ in grants}, set(ai_stats.AI_TABLES))
+
+    def test_bot_tables_are_invisible(self):
+        for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
+                      "ai_existing_users", "prediction_log", "game_predictions", "schema_migrations"):
+            self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
+
+    def test_cannot_write_or_create_even_with_read_only_switched_off(self):
+        off = "SET default_transaction_read_only = off"
+        for sql in ("INSERT INTO games (game_id, season_id) VALUES (-1, 20212022)",
+                    "UPDATE games SET day = day", "DELETE FROM games",
+                    "CREATE TABLE ai_reader_probe (x int)", "DROP TABLE games"):
+            # Права роли держат сами, без read-only сессии...
+            self.assertEqual(self._error_code(sql, off), "42501", sql)
+            # ...а read-only по умолчанию — вторая линия защиты.
+            self.assertIn(self._error_code(sql), ("25006", "42501"), sql)
+
+    def test_cannot_switch_to_another_role(self):
+        self.assertEqual(self._error_code("SET ROLE postgres"), "42501")
+
+    def test_run_readonly_turns_denials_and_timeout_into_model_errors(self):
+        import ai_stats
+
+        denied = ai_stats.run_readonly("SELECT * FROM bot_subscriptions")
+        self.assertIsNone(denied.rows)
+        self.assertIn("permission denied", denied.error)
+        slow = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("statement timeout", slow.error)
+        ok = ai_stats.run_readonly("SELECT game_id FROM games LIMIT 2")
+        self.assertIsNone(ok.error)
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

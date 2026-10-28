@@ -21,6 +21,7 @@ from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, Inlin
 from aiogram.utils.magic_filter import MagicFilter
 
 import ai_router
+import ai_stats
 import config
 import subscription_repo
 from leaderboard_specs import ADVANCED_METRICS
@@ -481,17 +482,35 @@ async def on_free_text(message: Message, bot: Bot) -> None:
 
     Лимит исчерпан — ответ без вызова модели; модель выбрала экран — бот показывает его
     (`AI_SCREENS`); иначе — её текст: отказ, уточнение или сообщение о сбое API.
+
+    Чатам из белого списка (`config.AI_STATS_CHAT_IDS`, Задача 83) модель ещё может передать
+    вопрос ответам по статистике (`ai_stats.answer`); а если чат получил такой ответ в
+    последние 30 минут, сообщение идёт туда сразу, без маршрутизатора.
     """
     chat_id = message.chat.id
+    text = message.text or ""
     if ai_router.questions_left(chat_id) <= 0:
         await message.answer_rich(rich_message(ai_router.LIMIT_TEXT))
         return
-    reply = await ai_router.ask(chat_id, message.text or "")
+    stats_allowed = chat_id in config.AI_STATS_CHAT_IDS
+    if stats_allowed and ai_stats.in_window(chat_id):
+        await _answer_stats(message, text)
+        return
+    reply = await ai_router.ask(chat_id, text, with_stats=stats_allowed)
+    if reply.tool == "stats_question":
+        await _answer_stats(message, text)
+        return
     if reply.tool is None:
         # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
         await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
         return
     await AI_SCREENS[reply.tool](message, bot, reply.params)
+
+
+async def _answer_stats(message: Message, question: str) -> None:
+    """Ответ на статистический вопрос (`ai_stats.answer`); текст модели экранируется."""
+    reply = await ai_stats.answer(message.chat.id, question)
+    await message.answer_rich(rich_message(html.escape(reply)))
 
 
 def is_plain_text(message: Message) -> bool:
