@@ -310,7 +310,8 @@ async def test_empty_result_is_reported_to_model(stats, make_message, fake_bot, 
 
     (result,) = _tool_results(s.model.calls[1])
     assert json.loads(result["content"]) == {
-        "columns": ["goals"], "rows": [], "truncated": False, "note": "запрос выполнен, строк нет",
+        "columns": ["goals"], "rows": [], "truncated": False,
+        "note": "строк нет (запрос выполнен; строки длиннее лимита отбрасываются)",
     }
 
 
@@ -666,8 +667,9 @@ def test_model_sql_is_wrapped_into_a_single_select(stats):
     s.ai_stats.run_readonly("WITH x AS (SELECT 2) SELECT * FROM x")
 
     first, second = s.sql
-    assert first == "SELECT * FROM (\nSELECT 1 -- комментарий\n) AS q LIMIT 51"
-    assert second == "SELECT * FROM (\nWITH x AS (SELECT 2) SELECT * FROM x\n) AS q LIMIT 51"
+    limit = "WHERE octet_length(q::text) <= 4000 LIMIT 51"
+    assert first == f"SELECT * FROM (\nSELECT 1 -- комментарий\n) AS q {limit}"
+    assert second == f"SELECT * FROM (\nWITH x AS (SELECT 2) SELECT * FROM x\n) AS q {limit}"
 
 
 @pytest.mark.asyncio
@@ -745,3 +747,19 @@ def test_watchdog_cancels_a_hung_query(stats, monkeypatch):
     outcome = s.ai_stats.run_readonly("SELECT pg_sleep(30)")
 
     assert outcome.rows is None and "user request" in outcome.error
+
+
+def test_long_cells_and_whole_result_are_clipped_and_flagged(stats):
+    ai = stats([], reader={"FROM (": (["a", "b"], [("x" * 1000, "y" * 1000) for _ in range(50)])}).ai_stats
+    text = ai.run_readonly("SELECT a, b FROM t").text
+    payload = json.loads(text)
+
+    assert all(len(cell) == ai.CELL_CHARS + 1 and cell.endswith("…") for row in payload["rows"] for cell in row)
+    assert payload["truncated"] is True
+    assert len(text) <= ai.RESULT_CHARS
+    assert 0 < len(payload["rows"]) < 50, "хвост строк отброшен, чтобы влезть в RESULT_CHARS"
+
+
+def test_short_result_is_not_flagged(stats):
+    ai = stats([], reader={"FROM (": (["a"], [("abc",), (5,)])}).ai_stats
+    assert json.loads(ai.run_readonly("SELECT a FROM t").text)["truncated"] is False

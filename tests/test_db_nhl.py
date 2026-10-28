@@ -1272,6 +1272,31 @@ class TestAiReaderRole(unittest.TestCase):
         self.assertEqual(large_objects(), before, "large object не создан")
         self.assertEqual(role_settings(), settings, "роль не изменила свои настройки")
 
+    def test_run_readonly_limits_result_volume(self):
+        """Объём выдачи: огромная строка не доходит до бота (отброшена SQL-ом), крупные ячейки и
+        весь результат обрезаются; модель получает не больше `RESULT_CHARS` символов."""
+        import json
+        import time
+
+        import ai_stats
+
+        started = time.monotonic()
+        huge = ai_stats.run_readonly("SELECT repeat('x', 1000000) AS v")
+        self.assertEqual(huge.rows, 0, "строка длиннее ROW_BYTES отброшена на стороне SQL")
+        self.assertLessEqual(len(huge.text), ai_stats.RESULT_CHARS)
+        giant = ai_stats.run_readonly("SELECT repeat('x', 200000000) AS v FROM generate_series(1, 3)")
+        self.assertEqual(giant.rows, 0)
+        self.assertLess(time.monotonic() - started, 8)
+
+        cells = ai_stats.run_readonly("SELECT repeat('y', 3000) AS v FROM generate_series(1, 50)")
+        payload = json.loads(cells.text)
+        self.assertEqual(len(payload["rows"][0][0]), ai_stats.CELL_CHARS + 1)
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(cells.text), ai_stats.RESULT_CHARS)
+
+        ordinary = json.loads(ai_stats.run_readonly("SELECT game_id, day FROM games LIMIT 3").text)
+        self.assertEqual((len(ordinary["rows"]), ordinary["truncated"]), (3, False))
+
     def test_watchdog_cancels_a_query_even_if_server_timeout_is_off(self):
         """Сторожевой таймер клиента — страховка на случай, если серверный `statement_timeout`
         сброшен: соединение без таймаута, а запрос всё равно отменяется."""

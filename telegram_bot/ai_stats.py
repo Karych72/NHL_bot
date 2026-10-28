@@ -48,6 +48,12 @@ COST_CEILING = 0.10
 WINDOW_MINUTES = 30
 HISTORY_PAIRS = 3
 ROW_LIMIT = 50
+# Объём выдачи модели: строки длиннее ROW_BYTES отбрасывает сам SQL (память бота), ячейки длиннее
+# CELL_CHARS и весь JSON длиннее RESULT_CHARS обрезает Python (стоимость вызова: 20 000 символов —
+# порядка 10 000 токенов, то есть до $0.02 на входе).
+ROW_BYTES = 4000
+CELL_CHARS = 300
+RESULT_CHARS = 20_000
 STATEMENT_TIMEOUT_SEC = 5
 EFFORT = "medium"
 # Клиент маршрутизатора (15 с, мало выхода) для диалога на effort medium тесен: мышление плюс вызов
@@ -138,7 +144,8 @@ def _tools() -> List[Dict[str, Any]]:
     """Инструменты диалога; порядок и текст стабильны ради кэша префикса."""
     return [
         ai_router.tool_schema(
-            "run_sql", f"Выполнить один SELECT к базе (read-only, до {ROW_LIMIT} строк).",
+            "run_sql", f"Выполнить один SELECT к базе (read-only, до {ROW_LIMIT} строк; строки длиннее {ROW_BYTES} "
+            f"байт отбрасываются, ячейки длиннее {CELL_CHARS} символов обрезаются).",
             {"sql": {"type": "string"}},
         ),
         ai_router.tool_schema(
@@ -193,7 +200,8 @@ def _system(prompt_file: str) -> List[Dict[str, Any]]:
     кэшируется; сегодняшняя дата идёт в сообщении пользователя."""
     text = "\n\n".join([
         (PROMPTS / prompt_file).read_text()
-        .replace("{ROW_LIMIT}", str(ROW_LIMIT)).replace("{SQL_ATTEMPTS}", str(SQL_ATTEMPTS)),
+        .replace("{ROW_LIMIT}", str(ROW_LIMIT)).replace("{SQL_ATTEMPTS}", str(SQL_ATTEMPTS))
+        .replace("{ROW_BYTES}", str(ROW_BYTES)).replace("{CELL_CHARS}", str(CELL_CHARS)),
         (PROMPTS / "stats_schema_notes.md").read_text(),
         "## Схема таблиц\n\n" + _schema(),
     ])
@@ -225,17 +233,21 @@ class _SqlOutcome(NamedTuple):
 def run_readonly(sql: str) -> _SqlOutcome:
     """Выполнить SQL модели ролью только на чтение; до `ROW_LIMIT` строк.
 
-    Защита в четыре слоя, ни один не опирается на промпт:
+    Защита в четыре слоя, ни один не опирается на промпт (обёртка включает и фильтр объёма):
     1. любая `;` в теле запроса (после снятия хвостовых) — ошибка запроса: psycopg2 шлёт simple
        query, где через `;` идут несколько операторов (`SELECT 1) AS x; SET …; SELECT … FROM (SELECT 1`
        обошла бы одну лишь обёртку); без `;` второго оператора нет;
-    2. запрос оборачивается в `SELECT * FROM (<sql>) AS q LIMIT n` — `SET`, `COMMIT`, `INSERT`
-       в подзапросе синтаксическая ошибка;
+    2. запрос оборачивается в `SELECT * FROM (<sql>) AS q WHERE octet_length(q::text) <= ROW_BYTES
+       LIMIT n` — `SET`, `COMMIT`, `INSERT` в подзапросе синтаксическая ошибка;
     3. права роли (только `SELECT` на таблицы данных) и read-only транзакция;
     4. сторожевой таймер клиента отменяет запрос через `STATEMENT_TIMEOUT_SEC + 1` с, что бы ни
        случилось с серверным `statement_timeout`.
     Роль может менять собственные настройки (`ALTER ROLE … SET`) — запретить это в PG16 нельзя,
     поэтому защита — п. 1 и 4, а параметры соединения задаются заново на каждом подключении.
+
+    Объём выдачи ограничен: SQL отбрасывает строки длиннее `ROW_BYTES` (память бота: сервер
+    отдаёт не больше `ROW_LIMIT + 1` коротких строк), Python обрезает ячейки до `CELL_CHARS` и
+    весь JSON до `RESULT_CHARS` (стоимость вызова модели), помечая `truncated`.
 
     Ошибка самого запроса (синтаксис, `;`, нет колонки, нет прав, таймаут `QueryCanceled`) —
     не сбой: текст ошибки уходит модели, это её попытка. Сбой соединения и прочие
@@ -246,7 +258,8 @@ def run_readonly(sql: str) -> _SqlOutcome:
     if ";" in body:
         message = "Ошибка SQL: точка с запятой допустима только в конце — нужен один SELECT"
         return _SqlOutcome(message, None, message)
-    wrapped = f"SELECT * FROM (\n{body}\n) AS q LIMIT {ROW_LIMIT + 1}"
+    wrapped = (f"SELECT * FROM (\n{body}\n) AS q WHERE octet_length(q::text) <= {ROW_BYTES} "
+               f"LIMIT {ROW_LIMIT + 1}")
     with closing(_reader_connection()) as conn, conn.cursor() as cur:
         watchdog = threading.Timer(STATEMENT_TIMEOUT_SEC + 1, conn.cancel)
         watchdog.start()
@@ -262,11 +275,24 @@ def run_readonly(sql: str) -> _SqlOutcome:
             return _SqlOutcome(f"Ошибка SQL: {str(exc).strip()}", None, str(exc).strip())
         finally:
             watchdog.cancel()
-    rows = [list(r) for r in fetched[:ROW_LIMIT]]
-    payload: Dict[str, Any] = {"columns": columns, "rows": rows, "truncated": len(fetched) > ROW_LIMIT}
+    rows, truncated = _clip([list(r) for r in fetched[:ROW_LIMIT]], len(fetched) > ROW_LIMIT)
+    payload: Dict[str, Any] = {"columns": columns, "rows": rows, "truncated": truncated}
+    while len(_dump(payload)) > RESULT_CHARS and rows:
+        rows.pop()
+        payload["truncated"] = True
     if not rows:
-        payload["note"] = "запрос выполнен, строк нет"
+        payload["note"] = "строк нет (запрос выполнен; строки длиннее лимита отбрасываются)"
     return _SqlOutcome(_dump(payload), len(rows), None)
+
+
+def _clip(rows: List[List[Any]], truncated: bool) -> Tuple[List[List[Any]], bool]:
+    """Обрезать текстовые ячейки до `CELL_CHARS`; второй элемент — была ли обрезка (или `truncated`)."""
+    for row in rows:
+        for i, value in enumerate(row):
+            if isinstance(value, str) and len(value) > CELL_CHARS:
+                row[i] = value[:CELL_CHARS] + "…"
+                truncated = True
+    return rows, truncated
 
 
 def _dicts(cur) -> List[Dict[str, Any]]:
