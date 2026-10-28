@@ -37,6 +37,7 @@
 | 90 | [Сдержанный rich-стиль: карточка матча, `/today`, `/tonight` и рассылки](task_90_rich_style_game_messages.md) | Продукт | 🟡 |
 | 91 | [Rich-стиль для остальных сообщений: подписки, служебные ответы, ИИ](task_91_rich_style_rest.md) | Продукт | ⚪ |
 | 92 | [Меню статистики: `/stats` одним экраном, `/team_stats`, без `/leaders`](task_92_stats_menu.md) | Продукт | 🟡 |
+| 94 | [Типовые вопросы к ИИ бота: каталог и заготовки ответов](task_94_ai_question_catalog.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
