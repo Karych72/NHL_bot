@@ -84,21 +84,20 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/stats",
             "/team_stats",
             "/help",
-            "/advanced",
             "/countries",
             "/subscriptions",
         ):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
-        for removed in ("/day_games", "/table", "/game", "/leaders", "/cancel"):
+        for removed in ("/advanced", "/day_games", "/table", "/game", "/leaders", "/cancel"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
         # Пометки голов карточки, в том числе ПШ вместо прежней «★».
         self.assertIn("ПШ — победная шайба", hm)
         self.assertIn("/BOS_FULL", hm)
-        # Расшифровка SAT/USAT/GF живёт в /advanced, в /help её не дублируем.
+        # Расшифровка SAT/USAT/GF живёт в подменю расширенной статистики /stats, в /help её не дублируем.
         self.assertNotIn(help_text.ADVANCED_STATS_EXPLAINED, hm)
         self.assertIn("Corsi", help_text.ADVANCED_COMMAND_INTRO)
         self.assertIn("Fenwick", help_text.ADVANCED_COMMAND_INTRO)

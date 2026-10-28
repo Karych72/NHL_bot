@@ -37,7 +37,7 @@ UNSUPPORTED_TEXT = "Это я пока не умею. Что умею — /help"
 # Команды без параметров, которые модель может открыть инструментом `open_command`; функции
 # экранов — `bot.AI_COMMANDS`.
 SCREEN_COMMANDS = (
-    "today", "tonight", "standings", "stats", "team_stats", "team", "countries", "advanced",
+    "today", "tonight", "standings", "stats", "team_stats", "team", "countries",
     "subscriptions", "help",
 )
 

@@ -48,7 +48,6 @@ from nhl_scoreboard import (
     tonight_reply_intro,
 )
 from help_text import (
-    ADVANCED_COMMAND_INTRO,
     BOT_COMMANDS,
     HELP_MESSAGE,
     START_MESSAGE,
@@ -57,17 +56,14 @@ from help_text import (
 )
 from keyboards import build_menu, callback_message
 from stats_handlers import (
-    ADVANCED_CALLBACK_PATTERN,
     COUNTRY_CALLBACK_PATTERN,
     DIGEST_EXPAND_CALLBACK_PATTERN,
     GOAL_VIDEO_CALLBACK_PATTERN,
     STAT_SCREEN_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
-    advanced_standalone_keyboard,
     callback_country,
     callback_expand_digest_game,
     callback_stat_screen,
-    callback_standalone_adv,
     callback_tonight_game,
     country_page_reply,
     country_rankings_reply,
@@ -220,11 +216,6 @@ async def cmd_countries(message: Message, bot: Bot) -> None:
     """`/countries`: рейтинг стран сезона и кнопки стран (Задача 49)."""
     text, markup = country_rankings_reply()
     await message.answer_rich(rich_message(text), reply_markup=markup)
-
-
-async def cmd_advanced(message: Message, bot: Bot) -> None:
-    """`/advanced`: только расширенная статистика полевых игроков — та же, что в конце меню `/stats`."""
-    await message.answer_rich(rich_message(ADVANCED_COMMAND_INTRO), reply_markup=advanced_standalone_keyboard())
 
 
 _DELIVERY_NOTE = (
@@ -447,7 +438,6 @@ AI_COMMANDS: Dict[str, Callable[[Message, Bot], Awaitable[None]]] = {
     "stats": cmd_stats,
     "team_stats": cmd_team_stats,
     "countries": cmd_countries,
-    "advanced": cmd_advanced,
     "subscriptions": cmd_subscriptions,
     "help": cmd_help,
 }
@@ -544,7 +534,6 @@ def build_standalone_router() -> Router:
         ("stats", cmd_stats),
         ("team_stats", cmd_team_stats),
         ("countries", cmd_countries),
-        ("advanced", cmd_advanced),
         ("subscriptions", cmd_subscriptions),
     ):
         router.message.register(handler, _command(name))
@@ -554,7 +543,6 @@ def build_standalone_router() -> Router:
         (SUBSCRIPTIONS_CALLBACK_PATTERN, callback_subscriptions),
         (TONIGHT_GAME_CALLBACK_PATTERN, callback_tonight_game),
         (COUNTRY_CALLBACK_PATTERN, callback_country),
-        (ADVANCED_CALLBACK_PATTERN, callback_standalone_adv),
         (GOAL_VIDEO_CALLBACK_PATTERN, handle_goal_video),
     ):
         router.callback_query.register(callback, _callback(pattern))

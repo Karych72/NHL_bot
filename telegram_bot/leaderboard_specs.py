@@ -1,6 +1,6 @@
 """Заголовки для пагинируемых таблиц лидеров: ключ (таблица, колонка) → название в чате,
-подписи колонки показателя в самой таблице и раскладка кнопок меню `/stats`, `/advanced`
-и `/team_stats` — одно описание для меню, страниц и инструментов ИИ."""
+подписи колонки показателя в самой таблице и раскладка кнопок меню `/stats` (с подменю
+расширенной статистики) и `/team_stats` — одно описание для меню, страниц и инструментов ИИ."""
 
 from typing import Dict, List, Tuple
 
@@ -75,7 +75,7 @@ STAT_COLUMN_LABELS: Dict[str, str] = {
     "face_off_win_percentage": "%вбр",
 }
 
-# Короткие ключи для /advanced → (таблица, колонка)
+# Короткие ключи расширенной статистики → (таблица, колонка)
 ADV_STANDALONE_TO_STAT: Dict[str, Tuple[str, str]] = {
     "sat": ("players_advanced_stats", "sat_pct"),
     "usat": ("players_advanced_stats", "usat_pct"),
@@ -84,7 +84,7 @@ ADV_STANDALONE_TO_STAT: Dict[str, Tuple[str, str]] = {
     "so": ("players_season_stats", "shootout_pct"),
 }
 
-# Ключи adv:* для голевых лидеров по типу броска (меню /advanced)
+# Ключи голевых лидеров по типу броска (подменю расширенной статистики /stats)
 SHOT_STANDALONE_TO_STAT: Dict[str, Tuple[str, str]] = {
     "wrist": ("players_shot_types", "goals_wrist"),
     "slap": ("players_shot_types", "goals_slap"),
@@ -95,12 +95,12 @@ SHOT_STANDALONE_TO_STAT: Dict[str, Tuple[str, str]] = {
     "wrap": ("players_shot_types", "goals_wrap_around"),
 }
 
-# Все кнопки adv:* меню /advanced: кнопки, свободный текст (Задача 81) и его инструмент.
+# Все кнопки подменю расширенной статистики: кнопки, свободный текст (Задача 81) и его инструмент.
 ADVANCED_METRICS: Dict[str, Tuple[str, str]] = {**ADV_STANDALONE_TO_STAT, **SHOT_STANDALONE_TO_STAT}
 
 # Ряды кнопок меню: (подпись, ключ). Основные метрики /stats — ключ (таблица, колонка),
-# первый ряд — бывший /leaders; расширенные — ключ ADVANCED_METRICS, ими кончается /stats
-# и из них целиком состоит /advanced; командные — ключ TEAM_STAT_SPECS.
+# первый ряд — бывший /leaders; расширенные — ключ ADVANCED_METRICS, из них состоит подменю
+# расширенной статистики /stats; командные — ключ TEAM_STAT_SPECS.
 MAIN_STAT_ROWS: List[List[Tuple[str, Tuple[str, str]]]] = [
     [
         ("Очки", ("players_season_stats", "points")),

@@ -44,23 +44,31 @@ def no_country_subscriptions(bot_module, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Меню /stats, /advanced, /team_stats — каждая кнопка ведёт на известную таблицу
+# Меню /stats, его подменю расширенной статистики, /team_stats — каждая кнопка ведёт на известную таблицу
 # ---------------------------------------------------------------------------
 
 def _buttons(markup):
     return [b for row in markup.inline_keyboard for b in row]
 
 
-def test_stats_menu_offers_every_player_and_goalie_table_once(bot_module):
-    """Один экран `/stats` вместо подменю полевых, вратарей и расширенной: каждая таблица
-    игроков — ровно одной кнопкой, первая страница."""
+def test_stats_menus_offer_every_player_and_goalie_table_once(bot_module):
+    """Основные метрики — в `/stats`, расширенные — в его подменю (`sa:menu`, последняя
+    кнопка `/stats`, «« Назад» — обратно): каждая таблица игроков — ровно одной кнопкой
+    одного из двух меню, первая страница."""
     stats_handlers = bot_module("stats_handlers")
     specs = bot_module("leaderboard_specs")
 
-    data = [b.callback_data for b in _buttons(stats_handlers.stats_menu_keyboard())]
+    main = [b.callback_data for b in _buttons(stats_handlers.stats_menu_keyboard())]
+    advanced = [b.callback_data for b in _buttons(stats_handlers.advanced_menu_keyboard())]
 
-    assert sorted(data) == sorted(f"st:{t}:{c}:0" for t, c in specs.PLAYER_STAT_TITLES)
-    assert all(re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, d) for d in data), "кнопка без хендлера"
+    assert (main[-1], advanced[-1]) == ("sa:menu", "st:menu")
+    advanced_tables = {f"{t}:{c}" for t, c in specs.ADVANCED_METRICS.values()}
+    assert sorted(main[:-1] + advanced[:-1]) == sorted(
+        f"{'sa' if f'{t}:{c}' in advanced_tables else 'st'}:{t}:{c}:0" for t, c in specs.PLAYER_STAT_TITLES
+    )
+    assert all(re.match(stats_handlers.STAT_SCREEN_CALLBACK_PATTERN, d) for d in main + advanced), (
+        "кнопка без хендлера"
+    )
 
 
 def test_stats_menu_highlights_only_points_goals_assists(bot_module):
@@ -181,7 +189,7 @@ async def test_stat_screen_parses_offset_and_renders_page_in_place(bot_module, m
     "prefix, intro, keyboard",
     [
         ("st", "STATS_COMMAND_INTRO", "stats_menu_keyboard"),
-        ("sa", "ADVANCED_COMMAND_INTRO", "advanced_standalone_keyboard"),
+        ("sa", "ADVANCED_COMMAND_INTRO", "advanced_menu_keyboard"),
         ("tm", "TEAM_STATS_COMMAND_INTRO", "team_stats_keyboard"),
     ],
 )
@@ -514,55 +522,6 @@ async def test_expand_digest_game_opens_card_for_valid_id(bot_module, make_callb
 
     mock_send.assert_awaited_once_with(fake_bot, 100, 777)
     assert api.answers == [None]
-
-
-# ---------------------------------------------------------------------------
-# callback_standalone_adv
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_standalone_adv_close_clears_markup(bot_module, make_callback, api):
-    stats_handlers = bot_module("stats_handlers")
-    data = "adv:close"
-
-    await stats_handlers.callback_standalone_adv(
-        make_callback(data), _match(stats_handlers, "ADVANCED_CALLBACK_PATTERN", data)
-    )
-
-    [edit] = api.edited_markups
-    assert (edit.message_id, edit.reply_markup) == (MENU_MESSAGE_ID, None)
-
-
-@pytest.mark.asyncio
-async def test_standalone_adv_resolves_known_key_to_its_stat(bot_module, make_callback, api):
-    stats_handlers = bot_module("stats_handlers")
-    data = "adv:sat"
-
-    with patch.object(
-        stats_handlers, "player_stat_leaderboard_page", return_value=("PAGE", False, True)
-    ) as mock_page:
-        await stats_handlers.callback_standalone_adv(
-            make_callback(data), _match(stats_handlers, "ADVANCED_CALLBACK_PATTERN", data)
-        )
-
-    mock_page.assert_called_once_with(
-        "Лидеры по Corsi (SAT %)", "players_advanced_stats", "sat_pct", 0
-    )
-    assert body(api.edited_texts[0]) == rich_html("PAGE")
-
-
-def test_advanced_pattern_covers_exactly_menu_keys_and_close(bot_module):
-    """Кнопки `adv:` — ровно ключи `ADVANCED_METRICS` и `close`: кнопка меню без
-    хендлера молчала бы, а ключ без статистики уронил бы хендлер."""
-    stats_handlers = bot_module("stats_handlers")
-    leaderboard_specs = bot_module("leaderboard_specs")
-    buttons = [
-        b.callback_data for row in stats_handlers.advanced_standalone_keyboard().inline_keyboard for b in row
-    ]
-    assert {d.split(":", 1)[1] for d in buttons} == set(leaderboard_specs.ADVANCED_METRICS)
-    for key in [*leaderboard_specs.ADVANCED_METRICS, "close"]:
-        assert re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, f"adv:{key}")
-    assert not re.match(stats_handlers.ADVANCED_CALLBACK_PATTERN, "adv:zzz")
 
 
 # ---------------------------------------------------------------------------
