@@ -3,8 +3,9 @@ import importlib
 import os
 import sys
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
+
+from tests._telegram_fakes import rich_html
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -56,10 +57,15 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
         for title, table, col in cases:
             with self.subTest(table=table, column=col):
                 with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows) as mock_fetch:
-                    text = bot_messages.player_stats(title, table, col)
+                    text, _, _ = bot_messages.player_stat_leaderboard_page(title, table, col, 0)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
-                self.assertRegex(text, r"1\.\|Ovechkin \[LW\]\|WSH\| ?58\.2\|82\|1700")
+                self.assertIn(
+                    '<tr><td align="right">1.</td><td>Ovechkin [LW]</td><td>WSH</td>'
+                    '<td align="right">58.2</td><td align="right">82</td>'
+                    '<td align="right">1700</td></tr>',
+                    text,
+                )
                 self.assertTrue(mock_fetch.called)
 
 
@@ -75,28 +81,42 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "/tonight",
             "/standings",
             "/team",
-            "/leaders",
             "/stats",
-            "/cancel",
+            "/team_stats",
             "/help",
-            "/advanced",
             "/countries",
             "/subscriptions",
         ):
             with self.subTest(cmd=fragment):
                 self.assertIn(fragment, hm)
         self.assertNotIn("/shottypes", hm)
-        for removed in ("/day_games", "/table", "/game"):
+        for removed in ("/advanced", "/day_games", "/table", "/game", "/leaders", "/cancel"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, hm)
         self.assertIn("Форма до матча", hm)
         # Пометки голов карточки, в том числе ПШ вместо прежней «★».
         self.assertIn("ПШ — победная шайба", hm)
         self.assertIn("/BOS_FULL", hm)
-        # Расшифровка SAT/USAT/GF живёт в /advanced, в /help её не дублируем.
+        # Расшифровка SAT/USAT/GF живёт в подменю расширенной статистики /stats, в /help её не дублируем.
         self.assertNotIn(help_text.ADVANCED_STATS_EXPLAINED, hm)
         self.assertIn("Corsi", help_text.ADVANCED_COMMAND_INTRO)
         self.assertIn("Fenwick", help_text.ADVANCED_COMMAND_INTRO)
+
+    def test_reference_texts_fold_legends_and_footer_links(self):
+        """Стиль справочных экранов (Задача 89): команды /help — список, легенда и
+        расшифровка метрик свёрнуты, ссылка на /help из /start — в подвале."""
+        help_text = _load_help_text()
+        hm = help_text.HELP_MESSAGE
+        self.assertTrue(hm.startswith("<b>Справка</b>\n"))
+        self.assertIn("\n<ul><li>/today — ", hm)
+        legend = hm.split("<details><summary>Обозначения</summary>", 1)[1]
+        self.assertIn("ПШ — победная шайба", legend)
+        start = help_text.START_MESSAGE
+        self.assertIn("<b>Быстрый старт</b>", start)
+        self.assertNotIn("/countries", start, "полный перечень команд — в /help")
+        self.assertTrue(start.endswith("<footer>Все команды и обозначения — /help</footer>"))
+        explained = help_text.ADVANCED_COMMAND_INTRO.split("<details><summary>", 1)[1]
+        self.assertIn("Corsi", explained)
 
     def test_start_and_help_use_plain_clickable_commands(self):
         """`<code>/cmd</code>` в Telegram не кликается — команды пишутся голыми."""
@@ -160,11 +180,17 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
         self.assertIn("BOS", text)
-        self.assertIn("<pre>", text)
+        self.assertIn("<table compact>", text)
+        self.assertNotIn("<pre>", text)
+        self.assertIn(
+            '<tr><td align="right">1.</td><td>BOS</td><td align="right">110</td>'
+            '<td align="right">82</td><td align="right">0.7</td></tr>',
+            text,
+        )
         self.assertIn("<b>ATLANTIC DIVISION</b>", text)
         self.assertIn("<b>EASTERN CONFERENCE</b>", text)
 
-    def test_stat_leaderboard_for_kind_points(self):
+    def test_player_stat_leaderboard_page_points(self):
         bot_messages = _load_bot_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
@@ -179,12 +205,17 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "count_rows": 1,
         }
         with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows):
-            text, has_prev, has_next = bot_messages.stat_leaderboard_for_kind(
-                bot_messages.LEADERBOARD_KIND_POINTS, 0
+            text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+                "Лучшие бомбардиры", "players_season_stats", "points", 0
             )
-        self.assertIn("Топ бомбардиров", text)
+        self.assertIn("Лучшие бомбардиры", text)
         self.assertIn("Ovechkin", text)
-        self.assertIn("1.|Ovechkin [LW]|WSH|  99|79|1650", text)
+        self.assertIn(
+            '<tr><td align="right">1.</td><td>Ovechkin [LW]</td><td>WSH</td>'
+            '<td align="right">99</td><td align="right">79</td>'
+            '<td align="right">1650</td></tr>',
+            text,
+        )
         self.assertFalse(has_prev)
         self.assertFalse(has_next)
 
@@ -196,20 +227,19 @@ def _load_stats_handlers():
     return importlib.import_module("stats_handlers")
 
 
+def _fake_bot():
+    """aiogram ``Bot`` на записывающей сессии (``tests/_telegram_fakes.py``) — запросы к Bot API без сети."""
+    from aiogram import Bot
+
+    from tests._telegram_fakes import FAKE_TOKEN, FakeSession
+
+    return Bot(FAKE_TOKEN, session=FakeSession())
+
+
 class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
     async def test_day_digest_single_game_sends_full_card_with_markup(self):
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-                return SimpleNamespace(message_id=len(sent))
-
-        class FakeContext:
-            bot = FakeBot()
-            user_data: dict = {}
-
+        bot = _fake_bot()
         games = [
             (
                 1,
@@ -218,27 +248,22 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         await stats_handlers.dispatch_day_digest_messages(
-            FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
+            bot, chat_id=42, day_label="2025-03-01", games=games
         )
+        sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["text"], "Полная карточка")
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        self.assertIsNotNone(sent[0].get("reply_markup"))
+        self.assertEqual(bot.session.sent_messages, [], "подсказка «Ещё: …» — подвал, не сообщение")
+        html_ = sent[0].rich_message.html
+        self.assertTrue(html_.startswith(rich_html("Полная карточка")))
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("<footer>Ещё: /tonight", html_)
+        [[video]] = sent[0].reply_markup.inline_keyboard
+        self.assertEqual(video.callback_data, "gv:1:2")
 
     async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
         """Несколько матчей — одно сообщение-сводка и кнопки dg:<game_id>."""
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-                return SimpleNamespace(message_id=len(sent))
-
-        class FakeContext:
-            bot = FakeBot()
-            user_data: dict = {}
-
+        bot = _fake_bot()
         games = [
             (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
             (102, "<b>B C</b> 2:2\n", []),
@@ -246,43 +271,36 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
         ), patch.object(
-            stats_handlers, "day_digest_summary_body", return_value=["1. <b>Home Away</b>", "2. B C"]
+            stats_handlers, "day_digest_summary_body", return_value=["1. Home Away", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
-                FakeContext(), chat_id=42, day_label="2025-03-01", games=games, attach_conv_nav_on_last=True
+                bot, chat_id=42, day_label="2025-03-01", games=games
             )
+        sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
-        self.assertIn("2 игр", sent[0]["text"])
-        self.assertIn("1. <b>Home Away</b>", sent[0]["text"])
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        kb = sent[0]["reply_markup"].inline_keyboard
-        self.assertEqual([b.text for b in kb[0]], ["1. HOM – AWY", "2. B – C"])
-        ds = importlib.import_module("dialog_states")
-        # «« Назад»» ведёт на родительское меню дайджеста (DAY_DIGEST), а не
-        # сразу в корень; «В начало»/«Закрыть меню» — следом.
-        self.assertEqual(kb[-1][0].callback_data, str(ds.DAY_DIGEST))
-        self.assertEqual(kb[-1][1].callback_data, str(ds.CHOOSE_STATS))
-        self.assertEqual(kb[-1][2].callback_data, str(ds.END_CONVERSATION))
+        self.assertEqual(bot.session.sent_messages, [], "подсказка «Ещё: …» — подвал, не сообщение")
+        html_ = sent[0].rich_message.html
+        self.assertTrue(html_.startswith("<p><b>Матчи ночи</b></p>"))
+        self.assertIn("<p>1. Home Away</p>", html_)
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("<footer>Игровой день 2025-03-01 · матчей: 2<br>", html_)
+        kb = sent[0].reply_markup.inline_keyboard
+        self.assertEqual([[b.text for b in row] for row in kb], [["1. HOM – AWY", "2. B – C"]])
 
     async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()
-        sent = []
-
-        class FakeBot:
-            async def send_message(self, **kwargs):
-                sent.append(kwargs)
-
-        class FakeContext:
-            bot = FakeBot()
-
+        bot = _fake_bot()
         games = [(0, "Нет матчей", [])]
         await stats_handlers.dispatch_day_digest_messages(
-            FakeContext(), chat_id=7, day_label="2025-01-01", games=games, attach_conv_nav_on_last=False
+            bot, chat_id=7, day_label="2025-01-01", games=games
         )
-        self.assertEqual(len(sent), 2)
-        self.assertEqual(sent[0]["text"], "Нет матчей")
-        self.assertEqual(sent[0].get("parse_mode"), "HTML")
-        self.assertIn("/stats", sent[1]["text"])
+        self.assertEqual(len(bot.session.outgoing), 1)
+        (rich,) = bot.session.sent_rich
+        self.assertEqual(bot.session.sent_messages, [])
+        html_ = rich.rich_message.html
+        self.assertTrue(html_.startswith(rich_html("Нет матчей")))
+        self.assertTrue(html_.endswith("</footer>"))
+        self.assertIn("/stats", html_.rsplit("<footer>", 1)[1])
 
 
 if __name__ == "__main__":

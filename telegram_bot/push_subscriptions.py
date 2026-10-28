@@ -6,13 +6,14 @@
 
     chat_id        BIGINT NOT NULL,       -- Telegram chat_id получателя
     kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores' | 'country_players'
+                                          -- | 'upcoming_games' (Задача 78)
     team_id        BIGINT,                -- для kind='team_scores'; иначе NULL
     country        TEXT,                  -- код страны; только у country_players (Задача 61)
-    last_sent_night DATE,                 -- ночь, уже отправленная чату (защита от дубля)
+    last_sent_night DATE,                 -- ночь дайджеста, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,
     created_at     TIMESTAMPTZ DEFAULT now()
 
-Уникальность строки: пара (chat_id, kind) для дайджеста; для команды —
+Уникальность строки: пара (chat_id, kind) для дайджеста и предстоящих матчей; для команды —
 (chat_id, kind, team_id); для страны — (chat_id, country). Реализуйте через UNIQUE-индекс или составной PRIMARY KEY.
 
 Хранить нужно минимум ``chat_id``: без активного диалога пользователь не получит
@@ -33,13 +34,15 @@
 каждого ночного прогона загрузчика; тот для ``active`` строк с ``kind='morning_digest'``,
 когда пора (Задача 63: ночь загружена целиком, либо 11:00 МСК; времени у подписчика нет),
 вызывает ту же логику, что и ``day_digest()`` /
-``dispatch_day_digest_messages``, и шлёт результат с ``attach_conv_nav_on_last=False``
-и без callback-кнопок диалога.
+``dispatch_day_digest_messages`` — как ``/today``. В дайджесте — только матчи, итог которых чату ещё не
+ушёл по другим подпискам (Задача 85).
 
-Подписка на команду
--------------------
-После игры команды (или по расписанию раз в день) слать краткое сообщение
-подписчикам с ``kind='team_scores'`` и совпадающим ``team_id``.
+Подписки на команду и страну
+----------------------------
+После игры — одно сообщение о матче под все подписки чата, которые на него ведут
+(``kind='team_scores'`` с командой матча, ``country_players`` с игроками страны в нём):
+каждый матч ночи приходит чату ровно один раз (Задача 85). Отметка — пара (чат, матч) в
+``bot_chat_game_sent`` (миграция 0014).
 
 Реализация: миграция ``data_tables/migrations/0001_bot_subscriptions.up.sql`` (``make
 db-migrate``), слой данных ``subscription_repo.py``, рассылка ``push_digest_job.py``

@@ -16,7 +16,7 @@
 - Контейнер бота выполняется от non-root пользователя (`appuser`, uid/gid 1000); пакеты по-прежнему ставятся от root на этапе сборки. У образа есть `HEALTHCHECK` — он проверяет доступность PostgreSQL из контейнера бота (подключение psycopg2 по `PG_HOST`/`PG_PORT`/`PG_USER`/`PG_DATABASE`), а не то, жив ли процесс.
 - В образ не копируется `.env`; при `docker compose up` используется `env_file: .env`.
 - **Restart-политика (Задача 35).** У всех сервисов (`db`, `bot`, `sync`, `predict`, `backup`, а также `retrain` при включённом профиле `modeling`) — `restart: unless-stopped`: переживают падение процесса и перезапуск Docker Desktop/хоста без ручного вмешательства.
-- **Автообновление данных (Задача 34).** Сервис `sync` в `docker-compose.yml` — тот же образ, что у бота, с `command: ["python", "-u", "scheduled_sync.py", "loop"]` и `working_dir: /app/pipeline`. Планировщик (`pipeline/scheduled_sync.py`) при старте сразу прогоняет загрузчик за окно `сегодня−2…сегодня`, затем ночью каждые 30 минут с 18:00 до 08:00 UTC включительно (21:00–11:00 МСК, Задача 56) прогоняет его снова — завершённые матчи попадают в БД по ходу ночи. После каждого прогона следом идёт `telegram_bot/push_digest_job.py` (пропускается сам, если `ENABLE_PUSH_DIGEST` не включён в `.env`): он шлёт подписчикам рассылку, как только вся ночь уже в БД, — не позже последнего слота, 08:00 UTC; отметка `bot_subscriptions.last_sent_night` не даёт отправить ночь дважды, в том числе после перезапуска (Задачи 60, 63, `docs/telegram_bot.md` §7). Повторные прогоны одного окна идемпотентны (`docs/data_loading.md` §6.3); игра попадает в `games`, только когда все три ответа gamecenter в `gameState = OFF`. Диск-кэш загрузчика и файл статуса (`all_data/sync_status.json`) живут в именованном томе `syncdata:/app/all_data`, отдельном от `pgdata`, — переживают пересоздание контейнера. У сервиса свой `healthcheck: python scheduled_sync.py check` (перекрывает образный `HEALTHCHECK`, рассчитанный на бота): 0, если последний прогон успешен и не старше 26 часов, иначе 1 — `docker compose ps` покажет `unhealthy`.
+- **Автообновление данных (Задача 34).** Сервис `sync` в `docker-compose.yml` — тот же образ, что у бота, с `command: ["python", "-u", "scheduled_sync.py", "loop"]` и `working_dir: /app/pipeline`. Планировщик (`pipeline/scheduled_sync.py`) при старте сразу прогоняет загрузчик за окно `сегодня−2…сегодня`, затем ночью каждые 30 минут с 18:00 до 08:00 UTC включительно (21:00–11:00 МСК, Задача 56) прогоняет его снова — завершённые матчи попадают в БД по ходу ночи. Днём, с 12:30 UTC (15:30 МСК), слоты идут без загрузчика — только рассылка превью предстоящих матчей (Задача 78); статус-файл они не пишут. После каждого прогона следом идёт `telegram_bot/push_digest_job.py` (пропускается сам, если `ENABLE_PUSH_DIGEST` не включён в `.env`): он шлёт подписчикам итог матча их подписок вскоре после конца матча, а дайджест с остальными матчами — как только вся ночь уже в БД, не позже последнего слота, 08:00 UTC; отметки `bot_chat_game_sent` (чат, матч) и `bot_subscriptions.last_sent_night` не дают отправить матч и ночь дважды, в том числе после перезапуска (Задачи 60, 63, 85, `docs/telegram_bot.md` §7). Повторные прогоны одного окна идемпотентны (`docs/data_loading.md` §6.3); игра попадает в `games`, только когда все три ответа gamecenter в `gameState = OFF`. Диск-кэш загрузчика и файл статуса (`all_data/sync_status.json`) живут в именованном томе `syncdata:/app/all_data`, отдельном от `pgdata`, — переживают пересоздание контейнера. У сервиса свой `healthcheck: python scheduled_sync.py check` (перекрывает образный `HEALTHCHECK`, рассчитанный на бота): 0, если последний прогон успешен и не старше 26 часов, иначе 1 — `docker compose ps` покажет `unhealthy`.
   - Результат: `docker compose ps` (колонка health), `docker compose logs sync` (логи каждого прогона), `all_data/sync_status.json` внутри тома `syncdata`.
   - Ручной прогон в контейнере: `docker compose run --rm sync python scheduled_sync.py once` — учтите, что `once` запускает и рассылку (если `ENABLE_PUSH_DIGEST=1`; уже отправленная ночь не повторится) и не координируется с уже работающим `loop` в сервисе `sync`, так что оба могут наложиться друг на друга. Для ручного обновления только данных — с хоста, как и раньше, `make season-sync-week` (или сам загрузчик без дайджеста: `docker compose run --rm sync python load_season_modern.py --date-from … --date-to …`).
 - **Еженедельный retrain (Задача 26).** **Отключён до Задачи 68** (модель победы; решение человека, 2026-10-10): модели `home_win` проигрывают Elo-эталону Задачи 66, каждый прогон был бы красным — профиль `modeling` не поднимать, см. `docs/modeling_training.md` §9. Сервис `retrain` в `docker-compose.yml` (профиль `modeling`: обычные `docker compose up -d` и `build` его не собирают и не запускают; поднять — `docker compose --profile modeling up -d retrain`) — образ со стадией `modeling` Dockerfile (`build: {target: modeling}`: lightgbm/sklearn, в образ бота не попадают) и `command: ["python", "-u", "pipeline/scheduled_retrain.py", "loop"]`. Раз в неделю (понедельник 12:00 UTC; цикл просыпается ежедневно в 12:00: повторяет прогон, отказанный по предусловию, а понедельничный слот пропускает, если реальный прогон был менее 6 дней назад) пересобирает датасет обучения и обучает `home_win` с `--no-promote`; стартует только после успешного sync, `latest` сам не двигается (`make modeling-promote`, см. `docs/modeling_training.md` §9). Артефакты — bind mount `./artifacts:/app/artifacts`, статус — `all_data/retrain_status.json` в томе `syncdata`.
@@ -52,14 +52,16 @@
     union all select 'players_advanced_stats', count(*) from players_advanced_stats
     union all select 'players_shot_types', count(*) from players_shot_types
     union all select 'bot_subscriptions', count(*) from bot_subscriptions
+    union all select 'prediction_log', count(*) from prediction_log
     union all select 'schema_migrations', count(*) from schema_migrations
     order by 1;"
     ```
     (список таблиц — по `data_tables/t.*.sql` плюс миграции: `bot_subscriptions`
-    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) — единственные пользовательские
-    данные, не восстановимые повторной загрузкой из NHL API, и служебная `schema_migrations`
-    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — обе переживают `db-drop`/`db-reset`, `pg_dump`
-    снимает обе. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
+    (`data_tables/migrations/0001_bot_subscriptions.up.sql`) и `prediction_log`
+    (`0010_prediction_log.up.sql`, журнал прогнозов) — данные, не восстановимые повторной
+    загрузкой из NHL API, и служебная `schema_migrations`
+    (`Makefile`, `MIGRATIONS_TABLE_DDL`) — все переживают `db-drop`/`db-reset`, `pg_dump`
+    снимает все. `BACKUP_DIR` — только абсолютный путь, см. `.env.example`, так что
     подстановка без раскрытия `~` работает как есть.)
   - *Разово проверить дамп на одноразовой БД* (рабочую `postgres` не трогает; точное сравнение числа строк по всем таблицам, а не оценка `pg_stat_user_tables`):
     ```
@@ -86,7 +88,9 @@
 
 Прод — одна VM в GCP (Compute Engine, `e2-small`, Debian 12) с тем же `docker-compose.yml`, что и локально. Разницы две: `NHL_BOT_IMAGE` в `.env` на VM указывает на образ из GHCR (`ghcr.io/karych72/nhl_bot:<тег>`), и `bot`/`sync`/`migrate` берут его вместо локальной сборки (`predict` — образ стадии `modeling`, `NHL_BOT_MODELING_IMAGE` = `ghcr.io/karych72/nhl_bot:<тег>-modeling`); токен бота не в `.env`, а в Secret Manager (ниже, «Токен бота»). Порт `db` опубликован только на loopback VM, наружу открыт лишь SSH. `retrain` (профиль `modeling`, трек B) релиз не выкатывает — на проде модели не обучаются, `predict` берёт их из `deploy/models/` в образе.
 
-**Релиз:** мерж PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `deploy/`, `Makefile`, `requirements.txt`, `modeling/`, `requirements-modeling.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образы `ghcr.io/karych72/nhl_bot:<тег>` и `…:<тег>-modeling` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` и `NHL_BOT_MODELING_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
+**Ветки.** `develop` — ветка по умолчанию: PR задач идут в неё; её мерж выкатывает dev-стек (ниже, «Dev-стенд»), прод не трогает. `master` — то, что на проде: в него попадает только релизный PR `develop → master`. Обе ветки защищены: мерж только через PR с зелёными `quality` и `db-tests`, без force-push. Релизный PR вливать **merge commit**, не squash: после squash `develop` и `master` расходятся по истории, и следующий релизный PR тянет конфликты. Хотфикс — PR от `master` в `master`, затем `master` вливается обратно в `develop` (тоже PR).
+
+**Релиз:** мерж релизного PR в `master`, если он меняет прод-код (`telegram_bot/`, `pipeline/`, `data_tables/`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `deploy/`, `Makefile`, `requirements.txt`, `modeling/`, `requirements-modeling.txt`; мерж только плана или документации прод не трогает), — job `tag` сам ставит следующий patch-тег от последнего `v*` (`v1.2.0` → `v1.2.1`); minor/major и хотфикс — вручную: `git tag v1.3.0 && git push origin v1.3.0`. Ожидать деплоя может только один прогон: новый (мерж или ручной тег) отменяет ожидающий. Дальше `.github/workflows/release.yml`: проверки `ci.yml` → образы `ghcr.io/karych72/nhl_bot:<тег>` и `…:<тег>-modeling` → job `deploy` (environment `production`) заходит на VM по SSH, переключает чекаут `/opt/nhl_bot` на тег, пишет `NHL_BOT_IMAGE` и `NHL_BOT_MODELING_IMAGE` в `.env`, делает `docker compose pull` и `up -d` (сначала `migrate`) и ждёт `healthy` у `bot` — иначе деплой красный. **Откат** — «Re-run jobs» у прогона предыдущего тега во вкладке Actions: миграции вперёд-назад он не откатывает, для этого `make db-migrate-down` вручную.
 
 **Разовая настройка.**
 
@@ -109,7 +113,17 @@
 5. Первая БД — до первого тега, образом, собранным на VM (в GHCR его ещё нет): `docker compose up -d db`, `docker compose build migrate`, `docker compose run --rm migrate make db-sync`, затем полная загрузка сезона `docker compose run --rm --no-deps -w /app/pipeline sync python -u load_season_modern.py`.
 6. Первый тег. После первой публикации пакет `nhl_bot` в GHCR сделать публичным (Package settings → Change visibility) — VM тянет образ без логина; секретов в образе нет (`.dockerignore`).
 
-**Токен бота (Задача 65).** Хранится в Secret Manager проекта `nhl-bot-prod`, секрет `nhl-bot-telegram-token`; на диске VM его нет. При загрузке VM юнит `nhl-bot-secrets.service` (`deploy/systemd/`, до `docker.service`) запускает `deploy/fetch-secrets.sh`: тот читает последнюю версию секрета и пишет `/run/nhl_bot/telegram_bot_token` (tmpfs; каталог `0700 root`, файл `0444` — его читает `appuser` контейнера). `deploy/compose.prod.yml` монтирует файл в `bot` и `sync` как compose secret, а entrypoint-обёртка на `sh` кладёт его в окружение и `exec`-ом запускает `command` — и сервиса, и `docker compose run`. Через `env_file` нельзя: Docker хранит `Config.Env` открытым текстом в `config.v2.json` на диске и показывает в `docker inspect`. Оверрайд включает `COMPOSE_FILE` в `.env` на VM, поэтому его видят и `release.yml`, и ручной `docker compose`. Нет файла — контейнер не стартует (`bind source path does not exist`), и при перезагрузке VM тоже. Локально оверрайд не подключён, токен — в локальном `.env`. `release.yml` секрет не читает: после перезагрузки VM его восстанавливает юнит. Чекаут тега старше Задачи 65 (откат «Re-run») не содержит `deploy/compose.prod.yml`, и compose на нём упадёт; такой откат — сначала вернуть токен в `.env` и убрать `COMPOSE_FILE`.
+**Боты и секреты (Задача 79, 2026-10-25).** Секреты — в Secret Manager проекта `nhl-bot-prod`, у каждого роль `roles/secretmanager.secretAccessor` для сервисного аккаунта VM. Значения не выводить и не вставлять в чаты; ввод — `gcloud secrets versions add <секрет> --data-file=- --project nhl-bot-prod`, затем Ctrl-D дважды без Enter (Enter допишет перевод строки в значение).
+
+| Секрет | Что | Кто читает |
+|---|---|---|
+| `nhl-bot-telegram-token` | токен продового бота @IcePulseNHLBot (ветка `master`) | `fetch-secrets.sh` → `bot`, `sync` прод-стека |
+| `nhl-bot-telegram-token-dev` | токен dev-бота @auto_karych_test_bot (ветка `develop`, бывший продовый) | `fetch-secrets.sh` → `bot`, `sync` dev-стека (`/run/nhl_bot_dev`, Задача 80) |
+| `nhl-bot-anthropic-key` | ключ Anthropic API, один на dev и прод | `fetch-secrets.sh` → `bot` обоих стеков (`anthropic_api_key`, Задача 81) |
+
+Локально — свой `.env` (`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`). Локальный `make bot` с продовым или dev-токеном не запускать, пока тот же бот работает на VM: второй polling-клиент на один токен получает `Conflict`. Для локальной отладки — отдельный личный бот.
+
+**Токен бота (Задача 65).** Хранится в Secret Manager проекта `nhl-bot-prod`, секрет `nhl-bot-telegram-token`; на диске VM его нет. При загрузке VM юнит `nhl-bot-secrets.service` (`deploy/systemd/`, до `docker.service`) запускает `deploy/fetch-secrets.sh <секрет> <каталог> [<файл>]` — для прода и для dev-бота (Задача 80), каждый раз скриптом из своего чекаута: тот читает последнюю версию секрета и пишет `<каталог>/<файл>`, для токена — `<каталог>/telegram_bot_token`, у прода — `/run/nhl_bot/telegram_bot_token` (tmpfs; каталог `0700 root`, файл `0444` — его читает `appuser` контейнера). `deploy/compose.prod.yml` монтирует файл в `bot` и `sync` как compose secret, а entrypoint-обёртка на `sh` кладёт его в окружение и `exec`-ом запускает `command` — и сервиса, и `docker compose run`. Через `env_file` нельзя: Docker хранит `Config.Env` открытым текстом в `config.v2.json` на диске и показывает в `docker inspect`. Оверрайд включает `COMPOSE_FILE` в `.env` на VM, поэтому его видят и `release.yml`, и ручной `docker compose`. Нет файла — контейнер не стартует (`bind source path does not exist`), и при перезагрузке VM тоже. Локально оверрайд не подключён, токен — в локальном `.env`. `release.yml` секрет не читает: после перезагрузки VM его восстанавливает юнит. Чекаут тега старше Задачи 65 (откат «Re-run») не содержит `deploy/compose.prod.yml`, и compose на нём упадёт; такой откат — сначала вернуть токен в `.env` и убрать `COMPOSE_FILE`.
 
 На VM пользователь из `gcloud compute ssh` не в группе `docker`, а `.env` принадлежит `deploy`: команды `docker compose` и правка `.env` — через `sudo -u deploy` (ниже).
 
@@ -139,7 +153,56 @@ cd /opt/nhl_bot \
   && sudo -u deploy docker compose up -d --force-recreate bot sync
 ```
 
-**Ротация токена:** BotFather → новый токен; на ноутбуке `gcloud secrets versions add nhl-bot-telegram-token --data-file=- --project nhl-bot-prod` (ввод не попадает в историю шелла, Ctrl-D); на VM `sudo systemctl restart nhl-bot-secrets && cd /opt/nhl_bot && sudo -u deploy docker compose up -d --force-recreate bot sync`.
+**Ключ Claude API (Задача 81).** Тот же механизм: юнит пишет ключ в `/run/nhl_bot/anthropic/anthropic_api_key` и `/run/nhl_bot_dev/anthropic/anthropic_api_key` (`fetch-secrets.sh nhl-bot-anthropic-key <каталог>/anthropic anthropic_api_key`), `compose.prod.yml` и `compose.dev.yml` монтируют его только в `bot`, entrypoint `bot` кладёт в окружение токен и ключ. Без файла `bot` не стартует, без переменной — падает `config.validate_env`. Подкаталог `anthropic/` — защита от отката: `fetch-secrets.sh` старше Задачи 81 третий аргумент игнорирует и пишет `telegram_bot_token` в переданный каталог, то есть в безвредный `anthropic/telegram_bot_token`, а не поверх токена бота. Поэтому новый юнит можно ставить в любой момент, и откат «Re-run» на старый тег ничего не ломает. Выкатка:
+1. До мержа PR в `develop` (иначе dev-деплой красный: `bot` без файла) — секрет `nhl-bot-anthropic-key` с версией и ролью доступа (как у токена выше), затем на VM ключ для dev-стека напрямую, без скрипта: в `/opt/nhl_bot_dev` до мержа старый `fetch-secrets.sh`.
+   ```
+   sudo install -d -m 0700 /run/nhl_bot_dev/anthropic \
+     && sudo gcloud secrets versions access latest --secret=nhl-bot-anthropic-key --out-file=/run/nhl_bot_dev/anthropic/anthropic_api_key \
+     && sudo chmod 0444 /run/nhl_bot_dev/anthropic/anthropic_api_key
+   ```
+2. После мержа в `develop` (dev-чекаут уже с новым скриптом) — новый юнит: `sudo install -m 644 /opt/nhl_bot_dev/deploy/systemd/nhl-bot-secrets.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart nhl-bot-secrets`. До релиза прод-строка ключа пишет `anthropic/telegram_bot_token` скриптом прода — безвредно, прод-коду ключ не нужен.
+3. До мержа релизного PR в `master` — ключ для прода скриптом dev-чекаута: `sudo /opt/nhl_bot_dev/deploy/fetch-secrets.sh nhl-bot-anthropic-key /run/nhl_bot/anthropic anthropic_api_key`. После релиза его же пишет юнит при каждой загрузке VM.
+
+Ротация ключа — новая версия `nhl-bot-anthropic-key`, `sudo systemctl restart nhl-bot-secrets` и `docker compose up -d --force-recreate bot` в обоих чекаутах. Месячный лимит расходов — в Anthropic Console.
+
+**Ротация токена:** BotFather → новый токен; на ноутбуке `gcloud secrets versions add nhl-bot-telegram-token --data-file=- --project nhl-bot-prod` (ввод не попадает в историю шелла, Ctrl-D); на VM `sudo systemctl restart nhl-bot-secrets && cd /opt/nhl_bot && sudo -u deploy docker compose up -d --force-recreate bot sync`. Dev-бот — то же с `nhl-bot-telegram-token-dev` и `cd /opt/nhl_bot_dev`.
+
+### Dev-стенд (Задача 80)
+
+Два бота на одной VM: `develop` → dev-бот @auto_karych_test_bot, `master` → продовый @IcePulseNHLBot. Postgres один — контейнер `db` прод-стека; баз две: прод — `postgres`, dev — `nhl_dev`. Общая база отклонена: `bot_subscriptions` хранит только `chat_id`, dev-рассылка ушла бы продовым подписчикам от dev-бота, а на `Forbidden` рассылка **деактивирует** подписку; и `migrate` из `develop` менял бы схему под продовым кодом.
+
+Dev-стек — тот же `docker-compose.yml` в отдельном compose-проекте `nhl_bot_dev`, чекаут `/opt/nhl_bot_dev`. Оверрайд `deploy/compose.dev.yml` убирает `db` и `backup` (профиль, который никто не включает), подключает `migrate`, `bot`, `sync`, `predict` к сети прод-стека `nhl_bot_default` и ставит им `PG_DATABASE=nhl_dev`; токен — файл `/run/nhl_bot_dev/telegram_bot_token`. Том `syncdata` у dev свой (`nhl_bot_dev_syncdata`). Дампы `backup` снимают только `postgres`: `nhl_dev` всегда можно пересобрать из продового дампа.
+
+**Выкатка.** Мерж в `develop` → `release.yml`: `ci.yml` → образы `ghcr.io/karych72/nhl_bot:dev-<sha7>` и `…-modeling` (git-тег не ставится) → `deploy` в `/opt/nhl_bot_dev` на коммит `develop`. Своя группа `concurrency`: dev-деплой не вытесняет ожидающий деплой прода. Секреты `DEPLOY_*` — те же, environment `production`. Миграция из `develop` применяется к `nhl_dev`; на `postgres` она попадёт только релизом в `master`. Откат `develop` без мержа — `make db-migrate-down` на `nhl_dev` или пересборка базы (ниже).
+
+**Разовая настройка** (на VM, `gcloud compute ssh nhl-bot`; секрет `nhl-bot-telegram-token-dev` — «Боты и секреты» выше). Нужен Docker Compose ≥ 2.20 (`depends_on.required`), на VM 2026-10-25 — v5.5.1. Настройка — **до** первого деплоя `develop`: иначе он упадёт на `cd /opt/nhl_bot_dev` (тогда — настроить и «Re-run jobs»):
+```
+# чекаут и .env dev-стека: .env прода без образов и COMPOSE_FILE, плюс проект и оверрайды dev
+sudo install -d -o deploy /opt/nhl_bot_dev
+sudo -u deploy git clone -b develop https://github.com/Karych72/NHL_bot.git /opt/nhl_bot_dev
+sudo -u deploy sh -c 'grep -vE "^(COMPOSE_FILE|COMPOSE_PROJECT_NAME|NHL_BOT_IMAGE|NHL_BOT_MODELING_IMAGE)=" /opt/nhl_bot/.env > /opt/nhl_bot_dev/.env \
+  && printf "COMPOSE_PROJECT_NAME=nhl_bot_dev\nCOMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml:deploy/compose.dev.yml\n" >> /opt/nhl_bot_dev/.env \
+  && chmod 600 /opt/nhl_bot_dev/.env'
+
+# база nhl_dev из последнего дампа прода; подписки и отметки рассылок — пустые
+cd /opt/nhl_bot
+DUMP=$(sudo ls -1 /srv/nhl_bot_backups/ | grep -E '^nhl_.*\.dump$' | sort | tail -1)
+sudo -u deploy docker compose exec -T db createdb -U postgres nhl_dev
+sudo cat "/srv/nhl_bot_backups/$DUMP" | sudo -u deploy docker compose exec -T db pg_restore -U postgres -d nhl_dev --no-owner
+sudo -u deploy docker compose exec -T db psql -U postgres -d nhl_dev -c 'TRUNCATE bot_subscriptions CASCADE'
+
+# юнит: токены обоих ботов (скрипт dev-строки — из /opt/nhl_bot_dev)
+sudo install -m 644 /opt/nhl_bot_dev/deploy/systemd/nhl-bot-secrets.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl restart nhl-bot-secrets
+sudo test -s /run/nhl_bot_dev/telegram_bot_token && echo dev-token-ok
+```
+Чекаут должен содержать `deploy/compose.dev.yml` и `fetch-secrets.sh` с аргументами — они в `develop` с Задачи 80 (до её мержа клон брался с `-b task-80-dev-stand`). Дальше чекаут ведёт деплой. Пересборка `nhl_dev` — `docker compose stop` в `/opt/nhl_bot_dev`, `dropdb -U postgres --force nhl_dev` и те же три команды базы, затем `docker compose up -d` там же.
+
+Dev-контейнеры подключены к сети прод-стека `nhl_bot_default`: `docker compose down` в `/opt/nhl_bot` её не удалит (`has active endpoints`), а пересоздание сети прода отрывает от неё dev — после него `docker compose up -d --force-recreate` в `/opt/nhl_bot_dev`.
+
+Память `e2-small` (2 ГБ) — замер `docker stats --no-stream` до и после подъёма dev-стека: Задача 80 в `plan/archive/`. `predict` обоих стеков стартует в 12:00 UTC.
+
+Нельзя запускать локальный `make bot` с dev-токеном, пока dev-бот работает на VM: второй polling-клиент получает `Conflict`.
 
 ## Тесты и качество
 
@@ -236,7 +299,7 @@ cd /opt/nhl_bot \
   всё остальное, через `make lock`.
 - **Зависимости моделирования** — отдельный файл `requirements-modeling.txt` (источник —
   `requirements-modeling.in`): семь ML-пакетов этапа 3 (LightGBM, scikit-learn, matplotlib и др.) плюс `pydantic` v2 для `modeling/config.py` (этап 2). Установка: `make modeling-dev`. Они **не** входят в `requirements.txt`, **не** ставятся через `make setup` / `make run-bot` и **не** попадают в Docker-образ бота. CatBoost в v1 не используется (опционально — этап 15 UPDATE-плана). Подробнее: [`docs/modeling_training.md`](docs/modeling_training.md#dependencies).
-- **Async-тесты бота.** Хендлеры `telegram_bot/` — корутины (python-telegram-bot 21.x), поэтому тест, который вызывает хендлер напрямую, объявляется `async def` и помечается `@pytest.mark.asyncio` (`pytest-asyncio` в `requirements-dev.txt`, строгий режим по умолчанию — конфиг-файла pytest в репозитории нет). В `unittest.TestCase` этот маркер не работает: такие классы наследуем от `unittest.IsolatedAsyncioTestCase` (stdlib). Забытый маркер строгий режим не пропускает молча — тест будет пропущен с предупреждением.
+- **Async-тесты бота.** Хендлеры `telegram_bot/` — корутины (aiogram 3), поэтому тест, который вызывает хендлер напрямую, объявляется `async def` и помечается `@pytest.mark.asyncio` (`pytest-asyncio` в `requirements-dev.txt`, строгий режим по умолчанию — конфиг-файла pytest в репозитории нет). В `unittest.TestCase` этот маркер не работает: такие классы наследуем от `unittest.IsolatedAsyncioTestCase` (stdlib). Забытый маркер строгий режим не пропускает молча — тест будет пропущен с предупреждением.
 - Следуем стилю существующих модулей (импорты, имена, обработка ошибок) вместо разнобоя.
 - Большие бинарные артефакты и выгрузки данных не коммитить без явной договорённости (см. `.gitignore`).
 

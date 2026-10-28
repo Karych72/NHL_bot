@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from bot_messages import rich_footer
+
 NHL_API_BASE = "https://api-web.nhle.com/v1"
 
 # US/Eastern — один согласованный пояс для времени старта в выводе.
@@ -49,8 +51,13 @@ def fetch_score(day: date) -> dict:
         raise ScoreboardFetchError("invalid JSON") from e
 
 
-def _parse_start_utc(raw: Optional[str]) -> Tuple[datetime, str]:
-    """Возвращает aware UTC и строку времени в ET; при ошибке — минимальный ключ сортировки."""
+def parse_start_utc(raw: Optional[str]) -> Tuple[datetime, str]:
+    """Время начала матча из `startTimeUTC`: aware UTC и строка «HH:MM ET».
+
+    Зачем: один разбор для `/tonight` (сортировка, подписи кнопок) и превью рассылки
+    `push_digest_job` (Задача 78). При пустом или битом значении — `datetime.min` (UTC),
+    минимальный ключ сортировки, и «—».
+    """
     if not raw:
         return (datetime.min.replace(tzinfo=ZoneInfo("UTC")), "—")
     try:
@@ -80,7 +87,7 @@ def slate_games_sorted(payload: dict) -> List[Dict[str, Any]]:
             continue
         filtered.append(g)
 
-    filtered.sort(key=lambda g: _parse_start_utc(g.get("startTimeUTC"))[0])
+    filtered.sort(key=lambda g: parse_start_utc(g.get("startTimeUTC"))[0])
     return filtered
 
 
@@ -104,8 +111,9 @@ def _format_msk_ahead_hours(dh: float) -> str:
 
 def tonight_reply_intro(payload: dict) -> str:
     """
-    Текст ответа /tonight без списка матчей (матчи только кнопками).
-    Разметка HTML (Telegram): <b>жирный</b>; дата и числа из API — через html.escape.
+    Текст ответа /tonight без списка матчей (матчи только кнопками): заголовок с датой,
+    подсказка и разница времени; источник расписания — подвал (`rich_footer`).
+    Построчный HTML для `rich_message()`; дата и числа из API — через html.escape.
     """
     raw_current = payload.get("currentDate") or "—"
     current_esc = html.escape(str(raw_current))
@@ -113,19 +121,17 @@ def tonight_reply_intro(payload: dict) -> str:
     if not games:
         return f"На {current_esc} в расписании NHL матчей нет."
 
-    n = len(games)
-    dh = msk_hours_ahead_of_et_now()
-    dh_s = _format_msk_ahead_hours(dh)
-    n_esc = html.escape(str(n))
-    dh_esc = html.escape(dh_s)
+    dh_esc = html.escape(_format_msk_ahead_hours(msk_hours_ahead_of_et_now()))
     return (
-        f"Матчи NHL на календарный день лиги <b>{current_esc}</b> "
-        f"(актуальное расписание с сайта NHL, не из базы бота).\n\n"
-        f"Ниже <b>{n_esc}</b> кнопок — выберите матч: откроется карточка из базы "
-        f"(если игра уже загружена) или сравнение сезонных показателей команд.\n\n"
-        f"На кнопках время старта в <b>ET</b> (восточное время США). "
-        f"<b>Москва сейчас на {dh_esc} ч впереди ET</b> "
-        f"(разница меняется при переводе часов в США; в России постоянно UTC+3)."
+        f"<b>Матчи NHL на {current_esc}</b>\n"
+        "Выберите матч кнопкой: сыгранный откроется карточкой из базы, ещё не сыгранный — "
+        "сравнением сезонных показателей команд.\n"
+        f"На кнопках время старта по ET (восточное время США); Москва сейчас на {dh_esc} ч "
+        "впереди.\n"
+        + rich_footer(
+            "Расписание — с сайта NHL, не из базы бота. Разница с Москвой меняется при "
+            "переводе часов в США."
+        )
     )
 
 
@@ -133,5 +139,5 @@ def tonight_match_button_label(game: Dict[str, Any]) -> str:
     """Подпись кнопки: AWAY @ HOME · HH:MM ET (лимит Telegram 64 символа)."""
     away = ((game.get("awayTeam") or {}).get("abbrev") or "?").strip()
     home = ((game.get("homeTeam") or {}).get("abbrev") or "?").strip()
-    _, time_et = _parse_start_utc(game.get("startTimeUTC"))
+    _, time_et = parse_start_utc(game.get("startTimeUTC"))
     return f"{away} @ {home} · {time_et}"

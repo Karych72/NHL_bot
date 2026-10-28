@@ -3,6 +3,8 @@ NHL Goal Video Replay service.
 
 Chain: game_id + event_id → NHL Replay API → Brightcove → MP4 file.
 Подпись к видео (автор, передачи, номер гола в сезоне, время) — из того же ответа Replay API.
+Кэш загруженных клипов (Задача 87): ``file_id`` Telegram и подпись по голу в ``bot_goal_clips`` —
+клип скачивается и грузится один раз, дальше рассылка и кнопка видео шлют его по ``file_id``.
 """
 
 from __future__ import annotations
@@ -14,9 +16,11 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import requests
+
+from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +121,44 @@ def goal_clip_published(game_id: int, event_id: int) -> bool:
     Аргументы: ``game_id``, ``event_id`` — гол.
     """
     return _get_replay(game_id, event_id) is not None
+
+
+def cached_goal_clip(game_id: int, event_id: int) -> Optional[Tuple[str, str]]:
+    """Загруженный ранее клип гола: (``file_id`` Telegram, HTML-подпись) или ``None``.
+
+    Зачем: рассылка и кнопка видео шлют клип по ``file_id`` — без скачивания с NHL,
+    ffmpeg и повторной загрузки (Задача 87).
+
+    Аргументы: ``game_id``, ``event_id`` — гол.
+    """
+    row = fetch_all(
+        "SELECT file_id, caption FROM bot_goal_clips WHERE game_id = %s AND event_id = %s",
+        (game_id, event_id),
+        columns=["file_id", "caption"],
+    )
+    if not row["count_rows"]:
+        return None
+    return row["file_id"][0], row["caption"][0]
+
+
+def save_goal_clip(game_id: int, event_id: int, file_id: str, caption: str) -> None:
+    """Запоминает ``file_id`` клипа, только что загруженного в Telegram, и его подпись.
+
+    Зачем: см. ``cached_goal_clip``. Повторная загрузка (Telegram отверг протухший
+    ``file_id``) перезаписывает строку.
+
+    Аргументы: ``game_id``, ``event_id`` — гол; ``file_id`` — из ответа на отправку видео;
+    ``caption`` — ``GoalVideoDelivery.caption``.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_goal_clips (game_id, event_id, file_id, caption) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (game_id, event_id) DO UPDATE "
+                "SET file_id = EXCLUDED.file_id, caption = EXCLUDED.caption, uploaded_at = now()",
+                (game_id, event_id, file_id, caption),
+            )
+        conn.commit()
 
 
 def _mp4_sources(sources: List[dict]) -> List[dict]:

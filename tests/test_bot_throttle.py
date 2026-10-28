@@ -1,22 +1,19 @@
 """Тесты троттлинга callback-кнопок (`throttle.py`, Задача 10).
 
-`enforce_callback_rate_limit` — обычный PTB-колбэк (`update, context`), а не
-хендлер, зарегистрированный в `Application`: сети/polling здесь нет, вызывается
-напрямую. Единственные границы, которые трогает сама функция —
-`update.effective_user`, `update.callback_query.answer()` и модульные часы
-(`throttle.time.monotonic`), поэтому оба подменяются так же, как в
-`tests/test_bot_database.py` для `database.cached_fetch_all`. Регистрация
-хендлера в `Application` (группа, порядок) проверяется отдельно, в
+`enforce_callback_rate_limit` — outer-middleware aiogram `(handler, event, data)`:
+сети/polling здесь нет, вызывается напрямую с настоящим `CallbackQuery`, привязанным
+к боту на записывающей сессии (`conftest.FakeSession`); `handler` — следующий шаг
+цепочки, который тест считает. Модульные часы (`throttle.time.monotonic`) подменяются
+так же, как в `tests/test_bot_database.py` для `database.cached_fetch_all`. Что
+middleware висит на `Dispatcher` и останавливает нажатие до хендлеров — в
 `tests/test_bot_application.py`.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List
 
 import pytest
-from telegram.ext import ApplicationHandlerStop
 
 
 @pytest.fixture
@@ -40,10 +37,20 @@ def clock(throttle_module, monkeypatch) -> dict:
     return state
 
 
-def _throttled_update(make_callback_update: Callable[..., Any], user_id: int = 1) -> Any:
-    update = make_callback_update("st:players_season_stats:points:0")
-    update.effective_user = SimpleNamespace(id=user_id)
-    return update
+class _Handler:
+    """Следующий шаг цепочки middleware: считает, сколько нажатий до него дошло."""
+
+    def __init__(self) -> None:
+        self.events: List[Any] = []
+
+    async def __call__(self, event: Any, data: Dict[str, Any]) -> str:
+        self.events.append(event)
+        return "handled"
+
+
+async def _press(throttle_module, make_callback: Callable[..., Any], handler: _Handler, user_id: int = 1) -> Any:
+    callback = make_callback("st:players_season_stats:points:0", user_id=user_id)
+    return await throttle_module.enforce_callback_rate_limit(handler, callback, {})
 
 
 # ---------------------------------------------------------------------------
@@ -51,94 +58,56 @@ def _throttled_update(make_callback_update: Callable[..., Any], user_id: int = 1
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_updates_within_limit_pass_through_without_answer(
-    throttle_module, clock, make_callback_update, fake_context
+async def test_presses_within_limit_reach_the_handler_without_answer(
+    throttle_module, clock, make_callback, api
 ) -> None:
-    update = _throttled_update(make_callback_update)
+    handler = _Handler()
 
     for _ in range(throttle_module.CALLBACK_RATE_LIMIT):
-        await throttle_module.enforce_callback_rate_limit(update, fake_context)
+        assert await _press(throttle_module, make_callback, handler) == "handled"
 
-    assert update.callback_query.answers == []
+    assert len(handler.events) == throttle_module.CALLBACK_RATE_LIMIT
+    assert api.answers == []
 
 
 @pytest.mark.asyncio
-async def test_exceeding_limit_answers_user_and_stops_the_update(
-    throttle_module, clock, make_callback_update, fake_context
+async def test_exceeding_limit_answers_user_and_stops_the_press(
+    throttle_module, clock, make_callback, api
 ) -> None:
-    update = _throttled_update(make_callback_update)
+    handler = _Handler()
     for _ in range(throttle_module.CALLBACK_RATE_LIMIT):
-        await throttle_module.enforce_callback_rate_limit(update, fake_context)
+        await _press(throttle_module, make_callback, handler)
 
-    with pytest.raises(ApplicationHandlerStop):
-        await throttle_module.enforce_callback_rate_limit(update, fake_context)
+    assert await _press(throttle_module, make_callback, handler) is None
 
-    # Пользователь получил answer() с непустым текстом, а не молчание.
-    assert len(update.callback_query.answers) == 1
-    assert update.callback_query.answers[0]
+    # Нажатие не дошло до хендлера, а пользователь получил ответ с текстом, а не молчание.
+    assert len(handler.events) == throttle_module.CALLBACK_RATE_LIMIT
+    assert api.answers == [throttle_module.RATE_LIMIT_ANSWER_TEXT]
 
 
 @pytest.mark.asyncio
-async def test_window_expiry_releases_the_counter(
-    throttle_module, clock, make_callback_update, fake_context
-) -> None:
-    update = _throttled_update(make_callback_update)
+async def test_window_expiry_releases_the_counter(throttle_module, clock, make_callback, api) -> None:
+    handler = _Handler()
     for _ in range(throttle_module.CALLBACK_RATE_LIMIT):
-        await throttle_module.enforce_callback_rate_limit(update, fake_context)
+        await _press(throttle_module, make_callback, handler)
 
     clock["now"] += throttle_module.CALLBACK_RATE_WINDOW_SEC + 0.01
 
-    # Окно истекло — апдейт снова проходит, без ApplicationHandlerStop.
-    await throttle_module.enforce_callback_rate_limit(update, fake_context)
-
-    assert update.callback_query.answers == []
+    # Окно истекло — нажатие снова доходит до хендлера.
+    assert await _press(throttle_module, make_callback, handler) == "handled"
+    assert api.answers == []
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_is_tracked_per_user(
-    throttle_module, clock, make_callback_update, fake_context
-) -> None:
-    spammer = _throttled_update(make_callback_update, user_id=1)
-    other_user = _throttled_update(make_callback_update, user_id=2)
-
+async def test_rate_limit_is_tracked_per_user(throttle_module, clock, make_callback, api) -> None:
+    handler = _Handler()
     for _ in range(throttle_module.CALLBACK_RATE_LIMIT):
-        await throttle_module.enforce_callback_rate_limit(spammer, fake_context)
-
-    with pytest.raises(ApplicationHandlerStop):
-        await throttle_module.enforce_callback_rate_limit(spammer, fake_context)
+        await _press(throttle_module, make_callback, handler, user_id=1)
+    assert await _press(throttle_module, make_callback, handler, user_id=1) is None
 
     # Лимит одного пользователя не затрагивает другого.
-    await throttle_module.enforce_callback_rate_limit(other_user, fake_context)
-    assert other_user.callback_query.answers == []
-
-
-# ---------------------------------------------------------------------------
-# Область перехвата (Ruling 4): только апдейты с callback_query и effective_user
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_update_without_callback_query_is_ignored(
-    throttle_module, clock, make_message_update, fake_context
-) -> None:
-    update = make_message_update("/help")
-
-    # Не должно ни падать, ни поднимать ApplicationHandlerStop.
-    await throttle_module.enforce_callback_rate_limit(update, fake_context)
-
-    assert throttle_module._hits == {}
-
-
-@pytest.mark.asyncio
-async def test_update_without_effective_user_is_not_throttled(
-    throttle_module, clock, make_callback_update, fake_context
-) -> None:
-    update = make_callback_update("st:players_season_stats:points:0")
-    update.effective_user = None
-
-    await throttle_module.enforce_callback_rate_limit(update, fake_context)
-
-    assert update.callback_query.answers == []
-    assert throttle_module._hits == {}
+    assert await _press(throttle_module, make_callback, handler, user_id=2) == "handled"
+    assert api.answers == [throttle_module.RATE_LIMIT_ANSWER_TEXT]
 
 
 # ---------------------------------------------------------------------------
@@ -147,18 +116,17 @@ async def test_update_without_effective_user_is_not_throttled(
 
 @pytest.mark.asyncio
 async def test_expired_user_entries_are_pruned_from_state(
-    throttle_module, clock, make_callback_update, fake_context
+    throttle_module, clock, make_callback
 ) -> None:
     """Требование задачи: истёкшие записи вычищаются в том же проходе, без
     отдельного планировщика — иначе `_hits` растёт неограниченно вместе с
     числом когда-либо нажавших кнопку пользователей."""
-    stale_update = _throttled_update(make_callback_update, user_id=1)
-    await throttle_module.enforce_callback_rate_limit(stale_update, fake_context)
+    handler = _Handler()
+    await _press(throttle_module, make_callback, handler, user_id=1)
     assert 1 in throttle_module._hits
 
     clock["now"] += throttle_module.CALLBACK_RATE_WINDOW_SEC + 0.01
-    fresh_update = _throttled_update(make_callback_update, user_id=2)
-    await throttle_module.enforce_callback_rate_limit(fresh_update, fake_context)
+    await _press(throttle_module, make_callback, handler, user_id=2)
 
     assert 1 not in throttle_module._hits, "истёкшая запись пользователя 1 должна быть вычищена"
     assert 2 in throttle_module._hits
