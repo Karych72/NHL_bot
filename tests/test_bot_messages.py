@@ -24,7 +24,7 @@ import pytest
 
 def _tables(text: str) -> List[List[List[str]]]:
     """Таблицы rich-сообщения в тексте экрана: таблица — строки, строка — тексты ячеек
-    (теги сняты, HTML-сущности раскрыты); строка «линия плей-офф» — одна ячейка."""
+    (теги сняты, HTML-сущности раскрыты); строка пунктира плей-офф — одна ячейка."""
     return [
         [
             [html.unescape(re.sub(r"<[^>]+>", "", cell)) for cell in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row)]
@@ -93,8 +93,10 @@ def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module)
 
     table = bot_messages._table([["#", "К"], ["1.", "A"], ["2.", "B"], ["3.", "C"]], "rl", playoff_line_after=2)
 
-    assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], ["линия плей-офф"], ["3.", "C"]]]
-    assert '<td colspan="2" align="center"><i>линия плей-офф</i></td>' in table
+    line = bot_messages._PLAYOFF_LINE
+    assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], [line], ["3.", "C"]]]
+    assert f'<td colspan="2" align="center">{line}</td>' in table
+    assert set(line) == {"┄"}, "черта — пунктир, без подписи"
 
 
 def test_table_stripes_only_tables_longer_than_ten_rows(bot_module):
@@ -1606,16 +1608,16 @@ def test_team_list_text_reports_empty_season(bot_module):
 
 
 # ---------------------------------------------------------------------------
-# Wild Card: линия плей-офф после WC2
+# Wild Card: черта плей-офф после WC2
 # ---------------------------------------------------------------------------
 
 def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     bot_module, fake_db_router
 ):
     """Метрополитен из шести команд: топ-3 дивизиона вне гонки, остальные три —
-    WC1, WC2, затем линия плей-офф и третий претендент с обычным номером."""
+    WC1, WC2, затем черта плей-офф и третий претендент с обычным номером."""
     bot_messages = bot_module("bot_messages")
-    # short_name, games_played, points, procent_points, wins, losses, ot,
+    # name, games_played, points, procent_points, wins, losses, ot,
     # division_name, conference_name — очки убывают с номером команды.
     rows = [
         (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(6)
@@ -1630,7 +1632,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
     [table] = _tables(wc)
     assert [row[:2] for row in table] == [
-        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], ["линия плей-офф"], ["3.", "T5"],
+        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], [bot_messages._PLAYOFF_LINE], ["3.", "T5"],
     ]
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
     assert text.startswith("<b>Турнирная таблица NHL</b>\n\n")
@@ -1661,7 +1663,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
         ["1.", "T0", "40", "20", "60.0"],
         ["2.", "T1", "39", "20", "60.0"],
         ["3.", "T2", "38", "20", "60.0"],
-        ["линия плей-офф"],
+        [bot_messages._PLAYOFF_LINE],
         ["4.", "T3", "37", "20", "60.0"],
     ]
     assert len(table) == 1 + 9 + 1, "шапка, девять команд и одна линия"

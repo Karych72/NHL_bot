@@ -29,6 +29,7 @@
 | 94 | [Типовые вопросы к ИИ бота: каталог и заготовки ответов](task_94_ai_question_catalog.md) | Продукт | 🟡 |
 | 96 | [Премиум-доступ: ИИ и прогноз модели — только платным](task_96_premium_access.md) | Продукт | 🟡 |
 | 97 | [Премиум: оплата подписки Telegram Stars](task_97_premium_stars_payment.md) | Продукт | 🟡 |
+| 98 | [Полные названия команд в rich-экранах](task_98_full_team_names.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
