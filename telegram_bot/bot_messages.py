@@ -193,7 +193,7 @@ def _table(
     Аргументы:
         rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
         align: по символу на колонку — `l` (влево) или `r` (вправо).
-        playoff_line_after: после стольких строк тела — строка «линия плей-офф» на всю
+        playoff_line_after: после стольких строк тела — пунктир `_PLAYOFF_LINE` на всю
             ширину (турнирная таблица: топ-3 дивизиона, две путёвки Wild Card).
         bold: ячейки тела жирным — пары (строка тела, колонка), с нуля; то, на что
             экран отвечает (лучшее значение превью матча).
@@ -209,11 +209,15 @@ def _table(
     parts = [row(head, "th")]
     for i, cells in enumerate(body):
         if i == playoff_line_after:
-            parts.append(f'<tr><td colspan="{len(align)}" align="center"><i>линия плей-офф</i></td></tr>')
+            parts.append(f'<tr><td colspan="{len(align)}" align="center">{_PLAYOFF_LINE}</td></tr>')
         parts.append(row(cells, "td", i))
     attrs = "compact striped" if len(body) > _STRIPED_MIN_ROWS else "compact"
     return f"<table {attrs}>" + "".join(parts) + "</table>"
 
+
+# Линия плей-офф: рамок у отдельных строк rich-таблица не знает, поэтому черта — строка
+# пунктира на всю ширину; длина — чтобы не раздвигать таблицу на телефоне.
+_PLAYOFF_LINE = "┄" * 28
 
 # Полосы — только у таблиц длиннее десятка строк: на длинной они ведут глаз по строке,
 # на короткой — лишний шум (spike Задачи 88, `docs/telegram_bot.md` §«Стиль сообщений»).
@@ -1255,7 +1259,7 @@ def _standings_sort_key(team: Dict[str, Union[int, str, float, None]]) -> Tuple:
     pts = int(team.get("points") or 0)
     wins = int(team.get("wins") or 0)
     losses = int(team.get("losses") or 0)
-    name = str(team.get("short_name") or "")
+    name = str(team.get("name") or "")
     return (-pts, -wins, losses, name)
 
 
@@ -1278,7 +1282,7 @@ def _standings_row(label: str, team: Dict[str, Union[int, str, float, None]]) ->
     """Строка таблицы `/standings`: метка места (« 1.», «WC1») и показатели команды."""
     return [
         label,
-        str(team.get("short_name") or "—").strip(),
+        str(team.get("name") or "—").strip(),
         str(int(team.get("points") or 0)),
         str(int(team.get("games_played") or 0)),
         _fmt_standings_pct(team.get("procent_points")),
@@ -1298,9 +1302,9 @@ def _wild_card_block(
         teams = sorted(by_division.get(div) or [], key=_standings_sort_key)
         conf_teams.extend(teams)
         for t in teams[:3]:
-            top3_names.add(str(t.get("short_name") or "").strip())
+            top3_names.add(str(t.get("name") or "").strip())
     remaining = [
-        t for t in conf_teams if str(t.get("short_name") or "").strip() not in top3_names
+        t for t in conf_teams if str(t.get("name") or "").strip() not in top3_names
     ]
     remaining.sort(key=_standings_sort_key)
     if not remaining:
@@ -1377,14 +1381,14 @@ def team_table() -> str:
     отдаёт текст с причиной вместо таблицы с одними заголовками секций и
     без единой строки команды."""
     stats = cached_fetch_all(
-        "SELECT short_name, games_played, points, procent_points, wins, "
+        "SELECT t.name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
         "WHERE ts.season_id = %s "
         "ORDER BY conference_name, division_name, points DESC",
         (config.SEASON_ID,),
-        columns=['short_name', 'games_played', 'points', 'procent_points',
+        columns=['name', 'games_played', 'points', 'procent_points',
                  'wins', 'losses', 'ot', 'division_name', 'conference_name'],
     )
 
@@ -1398,7 +1402,7 @@ def team_table() -> str:
     teams: List[Dict[str, Union[int, str, float, None]]] = []
     for i in range(stats['count_rows']):
         teams.append({
-            'short_name': (stats['short_name'][i] or '—').strip(),
+            'name': (stats['name'][i] or '—').strip(),
             'games_played': stats['games_played'][i],
             'points': stats['points'][i],
             'procent_points': stats['procent_points'][i],

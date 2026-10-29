@@ -155,7 +155,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
     def test_team_table_includes_season_and_as_of(self):
         bot_messages = _load_bot_messages()
         standings_row = {
-            "short_name": ["BOS"],
+            "name": ["Boston Bruins"],
             "games_played": [82],
             "points": [110],
             "procent_points": [0.671],
@@ -179,11 +179,11 @@ class Phase1UxCommandsTest(unittest.TestCase):
             text = bot_messages.team_table()
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
-        self.assertIn("BOS", text)
+        self.assertIn("Boston Bruins", text)
         self.assertIn("<table compact>", text)
         self.assertNotIn("<pre>", text)
         self.assertIn(
-            '<tr><td align="right">1.</td><td>BOS</td><td align="right">110</td>'
+            '<tr><td align="right">1.</td><td>Boston Bruins</td><td align="right">110</td>'
             '<td align="right">82</td><td align="right">0.7</td></tr>',
             text,
         )
