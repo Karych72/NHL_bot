@@ -24,13 +24,9 @@
 {"q": "финны в нхл", "tool": "country_players", "params": {"country": "FIN"}}
 {"q": "как играют чехи", "tool": "country_players", "params": {"country": "CZE"}}
 {"q": "американцы в этом сезоне", "tool": "country_players", "params": {"country": "USA"}}
-{"q": "как дела у Вашингтона", "tool": "team_profile", "params": {"team": "WSH"}}
 {"q": "Кэпс", "tool": "team_profile", "params": {"team": "WSH"}}
-{"q": "овечкин", "tool": "team_profile", "params": {"team": "WSH", "all_players": true}}
-{"q": "Макдэвид", "tool": "team_profile", "params": {"team": "EDM", "all_players": true}}
 {"q": "пингвины", "tool": "team_profile", "params": {"team": "PIT"}}
 {"q": "Тампа", "tool": "team_profile", "params": {"team": "TBL"}}
-{"q": "колорадо статистика", "tool": "team_profile", "params": {"team": "COL"}}
 {"q": "все игроки Бостона", "tool": "team_profile", "params": {"team": "BOS", "all_players": true}}
 {"q": "торонто мейплс ливс", "tool": "team_profile", "params": {"team": "TOR"}}
 {"q": "how are the Oilers doing", "tool": "team_profile", "params": {"team": "EDM"}}
@@ -50,15 +46,13 @@
 {"q": "у кого больше всех сухих матчей", "tool": "open_command", "params": {"command": "stats"}}
 {"q": "какая команда лучше всех в большинстве", "tool": "open_command", "params": {"command": "team_stats"}}
 {"q": "кто больше всех бросает по воротам из команд", "tool": "open_command", "params": {"command": "team_stats"}}
-{"q": "Сколько голов забил Овечкин?", "with_stats": true, "tool": "stats_question", "params": {}}
-{"q": "Дай статистику МакДэвида", "with_stats": true, "tool": "stats_question", "params": {}}
-{"q": "Как играет Кучеров в этом сезоне?", "with_stats": true, "tool": "stats_question", "params": {}}
-{"q": "Макдэвид", "with_stats": true, "tool": "stats_question", "params": {}}
-{"q": "Сколько голов Овечкин забил Коламбусу в сезоне 2024/25?", "with_stats": true, "tool": "stats_question", "params": {}}
-{"q": "все игроки Бостона", "with_stats": true, "tool": "team_profile", "params": {"team": "BOS", "all_players": true}}
-{"q": "лидеры по очкам", "with_stats": true, "tool": "leaders", "params": {"category": "points"}}
-{"q": "какие травмы у Эдмонтона", "with_stats": true, "tool": null}
-{"q": "как играют наши русские", "with_stats": true, "tool": "country_players", "params": {"country": "RUS"}}
-{"q": "лидеры по корси", "with_stats": true, "tool": "advanced_metric", "params": {"metric": "sat"}}
-{"q": "как дела у Вашингтона", "with_stats": true, "tool": "team_profile", "params": {"team": "WSH", "all_players": false}}
-{"q": "колорадо статистика", "with_stats": true, "tool": "team_profile", "params": {"team": "COL", "all_players": false}}
+{"q": "Сколько голов забил Овечкин?", "tool": "stats_question", "params": {}}
+{"q": "Дай статистику МакДэвида", "tool": "stats_question", "params": {}}
+{"q": "Как играет Кучеров в этом сезоне?", "tool": "stats_question", "params": {}}
+{"q": "Макдэвид", "tool": "stats_question", "params": {}}
+{"q": "Сколько голов Овечкин забил Коламбусу в сезоне 2024/25?", "tool": "stats_question", "params": {}}
+{"q": "лидеры по очкам", "tool": "leaders", "params": {"category": "points"}}
+{"q": "какие травмы у Эдмонтона", "tool": null}
+{"q": "как играют наши русские", "tool": "country_players", "params": {"country": "RUS"}}
+{"q": "как дела у Вашингтона", "tool": "team_profile", "params": {"team": "WSH", "all_players": false}}
+{"q": "колорадо статистика", "tool": "team_profile", "params": {"team": "COL", "all_players": false}}

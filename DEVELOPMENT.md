@@ -266,10 +266,24 @@ Dev-контейнеры подключены к сети прод-стека `n
   в этот файл и в `ai_stats.AI_TABLES` (тест `TestAiReaderRole` сверяет списки). Откат 0015 в одной
   базе роль не удаляет, пока права на неё остались в другой.
   **Выкатка на `nhl_dev`:** миграция применяется сама сервисом `migrate` при `up` (dev-стенд,
-  §«Dev-стенд»); на `postgres` (прод) — только мержем `develop` → `master`. Переменные бота
-  (в `.env` стека): `AI_STATS_CHAT_IDS` — белый список `chat_id` через запятую (пусто — функция
-  выключена), `AI_PG_USER` — роль (по умолчанию `nhl_ai_reader`); хост, порт и база — те же `PG_*`.
-  Контрольный прогон: `make ai-stats-eval` (нужны `ANTHROPIC_API_KEY` и база с миграцией).
+  §«Dev-стенд»); на `postgres` (прод) — только мержем `develop` → `master`. Переменная бота
+  (в `.env` стека): `AI_PG_USER` — роль (по умолчанию `nhl_ai_reader`); хост, порт и база — те же
+  `PG_*`. Контрольный прогон: `make ai-stats-eval` (нужны `ANTHROPIC_API_KEY` и база с миграцией).
+- **Премиум `premium_access` (миграция 0016, Задача 96).** Премиум-чату — ИИ 20 вопросов в сутки
+  и прогноз модели в превью; остальным — 3 вопроса в неделю, не больше 8 всего. Админской команды
+  нет: выдаёт и продлевает человек SQL-ом в каждой базе отдельно (`nhl_dev` — dev-бот, `postgres` —
+  прод). `chat_id` личного чата: написать боту любой вопрос и найти его в журнале —
+  `SELECT chat_id, question, asked_at FROM ai_questions ORDER BY asked_at DESC LIMIT 5;`.
+  Выдать или продлить (бессрочного нет — дату ставит человек):
+
+  ```bash
+  sudo -u deploy docker compose exec -T db psql -U postgres -d nhl_dev -c \
+    "INSERT INTO premium_access (chat_id, expires_at) VALUES (123456789, '2027-01-01 00:00+03')
+     ON CONFLICT (chat_id) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+  ```
+
+  Снять — `DELETE FROM premium_access WHERE chat_id = …` (или срок в прошлом). Откат 0016
+  удаляет `premium_access` и восстанавливает список текущих пользователей миграции 0012 по подпискам.
 
 ## Структура проекта
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
@@ -965,24 +966,33 @@ SLATE = {
 @pytest.fixture
 def upcoming_env(push_job, monkeypatch):
     """Рассылка превью с подменой NHL API, превью и БД: ``days`` — дни лиги, за которыми
-    ходили в NHL, ``previews`` — матчи, для которых собиралось превью, ``sent`` — отметки
-    (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` — (id подписки,
-    chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
-    ``run(bot, now)`` — один прогон."""
-    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0)
+    ходили в NHL, ``previews`` — пары (гости, хозяева), для которых собиралось превью,
+    ``sent`` — отметки (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` —
+    (id подписки, chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
+    ``premium`` — чаты с премиумом (Задача 96), ``predicted`` — матчи, чей прогноз читался из
+    ``game_predictions`` (у каждого — победа хозяев 61%); ``run(bot, now)`` — один прогон."""
+    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0,
+                          premium=set(), predicted=[])
 
     def fetch(day):
         env.days.append(day)
         return SLATE
 
-    def preview(game_id, away, home):
-        env.previews.append(game_id)
+    def preview(away, home):
+        env.previews.append((away, home))
         return f"PREVIEW {away} @ {home}", "Сезон 2026/27"
 
     def rows():
         env.read_subs += 1
         return env.chats
 
+    def predictions(query, params, columns):
+        env.predicted.append(params[0])
+        return {"count_rows": 1, "task": ["home_win"], "probability": [0.61]}
+
+    # Строка прогноза — настоящая `with_model_prediction`, подменена только её выборка.
+    monkeypatch.setattr(sys.modules["bot_messages"], "fetch_all", predictions)
+    monkeypatch.setattr(push_job.premium, "is_premium", lambda chat_id: chat_id in env.premium)
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
     monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
@@ -1039,7 +1049,29 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
     assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
     assert api.sent_messages == [], "превью уходят rich-сообщениями"
     assert all(m.rich_message.html.startswith("<p>⏰ Начало в ") for m in api.sent_rich)
-    assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
+    assert upcoming_env.previews == [("BOS", "TOR"), ("NYR", "MTL"), ("VAN", "SEA")]
+    assert upcoming_env.predicted == [], "бесплатным прогноз не читается"
+
+
+@pytest.mark.asyncio
+async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env, fake_bot, api):
+    """Задача 96: один матч, два чата — премиум получает строку прогноза, бесплатный нет;
+    превью общее и собирается один раз, прогноз дописывается при отправке, кто бы ни шёл
+    в рассылке первым."""
+    upcoming_env.chats = [(10, 111), (20, 222), (30, 333)]
+    upcoming_env.premium = {222}
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+
+    plain = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + PREVIEW_FOOTER
+    with_prediction = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + (
+        "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа TOR — 61%"
+        "<br>Настроить подписки: /subscriptions</footer>"
+    )
+    assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [
+        (111, plain), (222, with_prediction), (333, plain),
+    ]
+    assert upcoming_env.previews == [("BOS", "TOR")]
+    assert upcoming_env.predicted == [GAME_A]
 
 
 @pytest.mark.asyncio

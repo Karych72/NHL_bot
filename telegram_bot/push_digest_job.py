@@ -74,7 +74,9 @@ from bot_messages import (  # noqa: E402
     night_goals,
     rich_footer,
     rich_message,
+    with_model_prediction,
 )
+import premium  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402
     fetch_score,
@@ -615,10 +617,11 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
     Зачем: бот на виду у подписчика весь день — с 15:30 МСК на каждом прогоне (раз в
-    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд и строка
-    оценки модели, если прогноз опубликован): ближайший по началу ещё не начавшийся матч
-    дня, которого он не получал (решение человека 2026-10-25). Превью собирается раз на
-    матч, а не на подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
+    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд, премиум-чату —
+    и строка оценки модели, если прогноз опубликован, Задача 96): ближайший по началу ещё не
+    начавшийся матч дня, которого он не получал (решение человека 2026-10-25). Превью
+    собирается раз на матч, а не на подписчика, и без прогноза — его строка добавляется при
+    отправке каждому чату. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
     ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
@@ -635,8 +638,10 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = matchup_season_preview(game_id, away, home)
+            previews[game_id] = matchup_season_preview(away, home)
         body, footer = previews[game_id]
+        if premium.is_premium(chat_id):
+            footer = with_model_prediction(footer, game_id, home)
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"

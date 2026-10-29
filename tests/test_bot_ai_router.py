@@ -61,14 +61,15 @@ def _text(text: str) -> SimpleNamespace:
 
 @pytest.fixture
 def ai(bot_module, fake_db_router, monkeypatch):
-    """Фабрика окружения: чат задал сегодня `asked` вопросов, `existing` — текущий
-    пользователь; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
+    """Фабрика окружения: чат задал `asked` = (за сутки, за неделю, всего) вопросов, `premium` —
+    у него премиум; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
 
-    def _make(result: Any, asked: int = 0, existing: bool = False):
+    def _make(result: Any, asked: tuple = (0, 0, 0), premium: bool = False):
         bot = bot_module("bot")
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
-            ("count(*) FROM ai_questions", [(asked, existing)]),
+            ("FILTER (WHERE asked_at", [asked]),
+            ("FROM premium_access", [(premium,)]),
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
@@ -199,7 +200,8 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
     bot = bot_module("bot")
     ai_router = bot_module("ai_router")
     tools = ai_router.build_tools(["BOS"])
-    assert [t["name"] for t in tools] == list(bot.AI_SCREENS)
+    # `stats_question` — не экран: его вопрос уходит в `ai_stats` (Задача 83).
+    assert [t["name"] for t in tools] == [*bot.AI_SCREENS, "stats_question"]
     assert set(ai_router.SCREEN_COMMANDS) == set(bot.AI_COMMANDS)
     for tool in tools:
         assert tool["strict"] is True
@@ -248,24 +250,35 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
 
 
 # ---------------------------------------------------------------------------
-# Суточный лимит
+# Лимит (Задача 96): премиум — 20 в сутки; бесплатный — 3 в неделю и 8 за всё время.
+# Сам счёт (границы суток и недели МСК, источники) — на настоящей БД, tests/test_db_nhl.py.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("existing", "asked", "model_called"),
-    [(True, 19, True), (True, 20, False), (False, 4, True), (False, 5, False)],
+    ("premium", "asked", "refusal"),
+    [
+        (True, (19, 30, 500), None),
+        (True, (20, 20, 20), "LIMIT_TEXT"),
+        (False, (2, 2, 7), None),
+        (False, (0, 3, 3), "WEEK_LIMIT_TEXT"),
+        # Потолок за всё время — раньше недельного: новой недели бесплатный уже не дождётся.
+        (False, (0, 0, 8), "TOTAL_LIMIT_TEXT"),
+        (False, (0, 3, 8), "TOTAL_LIMIT_TEXT"),
+    ],
 )
-async def test_daily_limit_is_20_for_existing_users_and_5_for_new(
-    ai, bot_module, make_message, fake_bot, api, existing, asked, model_called
+async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
+    ai, bot_module, make_message, fake_bot, api, premium, asked, refusal
 ):
-    bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, existing=existing)
+    bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, premium=premium)
     await _ask(bot, make_message, fake_bot)
 
-    assert bool(messages.calls) is model_called
-    if not model_called:
-        assert _replies(api) == [_as_reply(bot_module("ai_router").LIMIT_TEXT)]
+    assert bool(messages.calls) is (refusal is None)
+    if refusal is not None:
+        assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
         assert not any(q.startswith("INSERT") for q, _ in cursor.executed)
+    # Премиум — по чату вопроса.
+    assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]
 
 
 # ---------------------------------------------------------------------------

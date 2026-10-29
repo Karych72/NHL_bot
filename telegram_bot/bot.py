@@ -480,24 +480,24 @@ AI_SCREENS: Dict[str, Callable[[Message, Bot, Dict[str, Any]], Awaitable[None]]]
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
-    Лимит исчерпан — ответ без вызова модели; модель выбрала экран — бот показывает его
-    (`AI_SCREENS`); иначе — её текст: отказ, уточнение или сообщение о сбое API.
+    Лимит исчерпан (`ai_router.limit_refusal`: премиум или бесплатный, Задача 96) — отказ без
+    вызова модели; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
+    отказ, уточнение или сообщение о сбое API.
 
-    Чатам из белого списка (`config.AI_STATS_CHAT_IDS`, Задача 83) модель ещё может передать
-    вопрос ответам по статистике (`ai_stats.answer`); а если чат получил такой ответ в
-    последние 30 минут, сообщение идёт туда сразу, без маршрутизатора.
+    Модель может передать вопрос ответам по статистике (`ai_stats.answer`, Задача 83); а если
+    чат получил такой ответ в последние 30 минут, сообщение идёт туда сразу, без маршрутизатора.
     """
     chat_id = message.chat.id
     text = message.text or ""
-    if ai_router.questions_left(chat_id) <= 0:
-        await message.answer_rich(rich_message(ai_router.LIMIT_TEXT))
+    refusal = ai_router.limit_refusal(chat_id)
+    if refusal is not None:
+        await message.answer_rich(rich_message(refusal))
         return
-    stats_allowed = chat_id in config.AI_STATS_CHAT_IDS
-    history = ai_stats.recent_pairs(chat_id) if stats_allowed else []
+    history = ai_stats.recent_pairs(chat_id)
     if history:
         await _answer_stats(message, text, history)
         return
-    reply = await ai_router.ask(chat_id, text, with_stats=stats_allowed)
+    reply = await ai_router.ask(chat_id, text)
     if reply.tool == "stats_question":
         await _answer_stats(message, text, history)
         return

@@ -1022,73 +1022,102 @@ class TestGoalClipCacheSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
-class TestAiQuestionsSql(unittest.TestCase):
-    """Суточный лимит и журнал свободного текста (Задача 81) на настоящих ``ai_questions`` и
-    ``ai_existing_users``. Юнит-тесты подменяют ответ БД, здесь проверяется сам SQL: граница
-    суток по МСК и лимит текущего пользователя. Чаты — отрицательные, как в
-    ``TestSubscriptionRepoSql``; строки удаляются до и после."""
+class TestAiLimitSql(unittest.TestCase):
+    """Премиум и лимит вопросов к ИИ (Задачи 81, 96) на настоящих ``premium_access``,
+    ``ai_questions`` и ``ai_stats_log``. Юнит-тесты подменяют ответ БД, здесь проверяется сам
+    SQL: срок премиума, границы суток и недели по МСК, потолок за всё время, что считается
+    вопросом. Чаты — отрицательные, как в ``TestSubscriptionRepoSql``; строки удаляются до и
+    после."""
 
-    NEW_CHAT = -999000081
-    EXISTING_CHAT = -999000082
+    FREE_CHAT = -999000081
+    PREMIUM_CHAT = -999000082
+    EXPIRED_CHAT = -999000083
+    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT]
+    # Минута до начала текущих суток / недели по МСК — уже не в счёт.
+    BEFORE_DAY = ("(date_trunc('day', now() AT TIME ZONE 'Europe/Moscow') - interval '1 minute') "
+                  "AT TIME ZONE 'Europe/Moscow'")
+    BEFORE_WEEK = BEFORE_DAY.replace("'day'", "'week'")
 
     def setUp(self):
         import ai_router
+        import premium
 
-        self.ai = ai_router
+        self.ai, self.premium = ai_router, premium
         self._cleanup()
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("INSERT INTO ai_existing_users (chat_id) VALUES (%s)", (self.EXISTING_CHAT,))
-
-    def _cleanup(self):
-        chats = [self.NEW_CHAT, self.EXISTING_CHAT]
-        with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM ai_questions WHERE chat_id = ANY(%s)", (chats,))
-            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", (chats,))
-            cur.execute("DELETE FROM ai_existing_users WHERE chat_id = ANY(%s)", (chats,))
-
-    def test_limit_counts_todays_questions_by_moscow_day(self):
-        ai = self.ai
-        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW)
-        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING)
-
-        ai._log_question(self.NEW_CHAT, "лидеры", "screen", 900, tool="leaders",
-                         tool_input={"category": "goals"}, cost_usd=0.004)
-        ai._log_question(self.NEW_CHAT, "погода", "error", 30000, error="APITimeoutError")
-        ai._log_question(self.EXISTING_CHAT, "таблица", "text", 700, answer="Пока не умею")
-        # Минута до полуночи по Москве — вчерашний вопрос, в сегодняшний лимит не входит.
-        with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO ai_questions (chat_id, question, outcome, latency_ms, asked_at) "
-                "VALUES (%s, 'вчера', 'text', 1, (date_trunc('day', now() AT TIME ZONE "
-                "'Europe/Moscow') - interval '1 minute') AT TIME ZONE 'Europe/Moscow')",
-                (self.NEW_CHAT,),
+                "INSERT INTO premium_access (chat_id, expires_at) VALUES "
+                "(%s, now() + interval '1 day'), (%s, now() - interval '1 second')",
+                (self.PREMIUM_CHAT, self.EXPIRED_CHAT),
             )
 
-        # Сбой API лимит не списывает: из трёх строк NEW_CHAT в счёт — только сегодняшний экран.
-        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 1)
-        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING - 1)
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("ai_questions", "ai_stats_log", "premium_access"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    def _asked(self, chat_id, n, at="now()", table="ai_questions", outcome="text"):
+        """``n`` вопросов чата в журнале ``table`` моментом ``at`` (SQL-выражение)."""
+        extra = "continuation, " if table == "ai_stats_log" else ""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for _ in range(n):
+                cur.execute(
+                    f"INSERT INTO {table} (chat_id, question, {extra}outcome, latency_ms, asked_at) "
+                    f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, {at})",
+                    (chat_id, outcome),
+                )
+
+    def test_is_premium_only_until_expiry(self):
+        self.assertTrue(self.premium.is_premium(self.PREMIUM_CHAT))
+        self.assertFalse(self.premium.is_premium(self.EXPIRED_CHAT))
+        self.assertFalse(self.premium.is_premium(self.FREE_CHAT))
+
+    def test_premium_limit_is_per_moscow_day(self):
+        ai = self.ai
+        self._asked(self.PREMIUM_CHAT, 5, at=self.BEFORE_DAY)
+        self._asked(self.PREMIUM_CHAT, ai.PREMIUM_DAILY_LIMIT - 1)
+        self.assertIsNone(ai.limit_refusal(self.PREMIUM_CHAT))
+        self._asked(self.PREMIUM_CHAT, 1)
+        self.assertEqual(ai.limit_refusal(self.PREMIUM_CHAT), ai.LIMIT_TEXT)
+
+    def test_free_limit_is_per_moscow_week_from_monday(self):
+        ai = self.ai
+        # Истёкший премиум — бесплатный чат.
+        self._asked(self.EXPIRED_CHAT, 2, at=self.BEFORE_WEEK)
+        self._asked(self.EXPIRED_CHAT, ai.FREE_WEEKLY_LIMIT - 1)
+        self.assertIsNone(ai.limit_refusal(self.EXPIRED_CHAT))
+        self._asked(self.EXPIRED_CHAT, 1)
+        self.assertEqual(ai.limit_refusal(self.EXPIRED_CHAT), ai.WEEK_LIMIT_TEXT)
+
+    def test_free_total_cap_counts_whole_history(self):
+        ai = self.ai
+        self._asked(self.FREE_CHAT, ai.FREE_TOTAL_LIMIT - 1, at="now() - interval '60 days'")
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
+        self._asked(self.FREE_CHAT, 1, at="now() - interval '30 days'")
+        self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.TOTAL_LIMIT_TEXT)
+
+    def test_each_question_counts_once_and_failures_do_not(self):
+        """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
+        ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``
+        маршрутизатором и сбои (``error``) в счёт не идут."""
+        ai = self.ai
+        ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"}, cost_usd=0.004)
+        ai._log_question(self.FREE_CHAT, "погода", "error", 30000, error="APITimeoutError")
+        ai._log_question(self.FREE_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="clarify")
+        self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.WEEK_LIMIT_TEXT)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT tool, tool_input, cost_usd FROM ai_questions "
-                "WHERE chat_id = %s AND outcome = 'screen'",
-                (self.NEW_CHAT,),
+                "WHERE chat_id = %s AND tool = 'leaders'",
+                (self.FREE_CHAT,),
             )
             self.assertEqual(cur.fetchall(), [("leaders", {"category": "goals"}, Decimal("0.004000"))])
-
-    def test_stats_questions_count_once_through_ai_stats_log(self):
-        """Вопрос статистики (Задача 83) списывает одну единицу: строка `ai_stats_log`;
-        выбор `stats_question` маршрутизатором и сбой в журнале 83 в счёт не идут."""
-        ai = self.ai
-        ai._log_question(self.NEW_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
-        with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for outcome in ("answer", "error", "ceiling"):
-                cur.execute(
-                    "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, latency_ms) "
-                    "VALUES (%s, 'голы', false, %s, 5)",
-                    (self.NEW_CHAT, outcome),
-                )
-        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 2)
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -1201,7 +1230,7 @@ class TestAiReaderRole(unittest.TestCase):
 
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
-                      "ai_existing_users", "prediction_log", "game_predictions", "schema_migrations"):
+                      "premium_access", "prediction_log", "game_predictions", "schema_migrations"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):
