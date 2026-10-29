@@ -277,6 +277,7 @@ Dev-контейнеры подключены к сети прод-стека `n
   Выдать или продлить (бессрочного нет — дату ставит человек):
 
   ```bash
+  cd /opt/nhl_bot   # контейнер db — в стеке прода, у dev-стека своей базы нет
   sudo -u deploy docker compose exec -T db psql -U postgres -d nhl_dev -c \
     "INSERT INTO premium_access (chat_id, expires_at) VALUES (123456789, '2027-01-01 00:00+03')
      ON CONFLICT (chat_id) DO UPDATE SET expires_at = EXCLUDED.expires_at"
