@@ -492,7 +492,9 @@ async def test_chat_outside_whitelist_gets_neither_tool_nor_stats(stats, make_me
 
 
 @pytest.mark.asyncio
-async def test_whitelisted_chat_router_gets_stats_question_and_hands_over(stats, make_message, fake_bot, api):
+async def test_whitelisted_chat_router_gets_stats_question_and_hands_over(
+    stats, bot_module, make_message, fake_bot, api,
+):
     s = stats([_finish("off_topic", "Ответ 83")])
     replies = await _ask(s, make_message, fake_bot, api, "сколько Овечкин забил Коламбусу")
 
@@ -500,7 +502,8 @@ async def test_whitelisted_chat_router_gets_stats_question_and_hands_over(stats,
     tools = {t["name"]: t for t in router_call["tools"]}
     assert tools["stats_question"]["strict"] is True
     assert tools["stats_question"]["input_schema"]["properties"] == {}
-    assert "stats_question" in router_call["system"][0]["text"]
+    ai_router = bot_module("ai_router")
+    assert router_call["system"][0]["text"] == ai_router.SYSTEM_PROMPT + ai_router.STATS_RULE
     assert "run_sql" in [t["name"] for t in stats_call["tools"]]
     assert replies == [_as_reply("Ответ 83")]
     assert _logged(s.cursor)["question"] == "сколько Овечкин забил Коламбусу"
@@ -525,6 +528,11 @@ def test_router_request_for_other_chats_is_unchanged(stats, bot_module):
     assert [t["name"] for t in plain["tools"]] == [
         "open_command", "digest_for_date", "team_profile", "leaders", "country_players", "advanced_metric",
     ]
+    # Белый список только дописывает правило и инструмент в конец — остальное побайтно то же.
+    whitelisted = ai_router.request_params("вопрос", with_stats=True)
+    assert whitelisted["system"][0]["text"] == plain["system"][0]["text"] + ai_router.STATS_RULE
+    assert whitelisted["tools"][:-1] == plain["tools"]
+    assert whitelisted["messages"] == plain["messages"]
 
 
 @pytest.mark.asyncio
