@@ -2,7 +2,7 @@
 
 Модель подменена заранее заданными ответами (очередь `FakeMessages`), роль БД только на чтение —
 скриптованным соединением; проверяются цикл «инструмент → результат → финал», ревью, потолки,
-окно продолжения диалога, белый список и журнал. Роль БД на настоящем Postgres проверяет
+окно продолжения диалога, лимит и журнал. Роль БД на настоящем Postgres проверяет
 `tests/test_db_nhl.py`, качество ответов — `make ai-stats-eval` против настоящего API.
 """
 
@@ -121,15 +121,17 @@ class FakeReaderConnection:
 def stats(bot_module, fake_db_router, monkeypatch):
     """Фабрика окружения. `responses` — очередь ответов модели; `reader` — {подстрока SQL:
     (колонки, строки) или исключение}; `history` — строки журнала окна (вопрос, исход,
-    шаги, ответ, свежая ли) от новой к старой; `allowed` — чат в белом списке."""
+    шаги, ответ, свежая ли) от новой к старой; `asked` — (за сутки, за неделю, всего) вопросов
+    бесплатного чата (Задача 96)."""
 
-    def _make(responses, reader=None, history=(), allowed=True, asked=0, existing=False,
+    def _make(responses, reader=None, history=(), asked=(0, 0, 0),
               reader_error: Optional[Exception] = None, router=None):
         bot, ai_stats, ai_router, config = (bot_module(n) for n in ("bot", "ai_stats", "ai_router", "config"))
-        monkeypatch.setattr(config, "AI_STATS_CHAT_IDS", frozenset({CHAT_ID}) if allowed else frozenset())
         monkeypatch.setattr(config, "SEASON_ID", 20262027)
         cursor = fake_db_router([
-            ("count(*) FROM ai_questions", [(asked, existing)]),
+            # Раньше журнала окна: запрос лимита тоже читает ai_stats_log.
+            ("FILTER (WHERE asked_at", [asked]),
+            ("FROM premium_access", [(False,)]),
             ("FROM ai_stats_log WHERE chat_id", list(history)),
             ("INSERT INTO ai_stats_log", []),
             ("INSERT INTO ai_questions", []),
@@ -140,7 +142,7 @@ def stats(bot_module, fake_db_router, monkeypatch):
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
         if router is None:
             # Свежая история открывает окно (маршрутизатор не зовётся), иначе он выберет stats_question.
-            router = [] if history or not allowed else [_response(_use("stats_question"))]
+            router = [] if history else [_response(_use("stats_question"))]
         model = FakeMessages(responses, router)
         model.options = []
 
@@ -474,27 +476,13 @@ async def test_reply_to_clarification_is_forced_continuation(stats, make_message
 
 
 # ---------------------------------------------------------------------------
-# Белый список и подключение к маршрутизатору 81
+# Подключение к маршрутизатору 81 и лимит (Задача 96)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_chat_outside_whitelist_gets_neither_tool_nor_stats(stats, make_message, fake_bot, api):
-    s = stats([], allowed=False, history=[_past()],
-              router=[_response(SimpleNamespace(type="text", text="Пока не умею"))])
-    await _ask(s, make_message, fake_bot, api)
-
-    (call,) = s.model.router_calls
-    assert s.model.calls == []
-    assert "stats_question" not in [t["name"] for t in call["tools"]]
-    assert "stats_question" not in call["system"][0]["text"]
-    assert not any(q.startswith("SELECT question") for q, _ in s.cursor.executed), "история 83 не читалась"
-    assert not any(q.startswith("INSERT INTO ai_stats_log") for q, _ in s.cursor.executed)
-
-
-@pytest.mark.asyncio
-async def test_whitelisted_chat_router_gets_stats_question_and_hands_over(
-    stats, bot_module, make_message, fake_bot, api,
-):
+async def test_router_gets_stats_question_and_hands_over(stats, bot_module, make_message, fake_bot, api):
+    """Бесплатный чат в пределах лимита получает весь конвейер — и ответы по БД (решение
+    человека 2026-10-29)."""
     s = stats([_finish("off_topic", "Ответ 83")])
     replies = await _ask(s, make_message, fake_bot, api, "сколько Овечкин забил Коламбусу")
 
@@ -502,8 +490,7 @@ async def test_whitelisted_chat_router_gets_stats_question_and_hands_over(
     tools = {t["name"]: t for t in router_call["tools"]}
     assert tools["stats_question"]["strict"] is True
     assert tools["stats_question"]["input_schema"]["properties"] == {}
-    ai_router = bot_module("ai_router")
-    assert router_call["system"][0]["text"] == ai_router.SYSTEM_PROMPT + ai_router.STATS_RULE
+    assert "stats_question" in router_call["system"][0]["text"]
     assert "run_sql" in [t["name"] for t in stats_call["tools"]]
     assert replies == [_as_reply("Ответ 83")]
     assert _logged(s.cursor)["question"] == "сколько Овечкин забил Коламбусу"
@@ -520,28 +507,15 @@ async def test_chat_inside_window_skips_router(stats, make_message, fake_bot, ap
     assert replies == [_as_reply("Продолжение")]
 
 
-def test_router_request_for_other_chats_is_unchanged(stats, bot_module):
-    stats([])  # подменяет БД: список клубов для enum
-    ai_router = bot_module("ai_router")
-    plain = ai_router.request_params("вопрос")
-    assert plain["system"][0]["text"] == ai_router.SYSTEM_PROMPT
-    assert [t["name"] for t in plain["tools"]] == [
-        "open_command", "digest_for_date", "team_profile", "leaders", "country_players", "advanced_metric",
-    ]
-    # Белый список только дописывает правило и инструмент в конец — остальное побайтно то же.
-    whitelisted = ai_router.request_params("вопрос", with_stats=True)
-    assert whitelisted["system"][0]["text"] == plain["system"][0]["text"] + ai_router.STATS_RULE
-    assert whitelisted["tools"][:-1] == plain["tools"]
-    assert whitelisted["messages"] == plain["messages"]
-
-
 @pytest.mark.asyncio
-async def test_daily_limit_covers_whitelisted_chat(stats, make_message, fake_bot, api):
-    s = stats([], asked=5)
-    replies = await _ask(s, make_message, fake_bot, api)
+async def test_limit_stops_continuation_inside_window(stats, make_message, fake_bot, api):
+    """Продолжение диалога 83 — тоже вопрос: недельный лимит бесплатного его останавливает,
+    хотя окно открыто (а записанная строка `ai_stats_log` его списывает — tests/test_db_nhl.py)."""
+    s = stats([], history=[_past()], asked=(0, 3, 3))
+    replies = await _ask(s, make_message, fake_bot, api, "а в прошлом сезоне?")
 
-    assert replies == [_as_reply(s.bot.ai_router.LIMIT_TEXT)]
-    assert s.model.calls == []
+    assert replies == [_as_reply(s.bot.ai_router.WEEK_LIMIT_TEXT)]
+    assert s.model.calls == [] and s.model.router_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -654,17 +628,6 @@ def test_every_tool_is_strict(bot_module):
     for tool in ai_stats._tools() + ai_stats._verdict_tools():
         assert tool["strict"] is True
         assert tool["input_schema"]["additionalProperties"] is False
-
-
-def test_chat_ids_env_parsing(bot_module, monkeypatch):
-    config = bot_module("config")
-    monkeypatch.setenv("AI_STATS_CHAT_IDS", "100, -200 ,")
-    assert config._env_chat_ids("AI_STATS_CHAT_IDS") == frozenset({100, -200})
-    monkeypatch.setenv("AI_STATS_CHAT_IDS", "")
-    assert config._env_chat_ids("AI_STATS_CHAT_IDS") == frozenset()
-    monkeypatch.setenv("AI_STATS_CHAT_IDS", "100,abc")
-    with pytest.raises(ValueError, match="AI_STATS_CHAT_IDS"):
-        config._env_chat_ids("AI_STATS_CHAT_IDS")
 
 
 # ---------------------------------------------------------------------------

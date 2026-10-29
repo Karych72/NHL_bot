@@ -4,8 +4,8 @@
 фраза `scripts/ai_router_eval.jsonl` уходит модели тем же запросом, что в боте
 (`ai_router.call_model`, без записи в журнал `ai_questions`), и сверяется с ожидаемым
 инструментом и параметрами (проверяются только перечисленные в наборе) или с текстовым
-ответом (`"tool": null`). Фраза с `"with_stats": true` идёт запросом чата из белого списка
-Задачи 83 — с инструментом `stats_question`. Текстовые ответы печатаются целиком — их
+ответом (`"tool": null`); `stats_question` — передача ответам по статистике (Задача 83).
+Текстовые ответы печатаются целиком — их
 проверяют глазами на выдуманные факты; ответы с цифрами помечены. В конце — точность, стоимость вопроса
 (средняя и максимальная, из `usage`) и размер префикса (`messages.count_tokens`).
 
@@ -36,7 +36,7 @@ async def main() -> int:
     prefix = await ai_router.client().messages.count_tokens(**params)
     passed, costs = 0, []
     for case in cases:
-        response = await ai_router.call_model(case["q"], case.get("with_stats", False))
+        response = await ai_router.call_model(case["q"])
         reply = ai_router.decide(response)
         costs.append(ai_router.cost_usd(response.usage))
         if case["tool"] is None:
@@ -46,8 +46,7 @@ async def main() -> int:
             ok = reply.tool == case["tool"] and all(reply.params.get(k) == v for k, v in expected.items())
         passed += ok
         got = f"{reply.tool} {json.dumps(reply.params, ensure_ascii=False)}" if reply.tool else "текст"
-        mark = " [83]" if case.get("with_stats") else ""
-        print(f"{'OK  ' if ok else 'FAIL'}{mark} {case['q']!r} -> {got}")
+        print(f"{'OK  ' if ok else 'FAIL'} {case['q']!r} -> {got}")
         if reply.text is not None:
             flag = "  [ЦИФРЫ — проверить]" if re.search(r"\d", reply.text) else ""
             print(f"       «{reply.text}»{flag}")

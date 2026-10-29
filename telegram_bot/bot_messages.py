@@ -848,14 +848,23 @@ def _team_record_line(
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
 
 
-def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
-    """Строка оценки модели для превью: победа хозяев и тотал больше 5.5; None, если прогноза нет.
+def with_model_prediction(footer: str, game_id: int, home_abbr: str) -> str:
+    """Подвал превью (`matchup_season_preview`) со строкой оценки модели: победа хозяев и тотал
+    больше 5.5; прогноза нет — подвал как есть.
 
-    Читает `game_predictions` (Задачи 22B, 73) по точному `game_id`. Публикация пишет строки
-    только для игр, где у обеих команд не меньше 5 игр в сезоне, и только для победы,
-    прошедшей гейт, — поэтому ни сезон, ни статус модели бот не проверяет; каждой части
-    строки может не быть отдельно. Запрос без кэша: ежедневная публикация заменяет строки.
+    Зачем: прогноз — только премиуму (Задача 96), поэтому строку добавляет вызывающий, знающий
+    чат, а не общее превью (у рассылки оно одно на все чаты). Читает `game_predictions`
+    (Задачи 22B, 73) по точному `game_id`. Публикация пишет строки только для игр, где у обеих
+    команд не меньше 5 игр в сезоне, и только для победы, прошедшей гейт, — поэтому ни сезон,
+    ни статус модели бот не проверяет; каждой части строки может не быть отдельно. Запрос без
+    кэша: ежедневная публикация заменяет строки.
+
+    Аргументы:
+        footer: подвал превью.
+        game_id: матч из расписания.
+        home_abbr: аббревиатура хозяев, как в превью (экранируется здесь).
     """
+    esc_home = html.escape(home_abbr)
     rows = fetch_all(
         "SELECT task, probability FROM game_predictions "
         "WHERE game_id = %s AND task IN ('home_win', 'over_5_5')",
@@ -869,8 +878,8 @@ def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
     if "over_5_5" in pct:
         parts.append(f"тотал больше 5.5 — {pct['over_5_5']}%")
     if not parts:
-        return None
-    return "Оценка модели (не совет): " + ", ".join(parts)
+        return footer
+    return f"{footer}\nОценка модели (не совет): " + ", ".join(parts)
 
 
 def _fmt_signed(val: Union[int, float, None]) -> str:
@@ -963,18 +972,15 @@ def _matchup_compare_table(
     return _table(rows, "lrr", bold=bold)
 
 
-def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tuple[str, str]:
+def matchup_season_preview(away_abbr: str, home_abbr: str) -> Tuple[str, str]:
     """
     Сезонное сравнение по teams.abbreviation (= abbrev из NHL API).
 
-    `game_id` — игра из расписания: по нему в подвал превью добавляется строка
-    модельной оценки (если она опубликована; при раннем выходе, когда обеих
-    команд нет в teams_stats, строки нет).
-
     Возвращает: (тело — построчный HTML для `rich_message()`, метрики — таблица
-    `_table`; строки подвала для `rich_footer()` — сезон и оценка модели). Подвал
-    отдельно: вызывающий дописывает в него свои строки (рассылка — ссылку на
-    подписки), а подвал у сообщения один и последний.
+    `_table`; строки подвала для `rich_footer()` — сезон). Подвал отдельно:
+    вызывающий дописывает в него свои строки (премиум-чату — оценку модели,
+    `with_model_prediction`; рассылка — ссылку на подписки), а подвал у сообщения
+    один и последний. Превью одно на все чаты, поэтому от чата не зависит.
     """
     a = (away_abbr or "").strip().upper()
     h = (home_abbr or "").strip().upper()
@@ -1053,11 +1059,6 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tupl
         parts.append(_one_line_team_html(home_abbr, rh))
     else:
         parts.append(_matchup_compare_table(a, h, ra, rh))
-
-    prediction = _model_prediction_line(game_id, esc_h)
-    if prediction:
-        footer += f"\n{prediction}"
-
     return "\n".join(parts), footer
 
 

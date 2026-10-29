@@ -44,7 +44,9 @@ from bot_messages import (
     team_stat_leaderboard_page,
     truncate_telegram_text,
     truncation_marker,
+    with_model_prediction,
 )
+import premium
 from keyboards import build_menu, callback_message
 from help_text import (
     ADVANCED_COMMAND_INTRO,
@@ -475,7 +477,8 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
 
     Если матч уже есть в базе — шлёт полную карточку (`send_game_card_message`);
     иначе шлёт текстовое превью сезонных встреч команд (`matchup_season_preview`)
-    — матч из расписания NHL API мог ещё не попасть в БД. Повторное нажатие
+    — матч из расписания NHL API мог ещё не попасть в БД; премиум-чату — с оценкой
+    модели (Задача 96). Повторное нажатие
     не шлёт копию, а ссылается на уже отправленный ответ
     (`_point_to_tonight_answer`).
     """
@@ -494,7 +497,9 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
         # Проза без счётных элементов — сноска без чисел, но текст берётся из
         # того же единственного хелпера (truncate_telegram_text по умолчанию),
         # а не из литерала, продублированного здесь и в bot.py.
-        body, footer = matchup_season_preview(game_id, away, home)
+        body, footer = matchup_season_preview(away, home)
+        if premium.is_premium(chat_id):
+            footer = with_model_prediction(footer, game_id, home)
         text = f"{truncate_telegram_text(body)}\n{rich_footer(footer)}"
         answer = await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(text))
     sent[key] = [answer.message_id, None]
