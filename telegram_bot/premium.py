@@ -3,7 +3,7 @@
 Часть `telegram_bot/`: признак читают лимит ИИ (`ai_router.limit_refusal`), превью матча по
 кнопке (`stats_handlers`) и рассылка превью (`push_digest_job`). Хранится в `premium_access`
 (миграция 0016): чат и срок. Покупка — подписка Telegram Stars (`bot.py`: `/premium`, оплата);
-каждый платёж пишется в журнал `premium_payments` (миграция 0017) и продлевает срок на 30 дней
+каждый платёж пишется в журнал `premium_payments` (миграция 0018) и продлевает срок на 30 дней
 (`extend_premium`). Возврат делает человек на VM: `python premium.py refund <charge_id>`.
 """
 

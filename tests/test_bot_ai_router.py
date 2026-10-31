@@ -78,8 +78,9 @@ def ai(bot_module, fake_db_router, monkeypatch):
             ("max(day) AS day FROM games", [(None,)]),
             ("", []),
         ])
-        # Журнал пишет через `get_connection`, импортированный в ai_router по имени.
+        # Журналы пишут через `get_connection`, импортированный в модуль по имени.
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+        monkeypatch.setattr(bot, "get_connection", bot_module("database").get_connection)
         messages = FakeMessages(result)
         monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
         return bot, cursor, messages
@@ -258,20 +259,22 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("premium", "asked", "refusal"),
+    ("premium", "asked", "refusal", "limit"),
     [
-        (True, (19, 30, 500), None),
-        (True, (20, 20, 20), "LIMIT_TEXT"),
-        (False, (2, 2, 7), None),
-        (False, (0, 3, 3), "WEEK_LIMIT_TEXT"),
+        (True, (19, 30, 500), None, None),
+        (True, (20, 20, 20), "LIMIT_TEXT", "day"),
+        (False, (2, 2, 7), None, None),
+        (False, (0, 3, 3), "WEEK_LIMIT_TEXT", "week"),
         # Потолок за всё время — раньше недельного: новой недели бесплатный уже не дождётся.
-        (False, (0, 0, 8), "TOTAL_LIMIT_TEXT"),
-        (False, (0, 3, 8), "TOTAL_LIMIT_TEXT"),
+        (False, (0, 0, 8), "TOTAL_LIMIT_TEXT", "total"),
+        (False, (0, 3, 8), "TOTAL_LIMIT_TEXT", "total"),
     ],
 )
 async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
-    ai, bot_module, make_message, fake_bot, api, premium, asked, refusal
+    ai, bot_module, make_message, fake_bot, api, premium, asked, refusal, limit
 ):
+    """Отказ модель не вызывает и в `ai_questions` не пишется — только строкой `ai_limit`
+    с видом лимита в журнал действий (Задача 99)."""
     bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, premium=premium)
     await _ask(bot, make_message, fake_bot)
 
@@ -279,7 +282,10 @@ async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
     if refusal is not None:
         assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
         assert ("/premium" in getattr(bot_module("ai_router"), refusal)) is not premium
-        assert not any(q.startswith("INSERT") for q, _ in cursor.executed)
+        message = make_message("")
+        assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
+            ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", limit))
+        ]
     # Премиум — по чату вопроса.
     assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]
 

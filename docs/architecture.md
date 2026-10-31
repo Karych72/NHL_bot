@@ -71,8 +71,10 @@ NHL_bot/
 │       ├── 0015_ai_stats.down.sql
 │       ├── 0016_premium_access.up.sql   # Премиум чата до даты; удаляет список текущих пользователей 0012 (Задача 96)
 │       ├── 0016_premium_access.down.sql
-│       ├── 0017_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
-│       └── 0017_premium_payments.down.sql
+│       ├── 0017_bot_actions.up.sql      # Журнал действий bot_actions и история подписок bot_subscription_events (триггер) (Задача 99)
+│       ├── 0017_bot_actions.down.sql
+│       ├── 0018_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
+│       └── 0018_premium_payments.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -110,6 +112,7 @@ NHL_bot/
 │   ├── ai_router_eval.jsonl            # Фразы набора с ожидаемым экраном или текстовым ответом
 │   ├── ai_stats_eval.py                # `make ai-stats-eval`: контрольный набор статистических вопросов против Claude API и БД (Задача 83)
 │   ├── ai_stats_eval.jsonl             # Вопросы с ожидаемыми числами (точечные, обзоры игроков, нет данных, уточнения, цепочки)
+│   ├── bot_users_report.sh             # Отчёт по пользователям обоих ботов: подписки, ИИ, действия, премиум (только чтение)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
 │   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
@@ -127,7 +130,7 @@ NHL_bot/
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99)
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит вопросов, журнал ai_questions (Задачи 81, 96)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
