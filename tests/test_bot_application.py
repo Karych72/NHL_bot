@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, List, Tuple
 
 import pytest
 from aiogram import Dispatcher
 from aiogram.filters import Command, CommandStart
-from aiogram.methods import SetMyCommands
+from aiogram.methods import AnswerPreCheckoutQuery, CreateInvoiceLink, SetMyCommands
+from aiogram.types import Message, PreCheckoutQuery
 
 from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
@@ -82,12 +84,12 @@ def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
     assert [h.callback for h in handlers] == [
         bot.cmd_start, bot.cmd_help, bot.cmd_today, bot.cmd_tonight, bot.cmd_standings,
         bot.cmd_team, bot.cmd_team_profile, bot.cmd_stats, bot.cmd_team_stats, bot.cmd_countries,
-        bot.cmd_subscriptions,
+        bot.cmd_subscriptions, bot.cmd_premium, bot.cmd_paysupport, bot.on_successful_payment,
     ]
     assert isinstance(handlers[0].filters[0].callback, CommandStart)
     assert _commands(router) == [
         "start", "help", "today", "tonight", "standings", "team", "stats", "team_stats", "countries",
-        "subscriptions",
+        "subscriptions", "premium", "paysupport",
     ]
 
 
@@ -165,14 +167,14 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
     registered = [
         h
         for router in dispatcher.sub_routers
-        for observer in (router.message, router.callback_query)
+        for observer in (router.message, router.callback_query, router.pre_checkout_query)
         for h in observer.handlers
     ]
     for handler in registered:
         assert asyncio.iscoroutinefunction(handler.callback), f"{handler.callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: standalone — 11 команд и 6 кнопок; хвост — 1.
-    assert len(registered) == 17 + 1
+    # Страховка от «проверили пустой список»: standalone — 14 хендлеров сообщений, 6 кнопок и pre_checkout; хвост — 1.
+    assert len(registered) == 21 + 1
     assert {h.callback.__module__ for h in registered} == {"bot", "stats_handlers"}
 
 
@@ -508,3 +510,115 @@ def test_env_float_raises_on_garbage_value_without_leaking_it(
 
     assert "PUSH_SEND_INTERVAL_SEC" in str(exc_info.value)
     assert "not-a-number" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Премиум за Stars (Задача 97)
+# ---------------------------------------------------------------------------
+
+def _premium_until(days: int) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("until_days, status", [(5, "Премиум до "), (None, "Премиума нет")])
+async def test_premium_command_shows_status_and_pay_button(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, until_days, status
+) -> None:
+    premium = bot_module("premium")
+    monkeypatch.setattr(
+        premium, "premium_until", lambda chat_id: None if until_days is None else _premium_until(until_days)
+    )
+
+    await _feed(dispatcher, fake_bot, make_update("/premium"))
+
+    [invoice] = api.sent(CreateInvoiceLink)
+    assert (invoice.currency, invoice.provider_token) == ("XTR", None)
+    assert [(p.amount) for p in invoice.prices] == [100]
+    assert invoice.subscription_period == 2592000
+    [reply] = api.sent_rich
+    html = body(reply)
+    assert status in html
+    assert (str(bot_module("ai_router").PREMIUM_DAILY_LIMIT) in html) and ("100 ⭐" in html)
+    assert ("автопродление" in html) is (until_days is not None)
+    [button] = [b for row in reply.reply_markup.inline_keyboard for b in row]
+    assert button.url == "https://t.me/$fake-invoice"
+
+
+@pytest.mark.asyncio
+async def test_premium_command_in_group_has_no_button_and_no_invoice(
+    bot_module, dispatcher, fake_bot, api, make_update
+) -> None:
+    await _feed(dispatcher, fake_bot, make_update("/premium", chat_id=-500, chat_type="supergroup"))
+
+    [reply] = api.sent_messages
+    assert "только в личном чате" in reply.text
+    assert reply.reply_markup is None
+    assert api.sent(CreateInvoiceLink) == []
+
+
+@pytest.mark.asyncio
+async def test_paysupport_names_the_support_contact(dispatcher, fake_bot, api, make_update) -> None:
+    await _feed(dispatcher, fake_bot, make_update("/paysupport"))
+
+    [reply] = api.sent_messages
+    assert "@karych_72" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_pre_checkout_is_confirmed_without_database(bot_module, fake_bot, api) -> None:
+    query = PreCheckoutQuery.model_validate(
+        {"id": "q1", "from": {"id": 200, "is_bot": False, "first_name": "T"}, "currency": "XTR",
+         "total_amount": 100, "invoice_payload": "premium"},
+        context={"bot": fake_bot},
+    )
+
+    await bot_module("bot").on_pre_checkout(query)
+
+    [answer] = api.sent(AnswerPreCheckoutQuery)
+    assert (answer.pre_checkout_query_id, answer.ok) == ("q1", True)
+
+
+def _payment_message(fake_bot: Any) -> Message:
+    return Message.model_validate(
+        {"message_id": 1, "date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+         "chat": {"id": 200, "type": "private"},
+         "successful_payment": {
+             "currency": "XTR", "total_amount": 100, "invoice_payload": "premium",
+             "telegram_payment_charge_id": "tg-charge-1", "provider_payment_charge_id": "",
+             "is_recurring": True}},
+        context={"bot": fake_bot},
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_payment_extends_premium_and_thanks(bot_module, fake_bot, api, monkeypatch) -> None:
+    calls: List[Tuple[Any, ...]] = []
+
+    def extend(*args: Any) -> datetime:
+        calls.append(args)
+        return datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(bot_module("premium"), "extend_premium", extend)
+
+    await bot_module("bot").on_successful_payment(_payment_message(fake_bot), fake_bot)
+
+    assert calls == [(200, "tg-charge-1", 100, True)]
+    [reply] = api.sent_messages
+    assert "Премиум до 01.12" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_failed_payment_record_is_logged_with_charge_id_and_raised(
+    bot_module, fake_bot, api, monkeypatch, caplog
+) -> None:
+    def broken(*args: Any) -> datetime:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(bot_module("premium"), "extend_premium", broken)
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await bot_module("bot").on_successful_payment(_payment_message(fake_bot), fake_bot)
+
+    assert "tg-charge-1" in caplog.text and "chat_id=200" in caplog.text
+    assert api.outgoing == []

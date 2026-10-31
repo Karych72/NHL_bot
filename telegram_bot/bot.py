@@ -17,16 +17,26 @@ import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
 from aiogram.utils.magic_filter import MagicFilter
 
 import ai_router
 import ai_stats
 import config
+import premium
 import subscription_repo
 from leaderboard_specs import ADVANCED_METRICS
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
+    MSK,
     country_rankings,
     day_digest,
     rich_footer,
@@ -139,6 +149,80 @@ async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
 async def cmd_help(message: Message, bot: Bot) -> None:
     """`/help`: список команд бота."""
     await message.answer_rich(rich_message(HELP_MESSAGE))
+
+_PREMIUM_PERKS = (
+    f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
+    "прогноз модели в превью матчей."
+)
+_PREMIUM_CANCEL_HINT = (
+    "Отменить автопродление — в настройках Telegram: Настройки → Stars → Подписки. "
+    "Доступ остаётся до конца оплаченного срока."
+)
+_PREMIUM_GROUP_TEXT = "Оплатить премиум можно только в личном чате с ботом: откройте его и отправьте /premium."
+_PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
+
+
+async def cmd_premium(message: Message, bot: Bot) -> None:
+    """`/premium`: статус премиума, что он даёт и кнопка оплаты подпиской Stars (Задача 97).
+
+    Оплата только в личке (`chat_id` лички = `user_id`); в группе — текст без кнопки. При
+    активном премиуме кнопка остаётся (продлить заранее) и добавляется подсказка, как отменить
+    автопродление.
+    """
+    if message.chat.type != "private":
+        await message.answer(_PREMIUM_GROUP_TEXT)
+        return
+    until = premium.premium_until(message.chat.id)
+    status = f"Премиум до {until.astimezone(MSK):%d.%m}" if until else "Премиума нет"
+    link = await bot.create_invoice_link(
+        title="Премиум на 30 дней",
+        description=_PREMIUM_PERKS,
+        payload="premium",
+        currency="XTR",
+        prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
+        subscription_period=premium.PERIOD_SECONDS,
+    )
+    lines = [status, "", _PREMIUM_PERKS, f"Подписка {premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."]
+    if until:
+        lines += ["", _PREMIUM_CANCEL_HINT]
+    button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
+    await message.answer_rich(
+        rich_message("\n".join(lines)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
+    )
+
+
+async def cmd_paysupport(message: Message, bot: Bot) -> None:
+    """`/paysupport`: куда писать по вопросам оплаты и возвратам (обязательна для Stars)."""
+    await message.answer(_PAYSUPPORT_TEXT)
+
+
+async def on_pre_checkout(query: PreCheckoutQuery) -> None:
+    """Подтверждает оплату без похода в БД: Telegram ждёт ответа считаные секунды."""
+    await query.answer(ok=True)
+
+
+async def on_successful_payment(message: Message, bot: Bot) -> None:
+    """Платёж Stars прошёл (первый или автопродление): продлевает премиум и пишет срок.
+
+    Ошибка записи не глушится: деньги уже списаны, поэтому сначала в лог идут данные платежа
+    (выдать премиум придётся вручную), затем исключение уходит дальше.
+    """
+    payment = message.successful_payment
+    assert payment is not None
+    try:
+        until = premium.extend_premium(
+            message.chat.id,
+            payment.telegram_payment_charge_id,
+            payment.total_amount,
+            bool(payment.is_recurring),
+        )
+    except Exception:
+        logger.exception(
+            "premium payment not recorded: charge_id=%s chat_id=%s amount=%s",
+            payment.telegram_payment_charge_id, message.chat.id, payment.total_amount,
+        )
+        raise
+    await message.answer(f"Спасибо! Премиум до {until.astimezone(MSK):%d.%m}.")
 
 
 async def cmd_tonight(message: Message, bot: Bot) -> None:
@@ -555,8 +639,12 @@ def build_standalone_router() -> Router:
         ("team_stats", cmd_team_stats),
         ("countries", cmd_countries),
         ("subscriptions", cmd_subscriptions),
+        ("premium", cmd_premium),
+        ("paysupport", cmd_paysupport),
     ):
         router.message.register(handler, _command(name))
+    router.pre_checkout_query.register(on_pre_checkout)
+    router.message.register(on_successful_payment, F.successful_payment)
     for pattern, callback in (
         (STAT_SCREEN_CALLBACK_PATTERN, callback_stat_screen),
         (DIGEST_EXPAND_CALLBACK_PATTERN, callback_expand_digest_game),

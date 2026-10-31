@@ -1129,6 +1129,105 @@ class TestAiLimitSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestPremiumPaymentsSql(unittest.TestCase):
+    """Оплата премиума (Задача 97) на настоящих ``premium_access`` и ``premium_payments``:
+    продление от «сейчас» или от действующего срока, идемпотентность по ``charge_id``, откат
+    срока при возврате. Чаты — отрицательные, строки удаляются до и после."""
+
+    NEW_CHAT = -999000091
+    ACTIVE_CHAT = -999000092
+    EXPIRED_CHAT = -999000093
+    CHATS = [NEW_CHAT, ACTIVE_CHAT, EXPIRED_CHAT]
+
+    def setUp(self):
+        import premium
+
+        self.premium = premium
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        self.active_until = self._query(
+            "INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() + interval '10 days'), "
+            "(%s, now() - interval '5 days') RETURNING expires_at",
+            (self.ACTIVE_CHAT, self.EXPIRED_CHAT),
+        )[0][0]
+
+    def _cleanup(self):
+        for table in ("premium_payments", "premium_access"):
+            self._query(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _days(self, later, earlier):
+        """Разница двух timestamptz в сутках."""
+        [(days,)] = self._query("SELECT extract(epoch FROM (%s::timestamptz - %s::timestamptz)) / 86400",
+                                (later, earlier))
+        return float(days)
+
+    def test_new_and_expired_chats_extend_from_now(self):
+        for chat in (self.NEW_CHAT, self.EXPIRED_CHAT):
+            until = self.premium.extend_premium(chat, f"t97-{chat}", 100, False)
+            [(now,)] = self._query("SELECT now()")
+            self.assertAlmostEqual(self._days(until, now), 30, places=2)
+            self.assertTrue(self.premium.is_premium(chat))
+
+    def test_active_chat_extends_from_its_expiry(self):
+        until = self.premium.extend_premium(self.ACTIVE_CHAT, "t97-active", 100, False)
+        self.assertAlmostEqual(self._days(until, self.active_until), 30, places=4)
+        self.assertEqual(self.premium.premium_until(self.ACTIVE_CHAT), until)
+
+    def test_same_charge_id_does_not_extend_twice(self):
+        first = self.premium.extend_premium(self.NEW_CHAT, "t97-dup", 100, False)
+        again = self.premium.extend_premium(self.NEW_CHAT, "t97-dup", 100, False)
+        self.assertEqual(first, again)
+        self.assertEqual(
+            self._query("SELECT count(*) FROM premium_payments WHERE chat_id = %s", (self.NEW_CHAT,)),
+            [(1,)],
+        )
+
+    def test_recurring_payment_extends_and_is_journaled(self):
+        first = self.premium.extend_premium(self.NEW_CHAT, "t97-first", 100, False)
+        second = self.premium.extend_premium(self.NEW_CHAT, "t97-renew", 100, True)
+        self.assertAlmostEqual(self._days(second, first), 30, places=4)
+        self.assertEqual(
+            self._query("SELECT is_recurring, amount_stars, paid_until = %s FROM premium_payments "
+                        "WHERE telegram_payment_charge_id = 't97-renew'", (second,)),
+            [(True, 100, True)],
+        )
+
+    def test_refund_rolls_back_expiry_and_marks_payment(self):
+        self.premium.extend_premium(self.ACTIVE_CHAT, "t97-refund", 100, False)
+        self.assertEqual(self.premium.find_refundable_payment("t97-refund"), self.ACTIVE_CHAT)
+
+        self.premium.mark_refunded("t97-refund")
+
+        self.assertEqual(self.premium.premium_until(self.ACTIVE_CHAT), self.active_until)
+        self.assertIsNotNone(self._query(
+            "SELECT refunded_at FROM premium_payments WHERE telegram_payment_charge_id = 't97-refund'"
+        )[0][0])
+        with self.assertRaises(LookupError):
+            self.premium.find_refundable_payment("t97-refund")
+        with self.assertRaises(LookupError):
+            self.premium.mark_refunded("t97-refund")
+        with self.assertRaises(LookupError):
+            self.premium.find_refundable_payment("t97-missing")
+
+    def test_refund_never_moves_expiry_into_the_past(self):
+        self.premium.extend_premium(self.NEW_CHAT, "t97-short", 100, False)
+        self._query("UPDATE premium_access SET expires_at = now() + interval '1 day' WHERE chat_id = %s",
+                    (self.NEW_CHAT,))
+        self.premium.mark_refunded("t97-short")
+        self.assertFalse(self.premium.is_premium(self.NEW_CHAT))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestAiStatsWindow(unittest.TestCase):
     """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
     строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""

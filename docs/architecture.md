@@ -70,7 +70,9 @@ NHL_bot/
 │       ├── 0015_ai_stats.up.sql         # Роль nhl_ai_reader (только чтение) и журнал ai_stats_log (Задача 83)
 │       ├── 0015_ai_stats.down.sql
 │       ├── 0016_premium_access.up.sql   # Премиум чата до даты; удаляет список текущих пользователей 0012 (Задача 96)
-│       └── 0016_premium_access.down.sql
+│       ├── 0016_premium_access.down.sql
+│       ├── 0017_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
+│       └── 0017_premium_payments.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -129,7 +131,7 @@ NHL_bot/
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит вопросов, журнал ai_questions (Задачи 81, 96)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
-│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
