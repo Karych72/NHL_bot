@@ -133,18 +133,26 @@ def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
 # так их одинаково зовёт и aiogram (бот подставляется по имени параметра), и `on_free_text`.
 
 
+# Кнопки приветствия ведут в меню `/subscriptions` (`callback_subscriptions`): нажатие
+# перерисовывает приветствие экраном подписок. «Утренний дайджест» — переключатель `sub:d`:
+# у подписанного нажатие дайджест выключит, подсказка нажатия об этом скажет.
+START_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text="⭐ Выбрать команды", callback_data="sub:T"),
+        InlineKeyboardButton(text="🌍 Выбрать страны", callback_data="sub:C"),
+    ],
+    [InlineKeyboardButton(text="☕ Утренний дайджест", callback_data="sub:d")],
+])
+
+
 async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
-    """`/start`, в том числе deep link `?start=game_<id>` из карточки матча."""
+    """`/start`: приветствие с кнопками подписки; deep link `?start=game_<id>` из карточки
+    матча открывает карточку, битый id — приветствие."""
     args = (command.args or "").split()
-    if args and args[0].startswith("game_"):
-        try:
-            gid = int(args[0].split("_", 1)[1])
-        except (IndexError, ValueError):
-            await message.answer_rich(rich_message(START_MESSAGE))
-            return
-        await send_game_card_message(bot, message.chat.id, gid)
+    if args and args[0].startswith("game_") and args[0][5:].isdecimal():
+        await send_game_card_message(bot, message.chat.id, int(args[0][5:]))
         return
-    await message.answer_rich(rich_message(START_MESSAGE))
+    await message.answer_rich(rich_message(START_MESSAGE), reply_markup=START_KEYBOARD)
 
 
 async def cmd_help(message: Message, bot: Bot) -> None:
