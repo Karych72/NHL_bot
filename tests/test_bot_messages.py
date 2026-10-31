@@ -604,6 +604,7 @@ def _preview_stats_row(home="BBB"):
     """Ответ запроса `teams_stats` для пары AAA @ home (общий для тестов превью)."""
     return {
         "abbr": ["AAA", home],
+        "name": ["Aaa Club", f"{home} Club"],
         "games_played": [10, 10],
         "wins": [7, 3],
         "losses": [3, 7],
@@ -643,15 +644,15 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     bot_messages = bot_module("bot_messages")
     text, footer = _render_preview(bot_messages)
 
-    # Тело открывает матч без «— сезон …»: сезон ушёл в подвал.
-    assert text.startswith("<b>AAA @ BBB</b>")
+    # Тело открывает матч полными названиями (Задача 98), без «— сезон …»: сезон ушёл в подвал.
+    assert text.startswith("<b>Aaa Club @ BBB Club</b>")
     assert "сезон" not in text.splitlines()[0]
     assert footer.splitlines()[0].startswith("Сезон ")
-    # Одна таблица «метрика · гости · хозяева», аббревиатуры — в шапке колонок,
+    # Одна таблица «метрика · гости · хозяева», названия — в шапке колонок,
     # разница шайб со знаком.
     [table] = _tables(text)
     assert table[:4] == [
-        ["", "AAA", "BBB"],
+        ["", "Aaa Club", "BBB Club"],
         ["Очки", "14", "6"],
         ["% очков", "70%", "30%"],
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
@@ -699,10 +700,12 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
 
 def _with_prediction(bot_messages, predictions, home="BBB"):
     """`with_model_prediction("Сезон 2026/27", 777, home)` при строках `game_predictions`
-    {task: p}; возвращает (подвал, mock `fetch_all`)."""
+    {task: p}; в `teams` хозяева называются «<home> Club». Возвращает (подвал, mock `fetch_all`)."""
     rows = {"count_rows": len(predictions), "task": list(predictions),
             "probability": list(predictions.values())}
-    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch:
+    name = {"count_rows": 1, "name": [f"{home} Club"]}
+    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch, \
+            patch.object(bot_messages, "cached_fetch_all", return_value=name):
         return bot_messages.with_model_prediction("Сезон 2026/27", 777, home), mock_fetch
 
 
@@ -710,11 +713,25 @@ def test_with_model_prediction_appends_win_and_total_to_footer(bot_module):
     bot_messages = bot_module("bot_messages")
     footer, mock_fetch = _with_prediction(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
 
-    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB — 57%, тотал больше 5.5 — 47%"
+    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB Club — 57%, тотал больше 5.5 — 47%"
     # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
     query, params = mock_fetch.call_args.args[:2]
     assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
     assert params == (777,)
+
+
+def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_module):
+    """Код — параметром, в верхнем регистре без пробелов; команды нет в `teams` — LookupError,
+    а не код вместо названия (Задача 98)."""
+    bot_messages = bot_module("bot_messages")
+    found = {"count_rows": 1, "name": ["Washington Capitals"]}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=found) as mock_fetch:
+        assert bot_messages.team_name_for_abbrev(" wsh ") == "Washington Capitals"
+    assert mock_fetch.call_args.args[1] == (bot_messages.config.SEASON_ID, "WSH")
+
+    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
+            pytest.raises(LookupError, match="ZZZ"):
+        bot_messages.team_name_for_abbrev("ZZZ")
 
 
 def test_with_model_prediction_shows_total_without_win(bot_module):
@@ -728,9 +745,9 @@ def test_with_model_prediction_without_rows_keeps_footer(bot_module):
     assert footer == "Сезон 2026/27"
 
 
-def test_with_model_prediction_escapes_home_abbrev(bot_module):
+def test_with_model_prediction_escapes_home_name(bot_module):
     footer, _ = _with_prediction(bot_module("bot_messages"), {"home_win": 0.5}, home="B&B")
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B — 50%"
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B Club — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):

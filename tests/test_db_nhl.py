@@ -447,7 +447,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
     CHAT = -999000070
     SEASON = 99999999
-    TEAMS = ((900011, "AAA", "Metropolitan"), (900012, "BBB", "Metropolitan"), (900013, "CCC", "Atlantic"))
+    TEAMS = (
+        (900011, "AAA", "Aaa Club", "Metropolitan"),
+        (900012, "BBB", "Bbb Club", "Metropolitan"),
+        (900013, "CCC", "Ccc Club", "Atlantic"),
+    )
 
     def setUp(self):
         from unittest import mock
@@ -460,11 +464,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         self._cleanup()
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for team_id, abbrev, division in self.TEAMS:
+            for team_id, abbrev, name, division in self.TEAMS:
                 cur.execute(
-                    "INSERT INTO teams (team_id, season_id, abbreviation, division_name) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (team_id, self.SEASON, abbrev, division),
+                    "INSERT INTO teams (team_id, season_id, abbreviation, name, division_name) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (team_id, self.SEASON, abbrev, name, division),
                 )
         for patcher in (
             mock.patch.object(config, "SEASON_ID", self.SEASON),
@@ -621,7 +625,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         _, _, buttons = await self._press("sub:T")
         self.assertIn(("Metropolitan (1)", "sub:D:1"), buttons)
         _, text, buttons = await self._press("sub:m")
-        self.assertIn("<li>Команды: BBB</li>", text)
+        self.assertIn("<li>Команды: Bbb Club</li>", text, "текст — полным названием, кнопки — кодом")
         self.assertIn(("🏒 Команды (1)", "sub:T"), buttons)
 
         hint, _, buttons = await self._press("sub:t:1:900012")
@@ -698,8 +702,8 @@ class TestCountryNightSql(unittest.TestCase):
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO teams (team_id, season_id, abbreviation, short_name) "
-                "VALUES (%s, %s, 'HOM', 'Home'), (%s, %s, 'AWY', 'Away')",
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
                 (self.TEAM, self.SEASON, self.OPPONENT, self.SEASON),
             )
             cur.execute(
@@ -782,19 +786,19 @@ class TestCountryNightSql(unittest.TestCase):
         block_game = "\n".join([
             "<b>ZZZ</b>",
             "",
-            "Скорер&lt; (HOM, ц)",
+            "Скорер&lt; (Home Club, ц)",
             "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
             "",
-            "Крыло (HOM)",
+            "Крыло (Home Club)",
             "0+1 · −1 · 2 бр. · 3 хита · 15:30",
             "",
-            "Защитник (HOM, защ)",
+            "Защитник (Home Club, защ)",
             "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
             "",
-            "Стенка (HOM)",
+            "Стенка (Home Club)",
             "30/33 · 90.91% · 59:47",
         ])
-        block_game2 = "<b>ZZZ</b>\n\nГость (AWY)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
+        block_game2 = "<b>ZZZ</b>\n\nГость (Away Club)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
             self.messages.country_night_blocks("ZZZ", self.NIGHT),
             [(self.GAME, block_game), (self.GAME2, block_game2)],
@@ -806,7 +810,7 @@ class TestCountryNightSql(unittest.TestCase):
     def test_score_line_is_the_first_line_of_the_card(self):
         """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
         line = self.messages.game_score_line(self.GAME)
-        self.assertEqual(line, "🏒 <b>Home 3:2 Away</b>")
+        self.assertEqual(line, "🏒 <b>Home Club 3:2 Away Club</b>")
         self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
@@ -840,8 +844,8 @@ class TestCountryNightSql(unittest.TestCase):
 
         blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
         self.assertEqual(subscribed[both], {
-            self.GAME: (["HOM"], [("ZZZ", blocks[self.GAME])]),
-            self.GAME2: (["HOM"], [("ZZZ", blocks[self.GAME2])]),
+            self.GAME: (["Home Club"], [("ZZZ", blocks[self.GAME])]),
+            self.GAME2: (["Home Club"], [("ZZZ", blocks[self.GAME2])]),
         })
         self.assertEqual(
             {game: (subs.teams, [code for code, _ in subs.countries]) for game, subs in subscribed[yyy].items()},
