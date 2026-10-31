@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List
 
@@ -69,7 +70,7 @@ def ai(bot_module, fake_db_router, monkeypatch):
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
             ("FILTER (WHERE asked_at", [asked]),
-            ("FROM premium_access", [(premium,)]),
+            ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=timezone.utc),)] if premium else []),
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
@@ -280,6 +281,7 @@ async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
     assert bool(messages.calls) is (refusal is None)
     if refusal is not None:
         assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
+        assert ("/premium" in getattr(bot_module("ai_router"), refusal)) is not premium
         message = make_message("")
         assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
             ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", limit))

@@ -15,6 +15,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import (
     AnswerCallbackQuery,
     CopyMessage,
+    CreateInvoiceLink,
     EditMessageReplyMarkup,
     EditMessageText,
     GetMe,
@@ -121,6 +122,8 @@ class FakeSession(BaseSession):
             return self._message(method.chat_id, text=method.text)
         if isinstance(method, SendRichMessage):
             return self._message(method.chat_id)
+        if isinstance(method, CreateInvoiceLink):
+            return "https://t.me/$fake-invoice"
         if isinstance(method, CopyMessage):
             self._message_ids += 1
             return MessageId(message_id=self._message_ids)

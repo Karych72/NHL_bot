@@ -64,6 +64,7 @@ if _HERE not in sys.path:
 
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
+    MODEL_PREDICTION_TEASER,
     MSK,
     country_name,
     country_night_blocks,
@@ -642,6 +643,8 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         body, footer = previews[game_id]
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)
+        else:
+            footer = f"{footer}\n{MODEL_PREDICTION_TEASER}"
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
