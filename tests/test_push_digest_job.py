@@ -990,8 +990,10 @@ def upcoming_env(push_job, monkeypatch):
         env.predicted.append(params[0])
         return {"count_rows": 1, "task": ["home_win"], "probability": [0.61]}
 
-    # Строка прогноза — настоящая `with_model_prediction`, подменена только её выборка.
+    # Строка прогноза — настоящая `with_model_prediction`, подменены только её выборка
+    # и название хозяев из `teams`.
     monkeypatch.setattr(sys.modules["bot_messages"], "fetch_all", predictions)
+    monkeypatch.setattr(sys.modules["bot_messages"], "team_name_for_abbrev", lambda abbrev: f"{abbrev} Club")
     monkeypatch.setattr(push_job.premium, "is_premium", lambda chat_id: chat_id in env.premium)
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
@@ -1064,7 +1066,7 @@ async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env,
 
     plain = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + PREVIEW_FOOTER
     with_prediction = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + (
-        "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа TOR — 61%"
+        "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа TOR Club — 61%"
         "<br>Настроить подписки: /subscriptions</footer>"
     )
     assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [

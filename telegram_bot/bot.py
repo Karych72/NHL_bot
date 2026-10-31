@@ -247,7 +247,7 @@ def _sub_button(
 
 
 def _subscriptions_main_screen(
-    digest: bool, upcoming: bool, team_abbrevs: List[str], countries: List[str]
+    digest: bool, upcoming: bool, team_names: List[str], countries: List[str]
 ) -> _Screen:
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
     (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю.
@@ -257,8 +257,8 @@ def _subscriptions_main_screen(
         items.append("Утренний дайджест")
     if upcoming:
         items.append("Предстоящие матчи")
-    if team_abbrevs:
-        items.append("Команды: " + ", ".join(team_abbrevs))
+    if team_names:
+        items.append("Команды: " + ", ".join(html.escape(name) for name in team_names))
     if countries:
         items.append("Страны: " + ", ".join(countries))
     lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
@@ -267,7 +267,7 @@ def _subscriptions_main_screen(
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
         [
-            InlineKeyboardButton(text=f"🏒 Команды ({len(team_abbrevs)})", callback_data="sub:T"),
+            InlineKeyboardButton(text=f"🏒 Команды ({len(team_names)})", callback_data="sub:T"),
             InlineKeyboardButton(text=f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
         ],
         [InlineKeyboardButton(text="Готово", callback_data="sub:x")],
@@ -276,12 +276,12 @@ def _subscriptions_main_screen(
 
 
 def _subscriptions_divisions_screen(
-    teams_by_division: Dict[str, List[Tuple[int, str]]], team_ids: Set[int]
+    teams_by_division: Dict[str, List[Tuple[int, str, str]]], team_ids: Set[int]
 ) -> _Screen:
     """Шаг 1 выбора команд: дивизионы с числом выбранных команд в скобках."""
     buttons = []
     for i, (division, teams) in enumerate(teams_by_division.items()):
-        chosen = sum(1 for team_id, _ in teams if team_id in team_ids)
+        chosen = sum(1 for team_id, _, _ in teams if team_id in team_ids)
         label = f"{division} ({chosen})" if chosen else division
         buttons.append(InlineKeyboardButton(text=label, callback_data=f"sub:D:{i}"))
     rows = build_menu(buttons, n_cols=_DIVISION_BUTTON_COLUMNS)
@@ -293,13 +293,13 @@ def _subscriptions_divisions_screen(
 
 
 def _subscriptions_teams_screen(
-    teams_by_division: Dict[str, List[Tuple[int, str]]], team_ids: Set[int], division_index: int
+    teams_by_division: Dict[str, List[Tuple[int, str, str]]], team_ids: Set[int], division_index: int
 ) -> _Screen:
     """Шаг 2 выбора команд: команды дивизиона номер `division_index`, у выбранных ✅."""
     division, teams = list(teams_by_division.items())[division_index]
     buttons = [
         _sub_button(abbrev, team_id in team_ids, f"sub:t:{division_index}:{team_id}")
-        for team_id, abbrev in teams
+        for team_id, abbrev, _ in teams
     ]
     rows = build_menu(buttons, n_cols=_TEAM_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton(text="« К дивизионам", callback_data="sub:T")])
@@ -328,13 +328,13 @@ def _subscriptions_countries_screen(codes: List[str], chosen: List[str]) -> _Scr
 def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
     """Главный экран по текущим подпискам чата; читает БД."""
     subs = subscription_repo.get_chat_subscriptions(chat_id)
-    abbrevs = sorted(
-        abbrev
+    names = sorted(
+        name
         for teams in season_teams_by_division().values()
-        for team_id, abbrev in teams
+        for team_id, _, name in teams
         if team_id in subs.team_ids
     )
-    return _subscriptions_main_screen(subs.digest, subs.upcoming, abbrevs, subs.countries)
+    return _subscriptions_main_screen(subs.digest, subs.upcoming, names, subs.countries)
 
 
 async def cmd_subscriptions(message: Message, bot: Bot) -> None:
@@ -365,7 +365,7 @@ def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
     if action == "t":
         team_id = int(args[1])
         abbrev = next(
-            a for teams in season_teams_by_division().values() for t, a in teams if t == team_id
+            a for teams in season_teams_by_division().values() for t, a, _ in teams if t == team_id
         )
         if team_id in team_ids:
             subscription_repo.deactivate_team_scores(chat_id, team_id)
