@@ -52,9 +52,11 @@
 **Что делать.**
 1. **Миграция 0017.** Только миграция, без `data_tables/t.*.sql` — как `ai_questions`: журнал не
    восстановить повторной загрузкой.
-   - `bot_actions(id bigserial PK, chat_id bigint NOT NULL, at timestamptz NOT NULL DEFAULT now(),
-     kind text NOT NULL CHECK (kind IN ('command', 'callback', 'ai_limit', 'blocked')), data text)`,
-     индекс `(chat_id, at)`.
+   - `bot_actions(id bigserial PK, chat_id bigint NOT NULL, user_id bigint, at timestamptz NOT NULL
+     DEFAULT now(), kind text NOT NULL CHECK (kind IN ('command', 'callback', 'ai_limit', 'blocked')),
+     data text)`, индекс `(chat_id, at)`. `user_id` — `from_user.id` апдейта (решение человека
+     2026-10-31): в группе чат общий, а действует конкретный человек. У `blocked` он `NULL` — это
+     событие чата, а не человека.
    - `bot_subscription_events(id bigserial PK, subscription_id bigint NOT NULL, chat_id bigint NOT NULL,
      kind text NOT NULL, team_id bigint, country text, active boolean NOT NULL,
      at timestamptz NOT NULL DEFAULT now())`.
@@ -75,7 +77,7 @@
    Свободный текст к ИИ **не пишется**: он целиком в `ai_questions` / `ai_stats_log` (GC3 — не
    дублировать).
 3. **Middleware** — одна функция на оба типа апдейта, по образцу `enforce_callback_rate_limit`:
-   пишет строку и передаёт апдейт дальше. Запись в БД синхронная (`get_connection`) — вызывать через
+   пишет строку (`chat_id`, `user_id`) и передаёт апдейт дальше. Запись в БД синхронная (`get_connection`) — вызывать через
    `asyncio.to_thread`, как остальные обращения к БД из хендлеров. Ошибку записи не глушить (GC4):
    БД у бота одна, без неё и сам хендлер не ответит.
 4. **Документация.** `docs/telegram_bot.md` — раздел «Журнал действий»: что пишется, чего нет и
@@ -84,15 +86,13 @@
    `bot_subscription_events`), 2–3 примера запросов: активные за неделю, популярность экранов,
    действия перед `ai_limit`. `docs/architecture.md` — миграция 0017.
 
-**Решить в начале (человек).**
-1. **`chat_id` или ещё и `user_id`.** В группе нажимает конкретный человек, а чат общий. Рекомендую
-   только `chat_id` — как подписки и премиум (YAGNI): групп у бота нет или единицы.
-2. **Срок хранения.** Рекомендую без очистки: при текущей нагрузке это тысячи строк в месяц;
-   вернуться, когда журнал заметно вырастет.
+**Решения человека 2026-10-31.**
+1. В `bot_actions` пишется и `user_id`, не только `chat_id`.
+2. Журнал не чистится — ни срока хранения, ни задания очистки.
 
 **Критерии приёмки.**
 - Тесты (`feed_update` собранного `Dispatcher`): команда даёт строку `command` с нормализованным
-  именем; нажатие — строку `callback` с `callback_data`; нажатие, отброшенное троттлингом, строки
+  именем, `chat_id` и `user_id`; нажатие — строку `callback` с `callback_data`; нажатие, отброшенное троттлингом, строки
   не даёт; свободный текст строки в `bot_actions` не даёт; отказ по лимиту — `ai_limit` с видом
   лимита; `deactivate_chat` — `blocked`.
 - Триггер на БД (`tests/test_db_nhl.py`): вставка подписки — событие; выключение и повторное
