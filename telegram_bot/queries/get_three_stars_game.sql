@@ -1,9 +1,8 @@
-DROP FUNCTION IF EXISTS get_three_stars_game(bigint);
 CREATE OR REPLACE FUNCTION get_three_stars_game (now_game_id bigint)
     RETURNS TABLE(star              int,
                   lastname          varchar(50),
                   player_position   varchar(5),
-                  team_name         varchar(30),
+                  abbreviation      varchar(10),
                   goals             int,
                   assists           int,
                   saves             int,
@@ -11,7 +10,7 @@ CREATE OR REPLACE FUNCTION get_three_stars_game (now_game_id bigint)
                   save_percentage   double precision)
 AS $$
 BEGIN
-    RETURN QUERY select ts.star, r.lastname, r.position as player_position, t.name as team_name,
+    RETURN QUERY select ts.star, r.lastname, r.position as player_position, t.abbreviation,
                  gps.goals, gps.assists, ggs.saves, ggs.shots, ggs.save_percentage
                  from game_three_stars ts
                  left join games g

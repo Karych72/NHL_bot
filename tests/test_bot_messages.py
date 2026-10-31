@@ -221,13 +221,13 @@ def _game_message_fetch_all(query, params=None, columns=None):
 
 
 # Три звезды по умолчанию: полевой игрок, вратарь, и звезда с экранируемыми
-# фамилией/названием команды и без статистики (NULL) — хвост после «—»
+# фамилией/аббревиатурой команды и без статистики (NULL) — хвост после «—»
 # в этом случае не выводится.
 _THREE_STARS_ROWS = {
     "star": [1, 2, 3],
     "lastname": ["Kaprizov", "Thompson", _EVIL_SCORER],
     "player_position": ["LW", "G", "C"],
-    "team_name": ["Minnesota Wild", "Vegas Golden Knights", "TOR<script>alert(1)</script>"],
+    "abbreviation": ["MIN", "VGK", "TOR<script>alert(1)</script>"],
     "goals": [1, None, None],
     "assists": [0, None, None],
     "saves": [None, 33, None],
@@ -395,17 +395,17 @@ def test_game_message_renders_three_stars_heading_and_three_lines(game_message_t
 
 def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
     text, _ = game_message_text
-    assert "\n1. Kaprizov (Minnesota Wild) — 1+0\n" in text
+    assert "\n1. Kaprizov (MIN) — 1+0\n" in text
 
 
 def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
     game_message_text,
 ):
     text, _ = game_message_text
-    assert "\n2. Thompson (Vegas Golden Knights) — 33/34, 97.1%\n" in text
+    assert "\n2. Thompson (VGK) — 33/34, 97.1%\n" in text
 
 
-def test_game_message_escapes_html_in_three_star_lastname_and_team_name(
+def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
     game_message_text,
 ):
     text, _ = game_message_text
@@ -1540,13 +1540,12 @@ def test_player_stats_with_count_returns_total_from_window_function(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(
         bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
-    ) as mock_fetch:
+    ):
         _, n, total = bot_messages.player_stats_with_count(
             "Title", "players_season_stats", "points"
         )
     assert n == 3
     assert total == 42
-    assert "t.name AS team" in str(mock_fetch.call_args.args[0]), "команда — полным названием (Задача 98)"
 
 
 def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
@@ -1572,11 +1571,10 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [7], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows) as mock_fetch:
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
         _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 1
     assert total == 7
-    assert "SELECT t.name, " in str(mock_fetch.call_args.args[0]), "команда — полным названием (Задача 98)"
 
 
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
@@ -1748,7 +1746,7 @@ def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, f
 
 def _country_skater_row(lastname, goals, points, games, hits, shots, blocked):
     # lastname, team, goals, points, games, toi, hits, shots, blocked, total (total=25)
-    return (lastname, "Edmonton Oilers", goals, points, games, "21:30", hits, shots, blocked, 25)
+    return (lastname, "EDM", goals, points, games, "21:30", hits, shots, blocked, 25)
 
 
 @pytest.mark.parametrize(
@@ -1773,11 +1771,10 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     extra = "20" if group == "F" else "2"
     assert _tables(text) == [[
         ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", extra_header],
-        ["11.", "McDavid", "Edmonton Oilers", "4", "8", "7", "21:30", "5", extra],
+        ["11.", "McDavid", "EDM", "4", "8", "7", "21:30", "5", extra],
     ]]
     assert (has_prev, has_next) == (True, True)
     assert position_sql in cursor.executed[-1][0]
-    assert cursor.executed[-1][0].startswith("SELECT r.lastname, t.name, "), "полное название (Задача 98)"
 
 
 def test_country_page_keeps_every_column_and_full_last_name(
@@ -1795,7 +1792,7 @@ def test_country_page_keeps_every_column_and_full_last_name(
 
     assert _tables(text) == [[
         ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
-        ["1.", "Nugent-Hopkins", "Edmonton Oilers", "64", "153", "82", "21:30", "150", "300"],
+        ["1.", "Nugent-Hopkins", "EDM", "64", "153", "82", "21:30", "150", "300"],
     ]]
 
 
@@ -1814,17 +1811,16 @@ def test_country_pages_reject_code_outside_ranking_without_touching_sql(
 
 def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
     bot_messages = bot_module("bot_messages")
-    cursor = fake_db_router([
+    fake_db_router([
         _COUNTRY_RANKING,
         # lastname, team, wins, save_pct, gaa, games, shutouts, total
-        ("FROM goalies_season_stats", [("Vejmelka", "Utah Mammoth", 38, 89.67, 2.74592, 64, 3, 1)]),
+        ("FROM goalies_season_stats", [("Vejmelka", "UTA", 38, 89.67, 2.74592, 64, 3, 1)]),
     ])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)
     assert _tables(text) == [[
         ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"],
-        ["1.", "Vejmelka", "Utah Mammoth", "38", "89.67%", "2.75", "64", "3"],
+        ["1.", "Vejmelka", "UTA", "38", "89.67%", "2.75", "64", "3"],
     ]]
-    assert cursor.executed[-1][0].startswith("SELECT r.lastname, t.name, "), "полное название (Задача 98)"
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)

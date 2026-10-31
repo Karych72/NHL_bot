@@ -333,22 +333,22 @@ def _format_three_star_line(
     star: int,
     lastname: Optional[str],
     position: Optional[str],
-    team_name: Optional[str],
+    abbreviation: Optional[str],
     goals: Optional[int],
     assists: Optional[int],
     saves: Optional[int],
     shots: Optional[int],
     save_percentage: Optional[float],
 ) -> str:
-    """Одна строка блока «Звёзды матча»: `1. Kaprizov (Minnesota Wild) — 1+0` для полевого
-    игрока, `1. Thompson (Vegas Golden Knights) — 33/34, 97.1%` для вратаря (номер звезды — без «★»:
+    """Одна строка блока «Звёзды матча»: `1. Kaprizov (MIN) — 1+0` для полевого
+    игрока, `1. Thompson (VGK) — 33/34, 97.1%` для вратаря (номер звезды — без «★»:
     символы в теле сообщения не ставим, `docs/telegram_bot.md` §«Стиль сообщений»). Различение — по
     позиции из `rosters` (`G` → вратарь). Отсутствующая фамилия → `Unknown`
     (как для голов, `bot_messages.py:187`); отсутствующая статистика (NULL) —
     строка без хвоста после «—». Каждое поле из БД проходит `html.escape()`.
     """
     name = html.escape(str(lastname or "Unknown"))
-    team = html.escape(str(team_name or ""))
+    abbr = html.escape(str(abbreviation or ""))
     star_str = html.escape(str(star))
     is_goalie = position == "G"
     tail = ""
@@ -361,7 +361,7 @@ def _format_three_star_line(
     elif goals is not None and assists is not None:
         tail = f"{html.escape(str(goals))}+{html.escape(str(assists))}"
 
-    line = f"{star_str}. {name} ({team})"
+    line = f"{star_str}. {name} ({abbr})"
     return f"{line} — {tail}" if tail else line
 
 
@@ -499,7 +499,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
     game_three_stars = fetch_all(
         "SELECT * FROM get_three_stars_game(%s)", (game_id,),
-        ['star', 'lastname', 'player_position', 'team_name',
+        ['star', 'lastname', 'player_position', 'abbreviation',
          'goals', 'assists', 'saves', 'shots', 'save_percentage'],
     )
 
@@ -590,7 +590,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             game_three_stars['star'][i],
             game_three_stars['lastname'][i],
             game_three_stars['player_position'][i],
-            game_three_stars['team_name'][i],
+            game_three_stars['abbreviation'][i],
             game_three_stars['goals'][i],
             game_three_stars['assists'][i],
             game_three_stars['saves'][i],
@@ -1152,7 +1152,7 @@ def player_stats_with_count(
     tail_select, tail_keys = _leaderboard_tail_columns(table_name)
 
     q = sql.SQL(
-        "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.name AS team, "
+        "SELECT r.lastname, r.position AS roster_position, {pl_col}, t.abbreviation AS team, "
         "{tail_select}, "
         "COUNT(*) OVER () AS total "
         "FROM {table} pl "
@@ -1882,7 +1882,7 @@ PLAYER_GROUPS: Dict[str, Tuple[str, str]] = {
 _BY_COUNTRY = "r.nationality = %s"
 _BY_TEAM = "r.current_team_id = %s"
 _GROUP_SKATERS_SQL = (
-    "SELECT r.lastname, t.name, p.goals, p.points, p.games, p.time_on_ice_per_game, "
+    "SELECT r.lastname, t.abbreviation, p.goals, p.points, p.games, p.time_on_ice_per_game, "
     "p.hits, p.shots, p.blocked, COUNT(*) OVER () "
     + _COUNTRY_FROM
     + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
@@ -1891,7 +1891,7 @@ _GROUP_SKATERS_SQL = (
     "LIMIT %s OFFSET %s"
 )
 _GROUP_GOALIES_SQL = (
-    "SELECT r.lastname, t.name, g.wins, g.save_percentage, "
+    "SELECT r.lastname, t.abbreviation, g.wins, g.save_percentage, "
     "g.goal_against_average, g.games, g.shutouts, COUNT(*) OVER () "
     "FROM goalies_season_stats g "
     "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
@@ -2133,8 +2133,8 @@ def team_stats_with_count(
             по разнице, `TEAM_STAT_SPECS` в `leaderboard_specs.py`).
         count, offset: размер и сдвиг страницы.
 
-    Строки — таблица rich-сообщения (`_table`), команда — полным названием `teams.name`
-    (таблицу раскладывает Telegram, Задача 98). У одной колонки — постоянный «хвост»
+    Строки — таблица rich-сообщения (`_table`), команда — аббревиатурой: полное имя
+    не помещается в строку на экране телефона. У одной колонки — постоянный «хвост»
     уже загруженных полей (Задача 18): игры, баланс `wins`-`losses`-`ot` и `points`;
     у пары — «за», «против», разница и игры: шире строка на телефоне не помещается.
 
@@ -2148,7 +2148,7 @@ def team_stats_with_count(
     values = [f"v{i}" for i in range(len(ids))]
 
     q = sql.SQL(
-        "SELECT t.name, {cols}, {sort}, games_played, wins, losses, ot, points, "
+        "SELECT t.abbreviation, {cols}, {sort}, games_played, wins, losses, ot, points, "
         "COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "

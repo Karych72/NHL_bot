@@ -212,7 +212,7 @@ GAME_TWO = 2026020002
 # assist_1_nationality, assist_2, assist_2_nationality, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
 # get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home.
-# get_three_stars_game: star, lastname, player_position, team_name, goals,
+# get_three_stars_game: star, lastname, player_position, abbreviation, goals,
 # assists, saves, shots, save_percentage.
 _GAMES = {
     GAME_ONE: {
