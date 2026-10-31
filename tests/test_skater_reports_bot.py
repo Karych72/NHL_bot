@@ -111,10 +111,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("\n<ul><li>/today — ", hm)
         legend = hm.split("<details><summary>Обозначения</summary>", 1)[1]
         self.assertIn("ПШ — победная шайба", legend)
-        start = help_text.START_MESSAGE
-        self.assertIn("<b>Быстрый старт</b>", start)
-        self.assertNotIn("/countries", start, "полный перечень команд — в /help")
-        self.assertTrue(start.endswith("<footer>Все команды и обозначения — /help</footer>"))
+        self.assertTrue(help_text.START_MESSAGE.endswith("<footer>Все команды — /help</footer>"))
         explained = help_text.ADVANCED_COMMAND_INTRO.split("<details><summary>", 1)[1]
         self.assertIn("Corsi", explained)
 
@@ -128,13 +125,12 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIn(f"/{cmd} — ", help_text.HELP_MESSAGE)
 
-    def test_start_and_help_note_regular_season_only(self):
+    def test_help_notes_regular_season_only(self):
+        """Оговорка про плей-офф — только в /help: /start её не несёт (решение человека 2026-10-31)."""
         help_text = _load_help_text()
-        for name in ("START_MESSAGE", "HELP_MESSAGE"):
-            with self.subTest(message=name):
-                msg = getattr(help_text, name)
-                self.assertIn("регулярный чемпионат", msg)
-                self.assertIn("плей-офф", msg)
+        self.assertIn("регулярный чемпионат", help_text.HELP_MESSAGE)
+        self.assertIn("плей-офф", help_text.HELP_MESSAGE)
+        self.assertNotIn("плей-офф", help_text.START_MESSAGE)
 
     def test_tonight_reply_intro_escapes_league_date(self):
         nhl = _load_nhl_scoreboard()

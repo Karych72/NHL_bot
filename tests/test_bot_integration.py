@@ -292,6 +292,29 @@ _DIGEST_ROUTES = [
 
 
 # ---------------------------------------------------------------------------
+# Сценарий «приветствие»: /start без deep link
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("args", ["", "game_abc"])
+@pytest.mark.asyncio
+async def test_start_greets_with_subscription_buttons(
+    bot_module, fake_db_router, make_message, fake_bot, api, args
+):
+    bot = bot_module("bot")
+    cursor = fake_db_router([])
+    message = make_message(f"/start {args}".strip())
+
+    await bot.cmd_start(message, fake_bot, _start_command(args))
+
+    (sent,) = api.sent_rich
+    assert body(sent).startswith("<p>🚨 <b>Шайба в игре. Ты в курсе.</b><br>")
+    assert _callback_data(sent.reply_markup) == ["sub:T", "sub:C", "sub:d"]
+    for data in _callback_data(sent.reply_markup):
+        assert re.match(bot.SUBSCRIPTIONS_CALLBACK_PATTERN, data), data
+    assert cursor.executed == [], "приветствие в БД не ходит"
+
+
+# ---------------------------------------------------------------------------
 # Сценарий «карточка игры»: deep link /start game_<id>
 # ---------------------------------------------------------------------------
 
