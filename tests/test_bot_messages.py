@@ -221,13 +221,13 @@ def _game_message_fetch_all(query, params=None, columns=None):
 
 
 # Три звезды по умолчанию: полевой игрок, вратарь, и звезда с экранируемыми
-# фамилией/аббревиатурой команды и без статистики (NULL) — хвост после «—»
+# фамилией/названием команды и без статистики (NULL) — хвост после «—»
 # в этом случае не выводится.
 _THREE_STARS_ROWS = {
     "star": [1, 2, 3],
     "lastname": ["Kaprizov", "Thompson", _EVIL_SCORER],
     "player_position": ["LW", "G", "C"],
-    "abbreviation": ["MIN", "VGK", "TOR<script>alert(1)</script>"],
+    "team_name": ["Minnesota Wild", "Vegas Golden Knights", "TOR<script>alert(1)</script>"],
     "goals": [1, None, None],
     "assists": [0, None, None],
     "saves": [None, 33, None],
@@ -395,17 +395,17 @@ def test_game_message_renders_three_stars_heading_and_three_lines(game_message_t
 
 def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
     text, _ = game_message_text
-    assert "\n1. Kaprizov (MIN) — 1+0\n" in text
+    assert "\n1. Kaprizov (Minnesota Wild) — 1+0\n" in text
 
 
 def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
     game_message_text,
 ):
     text, _ = game_message_text
-    assert "\n2. Thompson (VGK) — 33/34, 97.1%\n" in text
+    assert "\n2. Thompson (Vegas Golden Knights) — 33/34, 97.1%\n" in text
 
 
-def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
+def test_game_message_escapes_html_in_three_star_lastname_and_team_name(
     game_message_text,
 ):
     text, _ = game_message_text
@@ -604,6 +604,7 @@ def _preview_stats_row(home="BBB"):
     """Ответ запроса `teams_stats` для пары AAA @ home (общий для тестов превью)."""
     return {
         "abbr": ["AAA", home],
+        "name": ["Aaa Club", f"{home} Club"],
         "games_played": [10, 10],
         "wins": [7, 3],
         "losses": [3, 7],
@@ -643,15 +644,15 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     bot_messages = bot_module("bot_messages")
     text, footer = _render_preview(bot_messages)
 
-    # Тело открывает матч без «— сезон …»: сезон ушёл в подвал.
-    assert text.startswith("<b>AAA @ BBB</b>")
+    # Тело открывает матч полными названиями (Задача 98), без «— сезон …»: сезон ушёл в подвал.
+    assert text.startswith("<b>Aaa Club @ BBB Club</b>")
     assert "сезон" not in text.splitlines()[0]
     assert footer.splitlines()[0].startswith("Сезон ")
-    # Одна таблица «метрика · гости · хозяева», аббревиатуры — в шапке колонок,
+    # Одна таблица «метрика · гости · хозяева», названия — в шапке колонок,
     # разница шайб со знаком.
     [table] = _tables(text)
     assert table[:4] == [
-        ["", "AAA", "BBB"],
+        ["", "Aaa Club", "BBB Club"],
         ["Очки", "14", "6"],
         ["% очков", "70%", "30%"],
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
@@ -699,10 +700,12 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
 
 def _with_prediction(bot_messages, predictions, home="BBB"):
     """`with_model_prediction("Сезон 2026/27", 777, home)` при строках `game_predictions`
-    {task: p}; возвращает (подвал, mock `fetch_all`)."""
+    {task: p}; в `teams` хозяева называются «<home> Club». Возвращает (подвал, mock `fetch_all`)."""
     rows = {"count_rows": len(predictions), "task": list(predictions),
             "probability": list(predictions.values())}
-    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch:
+    name = {"count_rows": 1, "name": [f"{home} Club"]}
+    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch, \
+            patch.object(bot_messages, "cached_fetch_all", return_value=name):
         return bot_messages.with_model_prediction("Сезон 2026/27", 777, home), mock_fetch
 
 
@@ -710,11 +713,25 @@ def test_with_model_prediction_appends_win_and_total_to_footer(bot_module):
     bot_messages = bot_module("bot_messages")
     footer, mock_fetch = _with_prediction(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
 
-    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB — 57%, тотал больше 5.5 — 47%"
+    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB Club — 57%, тотал больше 5.5 — 47%"
     # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
     query, params = mock_fetch.call_args.args[:2]
     assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
     assert params == (777,)
+
+
+def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_module):
+    """Код — параметром, в верхнем регистре без пробелов; команды нет в `teams` — LookupError,
+    а не код вместо названия (Задача 98)."""
+    bot_messages = bot_module("bot_messages")
+    found = {"count_rows": 1, "name": ["Washington Capitals"]}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=found) as mock_fetch:
+        assert bot_messages.team_name_for_abbrev(" wsh ") == "Washington Capitals"
+    assert mock_fetch.call_args.args[1] == (bot_messages.config.SEASON_ID, "WSH")
+
+    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
+            pytest.raises(LookupError, match="ZZZ"):
+        bot_messages.team_name_for_abbrev("ZZZ")
 
 
 def test_with_model_prediction_shows_total_without_win(bot_module):
@@ -728,9 +745,9 @@ def test_with_model_prediction_without_rows_keeps_footer(bot_module):
     assert footer == "Сезон 2026/27"
 
 
-def test_with_model_prediction_escapes_home_abbrev(bot_module):
+def test_with_model_prediction_escapes_home_name(bot_module):
     footer, _ = _with_prediction(bot_module("bot_messages"), {"home_win": 0.5}, home="B&B")
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B — 50%"
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B Club — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
@@ -1523,12 +1540,13 @@ def test_player_stats_with_count_returns_total_from_window_function(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(
         bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
-    ):
+    ) as mock_fetch:
         _, n, total = bot_messages.player_stats_with_count(
             "Title", "players_season_stats", "points"
         )
     assert n == 3
     assert total == 42
+    assert "t.name AS team" in str(mock_fetch.call_args.args[0]), "команда — полным названием (Задача 98)"
 
 
 def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
@@ -1554,10 +1572,11 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [7], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
+    with patch.object(bot_messages, "cached_fetch_all", return_value=rows) as mock_fetch:
         _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 1
     assert total == 7
+    assert "SELECT t.name, " in str(mock_fetch.call_args.args[0]), "команда — полным названием (Задача 98)"
 
 
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
@@ -1729,7 +1748,7 @@ def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, f
 
 def _country_skater_row(lastname, goals, points, games, hits, shots, blocked):
     # lastname, team, goals, points, games, toi, hits, shots, blocked, total (total=25)
-    return (lastname, "EDM", goals, points, games, "21:30", hits, shots, blocked, 25)
+    return (lastname, "Edmonton Oilers", goals, points, games, "21:30", hits, shots, blocked, 25)
 
 
 @pytest.mark.parametrize(
@@ -1754,10 +1773,11 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     extra = "20" if group == "F" else "2"
     assert _tables(text) == [[
         ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", extra_header],
-        ["11.", "McDavid", "EDM", "4", "8", "7", "21:30", "5", extra],
+        ["11.", "McDavid", "Edmonton Oilers", "4", "8", "7", "21:30", "5", extra],
     ]]
     assert (has_prev, has_next) == (True, True)
     assert position_sql in cursor.executed[-1][0]
+    assert cursor.executed[-1][0].startswith("SELECT r.lastname, t.name, "), "полное название (Задача 98)"
 
 
 def test_country_page_keeps_every_column_and_full_last_name(
@@ -1775,7 +1795,7 @@ def test_country_page_keeps_every_column_and_full_last_name(
 
     assert _tables(text) == [[
         ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
-        ["1.", "Nugent-Hopkins", "EDM", "64", "153", "82", "21:30", "150", "300"],
+        ["1.", "Nugent-Hopkins", "Edmonton Oilers", "64", "153", "82", "21:30", "150", "300"],
     ]]
 
 
@@ -1794,16 +1814,17 @@ def test_country_pages_reject_code_outside_ranking_without_touching_sql(
 
 def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
     bot_messages = bot_module("bot_messages")
-    fake_db_router([
+    cursor = fake_db_router([
         _COUNTRY_RANKING,
         # lastname, team, wins, save_pct, gaa, games, shutouts, total
-        ("FROM goalies_season_stats", [("Vejmelka", "UTA", 38, 89.67, 2.74592, 64, 3, 1)]),
+        ("FROM goalies_season_stats", [("Vejmelka", "Utah Mammoth", 38, 89.67, 2.74592, 64, 3, 1)]),
     ])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)
     assert _tables(text) == [[
         ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"],
-        ["1.", "Vejmelka", "UTA", "38", "89.67%", "2.75", "64", "3"],
+        ["1.", "Vejmelka", "Utah Mammoth", "38", "89.67%", "2.75", "64", "3"],
     ]]
+    assert cursor.executed[-1][0].startswith("SELECT r.lastname, t.name, "), "полное название (Задача 98)"
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)

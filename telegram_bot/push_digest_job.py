@@ -200,7 +200,7 @@ class _GameSubscriptions(NamedTuple):
     """Подписки чата, которые ведут на один матч ночи (``subscribed_games``)."""
 
     teams: List[str]
-    """Аббревиатуры подписанных команд матча, хозяева первыми."""
+    """Полные названия подписанных команд матча, хозяева первыми."""
     countries: List[Tuple[str, str]]
     """(код, блок игроков страны) подписанных стран, чьи игроки играли, — по алфавиту."""
 
@@ -223,7 +223,7 @@ def subscribed_games(night: date) -> _SubscribedGames:
     if not rows:
         return {}
     games = fetch_all(
-        "SELECT g.game_id, g.home_team_id, trim(h.abbreviation), g.away_team_id, trim(a.abbreviation) "
+        "SELECT g.game_id, g.home_team_id, h.name, g.away_team_id, a.name "
         "FROM games g "
         "JOIN teams h ON h.team_id = g.home_team_id AND h.season_id = g.season_id "
         "JOIN teams a ON a.team_id = g.away_team_id AND a.season_id = g.season_id "

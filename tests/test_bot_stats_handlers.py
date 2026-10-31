@@ -367,7 +367,7 @@ async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_
     ("premium", "footer"),
     [
         (False, "<footer>Сезон 2026/27</footer>"),
-        (True, "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа NYR — 61%</footer>"),
+        (True, "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа New York Rangers — 61%</footer>"),
     ],
 )
 async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
@@ -382,6 +382,7 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
             patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")) as mock_preview, \
             patch.object(stats_handlers.premium, "is_premium", return_value=premium) as mock_premium, \
             patch.object(bot_module("bot_messages"), "fetch_all", return_value=prediction) as mock_fetch, \
+            patch.object(bot_module("bot_messages"), "team_name_for_abbrev", return_value="New York Rangers"), \
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
@@ -708,18 +709,27 @@ def _replay(**goal):
     }
 
 
-def test_goal_caption_scorer_season_goal_time_score_and_empty_net(bot_module):
-    video_replay = bot_module("video_replay")
+_TEAM_NAMES = {"BOS": "Boston Bruins", "SJS": "San Jose Sharks", "MTL": "Montréal Canadiens"}
 
+
+@pytest.fixture
+def video_replay(bot_module):
+    """`video_replay` с названиями команд из `_TEAM_NAMES` вместо запроса к `teams`."""
+    module = bot_module("video_replay")
+    with patch.object(module, "team_name_for_abbrev", side_effect=_TEAM_NAMES.get):
+        yield module
+
+
+def test_goal_caption_scorer_season_goal_time_score_and_empty_net(video_replay):
+    """Команды в подписи — полными названиями по коду из ответа API (Задача 98)."""
     assert video_replay.goal_caption(_replay()) == (
-        "🚨 <b>W. Borgen</b> (BOS) — 1-й гол в сезоне\n"
+        "🚨 <b>W. Borgen</b> (Boston Bruins) — 1-й гол в сезоне\n"
         "Без передач\n"
-        "3-й период, 18:18 · BOS 6:3 SJS · в пустые ворота"
+        "3-й период, 18:18 · Boston Bruins 6:3 San Jose Sharks · в пустые ворота"
     )
 
 
-def test_goal_caption_assists_with_season_totals_overtime_power_play(bot_module):
-    video_replay = bot_module("video_replay")
+def test_goal_caption_assists_with_season_totals_overtime_power_play(video_replay):
     replay = _replay(
         periodDescriptor={"number": 4, "periodType": "OT", "maxRegulationPeriods": 3},
         strength="pp",
@@ -732,15 +742,14 @@ def test_goal_caption_assists_with_season_totals_overtime_power_play(bot_module)
     )
 
     assert video_replay.goal_caption(replay) == (
-        "🚨 <b>W. Borgen</b> (BOS) — 3-й гол в сезоне\n"
+        "🚨 <b>W. Borgen</b> (Boston Bruins) — 3-й гол в сезоне\n"
         "Передачи: C. Mittelstadt (1), N. Zadorov (3)\n"
-        "овертайм, 18:18 · BOS 6:3 SJS · в большинстве"
+        "овертайм, 18:18 · Boston Bruins 6:3 San Jose Sharks · в большинстве"
     )
 
 
-def test_goal_caption_shootout_goal_without_season_number(bot_module):
+def test_goal_caption_shootout_goal_without_season_number(video_replay):
     """У гола серии буллитов (BUF@MTL 2026020092/804) нет ``goalsToDate``."""
-    video_replay = bot_module("video_replay")
     replay = _replay(
         periodDescriptor={"number": 5, "periodType": "SO", "maxRegulationPeriods": 3},
         name={"default": "C. Caufield"},
@@ -750,7 +759,8 @@ def test_goal_caption_shootout_goal_without_season_number(bot_module):
     del replay["goal"]["goalsToDate"]
 
     assert video_replay.goal_caption(replay) == (
-        "🚨 <b>C. Caufield</b> (MTL) — гол в серии буллитов, BOS–SJS"
+        "🚨 <b>C. Caufield</b> (Montréal Canadiens) — гол в серии буллитов, "
+        "Boston Bruins – San Jose Sharks"
     )
 
 

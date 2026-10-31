@@ -212,7 +212,7 @@ GAME_TWO = 2026020002
 # assist_1_nationality, assist_2, assist_2_nationality, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
 # get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home.
-# get_three_stars_game: star, lastname, player_position, abbreviation, goals,
+# get_three_stars_game: star, lastname, player_position, team_name, goals,
 # assists, saves, shots, save_percentage.
 _GAMES = {
     GAME_ONE: {
@@ -865,7 +865,7 @@ async def test_team_profile_command_shows_places_scorers_and_goalies(
     (reply,) = api.sent_rich
     text = body(reply)
     # Заголовок — одна строка, сезон — в подвале.
-    assert text.startswith("<p><b>Washington Capitals</b> (WSH)<br>")
+    assert text.startswith("<p><b>Washington Capitals</b><br>"), "без кода (Задача 98)"
     assert "Metropolitan: 2-е место · Eastern: 3-е · лига: 4-е из 4 сыгравших" in text
     assert "Игр: 17 · 10-5-2, 22 очка (64.71%)" in text
     assert "Форма (5 игр, W-L-OTL): 3-2-0 · серия W3" in text
@@ -951,7 +951,7 @@ async def test_team_abbreviation_command_replies_with_profile_and_link_to_team_l
     await bot.cmd_team_profile(message, match)
 
     (reply,) = api.sent_rich
-    assert "<b>Washington Capitals</b> (WSH)" in body(reply)
+    assert "<b>Washington Capitals</b><br>" in body(reply)
     assert body(reply).endswith("все команды: /team</footer>")
     team_id_query = next(q for q in cursor.executed if "SELECT team_id FROM teams" in q[0])
     assert "WSH" in team_id_query[1]
@@ -968,6 +968,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     bot = bot_module("bot")
     cursor = fake_db_router([
         ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
         # lastname, team, goals, points, games, toi, hits, shots, blocked, total
         ("r.position IN ('C', 'L', 'R')", [
             ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 2),
@@ -984,7 +985,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
 
     (reply,) = api.sent_rich
     text = body(reply)
-    assert "<p><b>WSH: все игроки</b>" in text
+    assert "<p><b>Washington Capitals: все игроки</b>" in text
     # Без колонок места и команды: игрок и показатели.
     assert (
         "<p><b>Нападающие</b></p>"
@@ -1033,6 +1034,7 @@ async def test_team_full_command_skips_empty_groups(
     bot = bot_module("bot")
     fake_db_router([
         ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
         ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 1)]),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),
@@ -1047,6 +1049,7 @@ async def test_team_full_command_skips_empty_groups(
 
     fake_db_router([
         ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
         ("r.position IN ('C', 'L', 'R')", []),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),

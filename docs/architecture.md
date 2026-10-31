@@ -860,7 +860,11 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 #### `get_game_stats(game_id)` → game_team_stats + games + teams
 
-Возвращает: `goals`, `pim`, `blocked`, `hits`, `shots`, `is_overtime`, `is_shootouts`, `field`, `team_name`. Сортировка: `field DESC` (home первым).
+Возвращает: `goals`, `pim`, `blocked`, `hits`, `shots`, `is_overtime`, `is_shootouts`, `field`, `team_name` (полное `teams.name`, Задача 98). Сортировка: `field DESC` (home первым).
+
+Тип возврата `RETURNS TABLE` через `CREATE OR REPLACE` не меняется, поэтому файл функции
+начинается с `DROP FUNCTION IF EXISTS` (как `get_goals_game.sql`, `get_three_stars_game.sql`):
+`make db-functions` пересоздаёт её при каждом деплое.
 
 #### `get_goals_game(game_id)` → all_goals + rosters (JOIN по scorer, assist1, assist2)
 
@@ -872,7 +876,7 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 #### `get_three_stars_game(game_id)` → game_three_stars + rosters + teams + game_player_stats + game_goalie_stats + games
 
-Возвращает: `star`, `lastname`, `player_position`, `abbreviation`, `goals`, `assists` (полевой игрок), `saves`, `shots`, `save_percentage` (вратарь) — по звезде одна строка, статистика не своей роли приходит `NULL` из пустого `LEFT JOIN`. Сортировка: `star`.
+Возвращает: `star`, `lastname`, `player_position`, `team_name` (полное `teams.name`), `goals`, `assists` (полевой игрок), `saves`, `shots`, `save_percentage` (вратарь) — по звезде одна строка, статистика не своей роли приходит `NULL` из пустого `LEFT JOIN`. Сортировка: `star`.
 
 ---
 
@@ -883,7 +887,7 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ### `game_message.txt` — Карточка матча
 
 ```
-🏒 Rangers 3:2 Lightning (OT)            ← хозяева первыми, счёт между командами
+🏒 New York Rangers 3:2 Tampa Bay Lightning (OT) ← хозяева первыми; полные названия (Задача 98)
 Периоды: 1:1, 0:0, 1:1, 1:0             ← формы до матча в итоге нет (только в превью)
 
 1-й период                              ← обычный текст, не <pre>; период без голов не выводится
@@ -900,9 +904,9 @@ Shesterkin — 26/28, 92.86%, 65:00
 Vasilevskiy — 29/32, 90.63%, 65:00
 
 Звёзды матча
-1. Panarin (NYR) — 2+1
-2. Kucherov (TBL) — 1+2
-3. Shesterkin (NYR) — 26/28, 92.86%
+1. Panarin (New York Rangers) — 2+1
+2. Kucherov (Tampa Bay Lightning) — 1+2
+3. Shesterkin (New York Rangers) — 26/28, 92.86%
 ```
 
 Шапка и сводка `/today` считаются одной функцией `_game_score_header()`; сводка
@@ -940,15 +944,16 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 (`leaderboard_specs.STAT_COLUMN_LABELS`: «Очки», «Голы», «SAT%»…), рядом
 постоянный «хвост» (Задача 18): игры/смены для полевых (players_season_stats и, через
 `LEFT/INNER JOIN players_season_stats`, players_advanced_stats/players_shot_types),
-игры и сейвы/броски против для вратарей, игры/баланс/очки для команд (аббревиатура клуба):
+игры и сейвы/броски против для вратарей, игры/баланс/очки для команд (клуб — полным
+названием `teams.name`, Задача 98):
 
 ```
-   | Игрок       | Ком | Очки | И  | Смен
-1. | McDavid [C] | EDM |  138 | 82 | 1841
-   | Вратарь     | Ком | Побед| И  | Сейвы
-1. | Vasilevskiy | TBL |   39 | 58 | 1353/1483
-  |Ком|%очк| И|  В-П-ОТ|  О
-1.|COL|73.8|82|55-16-11|121
+   | Игрок       | Ком             | Очки | И  | Смен
+1. | McDavid [C] | Edmonton Oilers |  138 | 82 | 1841
+   | Вратарь     | Ком                 | Побед| И  | Сейвы
+1. | Vasilevskiy | Tampa Bay Lightning |   39 | 58 | 1353/1483
+  |Ком               |%очк| И|  В-П-ОТ|  О
+1.|Colorado Avalanche|73.8|82|55-16-11|121
 ```
 
 Страница расширенной статистики (кнопки `sa:...`) вместо «Готово» несёт «« К списку» (`sa:menu` —
@@ -980,7 +985,9 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 тот же хендлер `cmd_team_profile` (группа `_FULL` в `TEAM_COMMAND_PATTERN`).
 Вход — команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
 `bot.py` по `TEAM_COMMAND_PATTERN`) и инструмент `team_profile` свободного текста; аббревиатура
-резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C).
+резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C). В тексте
+клуб — полным названием без кода (Задача 98); там, где на руках только код (`/BOS_FULL`,
+прогноз модели, подпись к видео гола), название даёт `team_name_for_abbrev()`.
 
 `players_season_stats` не хранит команду игрока — очки/голы за весь сезон целиком относятся
 к тому `current_team_id`, что сейчас стоит в `rosters` (последний обработанный ростер,

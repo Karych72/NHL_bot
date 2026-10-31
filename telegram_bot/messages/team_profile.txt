@@ -1,4 +1,4 @@
-<b>{{ team_name }}</b> ({{ abbrev }})
+<b>{{ team_name }}</b>
 {{ division }}: {{ div_place }}-е место · {{ conference }}: {{ conf_place }}-е · лига: {{ league_place }}-е из {{ league_size }} сыгравших
 
 <b>Сезон</b>
