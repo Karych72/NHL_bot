@@ -3,7 +3,8 @@
 **Блок:** релиз+ · **Надобность:** 🟠
 **Область:** `data_tables/t.playoff_series.sql` (новый), `data_tables/migrations/`,
 `data_tables/ai_reader_grants.sql`, `Makefile`, `telegram_bot/ai_stats.py`,
-`telegram_bot/ai_router.py`, `telegram_bot/prompts/`, `scripts/ai_stats_eval.jsonl`, тесты.
+`telegram_bot/ai_router.py`, `telegram_bot/prompts/`, `scripts/ai_stats_eval.jsonl`,
+`tests/test_bot_ai_stats.py`, `tests/test_db_nhl.py`.
 **Зависит от:** 104.
 **Источник:** решение человека 2026-10-31 (ИИ отвечает про плей-офф, экраны — позже); дизайн —
 [`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы «Серии» и
@@ -41,9 +42,10 @@
 - **Доступ.** `'playoff_series'` — в массив `ai_reader_grants.sql` и в `ai_stats.AI_TABLES`
   (их сверяет `test_grants_are_exactly_select_on_ai_tables`). `ai_stats._schema()` (`:187–196`)
   ищет только `CREATE TABLE` и иначе бросает `RuntimeError` — научить читать
-  `CREATE OR REPLACE VIEW`.
+  `CREATE OR REPLACE VIEW`. Вместе с ним — тест `tests/test_bot_ai_stats.py:620`: он требует
+  `CREATE TABLE {table}(` для каждой таблицы `AI_TABLES` и покраснеет на представлении.
 - **Промпты.** Аннотация `playoff_series` и обладателя Кубка в `stats_schema_notes.md`; из
-  `ai_router.py` (`:55`, `:69`, `:80`), `stats_answer.md:19`, `stats_reviewer.md:8` уходит
+  `ai_router.py` (`:57`, `:71`, `:82`), `stats_answer.md:19`, `stats_reviewer.md:8` уходит
   «плей-офф нет / отказ».
 - **Eval.** Кейсы в `scripts/ai_stats_eval.jsonl`: обладатель Кубка, счёт серии, бомбардир
   плей-офф сезона, «голы в сезоне» по умолчанию без плей-офф.
@@ -51,7 +53,7 @@
 ### Критерии приёмки
 
 - `make db-reset` сохраняет представление и GRANT; `test_db_nhl` зелёный на БД.
-- Тест: схема для промпта содержит `playoff_series`.
+- Тест: схема для промпта содержит `CREATE OR REPLACE VIEW playoff_series` (`test_bot_ai_stats.py:620`).
 - ИИ на dev-боте верно называет обладателя Кубка 2024 и счёт серии; `make ai-stats-eval` —
   новые кейсы проходят.
 

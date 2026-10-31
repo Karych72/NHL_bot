@@ -27,7 +27,7 @@
 
 ## Подробно
 
-Строки кода — снимок 2026-09-29, сверять.
+Строки кода — снимок `origin/develop` = `15483fb`, сверять.
 
 - Миграция `data_tables/migrations/NNNN_games_game_type.{up,down}.sql` (номер — следующий
   свободный по `origin/develop` на момент PR; на 2026-10-31 последняя — `0018`) по образцу 0002:
@@ -35,8 +35,8 @@
   `NOT NULL` и `CHECK (game_type IN (2, 3))`. Без BEGIN/COMMIT (миграции идут `--single-transaction`).
 - Парный DDL `data_tables/t.games.sql` — то же определение колонки (правило синхрона,
   `DEVELOPMENT.md`); индекс не нужен, пока нет запроса, который им пользуется.
-- Загрузчик пишет `game_type` из `gameType` мета-записи игры (`build_game_rows`);
-  фильтр `fetch_final_games` остаётся `gameType=2`.
+- Загрузчик пишет `game_type` из `gameType` мета-записи игры (`build_game_rows`, `:965`);
+  фильтр `fetch_final_games` (`:839`) остаётся `gameType=2`.
 - Тесты: схема в `tests/test_db_nhl.py` (колонка, NOT NULL, CHECK); в
   `test_pipeline_game_rows.py` — строка игры несёт `game_type = 2`.
 

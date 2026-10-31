@@ -36,8 +36,8 @@
   `(team_id | player_id, season_id, game_type)`; индексы `(season_id)` → `(season_id, game_type)`.
   FK на `rosters` / `teams` остаются `(id, season_id)`. Парные `t.*.sql` — синхронно.
 - **Загрузчик:** строки агрегатов несут `game_type = 2`; пять вызовов `execute_upsert` агрегатов
-  (`:1653`–`:1766`) — `conflict_columns` `[…, "season_id", "game_type"]`. У `teams` и `rosters`
-  ключ прежний.
+  (`:1627` `teams_stats`, `:1674`, `:1718`, `:1742`, `:1766`) — `conflict_columns`
+  `[…, "season_id", "game_type"]`. У `teams` (`:1608`) и `rosters` (`:1653`) ключ прежний.
 - **Потребители — фильтр `<alias>.game_type = 2`:** `bot_messages.py` — `_pss_join_sql`
   (`:105`, `:107`, `:112`), лидерборд (`:1162`), `teams_stats` (`:1035`, `:1426`, `:1677`,
   `:2157`), профиль игрока и вратаря (`:1579`, `:1600`), `:1787`, `:1900`; `ai_stats.py` —

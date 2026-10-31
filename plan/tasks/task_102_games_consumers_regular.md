@@ -24,15 +24,17 @@
 
 ## Подробно
 
-Строки кода — снимок 2026-09-29, сверять.
+Строки кода — снимок `origin/develop` = `15483fb`, сверять.
 
-- `telegram_bot/bot_messages.py`: `_recent_team_outcomes` (форма и серия), `_h2h_season_wins`,
-  `_standings_as_of_day` (дата таблицы).
-- `modeling/dataset_builder/base.py`: `load_target_games` и `load_history_team_stats` — train,
-  predict и rolling-признаки только по регулярке; строку в `_compose_data_snapshot_id` обновить,
-  чтобы снимок данных отражал фильтр.
+- `telegram_bot/bot_messages.py`: `_recent_team_outcomes` (`:750`, форма и серия),
+  `_h2h_season_wins` (`:834`), `_standings_as_of_day` (`:1278`, дата таблицы).
+- `modeling/dataset_builder/base.py`: `load_target_games` (`:83`) и `load_history_team_stats`
+  (`:159`) — train, predict и rolling-признаки только по регулярке; строку в
+  `_compose_data_snapshot_id` (`:237`) обновить, чтобы снимок данных отражал фильтр.
 - Не трогать: `day_digest`, `game_message`, `push_digest_job` — они про конкретные дни и матчи
   и должны показывать плей-офф (106).
+- Строки прогноза из `scheduled_games` (`base.py:146`) фильтр не затрагивает: расписание и так
+  остаётся регуляркой (`fetch_scheduled_games`, решение в 104).
 - Сезонные агрегаты (`teams_stats`, `players_season_stats`, …) — не здесь, это 103.
 
 ### Критерии приёмки
