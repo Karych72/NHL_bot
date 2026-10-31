@@ -73,6 +73,7 @@ def ai(bot_module, fake_db_router, monkeypatch):
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
+            ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
             ("max(day) AS day FROM games", [(None,)]),
             ("", []),
         ])
