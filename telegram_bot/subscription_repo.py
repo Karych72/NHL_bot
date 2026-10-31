@@ -248,12 +248,16 @@ def deactivate_chat(chat_id: int) -> None:
     """Гасит все подписки чата `chat_id` (active = FALSE), записи не удаляет.
 
     Зачем: чат, заблокировавший бота (`TelegramForbiddenError` в рассылке), не получит
-    ничего ни по одной подписке — долбиться в него каждым прогоном незачем."""
+    ничего ни по одной подписке — долбиться в него каждым прогоном незачем. Блокировка
+    пишется в журнал `bot_actions` (`blocked`, Задача 99): иначе её не отличить от отписки."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() WHERE chat_id = %s",
                 (chat_id,),
+            )
+            cur.execute(
+                "INSERT INTO bot_actions (chat_id, kind) VALUES (%s, 'blocked')", (chat_id,)
             )
         conn.commit()
 

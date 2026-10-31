@@ -70,7 +70,9 @@ NHL_bot/
 │       ├── 0015_ai_stats.up.sql         # Роль nhl_ai_reader (только чтение) и журнал ai_stats_log (Задача 83)
 │       ├── 0015_ai_stats.down.sql
 │       ├── 0016_premium_access.up.sql   # Премиум чата до даты; удаляет список текущих пользователей 0012 (Задача 96)
-│       └── 0016_premium_access.down.sql
+│       ├── 0016_premium_access.down.sql
+│       ├── 0017_bot_actions.up.sql      # Журнал действий bot_actions и история подписок bot_subscription_events (триггер) (Задача 99)
+│       └── 0017_bot_actions.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -125,7 +127,7 @@ NHL_bot/
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99)
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит вопросов, журнал ai_questions (Задачи 81, 96)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)

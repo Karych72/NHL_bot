@@ -278,7 +278,8 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     def _delete_rows(self):
         # psycopg2: `with conn` — транзакция, а не закрытие; закрывает `closing`.
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for table in ("bot_subscriptions", "bot_chat_game_sent"):
+            for table in ("bot_subscriptions", "bot_chat_game_sent", "bot_subscription_events",
+                          "bot_actions"):
                 cur.execute(
                     f"DELETE FROM {table} WHERE chat_id IN (%s, %s)", (self.CHAT, self.OTHER_CHAT)
                 )
@@ -367,6 +368,74 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.deactivate_chat(self.CHAT)
         self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
         self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"]))
+
+    def _events(self, chat_id=CHAT):
+        """История подписок чата (Задача 99) по порядку: (kind, team_id, country, active)."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, team_id, country, active FROM bot_subscription_events "
+                "WHERE chat_id = %s ORDER BY id",
+                (chat_id,),
+            )
+            return cur.fetchall()
+
+    def _actions(self, chat_id=CHAT):
+        """Журнал действий чата (Задача 99) по порядку: (user_id, kind, data)."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s ORDER BY id",
+                (chat_id,),
+            )
+            return cur.fetchall()
+
+    def test_subscription_events_only_on_insert_and_real_active_change(self):
+        """Задача 99: триггер пишет вставку и фактическую смену ``active``; повторное
+        включение уже включённой и отметка рассылки событий не дают."""
+        repo = self.repo
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.mark_digest_night_sent(self.CHAT, self.NIGHT)
+        repo.deactivate_team_scores(self.CHAT, self.TEAM)
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        # Страна включается через ON CONFLICT DO UPDATE — ветку UPDATE внутри INSERT.
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
+        repo.upsert_country(self.CHAT, "RUS")
+
+        self.assertEqual(self._events(), [
+            ("team_scores", self.TEAM, None, True),
+            ("morning_digest", None, None, True),
+            ("team_scores", self.TEAM, None, False),
+            ("team_scores", self.TEAM, None, True),
+            ("country_players", None, "RUS", True),
+            ("country_players", None, "RUS", False),
+            ("country_players", None, "RUS", True),
+        ])
+
+    def test_deactivate_chat_logs_blocked_and_all_subscriptions_off(self):
+        """Задача 99: блокировка — строка ``blocked`` без ``user_id`` и разом погашенные
+        подписки чата; так её отличают от отписки."""
+        repo = self.repo
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.upsert_country(self.OTHER_CHAT, "RUS")
+        repo.deactivate_chat(self.CHAT)
+
+        self.assertEqual(self._actions(), [(None, "blocked", None)])
+        # Порядок строк одного UPDATE не задан.
+        self.assertEqual(sorted(self._events()[2:]), [
+            ("country_players", None, "RUS", False), ("morning_digest", None, None, False),
+        ])
+        self.assertEqual(self._actions(self.OTHER_CHAT), [])
+        self.assertEqual(self._events(self.OTHER_CHAT), [("country_players", None, "RUS", True)])
+
+    def test_log_action_writes_command_row(self):
+        import bot
+
+        bot.log_action(self.CHAT, 7, "command", "help")
+
+        self.assertEqual(self._actions(), [(7, "command", "help")])
 
     def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
         repo = self.repo
@@ -475,7 +544,8 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+            for table in ("bot_subscriptions", "bot_subscription_events"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = %s", (self.CHAT,))
             cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
 
     def _rows(self):
@@ -851,7 +921,8 @@ class TestCountryNightSql(unittest.TestCase):
 
     def _delete_subscriptions(self, chats):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = ANY(%s)", (list(chats),))
+            for table in ("bot_subscriptions", "bot_subscription_events", "bot_actions"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (list(chats),))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -1230,7 +1301,8 @@ class TestAiReaderRole(unittest.TestCase):
 
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
-                      "premium_access", "prediction_log", "game_predictions", "schema_migrations"):
+                      "premium_access", "prediction_log", "game_predictions", "schema_migrations",
+                      "bot_actions", "bot_subscription_events"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):
