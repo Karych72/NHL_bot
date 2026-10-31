@@ -307,17 +307,23 @@ Dev-контейнеры подключены к сети прод-стека `n
   новой ссылкой (`createInvoiceLink`) — действующие подписчики продлеваются по старой цене.
   Откат 0017 удаляет только журнал, `premium_access` остаётся.
 
-  **Возврат** делает человек на VM по обращению из `/paysupport` — в контейнере бота (там токен и БД;
-  для dev-стека — его контейнер):
+  **Возврат** делает человек на VM по обращению из `/paysupport`. Команда идёт через `run --rm`, а не
+  `exec`: токен читает entrypoint-обёртка (`deploy/compose.prod.yml`), `exec` её пропускает. Прод:
 
   ```bash
   cd /opt/nhl_bot
-  sudo -u deploy docker compose exec bot python premium.py refund <telegram_payment_charge_id>
+  sudo -u deploy docker compose run --rm bot python premium.py refund <telegram_payment_charge_id>
   ```
 
-  Порядок: платёж находится в журнале (нет или уже возвращён — ошибка), отменяется автопродление
-  (`editUserStarSubscription`), возвращаются Stars (`refundStarPayment`), затем в одной транзакции
-  `refunded_at = now()` и срок `premium_access` уменьшается на 30 дней (не раньше текущего момента).
+  Dev-стек — то же из `/opt/nhl_bot_dev` (`deploy/compose.dev.yml`).
+
+  Порядок: платёж находится в журнале (нет или уже возвращён — ошибка), возвращаются Stars
+  (`refundStarPayment`), в одной транзакции `refunded_at = now()` и срок `premium_access` уменьшается
+  на 30 дней (не раньше текущего момента), затем отменяется автопродление (`editUserStarSubscription`).
+  Если CLI упал посреди: на возврате Stars — ничего не изменилось, повторить; на записи в БД — Stars
+  уже возвращены, выставить `refunded_at` и срок вручную SQL-ом; на отмене — деньги и БД верны,
+  отменить подписку вручную (пользователь в настройках Telegram или `editUserStarSubscription`), иначе
+  следующий платёж спишется снова.
 
   Вывод заработанных Stars — вопрос владельца, на код не влияет: через Fragment в TON-кошелёк, нужны
   KYC, минимум 1000 ⭐, задержка около 21 дня.

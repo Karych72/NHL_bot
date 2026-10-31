@@ -1198,6 +1198,17 @@ class TestPremiumPaymentsSql(unittest.TestCase):
             [(True, 100, True)],
         )
 
+    def test_paid_subscription_is_a_live_unrefunded_payment_not_a_manual_grant(self):
+        self.assertFalse(self.premium.has_paid_subscription(self.ACTIVE_CHAT))  # ручная выдача
+        self.premium.extend_premium(self.ACTIVE_CHAT, "t97-sub", 100, False)
+        self.assertTrue(self.premium.has_paid_subscription(self.ACTIVE_CHAT))
+        self.premium.mark_refunded("t97-sub")
+        self.assertFalse(self.premium.has_paid_subscription(self.ACTIVE_CHAT))
+        self.premium.extend_premium(self.NEW_CHAT, "t97-old", 100, False)
+        self._query("UPDATE premium_payments SET paid_until = now() - interval '1 day' "
+                    "WHERE chat_id = %s", (self.NEW_CHAT,))
+        self.assertFalse(self.premium.has_paid_subscription(self.NEW_CHAT))
+
     def test_refund_rolls_back_expiry_and_marks_payment(self):
         self.premium.extend_premium(self.ACTIVE_CHAT, "t97-refund", 100, False)
         self.assertEqual(self.premium.find_refundable_payment("t97-refund"), self.ACTIVE_CHAT)
@@ -1333,7 +1344,7 @@ class TestAiReaderRole(unittest.TestCase):
 
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
-                      "premium_access", "prediction_log", "game_predictions", "schema_migrations"):
+                      "premium_access", "premium_payments", "prediction_log", "game_predictions", "schema_migrations"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):

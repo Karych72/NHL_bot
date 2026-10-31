@@ -521,26 +521,37 @@ def _premium_until(days: int) -> datetime:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("until_days, status", [(5, "Премиум до "), (None, "Премиума нет")])
-async def test_premium_command_shows_status_and_pay_button(
-    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, until_days, status
+@pytest.mark.parametrize(
+    "until_days, subscribed, status",
+    [(None, False, "Премиума нет"), (5, False, "Премиум до "), (5, True, "Премиум до ")],
+    ids=["free", "manual-grant", "paid-subscription"],
+)
+async def test_premium_command_offers_payment_unless_subscription_is_active(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, until_days, subscribed, status
 ) -> None:
+    """Кнопка оплаты — бесплатному чату и вручную выданному премиуму; при действующей подписке
+    Stars её нет (вторая подписка пошла бы параллельно), вместо неё — как отменить автопродление."""
     premium = bot_module("premium")
     monkeypatch.setattr(
         premium, "premium_until", lambda chat_id: None if until_days is None else _premium_until(until_days)
     )
+    monkeypatch.setattr(premium, "has_paid_subscription", lambda chat_id: subscribed)
 
     await _feed(dispatcher, fake_bot, make_update("/premium"))
 
-    [invoice] = api.sent(CreateInvoiceLink)
-    assert (invoice.currency, invoice.provider_token) == ("XTR", None)
-    assert [(p.amount) for p in invoice.prices] == [100]
-    assert invoice.subscription_period == 2592000
     [reply] = api.sent_rich
     html = body(reply)
     assert status in html
-    assert (str(bot_module("ai_router").PREMIUM_DAILY_LIMIT) in html) and ("100 ⭐" in html)
-    assert ("автопродление" in html) is (until_days is not None)
+    assert str(bot_module("ai_router").PREMIUM_DAILY_LIMIT) in html and "100 ⭐" in html
+    assert ("автопродление" in html) is subscribed
+    if subscribed:
+        assert api.sent(CreateInvoiceLink) == []
+        assert reply.reply_markup is None
+        return
+    [invoice] = api.sent(CreateInvoiceLink)
+    assert (invoice.currency, invoice.provider_token) == ("XTR", None)
+    assert [p.amount for p in invoice.prices] == [100]
+    assert invoice.subscription_period == 2592000
     [button] = [b for row in reply.reply_markup.inline_keyboard for b in row]
     assert button.url == "https://t.me/$fake-invoice"
 

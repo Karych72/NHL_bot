@@ -33,13 +33,7 @@ def is_premium(chat_id: int) -> bool:
     Аргументы:
         chat_id: чат Telegram (личка или группа — премиум выдаётся на чат).
     """
-    rows = fetch_all(
-        "SELECT EXISTS (SELECT 1 FROM premium_access WHERE chat_id = %s AND expires_at > now()) "
-        "AS premium",
-        (chat_id,),
-        columns=["premium"],
-    )
-    return bool(rows["premium"][0])
+    return premium_until(chat_id) is not None
 
 
 def premium_until(chat_id: int) -> Optional[datetime]:
@@ -56,6 +50,25 @@ def premium_until(chat_id: int) -> Optional[datetime]:
         columns=["expires_at"],
     )
     return rows["expires_at"][0] if rows["expires_at"] else None
+
+
+def has_paid_subscription(chat_id: int) -> bool:
+    """Есть ли у чата действующая оплаченная подписка Stars (не ручная выдача, Задача 96).
+
+    Зачем: `/premium` не должен предлагать вторую подписку тому, у кого первая ещё идёт, —
+    иначе получатся две параллельные с автопродлением. Признак — невозвращённый платёж журнала
+    со сроком `paid_until` позже текущего момента.
+
+    Аргументы:
+        chat_id: чат Telegram (личка).
+    """
+    rows = fetch_all(
+        "SELECT EXISTS (SELECT 1 FROM premium_payments WHERE chat_id = %s "
+        "AND paid_until > now() AND refunded_at IS NULL) AS paid",
+        (chat_id,),
+        columns=["paid"],
+    )
+    return bool(rows["paid"][0])
 
 
 def extend_premium(chat_id: int, charge_id: str, amount_stars: int, is_recurring: bool) -> datetime:
@@ -147,21 +160,22 @@ def mark_refunded(charge_id: str) -> None:
 
 
 async def refund(bot: Bot, charge_id: str) -> None:
-    """Возврат платежа: отмена автопродления, возврат Stars, затем запись в БД.
+    """Возврат платежа: возврат Stars, запись в БД, затем отмена автопродления.
 
-    Зачем: человек возвращает деньги по обращению в `/paysupport`. Порядок важен — сначала
-    отмена подписки (иначе следующий платёж спишется снова), потом возврат, потом БД.
+    Зачем: человек возвращает деньги по обращению в `/paysupport`. Отмена — последней: у уже
+    отменённой или истёкшей подписки она может упасть, и это не должно блокировать возврат;
+    деньги и БД остаются согласованными, а упавшая отмена — громкая ошибка для человека.
 
     Аргументы:
         bot: бот с токеном (Bot API).
         charge_id: `telegram_payment_charge_id` платежа.
     """
     chat_id = find_refundable_payment(charge_id)
+    await bot.refund_star_payment(user_id=chat_id, telegram_payment_charge_id=charge_id)
+    mark_refunded(charge_id)
     await bot.edit_user_star_subscription(
         user_id=chat_id, telegram_payment_charge_id=charge_id, is_canceled=True
     )
-    await bot.refund_star_payment(user_id=chat_id, telegram_payment_charge_id=charge_id)
-    mark_refunded(charge_id)
 
 
 async def _run_refund(charge_id: str) -> None:

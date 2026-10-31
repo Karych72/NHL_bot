@@ -166,14 +166,20 @@ async def cmd_premium(message: Message, bot: Bot) -> None:
     """`/premium`: статус премиума, что он даёт и кнопка оплаты подпиской Stars (Задача 97).
 
     Оплата только в личке (`chat_id` лички = `user_id`); в группе — текст без кнопки. При
-    активном премиуме кнопка остаётся (продлить заранее) и добавляется подсказка, как отменить
-    автопродление.
+    действующей подписке Stars кнопки нет (вторая подписка шла бы параллельно) — вместо неё
+    подсказка, как отменить автопродление. Вручную выданному премиуму (Задача 96) кнопка
+    остаётся, подсказки нет.
     """
     if message.chat.type != "private":
         await message.answer(_PREMIUM_GROUP_TEXT)
         return
     until = premium.premium_until(message.chat.id)
+    subscribed = premium.has_paid_subscription(message.chat.id)
     status = f"Премиум до {until.astimezone(MSK):%d.%m}" if until else "Премиума нет"
+    lines = [status, "", _PREMIUM_PERKS, f"Подписка {premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."]
+    if subscribed:
+        await message.answer_rich(rich_message("\n".join(lines + ["", _PREMIUM_CANCEL_HINT])))
+        return
     link = await bot.create_invoice_link(
         title="Премиум на 30 дней",
         description=_PREMIUM_PERKS,
@@ -182,9 +188,6 @@ async def cmd_premium(message: Message, bot: Bot) -> None:
         prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
         subscription_period=premium.PERIOD_SECONDS,
     )
-    lines = [status, "", _PREMIUM_PERKS, f"Подписка {premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."]
-    if until:
-        lines += ["", _PREMIUM_CANCEL_HINT]
     button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
     await message.answer_rich(
         rich_message("\n".join(lines)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])

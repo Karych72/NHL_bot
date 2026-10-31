@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List
 
@@ -69,7 +70,7 @@ def ai(bot_module, fake_db_router, monkeypatch):
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
             ("FILTER (WHERE asked_at", [asked]),
-            ("FROM premium_access", [(premium,)]),
+            ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=timezone.utc),)] if premium else []),
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
