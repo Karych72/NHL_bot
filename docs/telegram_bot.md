@@ -362,3 +362,51 @@ spike 2026-10-27 на iOS и Desktop (`plan/rich_messages/README.md` §«Spike �
    решения человека 2026-10-29 и 2026-10-31). Коды остаются в таблицах лидеров (`/stats`,
    `/team_stats`, `/countries`), звёздах матча, кнопках (подписка, `/today`, `/tonight`),
    всплывающих ответах и командах `/BOS`, `/BOS_FULL`.
+
+---
+
+## 10. Журнал действий (Задача 99)
+
+Миграция 0017, только миграция: журнал не восстановить повторной загрузкой. Не чистится —
+ни срока хранения, ни задания очистки (решение человека 2026-10-31).
+
+**`bot_actions`** — строка на действие (`chat_id`, `user_id`, `at`, `kind`, `data`):
+
+| `kind` | Кто пишет | `data` |
+|---|---|---|
+| `command` | outer-middleware `message` (`bot.log_user_action`): текст с сущностью `bot_command` в начале | имя без `/`, `@бот` и аргументов, в нижнем регистре: `help`, `bos_full`; неизвестная команда — как есть |
+| `callback` | outer-middleware `callback_query`, вторым после троттлинга — отброшенные нажатия не пишутся | `callback_data` как есть |
+| `ai_limit` | `bot.on_free_text`, когда `ai_router.limit_refusal` отказал | `day` (премиум, сутки) / `week` / `total` |
+| `blocked` | `subscription_repo.deactivate_chat` (рассылка поймала `TelegramForbiddenError`) | — (`user_id` тоже нет: событие чата) |
+
+`user_id` — `from_user.id` апдейта: в группе чат общий, а действует конкретный человек.
+
+**Чего нет.** Свободного текста к ИИ: он целиком в `ai_questions` / `ai_stats_log`. Прочтения
+сообщений и рассылок: Telegram Bot API его не отдаёт.
+
+**`bot_subscription_events`** — история подписок: триггер на `bot_subscriptions` пишет вставку и
+фактическую смену `active` (`subscription_id`, `chat_id`, `kind`, `team_id`, `country`, `active`,
+`at`). Отметка рассылки (`last_sent_night`) и повторное включение включённой событий не дают.
+**Блокировка или отписка:** блокировка — строка `blocked` в `bot_actions` и в ту же секунду
+погашенные все подписки чата; отписка — одно событие `active = false` без `blocked`.
+
+Примеры:
+
+```sql
+-- Активные за неделю: чаты и люди. Кто только спрашивает ИИ, здесь не виден — он в
+-- ai_questions / ai_stats_log (в личке chat_id = user_id).
+SELECT count(DISTINCT chat_id) AS chats, count(DISTINCT user_id) AS users
+FROM bot_actions WHERE kind IN ('command', 'callback') AND at >= now() - interval '7 days';
+
+-- Популярность экранов: префикс callback_data и команды за 30 дней
+SELECT kind, CASE WHEN kind = 'callback' THEN split_part(data, ':', 1) ELSE data END AS screen,
+       count(*) AS n, count(DISTINCT user_id) AS users
+FROM bot_actions WHERE kind IN ('command', 'callback') AND at >= now() - interval '30 days'
+GROUP BY 1, 2 ORDER BY n DESC;
+
+-- Что человек делал за час до упора в лимит ИИ
+SELECT l.user_id, l.data AS lim, a.at, a.kind, a.data
+FROM bot_actions l JOIN bot_actions a
+  ON a.user_id = l.user_id AND a.at BETWEEN l.at - interval '1 hour' AND l.at AND a.id <> l.id
+WHERE l.kind = 'ai_limit' ORDER BY l.user_id, l.at, a.at;
+```

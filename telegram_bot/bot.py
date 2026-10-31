@@ -1,8 +1,8 @@
 """Точка входа Telegram-бота: сборка `Dispatcher` aiogram и регистрация хендлеров.
 
 Роль в пайплайне: `bot.py` собирает `Dispatcher` aiogram 3.31 из двух роутеров —
-команды и кнопки, затем свободный текст, — вешает троттлинг нажатий (`throttle.py`)
-и запускает long polling. Меню и листание таблиц статистики живут в
+команды и кнопки, затем свободный текст, — вешает троттлинг нажатий (`throttle.py`) и
+журнал действий (`bot_actions`, Задача 99) и запускает long polling. Меню и листание таблиц статистики живут в
 `stats_handlers.py`; здесь — команды верхнего уровня, подписки, свободный текст и
 сборка `Dispatcher`.
 """
@@ -24,6 +24,7 @@ import ai_router
 import ai_stats
 import config
 import subscription_repo
+from database import get_connection
 from leaderboard_specs import ADVANCED_METRICS
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
@@ -477,11 +478,19 @@ AI_SCREENS: Dict[str, Callable[[Message, Bot, Dict[str, Any]], Awaitable[None]]]
 }
 
 
+# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), неделя, всего.
+_AI_LIMIT_KINDS = {
+    ai_router.LIMIT_TEXT: "day",
+    ai_router.WEEK_LIMIT_TEXT: "week",
+    ai_router.TOTAL_LIMIT_TEXT: "total",
+}
+
+
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
     Лимит исчерпан (`ai_router.limit_refusal`: премиум или бесплатный, Задача 96) — отказ без
-    вызова модели; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
+    вызова модели, вид лимита — в журнал `bot_actions`; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
     отказ, уточнение или сообщение о сбое API.
 
     Модель может передать вопрос ответам по статистике (`ai_stats.answer`, Задача 83); а если
@@ -491,6 +500,10 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     text = message.text or ""
     refusal = ai_router.limit_refusal(chat_id)
     if refusal is not None:
+        assert message.from_user is not None
+        await asyncio.to_thread(
+            log_action, chat_id, message.from_user.id, "ai_limit", _AI_LIMIT_KINDS[refusal]
+        )
         await message.answer_rich(rich_message(refusal))
         return
     history = ai_stats.recent_pairs(chat_id)
@@ -525,6 +538,52 @@ def is_plain_text(message: Message) -> bool:
         return False
     entities = message.entities or []
     return not (entities and entities[0].type == "bot_command" and entities[0].offset == 0)
+
+
+def log_action(chat_id: int, user_id: int, kind: str, data: Optional[str]) -> None:
+    """Строка журнала `bot_actions` (Задача 99).
+
+    Зачем: по журналу видно, сколько у бота пользователей и кто возвращается, какие экраны
+    открывают и что делают до лимита ИИ — без него действия вне ИИ следа в БД не оставляют.
+
+    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал; `kind` — `command`,
+    `callback` или `ai_limit`; `data` — имя команды, `callback_data` или вид лимита.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_actions (chat_id, user_id, kind, data) VALUES (%s, %s, %s, %s)",
+                (chat_id, user_id, kind, data),
+            )
+        conn.commit()
+
+
+async def log_user_action(
+    handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+    event: Any,
+    data: Dict[str, Any],
+) -> Any:
+    """Outer-middleware `message` и `callback_query`: пишет команду или нажатие в журнал
+    (`log_action`) и передаёт апдейт дальше.
+
+    Зачем: outer-middleware видит апдейт раньше фильтров, поэтому в журнал попадает и
+    неизвестная команда. Команда — имя без `/` и `@бот` в нижнем регистре; свободный текст не
+    пишется (он в `ai_questions` / `ai_stats_log`). У нажатий стоит после троттлинга —
+    отброшенные им до журнала не доходят.
+
+    Аргументы: `handler` — следующий шаг цепочки aiogram, `event` — сообщение или нажатие,
+    `data` — контекст апдейта: `event_chat` и `event_from_user` берутся из него.
+    """
+    if isinstance(event, CallbackQuery):
+        kind, value = "callback", event.data
+    elif event.text is not None and not is_plain_text(event):
+        kind, value = "command", event.text[1:event.entities[0].length].split("@")[0].lower()
+    else:
+        return await handler(event, data)
+    await asyncio.to_thread(
+        log_action, data["event_chat"].id, data["event_from_user"].id, kind, value
+    )
+    return await handler(event, data)
 
 
 def _command(name: str) -> Command:
@@ -599,7 +658,8 @@ def build_dispatcher() -> Dispatcher:
 
     Троттлинг нажатий (`throttle.py`) — outer-middleware `callback_query`: он видит
     нажатие раньше фильтров любого роутера и при превышении лимита обрывает его, не
-    давая дойти до кнопок. Роутеры проверяются по порядку: standalone → хвост
+    давая дойти до кнопок. Журнал действий (`log_user_action`) — outer-middleware
+    `message` и `callback_query`, у нажатий вторым: aiogram зовёт их в порядке регистрации. Роутеры проверяются по порядку: standalone → хвост
     (`build_tail_router`).
 
     Апдейты разных пользователей обрабатываются конкурентно (polling aiogram запускает
@@ -610,6 +670,8 @@ def build_dispatcher() -> Dispatcher:
     """
     dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
     dispatcher.callback_query.outer_middleware(enforce_callback_rate_limit)
+    dispatcher.callback_query.outer_middleware(log_user_action)
+    dispatcher.message.outer_middleware(log_user_action)
     dispatcher.startup.register(_publish_command_menu)
     dispatcher.include_routers(build_standalone_router(), build_tail_router())
     return dispatcher

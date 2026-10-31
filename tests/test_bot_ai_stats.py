@@ -140,6 +140,7 @@ def stats(bot_module, fake_db_router, monkeypatch):
         ])
         monkeypatch.setattr(ai_stats, "get_connection", bot_module("database").get_connection)
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+        monkeypatch.setattr(bot, "get_connection", bot_module("database").get_connection)
         if router is None:
             # Свежая история открывает окно (маршрутизатор не зовётся), иначе он выберет stats_question.
             router = [] if history else [_response(_use("stats_question"))]

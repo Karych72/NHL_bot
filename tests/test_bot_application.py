@@ -54,7 +54,16 @@ def _commands(router: Any) -> List[str]:
 
 
 @pytest.fixture
-def dispatcher(bot_module) -> Dispatcher:
+def actions(bot_module, monkeypatch) -> List[Tuple[int, int, str, Any]]:
+    """Журнал `bot_actions` (Задача 99) в памяти: (chat_id, user_id, kind, data). Middleware
+    пишет на каждую команду и нажатие, а в CI БД нет; SQL записи — в tests/test_db_nhl.py."""
+    rows: List[Tuple[int, int, str, Any]] = []
+    monkeypatch.setattr(bot_module("bot"), "log_action", lambda *row: rows.append(row))
+    return rows
+
+
+@pytest.fixture
+def dispatcher(bot_module, actions) -> Dispatcher:
     return bot_module("bot").build_dispatcher()
 
 
@@ -68,10 +77,15 @@ def test_dispatcher_checks_commands_then_free_text(dispatcher) -> None:
     assert [r.name for r in dispatcher.sub_routers] == ["standalone", "tail"]
 
 
-def test_throttle_is_the_only_outer_middleware_of_button_presses(bot_module, dispatcher) -> None:
+def test_outer_middlewares_throttle_presses_before_logging_them(bot_module, dispatcher) -> None:
+    """Порядок — поведение: aiogram зовёт outer-middleware по порядку регистрации, и журнал
+    после троттлинга не видит отброшенных нажатий."""
+    bot = bot_module("bot")
     throttle = bot_module("throttle")
-    assert list(dispatcher.callback_query.outer_middleware) == [throttle.enforce_callback_rate_limit]
-    assert list(dispatcher.message.outer_middleware) == []
+    assert list(dispatcher.callback_query.outer_middleware) == [
+        throttle.enforce_callback_rate_limit, bot.log_user_action,
+    ]
+    assert list(dispatcher.message.outer_middleware) == [bot.log_user_action]
 
 
 def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
@@ -287,10 +301,10 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
 
 @pytest.mark.asyncio
 async def test_spam_presses_are_stopped_before_any_handler(
-    bot_module, dispatcher, fake_bot, api, make_update
+    bot_module, dispatcher, fake_bot, api, actions, make_update
 ) -> None:
     """Задача 10: девятое нажатие за окно не доходит до хендлера (ни одной правки
-    сообщения), пользователь получает ответ с текстом."""
+    сообщения), пользователь получает ответ с текстом; в журнал (Задача 99) оно не попадает."""
     throttle = bot_module("throttle")
     throttle._hits.clear()
     for _ in range(throttle.CALLBACK_RATE_LIMIT + 1):
@@ -299,6 +313,7 @@ async def test_spam_presses_are_stopped_before_any_handler(
 
     assert len(api.edited_markups) == throttle.CALLBACK_RATE_LIMIT
     assert api.answers[-1] == throttle.RATE_LIMIT_ANSWER_TEXT
+    assert len(actions) == throttle.CALLBACK_RATE_LIMIT
 
 
 @pytest.mark.asyncio
@@ -331,6 +346,46 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
     assert body(card) == rich_html("CARD")
     assert body(pointer) == rich_html(sh._TONIGHT_ALREADY_SENT)
     assert pointer.reply_parameters.message_id == 1, "второй тап — ссылка на неё"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text, name",
+    [("/help", "help"), ("/HELP@nhl_test_bot", "help"), ("/help me", "help"),
+     ("/Team_Stats", "team_stats"), ("/leaders", "leaders")],
+)
+async def test_command_is_logged_by_lowercase_name_with_chat_and_user(
+    dispatcher, fake_bot, actions, make_update, text, name
+) -> None:
+    """Задача 99: имя без `/`, `@бот` и аргументов, в нижнем регистре; неизвестная команда —
+    тоже (`/leaders` убрана, но её набирают)."""
+    await _feed(dispatcher, fake_bot, make_update(text, chat_id=-5, chat_type="group", user_id=7))
+
+    assert actions == [(-5, 7, "command", name)]
+
+
+@pytest.mark.asyncio
+async def test_press_is_logged_with_callback_data(dispatcher, fake_bot, actions, make_update) -> None:
+    await _feed(dispatcher, fake_bot, make_update(data="sub:x", chat_id=-5, user_id=7))
+
+    assert actions == [(-5, 7, "callback", "sub:x")]
+
+
+@pytest.mark.asyncio
+async def test_free_text_is_not_logged(bot_module, dispatcher, fake_bot, actions, make_update, monkeypatch) -> None:
+    """Вопрос к ИИ уже в `ai_questions` / `ai_stats_log` — журнал его не дублирует."""
+    bot = bot_module("bot")
+
+    async def ask(chat_id: int, text: str) -> Any:
+        return bot.ai_router.Reply(text="ответ", tool=None, params={})
+
+    monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)
+    monkeypatch.setattr(bot.ai_stats, "recent_pairs", lambda chat_id: [])
+    monkeypatch.setattr(bot.ai_router, "ask", ask)
+
+    await _feed(dispatcher, fake_bot, make_update("как сыграл Колорадо"))
+
+    assert actions == []
 
 
 # ---------------------------------------------------------------------------
