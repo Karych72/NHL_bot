@@ -366,7 +366,7 @@ async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_
 @pytest.mark.parametrize(
     ("premium", "footer"),
     [
-        (False, "<footer>Сезон 2026/27</footer>"),
+        (False, "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium</footer>"),
         (True, "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа New York Rangers — 61%</footer>"),
     ],
 )
@@ -504,7 +504,8 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
             await _tap_tonight(stats_handlers, make_callback, fake_bot, "tn:556:BOS:MIN")
 
     assert [body(m) for m in api.outgoing] == [
-        rich_html("PREVIEW") + "<footer>Сезон 2026/27</footer>", rich_html("CARD"), rich_html("CARD"),
+        rich_html("PREVIEW") + "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium</footer>",
+        rich_html("CARD"), rich_html("CARD"),
     ]
 
 

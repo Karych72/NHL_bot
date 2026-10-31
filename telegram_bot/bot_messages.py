@@ -877,6 +877,10 @@ def _team_record_line(
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
 
 
+# Вместо оценки модели бесплатному чату (Задача 97B): строка того же подвала.
+MODEL_PREDICTION_TEASER = "🔒 Прогноз модели — в премиуме: /premium"
+
+
 def with_model_prediction(footer: str, game_id: int, home_abbr: str) -> str:
     """Подвал превью (`matchup_season_preview`) со строкой оценки модели: победа хозяев и тотал
     больше 5.5; прогноза нет — подвал как есть.

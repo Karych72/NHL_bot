@@ -70,6 +70,7 @@ from bot_messages import (  # noqa: E402
     day_digest,
     game_message,
     game_score_line,
+    MODEL_PREDICTION_TEASER,
     matchup_season_preview,
     night_goals,
     rich_footer,
@@ -642,6 +643,8 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         body, footer = previews[game_id]
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)
+        else:
+            footer = f"{footer}\n{MODEL_PREDICTION_TEASER}"
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"

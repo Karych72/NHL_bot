@@ -278,6 +278,7 @@ async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
     assert bool(messages.calls) is (refusal is None)
     if refusal is not None:
         assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
+        assert ("/premium" in getattr(bot_module("ai_router"), refusal)) is not premium
         assert not any(q.startswith("INSERT") for q, _ in cursor.executed)
     # Премиум — по чату вопроса.
     assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]

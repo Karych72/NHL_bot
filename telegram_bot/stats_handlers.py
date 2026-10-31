@@ -37,6 +37,7 @@ from bot_messages import (
     digest_shown_match_count,
     game_exists,
     game_message,
+    MODEL_PREDICTION_TEASER,
     matchup_season_preview,
     player_stat_leaderboard_page,
     rich_footer,
@@ -500,6 +501,8 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
         body, footer = matchup_season_preview(away, home)
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)
+        else:
+            footer = f"{footer}\n{MODEL_PREDICTION_TEASER}"
         text = f"{truncate_telegram_text(body)}\n{rich_footer(footer)}"
         answer = await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(text))
     sent[key] = [answer.message_id, None]

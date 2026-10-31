@@ -476,7 +476,8 @@ FOOTER = "<footer>Настроить подписки: /subscriptions</footer>"
 # Причина рассылки — в подвале («По подписке: …»), а не первой строкой: первой идёт счёт.
 RUS_FOOTER = "<footer>По подписке: Россия<br>Настроить подписки: /subscriptions</footer>"
 # Подвал превью предстоящего матча: «Сезон …» из `matchup_season_preview`, затем подписки.
-PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>Настроить подписки: /subscriptions</footer>"
+# Бесплатному вместо оценки модели — тизер (Задача 97B).
+PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium<br>Настроить подписки: /subscriptions</footer>"
 
 
 def _goals(game_id, n, first_event=100):
@@ -1074,6 +1075,7 @@ async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env,
     ]
     assert upcoming_env.previews == [("BOS", "TOR")]
     assert upcoming_env.predicted == [GAME_A]
+    assert "🔒" not in with_prediction, "у премиума тизера нет"
 
 
 @pytest.mark.asyncio
