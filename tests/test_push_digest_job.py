@@ -1075,7 +1075,7 @@ async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env,
     ]
     assert upcoming_env.previews == [("BOS", "TOR")]
     assert upcoming_env.predicted == [GAME_A]
-    assert "🔒" not in with_prediction, "у премиума тизера нет"
+    assert all("🔒" not in m.rich_message.html for m in api.sent_rich if m.chat_id == 222)
 
 
 @pytest.mark.asyncio

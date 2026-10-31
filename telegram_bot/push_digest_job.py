@@ -64,13 +64,13 @@ if _HERE not in sys.path:
 
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
+    MODEL_PREDICTION_TEASER,
     MSK,
     country_name,
     country_night_blocks,
     day_digest,
     game_message,
     game_score_line,
-    MODEL_PREDICTION_TEASER,
     matchup_season_preview,
     night_goals,
     rich_footer,
