@@ -7,6 +7,19 @@
 Голы за игру: {{ gf }} забито / {{ ga }} пропущено
 Броски за игру: {{ sf }} своих / {{ sa }} соперника
 Большинство: {{ pp }} · Меньшинство: {{ pk }} · Вбрасывания: {{ fo }}
+{%- if season_extra %}
+{{ season_extra }}
+{%- endif %}
+{%- if recent_games %}
+
+<b>Последние матчи</b>
+{{ recent_games }}
+{%- endif %}
+{%- if upcoming_games %}
+
+<b>Ближайшие матчи</b>
+{{ upcoming_games }}
+{%- endif %}
 {%- if scorers_table %}
 
 <b>Бомбардиры</b>
@@ -22,5 +35,10 @@
 <b>Вратари</b>
 {{ goalies_table }}
 {%- endif %}
+{%- for label, table in player_groups %}
+
+<b>{{ label }}</b>
+{{ table }}
+{%- endfor %}
 {{ legend }}
 {{ footer }}
