@@ -1808,7 +1808,7 @@ def _team_games_context(team_id: int) -> Dict[str, str]:
 
         def periods(side: str) -> str:
             return " · ".join(
-                f"{p}-й {sum(int(g[f'{side}{p}'] or 0) for g, _ in games)}" for p in (1, 2, 3)
+                f"{p}-й {sum(g[f'{side}{p}'] for g, _ in games)}" for p in (1, 2, 3)
             )
 
         home = _outcomes_record([o for g, o in games if g["is_home"]])

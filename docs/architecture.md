@@ -349,7 +349,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 следит за свежестью данных, и успешная рассылка не скрывает упавшую ночную загрузку. Повторные
 прогоны одного дня идемпотентны: per-game таблицы — `DELETE` по `game_id` окна и `INSERT` в одной транзакции, сезонные — UPSERT. Расписание, здоровье сервиса,
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
-загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением).
+загрузчика заодно обновляет `scheduled_games` (расписание на две недели вперёд, Задачи 22A и 100; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением).
 Идущий матч (Stats REST `gameStateId` 3–6) ночной прогон не видит ни в `games`, ни в
 `scheduled_games` — он появляется в `games`, когда gamecenter отдаёт `OFF`. Сезонные таблицы
 (`teams_stats`, `players_season_stats`…) из Stats REST могут ночью уже учитывать матч, которого
@@ -377,7 +377,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 Сервис `predict` в `docker-compose.yml` (без профиля — выкатывается на прод; образ — стадия
 `modeling`, в релизе `ghcr.io/karych72/nhl_bot:<тег>-modeling`). Раз в сутки в 12:00 UTC (слот
 `scheduled_retrain.seconds_until_next_run`), после успешного свежего sync (`run_after_sync` из
-`scheduled_retrain` — общее предусловие), прогоняет `build-dataset --mode predict` →
+`scheduled_retrain` — общее предусловие), прогоняет `build-dataset --mode predict
+--target-day-to <завтра UTC>` (цели — сегодня и завтра, хотя `scheduled_games` держит две недели) →
 `predict` → `publish-predictions` → `publish-goals`; модели — из `deploy/models/` в образе, не
 обучаются. Догоняющий прогон при старте — если статуса нет или он старше суток. Статус —
 `all_data/publish_status.json` в томе `syncdata`, healthcheck — ok и моложе 26 часов. Тесты —
@@ -743,7 +744,9 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 #### `scheduled_games` — Будущие игры (Задача 22A)
 
-Цели predict-датасета: незавершённые игры регулярки на сегодня и завтра (UTC). `games` хранит
+Незавершённые игры регулярки на 14 дней вперёд от сегодня (UTC, `SCHEDULE_WINDOW_DAYS`).
+Читают их ближайшие матчи `/BOS_FULL` (Задача 100) и predict-датасет — ежедневная публикация
+берёт из них только сегодня и завтра (`--target-day-to`, `pipeline/scheduled_publish.py`). `games` хранит
 только сыгранные, поэтому будущие лежат отдельно; загрузчик заменяет содержимое сезона при каждом прогоне.
 
 | Колонка | Тип | Описание |

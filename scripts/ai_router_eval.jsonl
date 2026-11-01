@@ -58,4 +58,5 @@
 {"q": "колорадо статистика", "tool": "team_profile", "params": {"team": "COL", "all_players": false}}
 {"q": "расскажи про Тампу", "tool": "team_profile", "params": {"team": "TBL", "all_players": false}}
 {"q": "состав Тампы", "tool": "team_profile", "params": {"team": "TBL", "all_players": true}}
+{"q": "где играет Пастрняк", "tool": "team_profile", "params": {"team": "BOS", "all_players": false}}
 {"q": "подробно про Бостон", "tool": "team_profile", "params": {"team": "BOS", "all_players": true}}
