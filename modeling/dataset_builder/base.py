@@ -83,7 +83,8 @@ def _day_where_clause(config: DatasetBuildConfig) -> str:
 def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = False) -> pd.DataFrame:
     """Загружает игры-цели датасета: сыгранные (train) или будущие (predict).
 
-    Train берёт завершённые игры из ``games`` вместе с фактическими голами;
+    Train берёт завершённые игры регулярки из ``games`` (``game_type = 2``: модель обучена на
+    регулярке, плей-офф в train не подмешивается — Задача 102) вместе с фактическими голами;
     predict — ещё не сыгранные из ``scheduled_games`` (их наполняет загрузчик,
     Задача 22A), у которых нет ни победителя, ни голов: колонки те же, но
     ``winner_id`` и ``*_goals_target`` — NULL.
@@ -128,6 +129,7 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = 
                 ON aws.game_id = g.game_id
                AND aws.team_id::bigint = g.away_team_id::bigint
             WHERE g.winner_id IS NOT NULL
+              AND g.game_type = 2
               AND g.day IS NOT NULL
               AND g.home_team_id IS NOT NULL
               AND g.away_team_id IS NOT NULL
@@ -157,6 +159,15 @@ def load_target_games(conn, config: DatasetBuildConfig, *, with_outcome: bool = 
 
 
 def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+    """Загружает командную статистику сыгранных игр — историю для rolling-признаков.
+
+    Только регулярка (``game_type = 2``, Задача 102): признаки train и predict считаются по тем же
+    играм, на которых обучена модель.
+
+    Args:
+        conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
+        config: фильтр сезонов; ``target_day_to`` ограничивает последний день.
+    """
     max_day_clause = ""
     if config.target_day_to:
         max_day_clause = f" AND g.day <= '{config.target_day_to}'"
@@ -182,6 +193,7 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
         FROM game_team_stats s
         JOIN games g ON g.game_id = s.game_id
         WHERE g.winner_id IS NOT NULL
+          AND g.game_type = 2
           AND g.day IS NOT NULL
           {_season_where_clause(config)}
           {max_day_clause}
@@ -194,8 +206,8 @@ def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
     """Загружает попытки бросков сыгранных игр для xG-модели (Задача 69) — содержимое ``shots_train.csv``.
 
     Строки ``shot_attempts`` с ``season_id``, ``day``, ``home_team_id``, ``away_team_id`` из
-    ``games``; сезоны — ``config.season_ids`` (все, если пусто), ``target_day_to`` ограничивает
-    дни, ``target_day_from`` не действует: как и ``games_train.csv``, сезоны берутся целиком.
+    ``games``, только регулярка (``game_type = 2``, Задача 102); сезоны — ``config.season_ids``
+    (все, если пусто), ``target_day_to`` ограничивает дни, ``target_day_from`` не действует: как и ``games_train.csv``, сезоны берутся целиком.
 
     Args:
         conn: соединение psycopg2 (или совместимое с ``pd.read_sql_query``).
@@ -215,6 +227,7 @@ def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
         FROM shot_attempts s
         JOIN games g ON g.game_id = s.game_id
         WHERE g.winner_id IS NOT NULL
+          AND g.game_type = 2
           AND g.day IS NOT NULL
           {_season_where_clause(config)}
           {_day_where_clause(replace(config, target_day_from=None))}
@@ -235,7 +248,7 @@ def _load_train_metadata(path: Path) -> Dict[str, object]:
 
 
 def _compose_data_snapshot_id(config: DatasetBuildConfig, built_at_iso: str) -> str:
-    parts = ["db:games+game_team_stats"]
+    parts = ["db:games+game_team_stats", "game_type=2"]
     if config.season_ids:
         parts.append("seasons=" + ",".join(str(int(s)) for s in config.season_ids))
     else:
