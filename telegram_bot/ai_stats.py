@@ -85,10 +85,13 @@ _OVERVIEW_SKATER_SEASONS_SQL = (
     "FROM players_season_stats WHERE player_id = %s AND season_id IN (%s, %s) "
     "ORDER BY season_id DESC"
 )
+# Лог игр обзора — только регулярка (Задача 102): его сверяют с `games` сезонной строки, а серию
+# очков и «последние 10» не должен рвать или подменять плей-офф.
 _OVERVIEW_SKATER_GAMES_SQL = (
     "SELECT g.day::text AS day, gps.goals, gps.assists, gps.goals + gps.assists AS points, "
     "gps.shots FROM game_player_stats gps JOIN games g ON g.game_id = gps.game_id "
-    "WHERE gps.player_id = %s AND g.season_id = %s ORDER BY g.day DESC, g.game_id DESC"
+    "WHERE gps.player_id = %s AND g.season_id = %s AND g.game_type = 2 "
+    "ORDER BY g.day DESC, g.game_id DESC"
 )
 _OVERVIEW_GOALIE_SEASONS_SQL = (
     "SELECT season_id, games, games_started, wins, losses, ot, save_percentage, "
@@ -99,7 +102,7 @@ _OVERVIEW_GOALIE_GAMES_SQL = (
     "SELECT g.day::text AS day, ggs.shots AS shots_against, ggs.saves, "
     "ggs.shots - ggs.saves AS goals_against FROM game_goalie_stats ggs "
     "JOIN games g ON g.game_id = ggs.game_id WHERE ggs.player_id = %s AND g.season_id = %s "
-    "ORDER BY g.day DESC, g.game_id DESC LIMIT 10"
+    "AND g.game_type = 2 ORDER BY g.day DESC, g.game_id DESC LIMIT 10"
 )
 # `asked_at` по умолчанию `now()` в момент записи строки, то есть это время ответа, а не вопроса:
 # окно считается от него без поправки на задержку. Окно — условие каждой строки, а не новейшей.

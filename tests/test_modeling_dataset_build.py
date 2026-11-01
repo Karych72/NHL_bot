@@ -761,6 +761,7 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         query = self._query("train")
         self.assertIn("FROM games g", query)
         self.assertIn("g.winner_id IS NOT NULL", query)
+        self.assertIn("g.game_type = 2", query)  # Задача 102: плей-офф в train не идёт
         self.assertNotIn("scheduled_games", query)
 
     def test_outcome_columns_only_when_requested(self):
@@ -801,6 +802,7 @@ class TestLoadShotAttempts(unittest.TestCase):
         self.assertIn("FROM shot_attempts s", query)
         self.assertIn("JOIN games g ON g.game_id = s.game_id", query)
         self.assertIn("g.winner_id IS NOT NULL", query)
+        self.assertIn("g.game_type = 2", query)
         self.assertIn("g.season_id IN (20242025,20252026)", query)
         self.assertIn("g.day <= '2026-03-01'", query)
         self.assertNotIn("2025-01-01", query)

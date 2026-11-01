@@ -755,7 +755,8 @@ def _team_game_outcome(
 
 def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
-    сезона команды `team_id`, от новой игры к старой.
+    регулярного сезона команды `team_id`, от новой игры к старой (плей-офф —
+    `game_type = 3` — в форму и серию не входит, Задача 102).
 
     Единственное место, где строится запрос «последние игры команды» и
     разбирается его строка — общее для `_last_n_form_record()` (`limit=5`,
@@ -773,7 +774,7 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """
     row = cached_fetch_all(
         "SELECT winner_id, is_overtime, is_shootouts, " + _OT_EMPTY_NET_WIN_SQL
-        + "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
+        + "FROM games g WHERE season_id = %s AND game_type = 2 AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
         (config.SEASON_ID, team_id, team_id, limit),
@@ -843,11 +844,11 @@ def _current_streak(team_id: int) -> str:
 
 
 def _h2h_season_wins(tid_a: int, tid_b: int) -> Optional[Tuple[int, int]]:
-    """Победы команд `tid_a` и `tid_b` в личных встречах сезона или None,
-    если они ещё не встречались."""
+    """Победы команд `tid_a` и `tid_b` в личных встречах регулярного сезона или None,
+    если они ещё не встречались; серия плей-офф в счёт не идёт (Задача 102)."""
     row = cached_fetch_all(
-        "SELECT winner_id FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
-        "AND ((home_team_id = %s AND away_team_id = %s) "
+        "SELECT winner_id FROM games WHERE season_id = %s AND game_type = 2 "
+        "AND winner_id IS NOT NULL AND ((home_team_id = %s AND away_team_id = %s) "
         "     OR (home_team_id = %s AND away_team_id = %s))",
         (config.SEASON_ID, tid_a, tid_b, tid_b, tid_a),
         columns=["winner_id"],
@@ -1287,8 +1288,10 @@ def player_stat_leaderboard_page(
 
 
 def _standings_as_of_day() -> str:
+    """Дата «по состоянию на» у `/standings`: последний день регулярки сезона — таблица
+    по плей-офф не меняется, и его дни дату не сдвигают (Задача 102)."""
     row = cached_fetch_all(
-        "SELECT max(day)::text AS d FROM games WHERE season_id = %s",
+        "SELECT max(day)::text AS d FROM games WHERE season_id = %s AND game_type = 2",
         (config.SEASON_ID,),
         columns=["d"],
     )
@@ -1765,7 +1768,8 @@ def _team_games_context(team_id: int) -> Dict[str, str]:
 
     Зачем: то, чего нет в коротком `/BOS`. Сыгранные — `games` ⋈ `game_team_stats` своих и
     соперника (счёт — `goals`, как в карточке матча: победный буллит в нём уже учтён), исход —
-    `_team_game_outcome()`, как у формы. Ближайшие — `scheduled_games` (день по Северной
+    `_team_game_outcome()`, как у формы; только регулярка — как форма и блок «Сезон»
+    (Задача 102). Ближайшие — `scheduled_games` (день по Северной
     Америке, времени начала в БД нет). Нет игр или расписания — блок пустой и не выводится.
 
     Аргументы:
@@ -1780,7 +1784,7 @@ def _team_games_context(team_id: int) -> Dict[str, str]:
         "JOIN game_team_stats own ON own.game_id = g.game_id AND own.team_id = %s "
         "JOIN game_team_stats opp ON opp.game_id = g.game_id AND opp.team_id <> own.team_id "
         "JOIN teams t ON t.team_id = opp.team_id AND t.season_id = g.season_id "
-        "WHERE g.season_id = %s AND g.winner_id IS NOT NULL "
+        "WHERE g.season_id = %s AND g.game_type = 2 AND g.winner_id IS NOT NULL "
         "ORDER BY g.day DESC NULLS LAST, g.game_id DESC",
         (team_id, team_id, config.SEASON_ID),
         columns=_TEAM_SEASON_GAMES_COLUMNS,

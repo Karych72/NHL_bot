@@ -1079,6 +1079,132 @@ class TestPredictionLogSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestRegularSeasonOnlySql(unittest.TestCase):
+    """Задача 102: форма, H2H, дата таблицы, игры ``/BOS_FULL``, лог игр обзора ИИ и датасет
+    модели читают только регулярку. Вымышленный сезон: две победы HOM в регулярке и поздняя
+    игра плей-офф (``game_type = 3``), выигранная AWY, — она не должна попасть ни в один ответ.
+    Строки удаляются до и после."""
+
+    SEASON = 99999102
+    HOME = 900102
+    AWAY = 900103
+    PLAYER = -102
+    GOALIE = -103
+    REG1 = 2099991021
+    REG2 = 2099991022
+    PLAYOFF = 2099991023
+
+    def setUp(self):
+        import ai_stats
+        import bot_messages
+
+        self.messages = bot_messages
+        self.ai_stats = ai_stats
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        season_patch = patch.object(config, "SEASON_ID", self.SEASON)
+        season_patch.start()
+        self.addCleanup(season_patch.stop)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
+                (self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # (игра, день, хозяева, гости, победитель, тип)
+            for game in (
+                (self.REG1, date(2099, 1, 1), self.HOME, self.AWAY, self.HOME, 2),
+                (self.REG2, date(2099, 1, 3), self.AWAY, self.HOME, self.HOME, 2),
+                (self.PLAYOFF, date(2099, 4, 20), self.HOME, self.AWAY, self.AWAY, 3),
+            ):
+                cur.execute(
+                    "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                    "is_overtime, is_shootouts, season_id, game_type) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, FALSE, %s, %s)",
+                    (*game[:5], self.SEASON, game[5]),
+                )
+                winner, loser = game[4], ({game[2], game[3]} - {game[4]}).pop()
+                cur.execute(
+                    "INSERT INTO game_team_stats (game_id, team_id, field, goals, fst_period_goals, "
+                    "snd_period_goals, trd_period_goals, shots) "
+                    "VALUES (%s, %s, %s, 2, 1, 1, 0, 30), (%s, %s, %s, 1, 0, 0, 1, 25)",
+                    (game[0], winner, "home" if winner == game[2] else "away",
+                     game[0], loser, "home" if loser == game[2] else "away"),
+                )
+                cur.execute(
+                    "INSERT INTO game_player_stats (player_id, team_id, game_id, goals, assists, "
+                    "shots) VALUES (%s, %s, %s, 1, 0, 3)",
+                    (self.PLAYER, self.HOME, game[0]),
+                )
+                cur.execute(
+                    "INSERT INTO game_goalie_stats (player_id, team_id, game_id, saves, shots) "
+                    "VALUES (%s, %s, %s, 24, 25)",
+                    (self.GOALIE, self.HOME, game[0]),
+                )
+                cur.execute(
+                    "INSERT INTO shot_attempts (game_id, event_id, sort_order, team_id, event_type) "
+                    "VALUES (%s, 1, 1, %s, 'shot-on-goal')",
+                    (game[0], self.HOME),
+                )
+
+    def _games(self):
+        return [self.REG1, self.REG2, self.PLAYOFF]
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("shot_attempts", "game_goalie_stats", "game_player_stats", "game_team_stats"):
+                cur.execute(f"DELETE FROM {table} WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM games WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def test_form_streak_h2h_and_standings_day_skip_playoff(self):
+        # С плей-офф было бы 2-1-0, «L1», (2, 1) и 2099-04-20.
+        self.assertEqual(self.messages._last_n_form_record(self.HOME), "2-0-0")
+        self.assertEqual(self.messages._current_streak(self.HOME), "W2")
+        self.assertEqual(self.messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
+        self.assertEqual(self.messages._standings_as_of_day(), "2099-01-03")
+
+    def test_team_full_games_skip_playoff(self):
+        context = self.messages._team_games_context(self.HOME)
+        self.assertIn("Дома: 1-0-0 · в гостях: 1-0-0", context["season_extra"])
+        self.assertEqual(
+            context["recent_games"].splitlines(),
+            ["03.01 · в гостях · AWY · 2:1 · В", "01.01 · дома · AWY · 2:1 · В"],
+        )
+
+    def test_ai_overview_game_logs_skip_playoff(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(self.ai_stats._OVERVIEW_SKATER_GAMES_SQL, (self.PLAYER, self.SEASON))
+            self.assertEqual([r[0] for r in cur.fetchall()], ["2099-01-03", "2099-01-01"])
+            cur.execute(self.ai_stats._OVERVIEW_GOALIE_GAMES_SQL, (self.GOALIE, self.SEASON))
+            self.assertEqual([r[0] for r in cur.fetchall()], ["2099-01-03", "2099-01-01"])
+
+    def test_dataset_loaders_skip_playoff(self):
+        from modeling.dataset_builder.base import (
+            DatasetBuildConfig,
+            load_history_team_stats,
+            load_shot_attempts,
+            load_target_games,
+        )
+
+        cfg = DatasetBuildConfig(mode="train", output_dir=Path("."), season_ids=[self.SEASON])
+        regular = [self.REG1, self.REG2]
+        with closing(_connect()) as conn:
+            self.assertEqual(load_target_games(conn, cfg)["game_id"].tolist(), regular)
+            self.assertEqual(
+                load_target_games(conn, cfg, with_outcome=True)["game_id"].tolist(), regular
+            )
+            self.assertEqual(
+                sorted(set(load_history_team_stats(conn, cfg)["game_id"])), regular
+            )
+            self.assertEqual(load_shot_attempts(conn, cfg)["game_id"].tolist(), regular)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestGoalClipCacheSql(unittest.TestCase):
     """Кэш клипов голов (Задача 87) на настоящей ``bot_goal_clips``: юнит-тесты рассылки и
     кнопки видео подменяют кэш словарём, здесь — сам SQL чтения и перезаписи. Матч —
