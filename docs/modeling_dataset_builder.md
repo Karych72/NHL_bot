@@ -268,7 +268,8 @@ python -m modeling.cli build-dataset \
   --season-ids 20212022,20222023,20232024,20242025,20252026
 ```
 
-Predict (strict parity against train metadata):
+Predict (strict parity against train metadata). Without `--target-day-to` the targets are every
+game in `scheduled_games` — two weeks ahead (Task 100); the daily publication passes tomorrow (UTC):
 
 ```bash
 python -m modeling.cli build-dataset \
