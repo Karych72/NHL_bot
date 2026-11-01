@@ -206,6 +206,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             {
                 "id": 2025020001,
                 "gameDate": "2025-10-01",
+                "gameType": 2,
                 "homeTeamId": 10,
                 "visitingTeamId": 20,
                 "homeScore": 1,
@@ -297,6 +298,7 @@ class GoalAggregationTest(LoaderApiTestCase):
                 {
                     "id": 2025020002,
                     "gameDate": "2025-10-02",
+                    "gameType": 2,
                     "homeTeamId": 10,
                     "visitingTeamId": 20,
                     "homeScore": 1,
