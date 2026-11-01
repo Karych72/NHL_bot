@@ -32,6 +32,8 @@
 | 94 | [Типовые вопросы к ИИ бота: каталог и заготовки ответов](task_94_ai_question_catalog.md) | Продукт | 🟡 |
 | 97 | [Премиум: оплата подписки Telegram Stars](task_97_premium_stars_payment.md) | Продукт | 🟡 |
 | 100 | [`/BOS_FULL`: сводка клуба и ИИ по умолчанию — короткий экран](task_100_team_full_summary.md) | Продукт | 🟡 |
+| 107 | [Расписания: хранение, доставка экранов по времени, список в `/subscriptions`](task_107_schedules_delivery.md) | Продукт | 🟡 |
+| 108 | [Расписания: ИИ разбирает текст → карточка-черновик с кнопками](task_108_schedules_ai_form.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
