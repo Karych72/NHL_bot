@@ -23,6 +23,7 @@
 | 65 | Токен бота на проде — из Secret Manager | Релиз | 🟡 | ✅ выполнена (ветка `task-65-secret-manager`, PR #73; отметка — ветка `task-65-close`) — токен в Secret Manager, на VM только в `/run/nhl_bot` (tmpfs), в `bot`/`sync` — файлом-секретом через entrypoint-обёртку; прод переведён 2026-10-09, после `reboot` VM `bot`/`sync` healthy, `/start` отвечает |
 | 79 | Выпуск продового бота: новый бот, логин, аватарка | Релиз | 🔴 | ✅ выполнена (ветка `task-79-close`, PR #103) — прод на новом боте @IcePulseNHLBot (токен — новая версия `nhl-bot-telegram-token`), аватарка задана; старый бот @auto_karych_test_bot — токен в `nhl-bot-telegram-token-dev`, не запущен до Задачи 80; секреты описаны в DEVELOPMENT.md §«Боты и секреты» |
 | 80 | Dev-стенд: ветка `develop`, dev-бот и база `nhl_dev` | Релиз | 🟠 | ✅ выполнена (ветки `infra-develop-branch` — PR #100, `task-80-dev-stand` — PR #104, `task-80-close` — PR #105; релиз — ветка `develop`, PR #128) — пуш в `develop` деплоит @auto_karych_test_bot на базу `nhl_dev`, прод не тронут; память VM 558 → 698 МБ; живая проверка подтверждена человеком 2026-10-28 |
+| 101 | Плей-офф: колонка `games.game_type` | Релиз+ | 🟠 | ✅ выполнена (ветка `task-101-games-game-type`, PR #147; отметка — ветка `plan-task-101-db-check`, PR #149) — миграция 0019: `smallint NOT NULL CHECK (2, 3)`, бэкфилл `2`, загрузчик пишет тип; на `nhl_dev` одна группа `2` на все 6786 игр. Закрыта решением человека 2026-11-01 до релиза в `master` |
 | 39 | Два пробела конфига моделирования | Трек B | 🟠 | ✅ выполнена (ветка `sdd-task-39`, PR #37) — имена в `monotone` исправлены, lgbm обучается; `calibration.min_samples: 300 ≤ split.calibration_games`, `calibration_skipped: false` |
 | 40 | Качество модели | Трек B | 🔴 (для трека B) | ✅ выполнена (ветка `sdd-task-40-model-quality`, PR #43) — `home_win` бьёт тривиальный baseline на holdout обеими моделями (Δ+0.0018/+0.0029, в пределах шума), `latest` проставлен механизмом; `over_5_5` гейт не проходит (нет сигнала, спайк 40a) |
 | 26 | Retrain через cron | Трек B | ⚪ | ✅ выполнена (ветка `sdd-task-26-retrain-cron`, PR #50) — сервис `retrain`: понедельник 12:00 UTC, только `home_win`, `train --no-promote`, стартует после свежего sync, compose-профиль `modeling` (`--profile modeling`); `latest` двигается вручную (`make modeling-promote`), champion/challenger не делался; прогон ~45 с |
@@ -290,6 +291,19 @@ used 558 → 698 МБ, available 1417 → 1278 МБ (dev: bot 41, sync 16, predi
 найдена утечка токенов в логи `httpx` — исправлена (PR #105), остальное — Задача 82.
 **Ждёт:** ночи (подписки прода целы после рассылки) и релиза `develop → master`.
 **Выполнена** 2026-10-28 (релиз `develop` → `master`, PR #128): живая проверка на dev-боте пройдена — подтвердил человек; код в `master` релизным PR.
+
+### Задача 101. Плей-офф: колонка `games.game_type` ✅ 🟠
+Карточка — [`tasks/task_101_games_game_type.md`](./tasks/task_101_games_game_type.md). Первая
+из цепочки 101–106 (бывшая 37A). Приёмка: одна группа `2` на все строки `games`;
+`make all-tests` зелёный.
+
+**Итог (2026-11-01, ветка `task-101-games-game-type`, PR #147; отметка — ветка
+`plan-task-101-db-check`, PR #149).** Миграция `0019_games_game_type` и парный DDL
+`t.games.sql`: `game_type smallint NOT NULL CHECK (game_type IN (2, 3))`, бэкфилл `2`. Загрузчик
+пишет тип из `gameType` мета-записи (без поля — `KeyError`); `fetch_final_games` по-прежнему
+берёт только `gameType=2`. `make ci-local` — 964 passed, CI `db-tests` по PR зелёный; dev-деплой
+применил 0019 к `nhl_dev` — одна группа `2` на все 6786 игр (проверил человек на VM). Закрыта
+решением человека до релиза в `master`: на продовую базу миграция попадёт релизом `develop → master`.
 
 ---
 
