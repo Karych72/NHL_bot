@@ -17,6 +17,7 @@ aiogram при маршрутизации: `re.match(<PATTERN>, callback_data)`.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any, List
 
 import pytest
@@ -835,14 +836,16 @@ async def test_team_stats_goals_button_ranks_teams_by_goal_difference_per_game(
 # team_id, name, division_name, conference_name, games_played, wins, losses, ot,
 # points, procent_points, goals_per_game, goals_against_per_game, shots_per_game,
 # shots_allowed, power_play_percentage, penalty_kill_percentage,
-# face_off_win_percentage — вся лига сезона: места считаются по всем строкам.
+# face_off_win_percentage, power_play_goals, power_play_opportunities,
+# power_play_goals_against — вся лига сезона: места считаются по всем строкам.
 # WSH (team_id=5) — 2-я в дивизионе (Rangers впереди), 3-я в конференции
-# (Rangers и Bruins впереди), 4-я в лиге из четырёх.
+# (Rangers и Bruins впереди), 4-я в лиге из четырёх. По вбрасываниям WSH и Rangers
+# равны — у `/WSH_FULL` это общее 1-е место.
 _LEAGUE_ROWS = [
-    (5, "Washington Capitals", "Capitals", "Metropolitan", "Eastern", 17, 10, 5, 2, 22, 64.71, 3.1, 2.65, 30.5, 28, 21.5, 80, 51.25),
-    (6, "New York Rangers", "Rangers", "Metropolitan", "Eastern", 20, 13, 5, 2, 28, 70.0, 3.3, 2.5, 31, 27, 22, 82, 52),
-    (7, "Boston Bruins", "Bruins", "Atlantic", "Eastern", 20, 12, 6, 1, 25, 62.5, 3.0, 2.9, 29, 30, 20, 79, 49),
-    (8, "Los Angeles Kings", "Kings", "Pacific", "Western", 20, 14, 4, 2, 30, 75.0, 3.4, 2.4, 32, 26, 23, 83, 50),
+    (5, "Washington Capitals", "Capitals", "Metropolitan", "Eastern", 17, 10, 5, 2, 22, 64.71, 3.1, 2.65, 30.5, 28, 21.5, 80, 51.25, 12, 56, 9),
+    (6, "New York Rangers", "Rangers", "Metropolitan", "Eastern", 20, 13, 5, 2, 28, 70.0, 3.3, 2.5, 31, 27, 22, 82, 51.25, 14, 63, 8),
+    (7, "Boston Bruins", "Bruins", "Atlantic", "Eastern", 20, 12, 6, 1, 25, 62.5, 3.0, 2.9, 29, 30, 20, 79, 49, 11, 55, 10),
+    (8, "Los Angeles Kings", "Kings", "Pacific", "Western", 20, 14, 4, 2, 30, 75.0, 3.4, 2.4, 32, 26, 23, 83, 50, 15, 65, 7),
 ]
 
 # lastname, position, games, goals, assists, points, plus_minus,
@@ -980,6 +983,108 @@ async def test_team_abbreviation_command_replies_with_profile_and_link_to_team_l
     assert "WSH" in team_id_query[1]
 
 
+# day, is_home, opponent, goals for/against, period goals for (1–3) and against (1–3),
+# winner_id, is_overtime, is_shootouts, ot_empty_net_win — сыгранные игры WSH, свежие первыми.
+# Счёт буллитной игры уже включает победный буллит (как `game_team_stats.goals`),
+# голы по периодам — нет.
+_WSH_GAMES = [
+    (date(2026, 10, 28), False, "TOR", 3, 2, 1, 1, 0, 0, 1, 1, 5, True, False, False),
+    (date(2026, 10, 26), True, "MTL", 2, 3, 1, 1, 0, 1, 0, 1, 9, True, True, False),
+    (date(2026, 10, 24), True, "NYR", 4, 1, 2, 1, 1, 0, 1, 0, 5, False, False, False),
+    (date(2026, 10, 22), False, "BOS", 1, 3, 0, 1, 0, 1, 1, 1, 7, False, False, False),
+    (date(2026, 10, 20), True, "LAK", 5, 2, 2, 2, 1, 1, 0, 1, 5, False, False, False),
+    (date(2026, 10, 18), False, "PIT", 2, 4, 1, 0, 1, 2, 1, 1, 9, False, False, False),
+]
+# day, is_home, opponent
+_WSH_SCHEDULE = [(date(2026, 11, 2), True, "MTL"), (date(2026, 11, 4), False, "TOR")]
+
+
+def _full_team_routes(games: List[tuple], schedule: List[tuple]) -> List[tuple]:
+    """Маршруты общей части `/WSH_FULL` (шапка, «Сезон», игры и расписание) — без игроков."""
+    return [
+        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
+        ("FROM teams_stats ts", _LEAGUE_ROWS),
+        ("ORDER BY day DESC NULLS LAST", _WSH_FORM),
+        ("JOIN game_team_stats own", games),
+        ("FROM scheduled_games s", schedule),
+    ]
+
+
+_FULL_TEAM_ROUTES = _full_team_routes(_WSH_GAMES, _WSH_SCHEDULE)
+_NO_PLAYERS_ROUTES = [
+    ("r.position IN ('C', 'L', 'R')", []),
+    ("r.position = 'D'", []),
+    ("FROM goalies_season_stats g", []),
+]
+
+
+@pytest.mark.asyncio
+async def test_team_full_command_adds_places_games_and_schedule(
+    bot_module, fake_db_router, make_message, api
+):
+    """`/WSH_FULL` (Задача 100): шапка и начало «Сезона» — как у `/WSH`; у показателей место
+    в лиге (меньше пропущенных — выше, равные делят место), большинство в штуках, в
+    меньшинстве — пропущенные; дом/выезд, голы по периодам, последние 5 матчей со счётом и
+    пометкой ОТ/Б, ближайшие матчи — до таблиц игроков."""
+    bot = bot_module("bot")
+    cursor = fake_db_router([*_FULL_TEAM_ROUTES, *_NO_PLAYERS_ROUTES])
+    full_match = re.match(bot.TEAM_COMMAND_PATTERN, "/WSH_FULL")
+    await bot.cmd_team_profile(make_message("/WSH_FULL"), full_match)
+    fake_db_router(_PROFILE_ROUTES)
+    await bot.cmd_team_profile(make_message("/WSH"), re.match(bot.TEAM_COMMAND_PATTERN, "/WSH"))
+
+    full, short = (body(reply) for reply in api.sent_rich)
+    common = short.split("Голы за игру:", 1)[0]
+    assert "Форма (5 игр, W-L-OTL): 3-2-0 · серия W3" in common
+    assert full.startswith(common)
+    assert "Голы за игру: 3.1 (3-е) забито / 2.65 (3-е) пропущено" in full
+    assert "Броски за игру: 30.5 (3-е) своих / 28 (3-е) соперника" in full
+    assert (
+        "Большинство: 21.5% (12 из 56, 3-е) · Меньшинство: 80% (пропущено 9, 3-е) · "
+        "Вбрасывания: 51.25% (1-е)"
+    ) in full
+    assert "Дома: 2-0-1 · в гостях: 1-2-0" in full
+    assert (
+        "Голы по периодам (без овертайма): забито 1-й 7 · 2-й 6 · 3-й 3; "
+        "пропущено 1-й 5 · 2-й 4 · 3-й 5"
+    ) in full
+    assert (
+        "<p><b>Последние матчи</b><br>"
+        "28.10 · в гостях · TOR · 3:2 ОТ · В<br>"
+        "26.10 · дома · MTL · 2:3 Б · П<br>"
+        "24.10 · дома · NYR · 4:1 · В<br>"
+        "22.10 · в гостях · BOS · 1:3 · П<br>"
+        "20.10 · дома · LAK · 5:2 · В</p>"
+    ) in full
+    # Без игроков следом идёт строка-причина вместо таблиц — тем же абзацем.
+    assert "<p><b>Ближайшие матчи</b><br>02.11 · дома · MTL<br>04.11 · в гостях · TOR<br>" in full
+    assert "Ближайшие матчи" not in short and "Дома:" not in short and "(3-е)" not in short
+    _games_sql, games_params = next(q for q in cursor.executed if "game_team_stats own" in q[0])
+    assert games_params[:2] == (5, 5), "клуб — параметром"
+    _sql, schedule_params = next(q for q in cursor.executed if "scheduled_games" in q[0])
+    assert schedule_params[-1] == 3, "ближайших — три"
+
+
+@pytest.mark.asyncio
+async def test_team_full_command_skips_games_and_schedule_when_there_are_none(
+    bot_module, fake_db_router, make_message, api
+):
+    """У клуба есть строка `teams_stats`, но нет сыгранных игр в `games` и расписания —
+    блоки дом/выезд, периоды, последние и ближайшие матчи не выводятся, экран не падает."""
+    bot = bot_module("bot")
+    fake_db_router([*_full_team_routes([], []), *_NO_PLAYERS_ROUTES])
+
+    await bot.cmd_team_profile(
+        make_message("/WSH_FULL"), re.match(bot.TEAM_COMMAND_PATTERN, "/WSH_FULL")
+    )
+
+    text = body(api.sent_rich[0])
+    assert "Вбрасывания: 51.25% (1-е)" in text
+    for block in ("Дома:", "Голы по периодам", "Последние матчи", "Ближайшие матчи"):
+        assert block not in text
+    assert "У команды пока нет статистики игроков в этом сезоне." in text
+
+
 @pytest.mark.asyncio
 async def test_team_full_command_lists_every_skater_and_goalie(
     bot_module, fake_db_router, make_message, api
@@ -990,8 +1095,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     назад на профиль — в подвале."""
     bot = bot_module("bot")
     cursor = fake_db_router([
-        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
-        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
+        *_FULL_TEAM_ROUTES,
         # lastname, team, goals, points, games, toi, hits, shots, blocked, total
         ("r.position IN ('C', 'L', 'R')", [
             ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 2),
@@ -1008,7 +1112,7 @@ async def test_team_full_command_lists_every_skater_and_goalie(
 
     (reply,) = api.sent_rich
     text = body(reply)
-    assert "<p><b>Washington Capitals: все игроки</b>" in text
+    assert text.startswith("<p><b>Washington Capitals</b><br>")
     # Без колонок места и команды: игрок и показатели.
     assert (
         "<p><b>Нападающие</b></p>"
@@ -1056,8 +1160,7 @@ async def test_team_full_command_skips_empty_groups(
     заголовка и пустой таблицы; совсем пустой клуб — текст с причиной."""
     bot = bot_module("bot")
     fake_db_router([
-        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
-        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
+        *_FULL_TEAM_ROUTES,
         ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 1)]),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),
@@ -1071,8 +1174,7 @@ async def test_team_full_command_skips_empty_groups(
     assert "Защитники" not in text and "Вратари" not in text
 
     fake_db_router([
-        ("SELECT team_id FROM teams WHERE season_id", [(5,)]),
-        ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
+        *_FULL_TEAM_ROUTES,
         ("r.position IN ('C', 'L', 'R')", []),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),

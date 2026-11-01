@@ -5,8 +5,8 @@
 `tests/test_db_nhl.py`, `tests/test_pipeline_game_rows.py`.
 **Зависит от:** нет. Первая из цепочки 101 → 102 → 103 → 104 → 105 → 106.
 **Источник:** бывшая подзадача 37A (Задача 37 закрыта 2026-10-31, полная загрузка плей-офф
-вынесена в 101–106); дизайн — [`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md),
-раздел «Схема → `games`»; реестр — [`../open_tasks.md`](../open_tasks.md).
+вынесена в 101–106); дизайн — [`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md),
+раздел «Схема → `games`»; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

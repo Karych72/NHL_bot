@@ -662,7 +662,7 @@ class GameJsonCacheTest(LoaderApiTestCase):
 class ScheduledGamesTest(LoaderApiTestCase):
     """Задача 22A: будущие игры для ``scheduled_games``."""
 
-    def test_fetch_asks_for_future_states_of_regular_season_in_a_two_day_window(self):
+    def test_fetch_asks_for_future_states_of_regular_season_in_a_two_week_window(self):
         instance = make_loader()
         urls = []
         instance.fetch_paginated = lambda url, sort_key, page_size=500: urls.append(url) or []
@@ -674,7 +674,8 @@ class ScheduledGamesTest(LoaderApiTestCase):
         self.assertIn("gameStateId in (1,2)", url)
         first, last = re.findall(r'gameDate[<>]="(\d{4}-\d{2}-\d{2})"', url)
         self.assertEqual(first, datetime.now(timezone.utc).date().isoformat())
-        self.assertEqual((date.fromisoformat(last) - date.fromisoformat(first)).days, 1)
+        # Две недели: ближайшие 3 матча клуба в `/BOS_FULL` (Задача 100).
+        self.assertEqual((date.fromisoformat(last) - date.fromisoformat(first)).days, 13)
 
     def test_rows_from_api_records(self):
         rows = make_loader().build_scheduled_rows(

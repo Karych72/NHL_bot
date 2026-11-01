@@ -80,13 +80,15 @@ modeling-train: modeling-dev
 # (без него build-dataset/predict падают до публикации). Если latest указывает на прогон со
 # status != ok, publish-predictions удаляет строки задачи; без latest это же делает прямой
 # вызов publish-predictions. Ручной путь по artifacts/; ежедневно публикует сервис predict
-# (pipeline/scheduled_publish.py, Задача 73) по моделям из deploy/models/.
+# (pipeline/scheduled_publish.py, Задача 73) по моделям из deploy/models/. Цели — до завтра
+# UTC, как у сервиса: scheduled_games держит две недели (Задача 100).
 TASK ?= home_win
 MODEL ?= logreg
 modeling-publish: modeling-dev
 	$(PY) -m modeling.cli build-dataset --mode predict --output-dir artifacts/datasets \
 		--feature-set-version v2 --rolling-windows 5,10,20 --min-prior-games 5 \
-		--train-metadata-path artifacts/models/$(TASK)/$(MODEL)/latest/metadata.json
+		--train-metadata-path artifacts/models/$(TASK)/$(MODEL)/latest/metadata.json \
+		--target-day-to "$$($(PY) -c 'import datetime as d; print(d.datetime.now(d.timezone.utc).date() + d.timedelta(days=1))')"
 	$(PY) -m modeling.cli predict --task $(TASK) --model $(MODEL)
 	$(PY) -m modeling.cli publish-predictions --task $(TASK) --model $(MODEL)
 

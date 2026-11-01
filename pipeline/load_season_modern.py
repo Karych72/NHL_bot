@@ -44,9 +44,10 @@ FINAL_GAME_STATE = "OFF"
 # a season's upcoming games all come back with ``gameStateId`` 1.
 SCHEDULED_GAME_STATE_IDS = (1, 2)
 
-# How many UTC days, counting today, ``scheduled_games`` covers on every run:
-# 2 = today and tomorrow (the prediction targets of the bot's "tonight" preview).
-SCHEDULE_WINDOW_DAYS = 2
+# How many UTC days, counting today, ``scheduled_games`` covers on every run: two weeks,
+# so ``/BOS_FULL`` can list a club's next three games (Task 100). The daily forecast
+# narrows its targets to today and tomorrow itself (``pipeline/scheduled_publish.py``).
+SCHEDULE_WINDOW_DAYS = 14
 
 # gamecenter endpoint name -> cache file suffix.
 _GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box", "landing": "landing"}

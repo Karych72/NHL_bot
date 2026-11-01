@@ -610,7 +610,7 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 `metadata.json` по `latest` имеет `status != ok` → строки этой `task` удаляются, вставки нет,
 код выхода 0. Иначе строки задачи заменяются (delete + insert в одной транзакции), `run_id` берётся
 из `metadata.json` (в CSV его нет). Полный цикл — `make modeling-publish [TASK=home_win MODEL=logreg]`:
-`build-dataset --mode predict` (по `scheduled_games`, манифест берётся из `latest/metadata.json`
+`build-dataset --mode predict` (по `scheduled_games` до завтра UTC — `--target-day-to`, манифест берётся из `latest/metadata.json`
 пары; политика cold-start — дефолтная `drop`, как при обучении: она входит в `features_hash`,
 и другое значение роняет build-dataset на `features_hash mismatch`) → `predict` → `publish-predictions`. Цель требует `latest`: без него build-dataset/predict
 падают до публикации, поэтому удаление строк при непройденном гейте через make срабатывает, когда
@@ -623,7 +623,8 @@ first — a run must reach `status: ok`), and `ValueError` on a `features_hash` 
 обучаются**: обучены локально и зафиксированы в репозитории в `deploy/models/` (тот же формат
 `models/<task>/<model>/<run_id>/final/` + `latest`), приезжают в образе. Сервис `predict`
 (`pipeline/scheduled_publish.py`, образ стадии `modeling`) раз в сутки в 12:00 UTC после успешного
-sync: `build-dataset --mode predict --output-dir artifacts/predict` → `predict --artifacts-root deploy`
+sync: `build-dataset --mode predict --output-dir artifacts/predict --target-day-to <завтра UTC>`
+(`scheduled_games` держит две недели, прогноз — только на сегодня и завтра) → `predict --artifacts-root deploy`
 → `publish-predictions` → `publish-goals` (`python -m modeling.cli publish-goals --games CSV
 --predict-dataset CSV --artifacts-root DIR`: прогноз голевой модели по играм того же predict-датасета,
 `model = goals`, без гейта). Правило «у обеих команд ≥ 5 игр в сезоне» — cold-start `drop` датасета:
