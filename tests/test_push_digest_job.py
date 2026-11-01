@@ -926,7 +926,7 @@ async def test_subscriber_of_two_countries_gets_one_short_message_and_each_clip_
 
 @pytest.mark.asyncio
 async def test_game_card_resends_once_after_retry_after(push_env):
-    """``_throttled`` повторяет отправку карточки; без ``await`` 429 вообще не всплыла бы."""
+    """``throttled`` повторяет отправку карточки; без ``await`` 429 вообще не всплыла бы."""
     push_env.api.fail_next(SendRichMessage, _retry_after())
     await push_env.job.run_game_broadcast(
         push_env.bot, NIGHT, False, {111: {GAME_A: push_env.subs(["TOR"], [])}}

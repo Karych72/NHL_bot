@@ -21,7 +21,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -639,11 +639,12 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
         ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
-        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1])
+        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1])
         self.assertEqual(
             [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
             [("➕ Дайджест", "sub:d"), ("➕ Предстоящие матчи", "sub:u"),
-             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"), ("Готово", "sub:x")],
+             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
+             ("⏰ Расписания (0)", "sub:s"), ("Готово", "sub:x")],
         )
         self.assertEqual(self._rows(), [])
 
@@ -1456,6 +1457,188 @@ class TestPremiumPaymentsSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
+    """Расписания экранов (Задача 107) на настоящей ``bot_schedules``: миграция и её CHECK-и,
+    тикер (``bot.send_due_schedules``) — просрочка, блокировка, сбой, лимит без премиума — и
+    список с удалением в ``/subscriptions`` через ``Dispatcher.feed_update``. Telegram —
+    записывающая сессия; чаты отрицательные, строки удаляются до и после."""
+
+    CHAT = -999000107
+    OTHER_CHAT = -999000108
+    CHATS = [CHAT, OTHER_CHAT]
+    LEADERS = ("leaders", {"category": "goals"})
+
+    def setUp(self):
+        import bot
+        import schedule_repo
+
+        self.bot = bot
+        self.repo = schedule_repo
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for table in ("bot_schedules", "bot_subscriptions", "bot_subscription_events", "bot_actions",
+                      "premium_access"):
+            self._query(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _create(self, chat_id, screen=LEADERS, overdue="3 days"):
+        """Ежедневное расписание 10:00 МСК, чья отправка просрочена на `overdue`; его id."""
+        schedule_id = self.repo.create(chat_id, screen[0], screen[1], "day", None, None, time(10, 0),
+                                       "Europe/Moscow", datetime.now(timezone.utc))
+        self._query("UPDATE bot_schedules SET next_run_at = now() - %s::interval WHERE id = %s",
+                       (overdue, schedule_id))
+        return schedule_id
+
+    def _fake_bot(self):
+        from aiogram import Bot
+
+        from tests._telegram_fakes import FAKE_TOKEN, FakeSession
+
+        return Bot(FAKE_TOKEN, session=FakeSession())
+
+    def _next_runs(self, chat_id):
+        return [r for (r,) in self._query(
+            "SELECT next_run_at FROM bot_schedules WHERE chat_id = %s ORDER BY id", (chat_id,))]
+
+    def test_migration_rolls_back_and_applies_again(self):
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute((migrations / "0020_bot_schedules.down.sql").read_text())
+            self.assertFalse(_base_table_exists(cur, "bot_schedules"))
+            cur.execute((migrations / "0020_bot_schedules.up.sql").read_text())
+            self.assertTrue(_base_table_exists(cur, "bot_schedules"))
+            conn.rollback()
+
+    def test_checks_reject_week_without_day_and_quarter_hours(self):
+        for freq, weekday, month_day, local in (
+            ("week", None, None, "10:00"), ("day", None, None, "10:15"),
+            ("day", 5, None, "10:00"), ("month", None, 29, "10:00"),
+        ):
+            with self.subTest(freq=freq, weekday=weekday, month_day=month_day, local=local):
+                with self.assertRaises(psycopg2.errors.CheckViolation):
+                    self._query(
+                        "INSERT INTO bot_schedules (chat_id, screen, freq, weekday, month_day, local_time, "
+                        "timezone, next_run_at) VALUES (%s, 'leaders', %s, %s, %s, %s, 'Europe/Moscow', now())",
+                        (self.CHAT, freq, weekday, month_day, local),
+                    )
+
+    async def test_overdue_schedule_is_sent_once_and_moves_past_now(self):
+        schedule_id = self._create(self.CHAT)
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        await self.bot.send_due_schedules(fake_bot, now)
+        await self.bot.send_due_schedules(fake_bot, now)
+
+        [sent] = fake_bot.session.sent_rich
+        self.assertEqual(sent.chat_id, self.CHAT)
+        [next_run] = self._next_runs(self.CHAT)
+        self.assertGreater(next_run, now)
+        self.assertLessEqual(next_run - now, timedelta(days=1))
+        self.assertEqual(
+            self._query("SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s", (self.CHAT,)),
+            [(None, "schedule_sent", f"{schedule_id}:leaders")],
+        )
+
+    async def test_blocked_chat_loses_schedules_and_subscriptions(self):
+        from aiogram.exceptions import TelegramForbiddenError
+        from aiogram.methods import GetMe, SendRichMessage
+
+        import subscription_repo
+
+        self._create(self.CHAT)
+        subscription_repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        fake_bot = self._fake_bot()
+        fake_bot.session.fail_next(SendRichMessage, TelegramForbiddenError(GetMe(), "blocked"))
+        await self.bot.send_due_schedules(fake_bot, datetime.now(timezone.utc))
+
+        self.assertEqual(self.repo.list_for_chat(self.CHAT), [])
+        self.assertEqual(
+            self._query("SELECT active FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,)), [(False,)]
+        )
+
+    async def test_failed_schedule_does_not_stop_the_next_one(self):
+        # `help` на расписание не ставится — экран падает KeyError, как любой сбой экрана.
+        self._create(self.CHAT, ("open_command", {"command": "help"}), overdue="2 hours")
+        self._create(self.OTHER_CHAT, overdue="1 hour")
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        with self.assertLogs("bot", "ERROR"):
+            await self.bot.send_due_schedules(fake_bot, now)
+
+        self.assertEqual([m.chat_id for m in fake_bot.session.sent_rich], [self.OTHER_CHAT])
+        self.assertGreater(self._next_runs(self.CHAT)[0], now)
+
+    async def test_free_chat_gets_only_its_oldest_schedule(self):
+        self._create(self.CHAT, ("open_command", {"command": "team"}), overdue="1 hour")
+        self._create(self.CHAT, overdue="2 hours")
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        await self.bot.send_due_schedules(fake_bot, now)
+
+        [sent] = fake_bot.session.sent_rich
+        direct = self._fake_bot()
+        await self.bot.show_team(direct, self.CHAT)
+        self.assertEqual(sent, direct.session.sent_rich[0], "ушёл старейший — экран /team, не лидеры")
+        self.assertTrue(all(r > now for r in self._next_runs(self.CHAT)), "слот сдвинут у обоих")
+
+        self._query("INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() + interval '1 day')",
+                       (self.CHAT,))
+        self._query("UPDATE bot_schedules SET next_run_at = now() - interval '1 minute' WHERE chat_id = %s",
+                       (self.CHAT,))
+        await self.bot.send_due_schedules(fake_bot, datetime.now(timezone.utc))
+        self.assertEqual(len(fake_bot.session.sent_rich), 3, "премиуму — оба")
+
+    async def test_subscriptions_list_and_delete_through_dispatcher(self):
+        from aiogram.types import Update
+
+        from tests._telegram_fakes import _callback_data, body
+
+        mine = self._create(self.CHAT)
+        foreign = self._create(self.OTHER_CHAT)
+        dispatcher = self.bot.build_dispatcher()
+        fake_bot = self._fake_bot()
+
+        async def press(data):
+            update = Update.model_validate({"update_id": 1, "callback_query": _callback_data(data, self.CHAT, 1)})
+            await dispatcher.feed_update(fake_bot, update)
+            edit = fake_bot.session.edited_texts[-1]
+            return fake_bot.session.answers[-1], body(edit), [
+                b.callback_data for row in edit.reply_markup.inline_keyboard for b in row
+            ]
+
+        _, main_html, main_buttons = await press("sub:m")
+        self.assertIn("sub:s", main_buttons)
+        _, html_list, buttons = await press("sub:s")
+        self.assertIn("Лидеры · Лучшие снайперы — ежедневно 10:00 (МСК)", html_list)
+        self.assertEqual(buttons, [f"sub:s:{mine}", "sub:m"])
+
+        hint, _, _ = await press(f"sub:s:{foreign}")
+        self.assertEqual(hint, "Расписание не найдено")
+        self.assertEqual(len(self.repo.list_for_chat(self.OTHER_CHAT)), 1)
+
+        hint, html_after, buttons = await press(f"sub:s:{mine}")
+        self.assertEqual(hint, "Расписание удалено")
+        self.assertIn("Пока ничего нет.", html_after)
+        self.assertEqual(buttons, ["sub:m"])
+        self.assertEqual(
+            self._query("SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s "
+                           "AND kind = 'schedule_deleted'", (self.CHAT,)),
+            [(1, "schedule_deleted", str(mine))],
+        )
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestAiStatsWindow(unittest.TestCase):
     """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
     строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""
@@ -1562,7 +1745,7 @@ class TestAiReaderRole(unittest.TestCase):
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
                       "premium_access", "premium_payments", "prediction_log", "game_predictions", "schema_migrations",
-                      "bot_actions", "bot_subscription_events"):
+                      "bot_actions", "bot_subscription_events", "bot_schedules"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):
