@@ -6,7 +6,7 @@
 `telegram_bot/queries/get_three_stars_game.sql`, `messages/team_profile.txt`, тесты,
 `docs/telegram_bot.md`, `docs/architecture.md`.
 **Зависит от:** нет.
-**Источник:** просьба человека 2026-10-29; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-10-29; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
