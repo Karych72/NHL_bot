@@ -1042,6 +1042,8 @@ class ModernNhlLoader:
                     is_shootout,
                     self.current_season_label,
                     self.season_id,
+                    # Без gameType — KeyError здесь, а не нарушение CHECK на всю пачку вставки.
+                    int(game["gameType"]),
                 )
             )
 
@@ -1809,6 +1811,7 @@ class ModernNhlLoader:
                     "is_shootouts",
                     "season",
                     "season_id",
+                    "game_type",
                 ],
                 games_rows,
                 page_size=2000,

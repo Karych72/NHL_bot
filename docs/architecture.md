@@ -74,7 +74,9 @@ NHL_bot/
 │       ├── 0017_bot_actions.up.sql      # Журнал действий bot_actions и история подписок bot_subscription_events (триггер) (Задача 99)
 │       ├── 0017_bot_actions.down.sql
 │       ├── 0018_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
-│       └── 0018_premium_payments.down.sql
+│       ├── 0018_premium_payments.down.sql
+│       ├── 0019_games_game_type.up.sql   # games.game_type: 2 — регулярка, 3 — плей-офф; бэкфилл 2 (Задача 101)
+│       └── 0019_games_game_type.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)

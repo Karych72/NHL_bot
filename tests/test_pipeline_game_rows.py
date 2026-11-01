@@ -100,6 +100,7 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertEqual(field(row, "games", "winner_id"), WSH)
         self.assertEqual(field(row, "games", "season"), SEASON_LABEL)
         self.assertEqual(field(row, "games", "season_id"), SEASON_ID)
+        self.assertEqual(field(row, "games", "game_type"), 2)
         # §3: both flags are derived from the PBP payload, never NULL.
         self.assertIs(field(row, "games", "is_overtime"), False)
         # This game ended in regulation (gameOutcome.lastPeriodType == "REG"),

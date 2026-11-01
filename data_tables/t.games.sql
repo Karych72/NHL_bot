@@ -8,7 +8,10 @@ CREATE TABLE games(
     is_shootouts            boolean,
     season                  varchar(10),
     season_id               bigint NOT NULL,
+    -- Тип игры из NHL API: 2 — регулярка, 3 — плей-офф (Задача 101, миграция 0019).
+    game_type               smallint NOT NULL,
     PRIMARY KEY (game_id),
+    CONSTRAINT games_game_type_check CHECK (game_type IN (2, 3)),
     -- Команда конкретного сезона: teams.PRIMARY KEY = (team_id, season_id).
     -- Колонки nullable — значение проставляется по мере загрузки счёта/победителя,
     -- проверено на живой БД (6559 игр, 5 сезонов): 0 сирот на 2026-08-12.
