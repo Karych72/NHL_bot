@@ -22,6 +22,12 @@ import pytest
 from tests._telegram_fakes import body, rich_html
 
 TEAMS = [("BOS",), ("WSH",)]
+# Строка `teams_stats ⋈ teams` клуба 15 (колонки `_TEAM_PROFILE_STATS_COLUMNS`): без неё оба
+# экрана клуба ответили бы одним текстом «ещё не сыграла».
+WSH_STATS = (
+    15, "Washington Capitals", "Capitals", "Metropolitan", "Eastern", 17, 10, 5, 2, 22, 64.71,
+    3.1, 2.65, 30.5, 28, 21.5, 80, 51.25, 12, 56, 9,
+)
 
 
 class FakeMessages:
@@ -74,6 +80,7 @@ def ai(bot_module, fake_db_router, monkeypatch):
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
+            ("ts.power_play_goals_against FROM teams_stats", [WSH_STATS]),
             ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
             ("max(day) AS day FROM games", [(None,)]),
             ("", []),
@@ -140,8 +147,8 @@ async def test_open_command_replies_like_the_command(
 async def test_team_profile_replies_like_team_command(
     ai, make_message, fake_bot, api, all_players, command
 ):
-    """Клуб найден (маршрут `TEAM_ID`), статистики нет: профиль и полный список отвечают
-    разными текстами, так что сравнение различает `all_players`."""
+    """Клуб найден (маршрут `TEAM_ID`), игр и игроков нет: короткий и полный экран отвечают
+    разными текстами (места в лиге, подвал), так что сравнение различает `all_players`."""
     bot, _, _ = ai(_response(_tool_use("team_profile", team="WSH", all_players=all_players)))
     await _ask(bot, make_message, fake_bot, "как там Овечкин")
     other_command = "/WSH" if all_players else "/WSH_FULL"
@@ -209,6 +216,19 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
     for tool in tools:
         assert tool["strict"] is True
         assert tool["input_schema"]["additionalProperties"] is False
+
+
+def test_team_profile_defaults_to_short_screen(bot_module):
+    """Задача 100: вопрос о клубе открывает короткий экран, `all_players=true` — только по
+    просьбе всех игроков, состава или подробностей; правила «вопрос об игроке →
+    all_players=true» нет ни в промпте, ни в описании инструмента."""
+    ai_router = bot_module("ai_router")
+    (team_profile,) = [t for t in ai_router.build_tools(["BOS"]) if t["name"] == "team_profile"]
+    assert "По умолчанию all_players=false" in team_profile["description"]
+    assert "team_profile с all_players=false" in ai_router.SYSTEM_PROMPT
+    assert "«подробно про Бостон») — team_profile с all_players=true" in ai_router.SYSTEM_PROMPT
+    for text in (ai_router.SYSTEM_PROMPT, team_profile["description"]):
+        assert "его команды в текущем сезоне с all_players=true" not in text
 
 
 # ---------------------------------------------------------------------------
