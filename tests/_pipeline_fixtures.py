@@ -97,7 +97,7 @@ TABLE_COLUMNS: Dict[str, tuple] = {
     ),
     "games": (
         "game_id", "day", "home_team_id", "away_team_id", "winner_id", "is_overtime",
-        "is_shootouts", "season", "season_id",
+        "is_shootouts", "season", "season_id", "game_type",
     ),
     "all_goals": (
         "goal_player_id", "total_goals", "assist_player1_id", "assist_total_1",

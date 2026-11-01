@@ -175,6 +175,25 @@ class TestNhlSchema(unittest.TestCase):
                 f"expected bigint season_id, got {row[0]!r}",
             )
 
+    def test_games_game_type_is_regular_or_playoff(self):
+        """Миграция 0019 (Задача 101): games.game_type — smallint NOT NULL, только 2 или 3."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT data_type, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'games' "
+                "AND column_name = 'game_type'"
+            )
+            self.assertEqual(
+                cur.fetchone(), ("smallint", "NO"), "games.game_type — run: make db-migrate"
+            )
+            cur.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'public.games'::regclass AND conname = 'games_game_type_check'"
+            )
+            row = cur.fetchone()
+            self.assertIsNotNone(row, "games_game_type_check missing — run: make db-migrate")
+            self.assertEqual(row[0], "CHECK ((game_type = ANY (ARRAY[2, 3])))")
+
     def test_bot_subscriptions_migration_applied(self):
         with self.conn.cursor() as cur:
             if not _base_table_exists(cur, "bot_subscriptions"):
@@ -778,7 +797,8 @@ class TestCountryNightSql(unittest.TestCase):
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, is_shootouts, "
-                "season_id) VALUES (%s, %s, %s, %s, TRUE, %s), (%s, %s, %s, %s, FALSE, %s)",
+                "season_id, game_type) VALUES (%s, %s, %s, %s, TRUE, %s, 2), "
+                "(%s, %s, %s, %s, FALSE, %s, 2)",
                 (self.GAME, self.NIGHT, self.TEAM, self.OPPONENT, self.SEASON,
                  self.GAME2, self.NIGHT, self.OPPONENT, self.TEAM, self.SEASON),
             )
@@ -1028,8 +1048,8 @@ class TestPredictionLogSql(unittest.TestCase):
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
-                "is_overtime, season_id) VALUES (%s, %s, %s, %s, %s, TRUE, %s), "
-                "(%s, %s, %s, %s, NULL, FALSE, %s)",
+                "is_overtime, season_id, game_type) VALUES (%s, %s, %s, %s, %s, TRUE, %s, 2), "
+                "(%s, %s, %s, %s, NULL, FALSE, %s, 2)",
                 (self.PLAYED, today, self.HOME, self.AWAY, self.HOME, self.SEASON,
                  self.UNPLAYED, today, self.HOME, self.AWAY, self.SEASON),
             )
