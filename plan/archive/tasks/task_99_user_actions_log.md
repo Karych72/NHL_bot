@@ -6,7 +6,7 @@
 `throttle.py`, `telegram_bot/ai_router.py` (отказ по лимиту), `telegram_bot/subscription_repo.py`
 (`deactivate_chat`), `docs/telegram_bot.md`, `docs/architecture.md`.
 **Зависит от:** ни от чего; миграция идёт после 0016 (Задача 96).
-**Источник:** обсуждение с человеком 2026-10-31; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** обсуждение с человеком 2026-10-31; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

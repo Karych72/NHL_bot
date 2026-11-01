@@ -8,8 +8,8 @@
 `docs/telegram_bot.md`, `docs/architecture.md`, `DEVELOPMENT.md`.
 **Зависит от:** Задачи 83 — её белый список `AI_STATS_CHAT_IDS` эта задача заменяет; начинать после
 живой проверки 83 на dev-боте.
-**Источник:** просьба человека 2026-10-29; реестр — [`../open_tasks.md`](../open_tasks.md).
-Продолжение — оплата Telegram Stars, [Задача 97](task_97_premium_stars_payment.md).
+**Источник:** просьба человека 2026-10-29; реестр — [`../closed_tasks.md`](../closed_tasks.md).
+Продолжение — оплата Telegram Stars, [Задача 97](../../tasks/task_97_premium_stars_payment.md).
 
 ## Кратко
 
