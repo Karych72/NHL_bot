@@ -695,14 +695,20 @@ class Draft(NamedTuple):
 # каким он станет после нажатия, — `sch:<вид>:<экран>:<частота>:<день>:<слот>:<пояс>`; вид `e`
 # — карточка, `z` — выбор пояса, `s` — сохранить; `sch:x` — отмена. Экран — буква инструмента и
 # аргумент (`lgoals`, `tWSH_FULL`, `oteam_stats`), пусто — не выбрано, пояс — IANA-имя. Черновик
-# живёт в `callback_data`, а не строкой в БД: самый длинный (`oteam_stats`, `week`, `28`, `47`,
-# `America/Argentina/ComodRivadavia`) — 61 байт из 64.
+# живёт в `callback_data`, а не строкой в БД: самый длинный (`oteam_stats`, `month`, `28`, `47`,
+# `America/Argentina/ComodRivadavia`) — 62 байта из 64.
 SCHEDULE_CALLBACK_PATTERN = r"^sch:(x|[ezs]:[otlca]\w+:(day|week|month)?:\d{0,2}:\d{0,2}:[\w/+-]+)$"
 # Инструмент → (буква, параметр-аргумент); у клуба аргумент — `WSH` или `WSH_FULL`.
 _SCREEN_CODES = {
     "open_command": ("o", "command"), "team_profile": ("t", ""), "leaders": ("l", "category"),
     "country_players": ("c", "country"), "advanced_metric": ("a", "metric"),
 }
+# Допустимые аргументы экранов — те же наборы, что `enum` инструментов; клуб — шаблоном.
+_SCREEN_ARGS = {
+    "command": ai_router.SCHEDULE_COMMANDS, "category": ai_router.LEADER_CATEGORIES,
+    "country": tuple(COUNTRY_LABELS), "metric": tuple(ADVANCED_METRICS),
+}
+_DAYS = {"day": (None,), "week": tuple(range(1, 8)), "month": tuple(range(29))}
 _FREQ_BUTTONS = (("day", "День"), ("week", "Неделя"), ("month", "Месяц"))
 _WEEKDAYS_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 _TIME_PRESETS = (18, 24, 36, 42)  # 09:00, 12:00, 18:00, 21:00
@@ -732,13 +738,23 @@ def _encode(view: str, d: Draft) -> str:
 
 
 def _decode(data: str) -> Tuple[str, Draft]:
-    """Вид и черновик из `callback_data` кнопки карточки (обратное `_encode`)."""
+    """Вид и черновик из `callback_data` кнопки карточки (обратное `_encode`).
+
+    Raises:
+        ValueError: аргумент экрана, день, слот или пояс вне допустимых — `callback_data`
+            подделана (клиент MTProto шлёт любую): в `bot_schedules.params` CHECK-а нет.
+    """
     _, view, screen, freq, day, slot, tz = data.split(":")
     name, key = next((n, k) for n, (c, k) in _SCREEN_CODES.items() if c == screen[0])
     arg = screen[1:]
     params: Dict[str, Any] = {key: arg} if key else {"team": arg[:3], "all_players": arg.endswith("_FULL")}
-    return view, Draft(name, params, freq or None, int(day) if day else None,
-                       int(slot) if slot else None, tz)
+    draft = Draft(name, params, freq or None, int(day) if day else None, int(slot) if slot else None, tz)
+    valid_arg = arg in _SCREEN_ARGS[key] if key else re.fullmatch(r"[A-Z]{3}(_FULL)?", arg)
+    valid_day = draft.day is None or draft.day in _DAYS[freq or "day"]
+    valid_slot = draft.slot is None or draft.slot < 48
+    if not (valid_arg and valid_day and valid_slot and tz in zoneinfo.available_timezones()):
+        raise ValueError(f"Подделанная callback_data карточки расписания: {data}")
+    return view, draft
 
 
 def schedule_draft(chat_id: int, p: Dict[str, Any]) -> Optional[Draft]:
@@ -754,6 +770,7 @@ def schedule_draft(chat_id: int, p: Dict[str, Any]) -> Optional[Draft]:
     freq = p["freq"]
     day = p["weekday"] if freq == "week" else p["month_day"] if freq == "month" else None
     match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", p["time"] or "")
+    # После 23:45 — 00:00 того же дня недели: пограничный случай, правится кнопкой.
     slot = round((int(match[1]) * 60 + int(match[2])) / 30) % 48 if match else None
     tz = p["timezone"]
     if tz not in zoneinfo.available_timezones():
@@ -769,6 +786,11 @@ def _zone_label(tz: str) -> str:
     minutes = int(offset.total_seconds()) // 60
     shift = f"{minutes // 60:+d}" + (f":{minutes % 60:02d}" if minutes % 60 else "")
     return f"{_RU_ZONES.get(tz, tz)} (UTC{shift})"
+
+
+def _slot_time(slot: int) -> dtime:
+    """Время получасового слота суток 0–47."""
+    return dtime(slot // 2, slot % 2 * 30)
 
 
 def _complete(d: Draft) -> bool:
@@ -791,7 +813,7 @@ def _schedule_card(d: Draft) -> _Screen:
         "Экран: " + html.escape(_screen_label(d.screen, d.params)),
         "Частота: " + (dict(_FREQ_BUTTONS)[d.freq].lower() if d.freq else pick),
         *(["Когда: " + when] if d.freq in ("week", "month") else []),
-        "Время: " + (f"{d.slot // 2:02d}:{d.slot % 2 * 30:02d}" if d.slot is not None else pick),
+        "Время: " + (f"{_slot_time(d.slot):%H:%M}" if d.slot is not None else pick),
         "Пояс: " + html.escape(_zone_label(d.tz)),
         rich_footer(_CARD_NOTE),
     ]
@@ -807,7 +829,7 @@ def _schedule_card(d: Draft) -> _Screen:
         rows += build_menu(days, n_cols=7)
         rows.append([_card_button("Последний день", d.day == 0, d._replace(day=0))])
     if d.slot is None:
-        rows.append([_card_button(f"{s // 2:02d}:00", False, d._replace(slot=s)) for s in _TIME_PRESETS])
+        rows.append([_card_button(f"{_slot_time(s):%H:%M}", False, d._replace(slot=s)) for s in _TIME_PRESETS])
     else:
         rows.append([
             _card_button("−1ч", False, d._replace(slot=(d.slot - 2) % 48)),
@@ -853,7 +875,7 @@ async def callback_schedule_card(callback: CallbackQuery) -> None:
             return
         weekday = d.day if d.freq == "week" else None
         month_day = d.day if d.freq == "month" else None
-        local = dtime(d.slot // 2, d.slot % 2 * 30)
+        local = _slot_time(d.slot)
         schedule_id = schedule_repo.create(chat_id, d.screen, d.params, d.freq, weekday, month_day,
                                            local, d.tz, datetime.now(timezone.utc))
         log_action(chat_id, callback.from_user.id, "schedule_created", f"{schedule_id}:{d.screen}")
@@ -930,7 +952,7 @@ _AI_LIMIT_KINDS = {
 # Просьба о расписании в окне продолжения 83 идёт маршрутизатору, а не ответам по статистике:
 # глаголы регулярной отправки и «каждый день/неделю/…».
 _SCHEDULE_REQUEST = re.compile(
-    r"присыла|пришли|отправля|напомина|расписани|ежедневн|еженедельн|ежемесячн"
+    r"присыла|отправля|напомина|расписани|ежедневн|еженедельн|ежемесячн"
     r"|кажд(ый|ую|ое) (день|недел|месяц|утро|вечер|понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)",
     re.IGNORECASE,
 )

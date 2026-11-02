@@ -1511,9 +1511,12 @@ class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
     def test_migration_rolls_back_and_applies_again(self):
         migrations = Path(REPO_ROOT, "data_tables", "migrations")
         with closing(_connect()) as conn, conn.cursor() as cur:
+            # Откат в обратном порядке миграций: 0021 расширяет CHECK, который пересоздаёт 0020.
+            cur.execute((migrations / "0021_schedule_created.down.sql").read_text())
             cur.execute((migrations / "0020_bot_schedules.down.sql").read_text())
             self.assertFalse(_base_table_exists(cur, "bot_schedules"))
             cur.execute((migrations / "0020_bot_schedules.up.sql").read_text())
+            cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
             self.assertTrue(_base_table_exists(cur, "bot_schedules"))
             conn.rollback()
 
@@ -1667,9 +1670,14 @@ class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
     def test_migration_0021_rolls_back_and_applies_again(self):
         migrations = Path(REPO_ROOT, "data_tables", "migrations")
         with closing(_connect()) as conn, conn.cursor() as cur:
+            insert = "INSERT INTO bot_actions (chat_id, kind) VALUES (%s, 'schedule_created')"
             cur.execute((migrations / "0021_schedule_created.down.sql").read_text())
+            cur.execute("SAVEPOINT before_insert")
+            with self.assertRaises(psycopg2.errors.CheckViolation):
+                cur.execute(insert, (self.CHAT,))
+            cur.execute("ROLLBACK TO SAVEPOINT before_insert")
             cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
-            cur.execute("INSERT INTO bot_actions (chat_id, kind) VALUES (%s, 'schedule_created')", (self.CHAT,))
+            cur.execute(insert, (self.CHAT,))
             conn.rollback()
 
 

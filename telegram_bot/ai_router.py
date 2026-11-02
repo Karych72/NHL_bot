@@ -52,6 +52,8 @@ SCREEN_COMMANDS = (
 )
 # Экраны, которые ставятся на расписание (Задача 107): `bot.SCHEDULE_SCREENS`. Не ставятся
 # дайджест за фиксированную дату (итоги ночи — `today`), меню подписок и справка — не отчёты.
+# Категории инструмента `leaders`.
+LEADER_CATEGORIES = ("points", "goals", "assists")
 SCHEDULE_TOOLS = ("open_command", "team_profile", "leaders", "country_players", "advanced_metric")
 SCHEDULE_COMMANDS = tuple(c for c in SCREEN_COMMANDS if c not in ("subscriptions", "help"))
 
@@ -199,7 +201,7 @@ def build_tools(team_abbrevs: List[str]) -> List[Dict[str, Any]]:
             "leaders",
             "Лидеры сезона среди полевых игроков: points — очки, goals — голы, "
             "assists — передачи.",
-            {"category": {"type": "string", "enum": ["points", "goals", "assists"]}},
+            {"category": {"type": "string", "enum": list(LEADER_CATEGORIES)}},
         ),
         tool_schema(
             "country_players",

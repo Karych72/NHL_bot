@@ -248,17 +248,30 @@ async def test_cancel_drops_the_card(card):
     assert text == "<p>Расписание не создано.</p>" and buttons == {}
 
 
-def test_longest_callback_fits_telegram_limit(bot_module):
+def test_every_draft_fits_telegram_limit_and_decodes_back(bot_module):
+    """Все экраны и аргументы `_SCREEN_ARGS`, клуб с `_FULL`, самый длинный пояс `zoneinfo`."""
     import re
     import zoneinfo
 
     bot = bot_module("bot")
     longest_zone = max(zoneinfo.available_timezones(), key=len)
-    draft = bot.Draft("open_command", {"command": "team_stats"}, "month", 28, 47, longest_zone)
-    for view in "ezs":
-        data = bot._encode(view, draft)
-        assert len(data.encode()) <= 64, data
-        assert re.match(bot.SCHEDULE_CALLBACK_PATTERN, data)
-        assert bot._decode(data) == (view, draft)
-    full = bot.Draft("team_profile", {"team": "WSH", "all_players": True}, "day", None, None, MOSCOW)
-    assert bot._decode(bot._encode("e", full)) == ("e", full)
+    screens = [("team_profile", {"team": "WSH", "all_players": full}) for full in (True, False)] + [
+        (name, {key: arg}) for name, (_, key) in bot._SCREEN_CODES.items() if key for arg in bot._SCREEN_ARGS[key]
+    ]
+    for screen, params in screens:
+        draft = bot.Draft(screen, params, "month", 28, 47, longest_zone)
+        for view in "ezs":
+            data = bot._encode(view, draft)
+            assert len(data.encode()) <= 64, data
+            assert re.match(bot.SCHEDULE_CALLBACK_PATTERN, data)
+            assert bot._decode(data) == (view, draft)
+
+
+@pytest.mark.parametrize(
+    "data",
+    ["sch:s:ofoo:day::20:Europe/Moscow", "sch:s:tZZZZ:day::20:Europe/Moscow", "sch:s:lgoals:day::48:Europe/Moscow",
+     "sch:s:lgoals:week:8:20:Europe/Moscow", "sch:s:lgoals:day:5:20:Europe/Moscow", "sch:s:lgoals:day::20:Mars/Olympus"],
+)
+def test_forged_callback_fails_loudly(bot_module, data):
+    with pytest.raises(ValueError, match="Подделанная"):
+        bot_module("bot")._decode(data)
