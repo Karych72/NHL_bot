@@ -5,8 +5,18 @@
 # depend on the directory the command is run from (e.g. a task worktree vs. the main checkout).
 name: nhl_bot
 
+# Ротация логов docker (Задача 82): json-file по умолчанию хранит лог контейнера бессрочно
+# и без предела роста — что бы в него ни утекло (токен в Задаче 80), оно лежало бы на диске VM.
+# 3 файла по 10 МБ на контейнер; при пересоздании контейнера лог уходит вместе с ним.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
+    logging: *logging
     image: postgres:16.6-alpine
     # Переживает перезагрузку хоста и падение процесса (Задача 35); данные не теряются —
     # они на named volume pgdata, а не в самом контейнере.
@@ -32,6 +42,7 @@ services:
   # (schema_migrations). Таблицы не создаёт — на пустой БД сначала `make db-sync`
   # (DEVELOPMENT.md §Docker, «Развёртывание с нуля»).
   migrate:
+    logging: *logging
     image: ${NHL_BOT_IMAGE:-nhl-bot:local}
     build: .
     depends_on:
@@ -46,6 +57,7 @@ services:
     command: ["make", "db-functions", "db-migrate"]
 
   bot:
+    logging: *logging
     # NHL_BOT_IMAGE задаёт прод-деплой (release.yml) — образ из GHCR вместо локальной сборки.
     image: ${NHL_BOT_IMAGE:-nhl-bot:local}
     build: .
@@ -66,6 +78,7 @@ services:
     command: ["python", "bot.py"]
 
   sync:
+    logging: *logging
     image: ${NHL_BOT_IMAGE:-nhl-bot:local}
     build: .
     restart: unless-stopped
@@ -97,6 +110,7 @@ services:
       retries: 3
 
   predict:
+    logging: *logging
     # Ежедневная публикация прогноза (Задача 73): в 12:00 UTC, после успешного ночного sync,
     # пишет в game_predictions вероятность победы хозяев и тотала > 5.5 по моделям из
     # deploy/models/ (зафиксированы в репозитории, приезжают в образе; здесь не обучаются).
@@ -129,6 +143,7 @@ services:
       retries: 3
 
   retrain:
+    logging: *logging
     # Еженедельный retrain (Задача 26): тот же механизм, что у sync (pipeline/scheduled_retrain.py
     # переиспользует scheduled_sync), но образ со стадией modeling (lightgbm/sklearn — в образ
     # бота не попадают). Понедельник 12:00 UTC, вне ночного окна sync (18:00–08:00 UTC); стартует только
@@ -168,6 +183,7 @@ services:
       retries: 3
 
   backup:
+    logging: *logging
     # Compose-сервис вместо host cron (Задача 35, решение контроллера п.1) — тот же
     # долгоживущий-контейнер-со-своим-циклом, что и sync. Образ — тот же postgres:16.6-alpine,
     # что у db: версия pg_dump совпадает с версией сервера без обращения к хостовым утилитам.
@@ -191,6 +207,8 @@ services:
       - -c
       - |
         set -e
+        # Дампы содержат chat_id пользователей — только владельцу (root), не всем на VM (Задача 82).
+        umask 077
         while true; do
           ts=$$(date -u +%Y%m%dT%H%M%SZ)
           tmp="/backups/.nhl_$${ts}.dump.tmp"
