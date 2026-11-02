@@ -423,8 +423,18 @@ async def test_night_without_games_is_not_sent(push_job, fake_bot, api):
     assert api.outgoing == []
 
 
-def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job):
-    """Ночь готова, когда в ``games`` все матчи регулярки её даты; перенесённый,
+def _games_in_db(loaded_ids, queried):
+    """Подмена ``fetch_all``: из запрошенных id «в ``games``» только *loaded_ids*; запросы — в *queried*."""
+
+    def fetch(query, params, columns):
+        queried.append(sorted(params[0]))
+        return {"game_id": [g for g in params[0] if g in loaded_ids], "count_rows": 0}
+
+    return fetch
+
+
+def test_night_is_loaded_counts_games_played_as_scheduled(push_job):
+    """Ночь готова, когда в ``games`` все матчи регулярки и плей-офф её даты; перенесённый,
     предсезонный и матч соседней даты (в ответе ``score``) ночь не держат."""
     payload = {
         "games": [
@@ -435,23 +445,16 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
             {"id": 2026020060, "gameDate": "2026-10-07", "gameType": 2, "gameScheduleState": "OK"},
         ]
     }
-    queried = []
-
-    def games_in_db(loaded_ids):
-        def fetch(query, params, columns):
-            queried.append(sorted(params[0]))
-            return {"game_id": [g for g in params[0] if g in loaded_ids], "count_rows": 0}
-
-        return fetch
+    queried: list = []
 
     with patch.object(push_job, "fetch_score", return_value=payload) as score, patch.object(
-        push_job, "fetch_all", side_effect=games_in_db({2026020050})
+        push_job, "fetch_all", side_effect=_games_in_db({2026020050}, queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is False
     score.assert_called_once_with(NIGHT)
 
     with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
-        push_job, "fetch_all", side_effect=games_in_db({2026020050, 2026020051})
+        push_job, "fetch_all", side_effect=_games_in_db({2026020050, 2026020051}, queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is True
     assert queried == [[2026020050, 2026020051]] * 2
@@ -465,20 +468,17 @@ def test_night_of_only_playoff_games_waits_for_them(push_job):
             {"id": 2026030111, "gameDate": "2026-10-06", "gameType": 3, "gameScheduleState": "OK"},
         ]
     }
-
-    def games_in_db(loaded_ids):
-        return lambda query, params, columns: {
-            "game_id": [g for g in params[0] if g in loaded_ids]
-        }
+    queried: list = []
 
     with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
-        push_job, "fetch_all", side_effect=games_in_db(set())
+        push_job, "fetch_all", side_effect=_games_in_db(set(), queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is False
     with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
-        push_job, "fetch_all", side_effect=games_in_db({2026030111})
+        push_job, "fetch_all", side_effect=_games_in_db({2026030111}, queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is True
+    assert queried == [[2026030111]] * 2
 
 
 # ---------------------------------------------------------------------------

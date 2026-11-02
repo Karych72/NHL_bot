@@ -630,9 +630,9 @@ class ModernNhlLoader:
         for game_type in GAME_TYPES:
             for report in ("skater/bios", "goalie/bios"):
                 for r in self.fetch_player_report(report, game_type):
-                    nationality.setdefault(
-                        to_int(r.get("playerId")), optional_str(r.get("nationalityCode"))
-                    )
+                    code = optional_str(r.get("nationalityCode"))
+                    if code is not None:
+                        nationality.setdefault(to_int(r.get("playerId")), code)
         rows = [row[:7] + (nationality.get(to_int(row[0])),) + row[8:] for row in roster_rows]
         unknown = sum(1 for row in rows if row[7] is None)
         if unknown:
@@ -640,6 +640,11 @@ class ModernNhlLoader:
         return rows
 
     def build_player_advanced_stats(self, game_type: int) -> List[tuple]:
+        """``players_advanced_stats`` rows of *game_type* (goalsForAgainst + puckPossessions).
+
+        Args:
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
         logger.info("Fetching skater goalsForAgainst report (game type %d)...", game_type)
         gfa_rows = self.fetch_player_report("skater/goalsForAgainst", game_type)
         gfa_by_player = {to_int(r.get("playerId")): r for r in gfa_rows}
@@ -678,6 +683,11 @@ class ModernNhlLoader:
         return out
 
     def build_player_shot_types(self, game_type: int) -> List[tuple]:
+        """``players_shot_types`` rows of *game_type* from the ``skater/shottype`` report.
+
+        Args:
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
         logger.info("Fetching skater shottype report (game type %d)...", game_type)
         rows = self.fetch_player_report("skater/shottype", game_type)
         out: List[tuple] = []
@@ -709,6 +719,13 @@ class ModernNhlLoader:
         return out
 
     def build_player_season_stats(self, game_type: int) -> Tuple[List[tuple], List[dict]]:
+        """``players_season_stats`` rows of *game_type* and the raw ``skater/summary`` records.
+
+        The summary records go on to ``supplement_rosters_from_reports``.
+
+        Args:
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
         rows = self.fetch_player_report("skater/summary", game_type)
 
         logger.info("Fetching skater time-on-ice report (game type %d)...", game_type)
@@ -789,6 +806,13 @@ class ModernNhlLoader:
         return out, rows
 
     def build_goalie_season_stats(self, game_type: int) -> Tuple[List[tuple], List[dict]]:
+        """``goalies_season_stats`` rows of *game_type* and the raw ``goalie/summary`` records.
+
+        The summary records go on to ``supplement_rosters_from_reports``.
+
+        Args:
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
         rows = self.fetch_player_report("goalie/summary", game_type)
 
         logger.info("Fetching goalie saves-by-strength report (game type %d)...", game_type)
