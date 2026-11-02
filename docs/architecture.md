@@ -99,6 +99,7 @@ NHL_bot/
 │   ├── api_data_research.md
 │   ├── data_loading.md                 # установка окружения, БД, загрузка NHL API
 │   ├── pipeline_nulls_and_explicit_null_tz.md   # контракт NULL-семантики лоадера
+│   ├── premium.md                      # что входит в премиум и что нет
 │   └── telegram_bot.md                 # запуск и команды бота
 │
 ├── plan/                               # Планы (индекс: plan/README.md)

@@ -137,6 +137,7 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 
 - [`data_loading.md`](data_loading.md) — установка окружения, БД, загрузка данных NHL.
 - [`pipeline_nulls_and_explicit_null_tz.md`](pipeline_nulls_and_explicit_null_tz.md) — контракт `NULL`-семантики; важно для понимания, почему бот в некоторых местах рендерит `—` или «Unknown».
+- [`premium.md`](premium.md) — что входит в премиум и что нет: лимиты ИИ, прогноз, расписания.
 - [`architecture.md`](architecture.md) — общая архитектура и схема таблиц БД.
 - [`api_data_research.md`](api_data_research.md) — какие поля NHL API маппятся в какие колонки.
 
