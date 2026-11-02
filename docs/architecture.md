@@ -95,6 +95,7 @@ NHL_bot/
 │   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
+│   ├── ai_capabilities.md              # таблица: на какие вопросы ИИ отвечает, на какие нет
 │   ├── architecture.md                 # ← этот файл
 │   ├── api_data_research.md
 │   ├── data_loading.md                 # установка окружения, БД, загрузка NHL API
