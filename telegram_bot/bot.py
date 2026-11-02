@@ -708,6 +708,8 @@ _SCREEN_ARGS = {
     "command": ai_router.SCHEDULE_COMMANDS, "category": ai_router.LEADER_CATEGORIES,
     "country": tuple(COUNTRY_LABELS), "metric": tuple(ADVANCED_METRICS),
 }
+# IANA-зоны `zoneinfo`: каталог обходится один раз, а не на каждое нажатие.
+_ZONES = frozenset(zoneinfo.available_timezones())
 _DAYS = {"day": (None,), "week": tuple(range(1, 8)), "month": tuple(range(29))}
 _FREQ_BUTTONS = (("day", "День"), ("week", "Неделя"), ("month", "Месяц"))
 _WEEKDAYS_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
@@ -752,7 +754,7 @@ def _decode(data: str) -> Tuple[str, Draft]:
     valid_arg = arg in _SCREEN_ARGS[key] if key else re.fullmatch(r"[A-Z]{3}(_FULL)?", arg)
     valid_day = draft.day is None or draft.day in _DAYS[freq or "day"]
     valid_slot = draft.slot is None or draft.slot < 48
-    if not (valid_arg and valid_day and valid_slot and tz in zoneinfo.available_timezones()):
+    if not (valid_arg and valid_day and valid_slot and tz in _ZONES):
         raise ValueError(f"Подделанная callback_data карточки расписания: {data}")
     return view, draft
 
@@ -773,7 +775,7 @@ def schedule_draft(chat_id: int, p: Dict[str, Any]) -> Optional[Draft]:
     # После 23:45 — 00:00 того же дня недели: пограничный случай, правится кнопкой.
     slot = round((int(match[1]) * 60 + int(match[2])) / 30) % 48 if match else None
     tz = p["timezone"]
-    if tz not in zoneinfo.available_timezones():
+    if tz not in _ZONES:
         existing = schedule_repo.list_for_chat(chat_id)
         tz = existing[-1].timezone if existing else "Europe/Moscow"
     return Draft(screen, params, freq, day, slot, tz)

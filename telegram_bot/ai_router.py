@@ -50,10 +50,10 @@ SCREEN_COMMANDS = (
     "today", "tonight", "standings", "stats", "team_stats", "team", "countries",
     "subscriptions", "help",
 )
-# Экраны, которые ставятся на расписание (Задача 107): `bot.SCHEDULE_SCREENS`. Не ставятся
-# дайджест за фиксированную дату (итоги ночи — `today`), меню подписок и справка — не отчёты.
 # Категории инструмента `leaders`.
 LEADER_CATEGORIES = ("points", "goals", "assists")
+# Экраны, которые ставятся на расписание (Задача 107): `bot.SCHEDULE_SCREENS`. Не ставятся
+# дайджест за фиксированную дату (итоги ночи — `today`), меню подписок и справка — не отчёты.
 SCHEDULE_TOOLS = ("open_command", "team_profile", "leaders", "country_players", "advanced_metric")
 SCHEDULE_COMMANDS = tuple(c for c in SCREEN_COMMANDS if c not in ("subscriptions", "help"))
 
