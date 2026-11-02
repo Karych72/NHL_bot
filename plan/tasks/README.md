@@ -33,6 +33,7 @@
 | 107 | [Расписания: хранение, доставка экранов по времени, список в `/subscriptions`](task_107_schedules_delivery.md) | Продукт | 🟡 |
 | 108 | [Расписания: ИИ разбирает текст → карточка-черновик с кнопками](task_108_schedules_ai_form.md) | Продукт | 🟡 |
 | 115 | [Премиум: 3 дня бесплатно новому пользователю](task_115_premium_trial.md) | Продукт | 🟡 |
+| 116 | [`/subscriptions`: подсказка о своих расписаниях на главном экране](task_116_subscriptions_schedule_hint.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
