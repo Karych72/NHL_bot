@@ -135,12 +135,12 @@ make env-example
 | Таблица | PK | Гранулярность |
 |---------|----|----|
 | `teams` | `(team_id, season_id)` | команда × сезон (название, дивизион, конференция) |
-| `teams_stats` | `(team_id, season_id)` | агрегаты команды за сезон |
+| `teams_stats` | `(team_id, season_id, game_type)` | агрегаты команды за сезон (`game_type` 2 регулярка, 3 плей-офф) |
 | `rosters` | `(player_id, season_id)` | состав: игроки, привязанные к команде на сезон |
-| `players_season_stats` | `(player_id, season_id)` | сезонная статистика полевых |
-| `players_advanced_stats` | `(player_id, season_id)` | Corsi/Fenwick/GF%/zone-start и т.п. |
-| `players_shot_types` | `(player_id, season_id)` | броски по типам (wrist/snap/slap/…) |
-| `goalies_season_stats` | `(player_id, season_id)` | сезонная статистика вратарей |
+| `players_season_stats` | `(player_id, season_id, game_type)` | сезонная статистика полевых |
+| `players_advanced_stats` | `(player_id, season_id, game_type)` | Corsi/Fenwick/GF%/zone-start и т.п. |
+| `players_shot_types` | `(player_id, season_id, game_type)` | броски по типам (wrist/snap/slap/…) |
+| `goalies_season_stats` | `(player_id, season_id, game_type)` | сезонная статистика вратарей |
 
 **Игры и per-game-факты:**
 
@@ -381,8 +381,8 @@ rm -rf all_data/raw/{season_id}
 включает эту игру) снова сходит в сеть и перезапишет кэш свежим ответом.
 
 **Порядок ON CONFLICT** в UPSERT-ах сохраняет именно ключевые колонки:
-`(team_id, season_id)` или `(player_id, season_id)`. Никаких суррогатных
-ключей нет.
+`(team_id, season_id)` или `(player_id, season_id)`, у пяти сезонных агрегатов —
+плюс `game_type` (Задача 103). Никаких суррогатных ключей нет.
 
 ---
 

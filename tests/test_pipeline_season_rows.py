@@ -153,6 +153,7 @@ class TeamRowsTest(LoaderApiTestCase):
         _, stats_rows = self._loader().build_teams_and_stats()
         wsh = next(r for r in stats_rows if field(r, "teams_stats", "team_id") == WSH)
 
+        self.assertEqual(field(wsh, "teams_stats", "game_type"), 2)
         self.assertEqual(field(wsh, "teams_stats", "games_played"), 82)
         self.assertEqual(field(wsh, "teams_stats", "wins"), 43)
         self.assertEqual(field(wsh, "teams_stats", "losses"), 30)
@@ -186,7 +187,9 @@ class TeamRowsTest(LoaderApiTestCase):
 
         self.assertEqual(field(by_team[WSH], "teams_stats", "wins"), 0)
         self.assertEqual(field(by_team[WSH], "teams_stats", "face_off_win_percentage"), 0.0)
-        self.assertColumnsNone(by_team[OTT], "teams_stats", keep=("team_id", "season_id"))
+        self.assertColumnsNone(
+            by_team[OTT], "teams_stats", keep=("team_id", "season_id", "game_type")
+        )
 
 
 class RosterRowsTest(LoaderApiTestCase):
@@ -400,6 +403,7 @@ class SkaterSeasonStatsTest(LoaderApiTestCase):
         table = "players_season_stats"
 
         self.assertEqual(field(ovi, table, "season_id"), SEASON_ID)
+        self.assertEqual(field(ovi, table, "game_type"), 2)
         self.assertEqual(field(ovi, table, "assists"), 32)
         self.assertEqual(field(ovi, table, "goals"), 32)
         self.assertEqual(field(ovi, table, "points"), 64)
@@ -456,7 +460,7 @@ class SkaterSeasonStatsTest(LoaderApiTestCase):
 
         # §2.5: unknown everywhere, not 0 / "00:00" / 0.0.
         self.assertColumnsNone(
-            sourdif, "players_season_stats", keep=("player_id", "season_id")
+            sourdif, "players_season_stats", keep=("player_id", "season_id", "game_type")
         )
 
 
@@ -484,6 +488,7 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
         table = "goalies_season_stats"
 
         self.assertEqual(field(gk, table, "season_id"), SEASON_ID)
+        self.assertEqual(field(gk, table, "game_type"), 2)
         self.assertEqual(field(gk, table, "games"), 58)
         self.assertEqual(field(gk, table, "games_started"), 58)
         self.assertEqual(field(gk, table, "wins"), 31)
@@ -541,7 +546,7 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
         # §3: ties stays 0 even with nothing in the payload.
         self.assertEqual(field(gk, "goalies_season_stats", "ties"), 0)
         self.assertColumnsNone(
-            gk, "goalies_season_stats", keep=("player_id", "season_id", "ties")
+            gk, "goalies_season_stats", keep=("player_id", "season_id", "game_type", "ties")
         )
 
 
@@ -568,6 +573,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
         ovi, sourdif = rows[OVECHKIN], rows[SOURDIF]
 
         self.assertEqual(field(ovi, table, "season_id"), SEASON_ID)
+        self.assertEqual(field(ovi, table, "game_type"), 2)
         self.assertEqual(field(ovi, table, "sat_pct"), 50.8)
         self.assertEqual(field(ovi, table, "usat_pct"), 49.5)
         self.assertEqual(field(ovi, table, "goals_pct"), 55.5)
@@ -586,7 +592,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ovi, table, "sh_goals_for"), 0)
 
         # §2.6: no goalsForAgainst row and an empty puckPossessions one.
-        self.assertColumnsNone(sourdif, table, keep=("player_id", "season_id"))
+        self.assertColumnsNone(sourdif, table, keep=("player_id", "season_id", "game_type"))
 
     def test_shot_type_row_keeps_real_zeros_and_nulls_missing_fields(self):
         instance = make_loader()
@@ -601,6 +607,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
         ovi, sourdif = rows[OVECHKIN], rows[SOURDIF]
 
         self.assertEqual(field(ovi, table, "season_id"), SEASON_ID)
+        self.assertEqual(field(ovi, table, "game_type"), 2)
         self.assertEqual(field(ovi, table, "goals_wrist"), 8)
         self.assertEqual(field(ovi, table, "shots_wrist"), 60)
         self.assertEqual(field(ovi, table, "goals_slap"), 3)
@@ -617,7 +624,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
         self.assertEqual(field(ovi, table, "goals_wrap_around"), 0)
         self.assertEqual(field(ovi, table, "shots_wrap_around"), 0)
 
-        self.assertColumnsNone(sourdif, table, keep=("player_id", "season_id"))
+        self.assertColumnsNone(sourdif, table, keep=("player_id", "season_id", "game_type"))
 
 
 class SeasonReferenceRowsTest(LoaderApiTestCase):

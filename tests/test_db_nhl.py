@@ -138,12 +138,16 @@ class TestNhlSchema(unittest.TestCase):
                     "to apply data_tables/t.*.sql"
                 )
             self.assertEqual(pk, ["team_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "teams_stats"), ["team_id", "season_id"])
             self.assertEqual(_pk_columns(cur, "rosters"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_season_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "goalies_season_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_advanced_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_shot_types"), ["player_id", "season_id"])
+            # Миграция 0022 (Задача 103): регулярка и плей-офф — отдельные строки агрегатов.
+            self.assertEqual(
+                _pk_columns(cur, "teams_stats"), ["team_id", "season_id", "game_type"]
+            )
+            for table in ("players_season_stats", "goalies_season_stats",
+                          "players_advanced_stats", "players_shot_types"):
+                self.assertEqual(
+                    _pk_columns(cur, table), ["player_id", "season_id", "game_type"], table
+                )
             self.assertEqual(_pk_columns(cur, "games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "scheduled_games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "game_predictions"), ["game_id", "task"])
@@ -176,24 +180,36 @@ class TestNhlSchema(unittest.TestCase):
                 f"expected bigint season_id, got {row[0]!r}",
             )
 
-    def test_games_game_type_is_regular_or_playoff(self):
-        """Миграция 0019 (Задача 101): games.game_type — smallint NOT NULL, только 2 или 3."""
+    def test_game_type_is_regular_or_playoff(self):
+        """Миграции 0019 и 0022 (Задачи 101, 103): game_type у games и сезонных агрегатов —
+        smallint NOT NULL, только 2 или 3; индекс лидербордов агрегатов — (season_id, game_type)."""
+        tables = ("games", "teams_stats", "players_season_stats", "goalies_season_stats",
+                  "players_advanced_stats", "players_shot_types")
         with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT data_type, is_nullable FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'games' "
-                "AND column_name = 'game_type'"
-            )
-            self.assertEqual(
-                cur.fetchone(), ("smallint", "NO"), "games.game_type — run: make db-migrate"
-            )
-            cur.execute(
-                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                "WHERE conrelid = 'public.games'::regclass AND conname = 'games_game_type_check'"
-            )
-            row = cur.fetchone()
-            self.assertIsNotNone(row, "games_game_type_check missing — run: make db-migrate")
-            self.assertEqual(row[0], "CHECK ((game_type = ANY (ARRAY[2, 3])))")
+            for table in tables:
+                with self.subTest(table=table):
+                    cur.execute(
+                        "SELECT data_type, is_nullable FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = %s "
+                        "AND column_name = 'game_type'",
+                        (table,),
+                    )
+                    self.assertEqual(
+                        cur.fetchone(), ("smallint", "NO"), f"{table}.game_type — run: make db-migrate"
+                    )
+                    cur.execute(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conrelid = %s::regclass AND conname = %s",
+                        (f"public.{table}", f"{table}_game_type_check"),
+                    )
+                    row = cur.fetchone()
+                    self.assertIsNotNone(row, f"{table}_game_type_check missing — run: make db-migrate")
+                    self.assertEqual(row[0], "CHECK ((game_type = ANY (ARRAY[2, 3])))")
+            for table in tables[2:]:
+                cur.execute(
+                    "SELECT pg_get_indexdef(%s::regclass)", (f"public.idx_{table}_season",)
+                )
+                self.assertTrue(cur.fetchone()[0].endswith("(season_id, game_type)"), table)
 
     def test_bot_subscriptions_migration_applied(self):
         with self.conn.cursor() as cur:
@@ -1200,6 +1216,155 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
                 sorted(set(load_history_team_stats(conn, cfg)["game_id"])), regular
             )
             self.assertEqual(load_shot_attempts(conn, cfg)["game_id"].tolist(), regular)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestRegularSeasonAggregatesSql(unittest.TestCase):
+    """Задача 103: экраны бота и обзор ИИ читают из сезонных агрегатов только регулярку.
+    Вымышленный сезон: у HOM, его игрока и вратаря в каждой из пяти таблиц две строки —
+    регулярка и плей-офф (``game_type = 3``) с числами-метками 333–888, которых нет в регулярке:
+    ни одна метка не должна попасть в ответ, ни одна строка — задвоиться. Строки удаляются
+    до и после."""
+
+    SEASON = 99999103
+    HOME = 900104
+    AWAY = 900105
+    PLAYER = -104
+    GOALIE = -105
+    PLAYOFF_MARKS = ("333", "444", "555", "777", "888", "99.9")
+
+    def setUp(self):
+        import ai_stats
+        import bot_messages
+
+        self.messages = bot_messages
+        self.ai_stats = ai_stats
+        # Шаблоны экранов (`messages/*.txt`) читаются относительно telegram_bot/.
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(TELEGRAM_BOT)
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        season_patch = patch.object(config, "SEASON_ID", self.SEASON)
+        season_patch.start()
+        self.addCleanup(season_patch.stop)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
+                (self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # Порог лидерборда Corsi — LEAST(20, половина игр лидера): по регулярке 10, игрок с 12
+            # проходит; 40 игр плей-офф (нарочно больше регулярки) без фильтра подняли бы порог до 20.
+            cur.execute(
+                "INSERT INTO teams_stats (team_id, season_id, game_type, games_played, wins, "
+                "losses, ot, points, procent_points) VALUES "
+                "(%s, %s, 2, 20, 12, 6, 2, 26, 65.0), (%s, %s, 3, 40, 444, 3, 0, 888, 50.0), "
+                "(%s, %s, 2, 20, 8, 10, 2, 18, 45.0)",
+                (self.HOME, self.SEASON, self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # Места в лиге у `/BOS_FULL` сравнивают показатели регулярки — без NULL, как у загрузчика.
+            cur.execute(
+                "UPDATE teams_stats SET goals_per_game = 3.1, goals_against_per_game = 2.8, "
+                "shots_per_game = 30.5, shots_allowed = 28.5, power_play_percentage = 21.5, "
+                "penalty_kill_percentage = 80.5, face_off_win_percentage = 50.5, "
+                "power_play_goals = 12, power_play_opportunities = 60, "
+                "power_play_goals_against = 10 WHERE season_id = %s AND game_type = 2",
+                (self.SEASON,),
+            )
+            cur.execute(
+                "INSERT INTO rosters (player_id, season_id, lastname, position, nationality, "
+                "current_team_id) VALUES (%s, %s, 'Skater', 'C', 'ZZZ', %s), "
+                "(%s, %s, 'Keeper', 'G', 'ZZZ', %s)",
+                (self.PLAYER, self.SEASON, self.HOME, self.GOALIE, self.SEASON, self.HOME),
+            )
+            # (тип, игры, голы, передачи, очки, смены, время за игру, Corsi, голы с кистевого);
+            # 11 игр плей-офф тоже выше порога 10 — без фильтра JOIN на pss задвоил бы Corsi.
+            for row in ((2, 12, 11, 6, 17, 400, "18:00", 52.5, 5),
+                        (3, 11, 555, 222, 777, 150, "19:00", 99.9, 333)):
+                cur.execute(
+                    "INSERT INTO players_season_stats (player_id, season_id, game_type, games, "
+                    "goals, assists, points, shifts, time_on_ice_per_game) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, *row[:7]),
+                )
+                cur.execute(
+                    "INSERT INTO players_advanced_stats (player_id, season_id, game_type, sat_pct) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, row[0], row[7]),
+                )
+                cur.execute(
+                    "INSERT INTO players_shot_types (player_id, season_id, game_type, goals_wrist) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, row[0], row[8]),
+                )
+            cur.execute(
+                "INSERT INTO goalies_season_stats (player_id, season_id, game_type, games, wins, "
+                "losses, ot, saves, shots_against, save_percentage, goal_against_average, "
+                "shutouts) VALUES (%s, %s, 2, 15, 9, 4, 2, 400, 430, 93.0, 2.5, 1), "
+                "(%s, %s, 3, 9, 444, 3, 0, 250, 270, 92.6, 2.2, 0)",
+                (self.GOALIE, self.SEASON, self.GOALIE, self.SEASON),
+            )
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("players_season_stats", "players_advanced_stats", "players_shot_types",
+                          "goalies_season_stats", "rosters", "teams_stats", "teams"):
+                cur.execute(f"DELETE FROM {table} WHERE season_id = %s", (self.SEASON,))
+
+    def assertNoPlayoff(self, text):
+        for mark in self.PLAYOFF_MARKS:
+            self.assertNotIn(mark, text)
+
+    def test_leaderboards_show_each_player_once(self):
+        for table, column in (("players_season_stats", "points"),
+                              ("goalies_season_stats", "wins"),
+                              ("players_advanced_stats", "sat_pct"),
+                              ("players_shot_types", "goals_wrist")):
+            with self.subTest(table=table):
+                text, _n, total = self.messages.player_stats_with_count("Лидеры", table, column)
+                self.assertEqual(total, 1)
+                self.assertNoPlayoff(text)
+
+    def test_team_screens_read_regular_totals(self):
+        text, _n, total = self.messages.team_stats_with_count(["points"])
+        self.assertEqual(total, 2)
+        self.assertNoPlayoff(text)
+        self.assertNoPlayoff(self.messages.team_table())
+        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview("AWY", "HOM")))
+        for screen in (self.messages.team_profile, self.messages.team_full_stats):
+            with self.subTest(screen=screen.__name__):
+                text = screen("HOM")
+                self.assertIn("Skater", text)
+                self.assertIn("Keeper", text)
+                self.assertNoPlayoff(text)
+
+    def test_country_screens_read_regular_totals(self):
+        with patch.object(self.messages, "COUNTRY_MIN_PLAYERS", 1):
+            self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
+        for group in ("F", "G"):
+            with self.subTest(group=group):
+                table, _n, total = self.messages._player_group_table(
+                    self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
+                )
+                self.assertEqual(total, 1)
+                self.assertNoPlayoff(table)
+
+    def test_ai_overview_seasons_read_regular_totals(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                self.ai_stats._OVERVIEW_SKATER_SEASONS_SQL,
+                (self.PLAYER, self.SEASON, self.SEASON - 10001),
+            )
+            self.assertEqual([r[:2] for r in cur.fetchall()], [(self.SEASON, 12)])
+            cur.execute(
+                self.ai_stats._OVERVIEW_GOALIE_SEASONS_SQL,
+                (self.GOALIE, self.SEASON, self.SEASON - 10001),
+            )
+            self.assertEqual([r[:2] for r in cur.fetchall()], [(self.SEASON, 15)])
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
