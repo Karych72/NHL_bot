@@ -466,6 +466,32 @@ def _score_line(header: Dict[str, str]) -> str:
     )
 
 
+def playoff_label(game_id: int) -> Optional[str]:
+    """Пометка матча плей-офф «Плей-офф, раунд R, игра G» или `None` для других типов.
+
+    Зачем: карточка, сводка дайджеста и превью `/tonight` показывают, что матч —
+    плей-офф (Задача 106). Всё берётся из `game_id` (`2025030123` — тип 03, раунд 1,
+    серия 2, игра 3), без запроса к API и без колонки в базе.
+
+    Аргументы:
+        game_id: десятизначный id матча NHL.
+    """
+    digits = str(game_id)
+    if digits[4:6] != "03":
+        return None
+    return f"Плей-офф, раунд {digits[7]}, игра {digits[9]}"
+
+
+def _card_heading(header: Dict[str, str], game_id: int) -> str:
+    """Шапка карточки матча: строка счёта (`_score_line`) и, у плей-офф, курсивная
+    пометка раунда (`playoff_label`) строкой ниже — счёт остаётся первой строкой,
+    видной в уведомлении."""
+    label = playoff_label(game_id)
+    if label is None:
+        return _score_line(header)
+    return f"{_score_line(header)}\n<i>{label}</i>"
+
+
 def _period_names(period: int, shootout: bool) -> Tuple[str, str]:
     """Название периода гола в карточке матча: (заголовок блока голов, коротко
     для кнопки видео) — «2-й период»/«2п», «Овертайм»/«ОТ», «2-й овертайм»/«2ОТ»,
@@ -602,7 +628,7 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
 
     to_template = {
-        'score_line': _score_line(header),
+        'score_line': _card_heading(header, game_id),
         'home_shots': html.escape(str(game_stats['shots'][0])),
         'away_shots': html.escape(str(game_stats['shots'][1])),
         'home_penalties': html.escape(str(game_stats['pim'][0])),
@@ -1021,10 +1047,11 @@ def _matchup_compare_table(
     return _table(rows, "lrr", bold=bold)
 
 
-def matchup_season_preview(away_abbr: str, home_abbr: str) -> Tuple[str, str]:
+def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tuple[str, str]:
     """
     Сезонное сравнение по teams.abbreviation (= abbrev из NHL API); команды в тексте —
-    полным названием `teams.name`.
+    полным названием `teams.name`. У матча плей-офф под заголовком — пометка раунда
+    (`playoff_label` по `game_id`); сравнение и тогда по регулярке.
 
     Возвращает: (тело — построчный HTML для `rich_message()`, метрики — таблица
     `_table`; строки подвала для `rich_footer()` — сезон). Подвал отдельно:
@@ -1093,6 +1120,9 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> Tuple[str, str]:
 
     esc_a, esc_h = html.escape(names[a]), html.escape(names[h])
     header = f"<b>{esc_a} @ {esc_h}</b>"
+    label = playoff_label(game_id)
+    if label is not None:
+        header += f"\n<i>{label}</i>"
     footer = f"Сезон {season_esc}"
 
     def _one_line_team_html(esc_name: str, row: Optional[Dict[str, Union[int, float, None]]]) -> str:
@@ -2264,9 +2294,9 @@ def country_game_block(code: str, game_id: int) -> Optional[str]:
 
 
 def game_score_line(game_id: int) -> str:
-    """Строка счёта матча `game_id` — первая строка его карточки (`_score_line`).
+    """Шапка карточки матча `game_id` — счёт и пометка плей-офф (`_card_heading`).
     Нужна короткому сообщению подписки на страну (Задача 76), где полной карточки нет."""
-    return _score_line(_game_score_header(*_fetch_game_score_rows(game_id)))
+    return _card_heading(_game_score_header(*_fetch_game_score_rows(game_id)), game_id)
 
 
 def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
@@ -2456,7 +2486,8 @@ def day_digest_summary_body(game_ids: Sequence[int]) -> List[str]:
     на кнопке матча (`digest_game_button_labels`).
 
     Зачем так: матч — «1. Хозяева 3:2 Гости» обычным шрифтом по левому краю (жирный —
-    только заголовок сводки), счёт по периодам — курсивом строкой ниже с отступом. Моноширинное выравнивание
+    только заголовок сводки), счёт по периодам — курсивом строкой ниже с отступом, у плей-офф
+    там же пометка раунда (`playoff_label`). Моноширинное выравнивание
     команд по счёту на телефоне выглядело криво (отзыв 2026-10-03), а в одной
     строке с командами счёт по периодам не влезает в ширину экрана.
 
@@ -2467,13 +2498,17 @@ def day_digest_summary_body(game_ids: Sequence[int]) -> List[str]:
     Аргументы:
         game_ids: матчи дня в порядке сводки, непустой список.
     """
-    headers = [_game_score_header(*_fetch_game_score_rows(gid)) for gid in game_ids]
-    return [
-        f"{i}. {html.escape(h['home'].strip())} {html.escape(h['home_score'])}:"
-        f"{html.escape(h['away_score'])} {html.escape(h['away'].strip())}\n"
-        f"{_FIGURE_SPACE * 2}<i>{html.escape(h['period_scores'] + h['extra'])}</i>"
-        for i, h in enumerate(headers, start=1)
-    ]
+    lines = []
+    for i, gid in enumerate(game_ids, start=1):
+        h = _game_score_header(*_fetch_game_score_rows(gid))
+        label = playoff_label(gid)
+        playoff = f" · {label}" if label else ""
+        lines.append(
+            f"{i}. {html.escape(h['home'].strip())} {html.escape(h['home_score'])}:"
+            f"{html.escape(h['away_score'])} {html.escape(h['away'].strip())}\n"
+            f"{_FIGURE_SPACE * 2}<i>{html.escape(h['period_scores'] + h['extra'])}{playoff}</i>"
+        )
+    return lines
 
 
 def digest_game_button_labels(game_ids: Sequence[int]) -> List[str]:

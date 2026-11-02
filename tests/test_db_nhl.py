@@ -1395,7 +1395,7 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
         self.assertEqual(total, 2)
         self.assertNoPlayoff(text)
         self.assertNoPlayoff(self.messages.team_table())
-        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview("AWY", "HOM")))
+        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview(2099020001, "AWY", "HOM")))
         for screen in (self.messages.team_profile, self.messages.team_full_stats):
             with self.subTest(screen=screen.__name__):
                 text = screen("HOM")
