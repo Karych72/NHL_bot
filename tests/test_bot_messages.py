@@ -250,6 +250,33 @@ def game_message_text(bot_module):
     return text, goals_meta
 
 
+def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
+    """`2025030412`: тип 03, раунд 4, серия 1, игра 2; регулярка и предсезонка — без пометки."""
+    bot_messages = bot_module("bot_messages")
+    assert bot_messages.playoff_label(2025030412) == "Плей-офф, раунд 4, игра 2"
+    assert bot_messages.playoff_label(2025020412) is None
+    assert bot_messages.playoff_label(2025010012) is None
+
+
+def test_game_message_marks_playoff_round_under_score_line(bot_module):
+    """Карточка матча плей-офф (Задача 106): счёт — первой строкой (её видно в уведомлении),
+    пометка раунда — курсивом строкой ниже; та же шапка — у сообщения подписки на страну."""
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
+        text, _ = bot_messages.game_message(2025030123)
+        score_line = bot_messages.game_score_line(2025030123)
+    first, second, _rest = text.split("\n", 2)
+    assert first.startswith("🏒 <b>")
+    assert second == "<i>Плей-офф, раунд 1, игра 3</i>"
+    assert score_line == f"{first}\n{second}"
+
+
+def test_game_message_has_no_playoff_mark_for_regular_game(game_message_text):
+    text, _ = game_message_text
+    assert "Плей-офф" not in text
+
+
 def test_game_message_escapes_script_tag_in_team_name(game_message_text):
     text, _ = game_message_text
     assert "TOR&lt;script&gt;alert(1)&lt;/script&gt;" in text
@@ -564,16 +591,20 @@ def test_last_n_form_record_rule_84_2_ot_empty_net_goal_counts_as_loss(bot_modul
 # matchup_season_preview() — escaping and missing-data branches
 # ---------------------------------------------------------------------------
 
+# id матча регулярки (тип 02): превью без пометки плей-офф.
+_REGULAR_GAME = 2025020555
+
+
 def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview("", "NYR")
+        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"", "NYR")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
 
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview("?", "?")
+        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"?", "?")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
@@ -583,7 +614,7 @@ def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, footer = bot_messages.matchup_season_preview("AAA", "BBB")
+        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
     assert text.startswith("<b>AAA @ BBB</b>\n")
     assert "нет в базе бота" in text
     assert "<b>AAA</b>" not in text and "<b>BBB</b>" not in text, "аббревиатуры в тексте — без <b>"
@@ -594,10 +625,22 @@ def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, _footer = bot_messages.matchup_season_preview("<i>AB", "CD&EF")
+        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"<i>AB", "CD&EF")
     assert "&lt;i&gt;AB" in text
     assert "CD&amp;EF" in text
     assert "<i>AB" not in text
+
+
+def test_matchup_season_preview_marks_playoff_round_under_heading(bot_module):
+    """Превью матча плей-офф (`/tonight`, рассылка перед матчем): пометка раунда из `game_id`
+    строкой под заголовком; у регулярки её нет (Задача 106)."""
+    bot_messages = bot_module("bot_messages")
+    empty = {"count_rows": 0}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
+        playoff, _ = bot_messages.matchup_season_preview(2025030123, "AAA", "BBB")
+        regular, _ = bot_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB")
+    assert playoff.startswith("<b>AAA @ BBB</b>\n<i>Плей-офф, раунд 1, игра 3</i>\n")
+    assert "Плей-офф" not in regular
 
 
 def _preview_stats_row(home="BBB"):
@@ -637,7 +680,7 @@ def _render_preview(bot_messages, home="BBB"):
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
             patch.object(bot_messages, "fetch_all", side_effect=AssertionError("превью читает прогноз")):
-        return bot_messages.matchup_season_preview("AAA", home)
+        return bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", home)
 
 
 def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module):
@@ -692,7 +735,7 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
         raise AssertionError(f"unexpected query: {q}")
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached):
-        text, _footer = bot_messages.matchup_season_preview("AAA", "BBB")
+        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
 
     [points] = [r for r in re.findall(r"<tr>(.*?)</tr>", text) if ">Очки<" in r]
     assert "<b>" not in points
@@ -779,7 +822,7 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
         raise AssertionError(f"unexpected query: {q}")
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
-        text, _footer = bot_messages.matchup_season_preview("AAA", "BBB")
+        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
 
     [table] = _tables(text)
     assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
@@ -1397,6 +1440,24 @@ def test_day_digest_summary_body_plain_matchup_and_italic_indented_periods(bot_m
     assert body == [
         "1. Flyers 0:2 Penguins\n  <i>0:1, 0:0, 0:1</i>",
         "2. Maple Leafs 2:1 Kings\n  <i>1:0, 0:1, 0:0, 1:0 (OT)</i>",
+    ]
+
+
+def test_day_digest_summary_body_marks_playoff_game_after_periods(bot_module, fake_db_router):
+    """Матч плей-офф в сводке дня: пометка раунда — в курсивной строке после периодов,
+    у матча регулярки той же ночи её нет (Задача 106)."""
+    bot_messages = bot_module("bot_messages")
+    stats = [(1, 0, 0, 0, 0, False, False, "home", "A"), (0, 0, 0, 0, 0, False, False, "away", "B")]
+    fake_db_router([
+        ("get_game_stats", stats),
+        ("get_goals_game", [_goal_row(2, 1, 0)]),
+    ])
+
+    body = bot_messages.day_digest_summary_body([2025030245, 2025020245])
+
+    assert body == [
+        "1. A 1:0 B\n  <i>0:0, 1:0, 0:0 · Плей-офф, раунд 2, игра 5</i>",
+        "2. A 1:0 B\n  <i>0:0, 1:0, 0:0</i>",
     ]
 
 

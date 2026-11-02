@@ -498,7 +498,7 @@ async def callback_tonight_game(callback: CallbackQuery, bot: Bot, match: re.Mat
         # Проза без счётных элементов — сноска без чисел, но текст берётся из
         # того же единственного хелпера (truncate_telegram_text по умолчанию),
         # а не из литерала, продублированного здесь и в bot.py.
-        body, footer = matchup_season_preview(away, home)
+        body, footer = matchup_season_preview(game_id, away, home)
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)
         else:

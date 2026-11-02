@@ -640,7 +640,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = matchup_season_preview(away, home)
+            previews[game_id] = matchup_season_preview(game_id, away, home)
         body, footer = previews[game_id]
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)
