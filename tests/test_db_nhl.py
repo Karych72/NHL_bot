@@ -1684,6 +1684,79 @@ class TestPremiumPaymentsSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestPremiumTrialSql(unittest.TestCase):
+    """Пробный премиум (Задача 115) на настоящих таблицах: новый чат получает 3 дня, чат со
+    строкой ``premium_access`` (и истёкшей) или с историей — нет, повтор не продлевает.
+    Чаты — отрицательные, строки удаляются до и после."""
+
+    CHAT = -999000115
+    TABLES = ("premium_access", "bot_subscriptions", "ai_questions", "ai_stats_log", "bot_actions")
+
+    def setUp(self):
+        import premium
+
+        self.premium = premium
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for table in self.TABLES:
+            self._query(f"DELETE FROM {table} WHERE chat_id = %s", (self.CHAT,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _log_start(self):
+        """Строка журнала, которую middleware пишет до хэндлера `/start`."""
+        self._query("INSERT INTO bot_actions (chat_id, kind, data) VALUES (%s, 'command', 'start')",
+                    (self.CHAT,))
+
+    def test_new_chat_gets_three_days_once(self):
+        self._log_start()
+        until = self.premium.grant_trial(self.CHAT)
+        [(days,)] = self._query("SELECT extract(epoch FROM (%s::timestamptz - now())) / 86400", (until,))
+        self.assertAlmostEqual(float(days), 3, places=2)
+        self.assertTrue(self.premium.is_premium(self.CHAT))
+
+        self._log_start()
+        self.assertIsNone(self.premium.grant_trial(self.CHAT))
+        self.assertEqual(self.premium.premium_until(self.CHAT), until)
+
+    def test_expired_premium_row_means_trial_was_used(self):
+        self._query("INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() - interval '1 day')",
+                    (self.CHAT,))
+        self.assertIsNone(self.premium.grant_trial(self.CHAT))
+        self.assertFalse(self.premium.is_premium(self.CHAT))
+
+    def test_chat_with_history_gets_no_trial(self):
+        history = {
+            "subscription": "INSERT INTO bot_subscriptions (chat_id, kind, team_id) VALUES (%s, 'team_scores', 1)",
+            "ai_question": "INSERT INTO ai_questions (chat_id, question, outcome, latency_ms) "
+                           "VALUES (%s, 'q', 'text', 1)",
+            "ai_stats": "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, latency_ms) "
+                        "VALUES (%s, 'q', false, 'answer', 1)",
+            "earlier_action": "INSERT INTO bot_actions (chat_id, kind, data) VALUES (%s, 'command', 'today')",
+        }
+        for name, sql in history.items():
+            with self.subTest(name):
+                self._cleanup()
+                self._query(sql, (self.CHAT,))
+                self._log_start()
+                self.assertIsNone(self.premium.grant_trial(self.CHAT))
+                self.assertEqual(
+                    self._query("SELECT count(*) FROM premium_access WHERE chat_id = %s", (self.CHAT,)),
+                    [(0,)],
+                )
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
     """Расписания экранов (Задача 107) на настоящей ``bot_schedules``: миграция и её CHECK-и,
     тикер (``bot.send_due_schedules``) — просрочка, блокировка, сбой, лимит без премиума — и

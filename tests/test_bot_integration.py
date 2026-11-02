@@ -44,6 +44,13 @@ def _callback_data(markup: Any) -> List[str]:
     return [button.callback_data for button in _flat_buttons(markup)]
 
 
+@pytest.fixture(autouse=True)
+def _no_trial(bot_module, monkeypatch) -> None:
+    """Сценарии `/start` — для чата, которому пробник уже не положен: выдача пробника
+    (Задача 115) — в tests/test_bot_application.py, её SQL — в tests/test_db_nhl.py."""
+    monkeypatch.setattr(bot_module("premium"), "grant_trial", lambda chat_id: None)
+
+
 def _start_command(args: str) -> CommandObject:
     """`/start <args>` так, как его разбирает aiogram для хендлера `cmd_start`."""
     return CommandObject(prefix="/", command="start", args=args)

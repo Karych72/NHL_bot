@@ -4,7 +4,8 @@
 кнопке (`stats_handlers`) и рассылка превью (`push_digest_job`). Хранится в `premium_access`
 (миграция 0016): чат и срок. Покупка — подписка Telegram Stars (`bot.py`: `/premium`, оплата);
 каждый платёж пишется в журнал `premium_payments` (миграция 0018) и продлевает срок на 30 дней
-(`extend_premium`). Возврат делает человек на VM: `python premium.py refund <charge_id>`.
+(`extend_premium`); новый чат лички при первом `/start` получает пробник на 3 дня
+(`grant_trial`, Задача 115). Возврат делает человек на VM: `python premium.py refund <charge_id>`.
 """
 
 import argparse
@@ -22,6 +23,8 @@ from database import fetch_all, get_connection
 PRICE_STARS = 100
 PERIOD_SECONDS = 2592000
 PERIOD_DAYS = 30
+# Пробник новому чату лички при первом `/start` (Задача 115).
+TRIAL_DAYS = 3
 
 
 def is_premium(chat_id: int) -> bool:
@@ -69,6 +72,34 @@ def has_paid_subscription(chat_id: int) -> bool:
         columns=["paid"],
     )
     return bool(rows["paid"][0])
+
+
+def grant_trial(chat_id: int) -> Optional[datetime]:
+    """Выдаёт новому чату премиум на `TRIAL_DAYS` дней; срок пробника или None, если чат не новый.
+
+    Зачем: пробник показывает премиум целиком до просьбы об оплате (Задача 115). Новый — у чата
+    нет ни строки `premium_access` (она не удаляется после истечения и потому же служит отметкой
+    «пробник был»), ни подписок, ни вопросов к ИИ, ни действий в журнале `bot_actions`, кроме
+    одного — этого `/start`: middleware пишет его до хэндлера.
+
+    Аргументы:
+        chat_id: личка, приславшая `/start`.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO premium_access (chat_id, expires_at) "
+                "SELECT %(chat)s, now() + make_interval(days => %(days)s) "
+                "WHERE NOT EXISTS (SELECT 1 FROM bot_subscriptions WHERE chat_id = %(chat)s) "
+                "AND NOT EXISTS (SELECT 1 FROM ai_questions WHERE chat_id = %(chat)s) "
+                "AND NOT EXISTS (SELECT 1 FROM ai_stats_log WHERE chat_id = %(chat)s) "
+                "AND (SELECT count(*) FROM bot_actions WHERE chat_id = %(chat)s) <= 1 "
+                "ON CONFLICT (chat_id) DO NOTHING RETURNING expires_at",
+                {"chat": chat_id, "days": TRIAL_DAYS},
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row[0] if row else None
 
 
 def extend_premium(chat_id: int, charge_id: str, amount_stars: int, is_recurring: bool) -> datetime:

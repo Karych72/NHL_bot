@@ -624,6 +624,80 @@ async def test_premium_command_in_group_has_no_button_and_no_invoice(
     assert api.sent(CreateInvoiceLink) == []
 
 
+# ---------------------------------------------------------------------------
+# Пробный премиум при первом /start (Задача 115)
+# ---------------------------------------------------------------------------
+
+# 22:00 UTC 05.11 — уже 06.11 по Москве: дата в строке о подарке — московская.
+_TRIAL_UNTIL = datetime(2026, 11, 5, 22, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def trial_grants(bot_module, monkeypatch) -> Callable[[Any], List[int]]:
+    """`premium.grant_trial` в памяти (SQL — в tests/test_db_nhl.py): отвечает `until` и
+    записывает чаты, для которых его звали."""
+    def _patch(until: Any) -> List[int]:
+        calls: List[int] = []
+        monkeypatch.setattr(bot_module("premium"), "grant_trial", lambda chat_id: calls.append(chat_id) or until)
+        return calls
+    return _patch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("until", [_TRIAL_UNTIL, None], ids=["new", "known"])
+async def test_start_in_private_greets_new_chat_with_trial_gift(
+    bot_module, dispatcher, fake_bot, api, make_update, trial_grants, until
+) -> None:
+    calls = trial_grants(until)
+
+    await _feed(dispatcher, fake_bot, make_update("/start", chat_id=300))
+
+    help_text = bot_module("help_text")
+    expected = help_text.start_message_with_gift(
+        "🎁 Премиум на 3 дня в подарок — до 06.11: прогноз модели и ИИ до 20 вопросов в сутки. "
+        "Подробнее — /premium"
+    ) if until else help_text.START_MESSAGE
+    [reply] = api.sent_rich
+    assert body(reply) == rich_html(expected)
+    assert body(reply).startswith("<p>🚨 <b>Шайба в игре.")
+    assert [b.callback_data for row in reply.reply_markup.inline_keyboard for b in row] == ["sub:T", "sub:C", "sub:d"]
+    assert calls == [300]
+
+
+@pytest.mark.asyncio
+async def test_start_in_group_gives_no_trial(
+    bot_module, dispatcher, fake_bot, api, make_update, trial_grants
+) -> None:
+    calls = trial_grants(_TRIAL_UNTIL)
+
+    await _feed(dispatcher, fake_bot, make_update("/start", chat_id=-500, chat_type="supergroup"))
+
+    [reply] = api.sent_rich
+    assert body(reply) == rich_html(bot_module("help_text").START_MESSAGE)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_start_deep_link_sends_trial_gift_after_game_card(
+    bot_module, dispatcher, fake_bot, api, make_update, trial_grants, monkeypatch
+) -> None:
+    """Deep link — тоже первое касание: приветствия нет, строка о подарке — после карточки."""
+    calls = trial_grants(_TRIAL_UNTIL)
+    bot = bot_module("bot")
+    cards: List[Tuple[int, int]] = []
+
+    async def card(_bot: Any, chat_id: int, game_id: int) -> None:
+        cards.append((chat_id, game_id))
+
+    monkeypatch.setattr(bot, "send_game_card_message", card)
+
+    await _feed(dispatcher, fake_bot, make_update("/start game_42", chat_id=300))
+
+    assert cards == [(300, 42)] and calls == [300]
+    [gift] = api.sent_rich
+    assert body(gift) == rich_html(bot._TRIAL_GIFT.format(until="06.11"))
+
+
 @pytest.mark.asyncio
 async def test_paysupport_names_the_support_contact(dispatcher, fake_bot, api, make_update) -> None:
     await _feed(dispatcher, fake_bot, make_update("/paysupport"))
