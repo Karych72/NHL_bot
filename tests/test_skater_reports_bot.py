@@ -125,11 +125,13 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIn(f"/{cmd} — ", help_text.HELP_MESSAGE)
 
-    def test_help_notes_regular_season_only(self):
-        """Оговорка про плей-офф — только в /help: /start её не несёт (решение человека 2026-10-31)."""
+    def test_help_scopes_regular_season_and_playoffs(self):
+        """/help: таблица и лидеры — регулярка, матчи и ИИ — с плей-офф; ложного «плей-офф
+        в базе нет» больше нет (Задача 106). /start оговорки не несёт (решение человека 2026-10-31)."""
         help_text = _load_help_text()
-        self.assertIn("регулярный чемпионат", help_text.HELP_MESSAGE)
-        self.assertIn("плей-офф", help_text.HELP_MESSAGE)
+        self.assertIn("лидеры и экраны команд считают регулярный чемпионат", help_text.HELP_MESSAGE)
+        self.assertIn("включают плей-офф", help_text.HELP_MESSAGE)
+        self.assertNotIn("не отражены", help_text.HELP_MESSAGE)
         self.assertNotIn("плей-офф", help_text.START_MESSAGE)
 
     def test_tonight_reply_intro_escapes_league_date(self):
