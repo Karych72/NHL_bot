@@ -1699,7 +1699,7 @@ def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
     query_text, _params = cursor.executed[-1]
     assert (
         "pss.games >= LEAST(20, (SELECT CEIL(MAX(ts.games_played) / 2.0) "
-        "FROM teams_stats ts WHERE ts.season_id = pl.season_id))"
+        "FROM teams_stats ts WHERE ts.season_id = pl.season_id AND ts.game_type = pl.game_type))"
     ) in query_text
 
 

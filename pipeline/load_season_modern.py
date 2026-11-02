@@ -49,6 +49,11 @@ SCHEDULED_GAME_STATE_IDS = (1, 2)
 # narrows its targets to today and tomorrow itself (``pipeline/scheduled_publish.py``).
 SCHEDULE_WINDOW_DAYS = 14
 
+# ``game_type`` of the season aggregate rows (teams_stats, players_*, goalies_season_stats;
+# Task 103): 2 = regular season, the only type the ``gameTypeId=2`` reports here return.
+# Playoff totals (3) arrive with Task 104 under the same key.
+REGULAR_SEASON = 2
+
 # gamecenter endpoint name -> cache file suffix.
 _GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box", "landing": "landing"}
 
@@ -339,6 +344,7 @@ class ModernNhlLoader:
                 (
                     team_id,
                     self.season_id,
+                    REGULAR_SEASON,
                     optional_int(row.get("gamesPlayed")),
                     optional_int(row.get("wins")),
                     optional_int(row.get("losses")),
@@ -612,6 +618,7 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
+                    REGULAR_SEASON,
                     optional_pct_from_ratio(pp.get("satPct")),
                     optional_pct_from_ratio(pp.get("usatPct")),
                     optional_pct_from_ratio(pp.get("goalsPct")),
@@ -647,6 +654,7 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
+                    REGULAR_SEASON,
                     optional_int(r.get("goalsWrist")),
                     optional_int(r.get("shotsOnNetWrist")),
                     optional_int(r.get("goalsSlap")),
@@ -760,6 +768,7 @@ class ModernNhlLoader:
                     optional_pct_from_ratio(so.get("shootoutShootingPct")),
                     player_id,
                     self.season_id,
+                    REGULAR_SEASON,
                 )
             )
         return out, rows
@@ -831,6 +840,7 @@ class ModernNhlLoader:
                     safe_pct(ev_saves, ev_shots),
                     player_id,
                     self.season_id,
+                    REGULAR_SEASON,
                 )
             )
         return out, rows
@@ -1633,6 +1643,7 @@ class ModernNhlLoader:
                 [
                     "team_id",
                     "season_id",
+                    "game_type",
                     "games_played",
                     "wins",
                     "losses",
@@ -1650,7 +1661,7 @@ class ModernNhlLoader:
                     "shots_allowed",
                     "face_off_win_percentage",
                 ],
-                ["team_id", "season_id"],
+                ["team_id", "season_id", "game_type"],
                 teams_stats_rows,
             )
             self.execute_upsert(
@@ -1714,8 +1725,9 @@ class ModernNhlLoader:
                     "shootout_pct",
                     "player_id",
                     "season_id",
+                    "game_type",
                 ],
-                ["player_id", "season_id"],
+                ["player_id", "season_id", "game_type"],
                 skater_rows,
             )
             self.execute_upsert(
@@ -1724,6 +1736,7 @@ class ModernNhlLoader:
                 [
                     "player_id",
                     "season_id",
+                    "game_type",
                     "sat_pct",
                     "usat_pct",
                     "goals_pct",
@@ -1739,7 +1752,7 @@ class ModernNhlLoader:
                     "sh_goals_for",
                     "sh_goals_against",
                 ],
-                ["player_id", "season_id"],
+                ["player_id", "season_id", "game_type"],
                 advanced_rows,
             )
             self.execute_upsert(
@@ -1748,6 +1761,7 @@ class ModernNhlLoader:
                 [
                     "player_id",
                     "season_id",
+                    "game_type",
                     "goals_wrist",
                     "shots_wrist",
                     "goals_slap",
@@ -1763,7 +1777,7 @@ class ModernNhlLoader:
                     "goals_wrap_around",
                     "shots_wrap_around",
                 ],
-                ["player_id", "season_id"],
+                ["player_id", "season_id", "game_type"],
                 shot_type_rows,
             )
             self.execute_upsert(
@@ -1795,8 +1809,9 @@ class ModernNhlLoader:
                     "even_strength_save_percentage",
                     "player_id",
                     "season_id",
+                    "game_type",
                 ],
-                ["player_id", "season_id"],
+                ["player_id", "season_id", "game_type"],
                 goalie_rows,
             )
             self.execute_insert(

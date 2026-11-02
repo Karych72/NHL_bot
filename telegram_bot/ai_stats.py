@@ -77,13 +77,15 @@ _OVERVIEW_PLAYERS_SQL = (
     "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
     "WHERE r.season_id = %s AND (%s IS NULL OR r.player_id = %s) ORDER BY r.name"
 )
+# Сезонные строки обзора — регулярка (Задача 103): строка плей-офф того же сезона иначе встала бы
+# второй «текущей» и сдвинула прошлый сезон из пары.
 _OVERVIEW_SKATER_SEASONS_SQL = (
     "SELECT season_id, games, goals, assists, points, power_play_points, game_winning_goals, "
     "shots, shot_pct, plus_minus, time_on_ice_per_game, "
     "round(points::numeric / NULLIF(games, 0), 2) AS points_per_game, "
     "round(shots::numeric / NULLIF(games, 0), 2) AS shots_per_game "
     "FROM players_season_stats WHERE player_id = %s AND season_id IN (%s, %s) "
-    "ORDER BY season_id DESC"
+    "AND game_type = 2 ORDER BY season_id DESC"
 )
 # Лог игр обзора — только регулярка (Задача 102): его сверяют с `games` сезонной строки, а серию
 # очков и «последние 10» не должен рвать или подменять плей-офф.
@@ -96,7 +98,7 @@ _OVERVIEW_SKATER_GAMES_SQL = (
 _OVERVIEW_GOALIE_SEASONS_SQL = (
     "SELECT season_id, games, games_started, wins, losses, ot, save_percentage, "
     "goal_against_average, shutouts, saves, shots_against FROM goalies_season_stats "
-    "WHERE player_id = %s AND season_id IN (%s, %s) ORDER BY season_id DESC"
+    "WHERE player_id = %s AND season_id IN (%s, %s) AND game_type = 2 ORDER BY season_id DESC"
 )
 _OVERVIEW_GOALIE_GAMES_SQL = (
     "SELECT g.day::text AS day, ggs.shots AS shots_against, ggs.saves, "

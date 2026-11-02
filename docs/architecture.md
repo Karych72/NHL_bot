@@ -80,7 +80,9 @@ NHL_bot/
 │       ├── 0020_bot_schedules.up.sql     # Расписания экранов bot_schedules; bot_actions: schedule_sent / schedule_deleted (Задача 107)
 │       ├── 0020_bot_schedules.down.sql
 │       ├── 0021_schedule_created.up.sql  # bot_actions: schedule_created — расписание с карточки (Задача 108)
-│       └── 0021_schedule_created.down.sql
+│       ├── 0021_schedule_created.down.sql
+│       ├── 0022_aggregates_game_type.up.sql  # game_type в PK пяти сезонных агрегатов, бэкфилл 2 (Задача 103)
+│       └── 0022_aggregates_game_type.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -306,7 +308,10 @@ NHL Stats API                          NHL Web API
 
 ### Стратегия загрузки
 
-- **Сезонные таблицы:** UPSERT по PK `(team_id, season_id)` или `(player_id, season_id)`.
+- **Сезонные таблицы:** UPSERT по PK — у `teams` и `rosters` `(team_id | player_id, season_id)`,
+  у пяти агрегатов (`teams_stats`, `players_*`, `goalies_season_stats`) ещё и `game_type`
+  (2 регулярка, 3 плей-офф; миграция 0022, Задача 103). Экраны бота и обзор ИИ читают
+  агрегаты с фильтром `game_type = 2`.
 - **Per-game таблицы (`games`, `all_goals`, `shot_attempts`, `game_*_stats`):** `DELETE … WHERE game_id = ANY(window) → INSERT`. Идемпотентно при повторных запусках на пересекающихся окнах.
 - **Пагинация:** API с ответами `{data, total}` выгружаются постранично (`fetch_paginated`, запрошенный размер страницы 200–1000). API сам режет страницу ниже `limit` (100 строк у отчётов полевых, 1000 у `game`), а без явного `sort` порядок записей между страницами плавает. Поэтому выгрузка всегда идёт с сортировкой по уникальному ключу (`playerId` / `teamId` / `id`, Задача 62).
 - **Retry-логика:** до 10 попыток, экспоненциальный backoff, обработка HTTP 429 (Rate Limit) через заголовок `Retry-After`.
@@ -710,6 +715,7 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | Колонка | Тип | Описание |
 |---|---|---|
 | `team_id` | int | FK → teams (team_id, season_id) |
+| `game_type` | smallint | 2 — регулярка, 3 — плей-офф; PK `(team_id, season_id, game_type)` |
 | `games_played` | int | Сыгранные матчи |
 | `wins`, `losses`, `ot` | int | Победы, поражения, OT-поражения |
 | `points` | int | Очки |
@@ -745,13 +751,15 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 #### `players_season_stats` — Сезонная статистика полевых игроков
 
 28 колонок, основные: `player_id`, `goals`, `assists`, `points`, `pim`, `shots`, `games`, `hits`, `blocked`, `plus_minus`, `time_on_ice_per_game`, `power_play_goals`, `power_play_points`, `face_off_pct`, `shot_pct`, `game_winning_goals`.
-FK `(player_id, season_id) → rosters`; индекс `idx_players_season_stats_season (season_id)` под лидерборды.
-То же самое (FK на rosters + индекс на season_id) — у `players_advanced_stats` и `players_shot_types`.
+PK `(player_id, season_id, game_type)` — `game_type` 2 регулярка, 3 плей-офф (Задача 103);
+FK `(player_id, season_id) → rosters`; индекс `idx_players_season_stats_season (season_id, game_type)` под лидерборды.
+То же самое (PK с `game_type`, FK на rosters, индекс) — у `players_advanced_stats` и `players_shot_types`.
 
 #### `goalies_season_stats` — Сезонная статистика вратарей
 
 24 колонки, основные: `player_id`, `wins`, `losses`, `shutouts`, `save_percentage`, `goal_against_average`, `games`, `saves`, `shots_against`, `goals_against`.
-FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_season (season_id)` под лидерборды вратарей.
+PK `(player_id, season_id, game_type)`, как у полевых; FK `(player_id, season_id) → rosters`;
+индекс `idx_goalies_season_stats_season (season_id, game_type)` под лидерборды вратарей.
 
 #### `games` — Матчи
 

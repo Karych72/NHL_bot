@@ -103,14 +103,15 @@ def _pss_join_sql(table_name: str) -> sql.Composable:
         # числу матчей (1 игра сыграна → порог 1).
         return sql.SQL(
             "INNER JOIN players_season_stats pss ON pl.player_id = pss.player_id "
-            "AND pss.season_id = pl.season_id AND pss.games >= LEAST(20, ("
+            "AND pss.season_id = pl.season_id AND pss.game_type = pl.game_type "
+            "AND pss.games >= LEAST(20, ("
             "SELECT CEIL(MAX(ts.games_played) / 2.0) FROM teams_stats ts "
-            "WHERE ts.season_id = pl.season_id)) "
+            "WHERE ts.season_id = pl.season_id AND ts.game_type = pl.game_type)) "
         )
     if table_name == "players_shot_types":
         return sql.SQL(
             "LEFT JOIN players_season_stats pss ON pl.player_id = pss.player_id "
-            "AND pss.season_id = pl.season_id "
+            "AND pss.season_id = pl.season_id AND pss.game_type = pl.game_type "
         )
     return sql.SQL("")
 
@@ -1046,7 +1047,8 @@ def matchup_season_preview(away_abbr: str, home_abbr: str) -> Tuple[str, str]:
         "ts.shots_per_game, ts.face_off_win_percentage "
         "FROM teams_stats ts "
         "INNER JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s AND upper(trim(COALESCE(t.abbreviation, ''))) = ANY(%s)",
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
+        "AND upper(trim(COALESCE(t.abbreviation, ''))) = ANY(%s)",
         (config.SEASON_ID, [a, h]),
         columns=[
             "abbr",
@@ -1175,7 +1177,7 @@ def player_stats_with_count(
         "{join_pss}"
         "LEFT JOIN rosters r ON pl.player_id = r.player_id AND r.season_id = pl.season_id "
         "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = pl.season_id "
-        "WHERE pl.season_id = %s "
+        "WHERE pl.season_id = %s AND pl.game_type = 2 "
         # NULLS LAST keeps unranked players (no value reported) at the bottom of
         # leaderboards instead of at the top under DESC's default NULLS FIRST.
         "ORDER BY {order_col} DESC NULLS LAST, {second_col} DESC NULLS LAST "
@@ -1439,7 +1441,7 @@ def team_table() -> str:
         "       losses, ot, t.division_name, t.conference_name "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
         "ORDER BY conference_name, division_name, points DESC",
         (config.SEASON_ID,),
         columns=['name', 'games_played', 'points', 'procent_points',
@@ -1591,7 +1593,7 @@ def _team_skaters(team_id: int, order_by: str, limit: int) -> Dict:
         "pss.plus_minus, pss.time_on_ice_per_game "
         "FROM rosters r "
         "JOIN players_season_stats pss "
-        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id "
+        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id AND pss.game_type = 2 "
         f"WHERE r.current_team_id = %s AND r.season_id = %s ORDER BY {order_by} LIMIT %s",
         (team_id, config.SEASON_ID, limit),
         columns=_TEAM_SKATER_COLUMNS,
@@ -1612,7 +1614,7 @@ def _team_goalies_table(team_id: int) -> str:
         "gs.save_percentage, gs.goal_against_average "
         "FROM rosters r "
         "JOIN goalies_season_stats gs "
-        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id "
+        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id AND gs.game_type = 2 "
         "WHERE r.current_team_id = %s AND r.season_id = %s AND gs.games > 0 "
         "ORDER BY gs.games DESC, gs.wins DESC",
         (team_id, config.SEASON_ID),
@@ -1702,7 +1704,7 @@ def _team_season_context(a: str, ranked: bool) -> Union[str, Tuple[int, Dict[str
         "ts.power_play_goals_against "
         "FROM teams_stats ts "
         "JOIN teams t ON t.team_id = ts.team_id AND t.season_id = ts.season_id "
-        "WHERE ts.season_id = %s",
+        "WHERE ts.season_id = %s AND ts.game_type = 2",
         (config.SEASON_ID,),
         columns=_TEAM_PROFILE_STATS_COLUMNS,
     )
@@ -1950,9 +1952,12 @@ COUNTRY_LABELS: Dict[str, str] = {
 # попадает: у 1–2 игроков «сумма очков страны» — это просто их личная статистика.
 COUNTRY_MIN_PLAYERS = 3
 COUNTRY_NOT_FOUND = "Страна не найдена в рейтинге этого сезона."
+# Условие на `p` (регулярка, Задача 103) стоит здесь, а не в WHERE: так его получают все три
+# запроса стран — рейтинг, счётчик без страны и `_GROUP_SKATERS_SQL`.
 _COUNTRY_FROM = (
     "FROM players_season_stats p "
     "JOIN rosters r ON p.player_id = r.player_id AND p.season_id = r.season_id "
+    "AND p.game_type = 2 "
 )
 
 
@@ -2067,7 +2072,7 @@ _GROUP_GOALIES_SQL = (
     "FROM goalies_season_stats g "
     "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
     "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
-    "WHERE g.season_id = %s AND {owner} AND g.games > 0 "
+    "WHERE g.season_id = %s AND g.game_type = 2 AND {owner} AND g.games > 0 "
     "ORDER BY g.wins DESC NULLS LAST, r.lastname, r.player_id "
     "LIMIT %s OFFSET %s"
 )
@@ -2323,7 +2328,7 @@ def team_stats_with_count(
         "COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
         "ORDER BY {sort} DESC NULLS LAST, t.abbreviation "
         "LIMIT %s OFFSET %s"
     ).format(cols=sql.SQL(", ").join(ids), sort=sort)
