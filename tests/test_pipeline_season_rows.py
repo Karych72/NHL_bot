@@ -1,6 +1,6 @@
 """Season-scoped row assembly in ``pipeline/load_season_modern.py``.
 
-Feeds ``build_teams_and_stats`` / ``build_rosters`` /
+Feeds ``build_teams`` / ``build_teams_stats`` / ``build_rosters`` /
 ``supplement_rosters_from_reports`` / ``build_player_season_stats`` /
 ``build_goalie_season_stats`` / ``build_player_advanced_stats`` /
 ``build_player_shot_types`` the trimmed real API payloads from
@@ -34,6 +34,7 @@ from tests._pipeline_fixtures import (
     by_player,
     field,
     load_fixture,
+    loader,
     make_loader,
     stub_api,
     without,
@@ -44,6 +45,18 @@ TEAM_SUMMARY = "stats/rest/en/team/summary"
 STANDINGS = "standings/now"
 ROSTER = "/v1/roster/"
 LANDING = "/landing"
+TKACHUK = 8480801  # OTT; only in the playoff fixtures (``nhl_playoff_*.json``)
+
+
+def regular_teams_and_stats(instance):
+    """``teams`` and regular-season ``teams_stats`` rows, as ``build_season_reference_rows`` makes them."""
+    summary = instance.fetch_team_summary(loader.REGULAR_SEASON)
+    return instance.build_teams(summary), instance.build_teams_stats(summary, loader.REGULAR_SEASON)
+
+
+def playoff_route(report: str) -> str:
+    """URL fragment that routes only the ``gameTypeId=3`` request of *report* (``loader.report_url``)."""
+    return f"{report}?cayenneExp=gameTypeId=3"
 
 # Every source key the build_* methods read for a nullable column, per report.
 # Dropping them models a payload that still lists the entity but carries none of
@@ -133,7 +146,7 @@ class TeamRowsTest(LoaderApiTestCase):
         return instance
 
     def test_teams_row_merges_summary_meta_and_standings(self):
-        teams_rows, _ = self._loader().build_teams_and_stats()
+        teams_rows, _ = regular_teams_and_stats(self._loader())
         wsh = next(r for r in teams_rows if field(r, "teams", "team_id") == WSH)
 
         self.assertEqual(field(wsh, "teams", "season_id"), SEASON_ID)
@@ -150,7 +163,7 @@ class TeamRowsTest(LoaderApiTestCase):
         self.assertIsNone(field(wsh, "teams", "first_year_of_play"))
 
     def test_teams_stats_row_scales_ratios_and_nulls_absent_columns(self):
-        _, stats_rows = self._loader().build_teams_and_stats()
+        _, stats_rows = regular_teams_and_stats(self._loader())
         wsh = next(r for r in stats_rows if field(r, "teams_stats", "team_id") == WSH)
 
         self.assertEqual(field(wsh, "teams_stats", "game_type"), 2)
@@ -177,12 +190,14 @@ class TeamRowsTest(LoaderApiTestCase):
         summary = load_fixture("nhl_team_summary.json")
         wsh_row = next(r for r in summary if r["teamId"] == WSH)
         ott_row = next(r for r in summary if r["teamId"] == OTT)
-        _, stats_rows = self._loader(
-            [
-                dict(wsh_row, wins=0, faceoffWinPct=0.0),  # the API really sent 0
-                without(ott_row, *TEAM_SUMMARY_STAT_KEYS),  # the API sent nothing
-            ]
-        ).build_teams_and_stats()
+        _, stats_rows = regular_teams_and_stats(
+            self._loader(
+                [
+                    dict(wsh_row, wins=0, faceoffWinPct=0.0),  # the API really sent 0
+                    without(ott_row, *TEAM_SUMMARY_STAT_KEYS),  # the API sent nothing
+                ]
+            )
+        )
         by_team = {field(r, "teams_stats", "team_id"): r for r in stats_rows}
 
         self.assertEqual(field(by_team[WSH], "teams_stats", "wins"), 0)
@@ -215,7 +230,7 @@ class RosterRowsTest(LoaderApiTestCase):
         return instance
 
     def _teams_and_wsh_roster(self, instance):
-        teams_rows, _ = instance.build_teams_and_stats()
+        teams_rows, _ = regular_teams_and_stats(instance)
         wsh_only = [r for r in teams_rows if field(r, "teams", "team_id") == WSH]
         return teams_rows, instance.build_rosters(wsh_only)
 
@@ -395,7 +410,7 @@ class SkaterSeasonStatsTest(LoaderApiTestCase):
         routes = {frag: load_fixture(name) for frag, name in self.REPORTS.items()}
         routes.update(overrides or {})
         stub_api(instance, paginated_routes=routes)
-        rows, _ = instance.build_player_season_stats()
+        rows, _ = instance.build_player_season_stats(loader.REGULAR_SEASON)
         return by_player(rows, "players_season_stats")
 
     def test_row_joins_every_report_and_keeps_real_zeros(self):
@@ -480,7 +495,7 @@ class GoalieSeasonStatsTest(LoaderApiTestCase):
                 ),
             },
         )
-        rows, _ = instance.build_goalie_season_stats()
+        rows, _ = instance.build_goalie_season_stats(loader.REGULAR_SEASON)
         return by_player(rows, "goalies_season_stats")
 
     def test_row_joins_saves_by_strength_and_derives_percentages(self):
@@ -568,7 +583,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
                 "skater/puckPossessions": puck_possessions,
             },
         )
-        rows = by_player(instance.build_player_advanced_stats(), "players_advanced_stats")
+        rows = by_player(instance.build_player_advanced_stats(loader.REGULAR_SEASON), "players_advanced_stats")
         table = "players_advanced_stats"
         ovi, sourdif = rows[OVECHKIN], rows[SOURDIF]
 
@@ -602,7 +617,7 @@ class AdvancedAndShotTypeRowsTest(LoaderApiTestCase):
             for r in report
         ]
         stub_api(instance, paginated_routes={"skater/shottype": report})
-        rows = by_player(instance.build_player_shot_types(), "players_shot_types")
+        rows = by_player(instance.build_player_shot_types(loader.REGULAR_SEASON), "players_shot_types")
         table = "players_shot_types"
         ovi, sourdif = rows[OVECHKIN], rows[SOURDIF]
 
@@ -652,7 +667,16 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         "goalie/bios": "nhl_goalie_bios.json",
     }
 
-    def _reference_rows(self, overrides=None):
+    @classmethod
+    def _playoff_reports(cls):
+        """Every ``gameTypeId=3`` report routed to its ``nhl_playoff_*.json`` fixture."""
+        reports = dict(cls.REPORTS, **{"team/summary": "nhl_team_summary.json"})
+        return {
+            playoff_route(report): load_fixture(name.replace("nhl_", "nhl_playoff_", 1))
+            for report, name in reports.items()
+        }
+
+    def _reference_rows(self, overrides=None, playoffs=None):
         # McMichael is on neither the trimmed roster response nor any summary
         # report — only the shottype report (mixed in here) and player landing
         # know about him (see MCMICHAEL's docstring in _pipeline_fixtures.py).
@@ -660,7 +684,10 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         mcmichael_shot_row = dict(shottype[0], playerId=MCMICHAEL)
         routes = {frag: load_fixture(name) for frag, name in self.REPORTS.items()}
         routes["skater/shottype"] = shottype + [mcmichael_shot_row]
+        # Before the playoffs start (October–April sync runs) every playoff report is empty.
+        routes.update({route: [] for route in self._playoff_reports()})
         routes.update(overrides or {})
+        routes.update(playoffs or {})
 
         instance = make_loader()
         stub_api(
@@ -732,6 +759,73 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         self.assertEqual(nationality(MCMICHAEL), "CAN")  # added from player landing
         # On the roster but not in bios (left out of the fixture) → unknown, not a guess.
         self.assertIsNone(nationality(SANDIN))
+
+    def test_before_the_playoffs_every_stats_row_is_regular_season(self):
+        """Task 104: the daily sync of a season without playoff games writes regular rows only."""
+        rows = self._reference_rows()
+        for table, table_rows in (
+            ("teams_stats", rows.teams_stats_rows),
+            ("players_season_stats", rows.skater_rows),
+            ("goalies_season_stats", rows.goalie_rows),
+            ("players_advanced_stats", rows.advanced_rows),
+            ("players_shot_types", rows.shot_type_rows),
+        ):
+            with self.subTest(table=table):
+                self.assertTrue(table_rows)
+                self.assertEqual({field(r, table, "game_type") for r in table_rows}, {2})
+
+    def test_playoff_totals_sit_beside_regular_ones_and_teams_stay_regular(self):
+        """Task 104: ``gameTypeId=3`` reports give rows of game type 3 next to the regular ones."""
+        rows = self._reference_rows(playoffs=self._playoff_reports())
+
+        # teams: from the regular season only — the playoff summary (OTT alone) adds no row.
+        self.assertEqual(sorted(field(r, "teams", "team_id") for r in rows.teams_rows), [OTT, WSH])
+        stats = {
+            (field(r, "teams_stats", "team_id"), field(r, "teams_stats", "game_type")): r
+            for r in rows.teams_stats_rows
+        }
+        self.assertEqual(sorted(stats), [(OTT, 2), (OTT, 3), (WSH, 2)])
+        ott_playoffs = stats[(OTT, 3)]
+        self.assertEqual(field(ott_playoffs, "teams_stats", "games_played"), 4)
+        self.assertEqual(field(ott_playoffs, "teams_stats", "losses"), 4)
+        # A playoff loss in overtime is a plain loss: the API sends no otLosses → NULL.
+        self.assertIsNone(field(ott_playoffs, "teams_stats", "ot"))
+
+        def keys(table, table_rows):
+            return {(field(r, table, "player_id"), field(r, table, "game_type")) for r in table_rows}
+
+        self.assertIn((OVECHKIN, 2), keys("players_season_stats", rows.skater_rows))
+        for table, table_rows in (
+            ("players_season_stats", rows.skater_rows),
+            ("players_advanced_stats", rows.advanced_rows),
+            ("players_shot_types", rows.shot_type_rows),
+        ):
+            with self.subTest(table=table):
+                self.assertIn((TKACHUK, 3), keys(table, table_rows))
+        self.assertIn((ULLMARK, 3), keys("goalies_season_stats", rows.goalie_rows))
+
+        tkachuk = next(
+            r for r in rows.skater_rows if field(r, "players_season_stats", "player_id") == TKACHUK
+        )
+        self.assertEqual(field(tkachuk, "players_season_stats", "games"), 4)
+        # No shootouts in the playoffs: zero attempts are real zeros, the percentage is NULL.
+        self.assertEqual(field(tkachuk, "players_season_stats", "shootout_shots"), 0)
+        self.assertIsNone(field(tkachuk, "players_season_stats", "shootout_pct"))
+
+        # A player only in the playoff reports still gets his rosters row (FK of every
+        # stats table), with the club and country of the playoff reports.
+        roster = by_player(rows.roster_rows, "rosters")
+        self.assertEqual(field(roster[TKACHUK], "rosters", "current_team_id"), OTT)
+        self.assertEqual(field(roster[TKACHUK], "rosters", "nationality"), "USA")
+
+    def test_regular_season_bios_country_wins_over_playoff_bios(self):
+        ovechkin_playoff_bios = dict(
+            load_fixture("nhl_skater_bios.json")[0], playerId=OVECHKIN, nationalityCode="SWE"
+        )
+        playoffs = self._playoff_reports()
+        playoffs[playoff_route("skater/bios")] = [ovechkin_playoff_bios]
+        roster = by_player(self._reference_rows(playoffs=playoffs).roster_rows, "rosters")
+        self.assertEqual(field(roster[OVECHKIN], "rosters", "nationality"), "RUS")
 
 
 if __name__ == "__main__":

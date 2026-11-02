@@ -1,0 +1,30 @@
+[
+  {
+    "assists": 0,
+    "evGoals": 0,
+    "evPoints": 0,
+    "faceoffWinPct": 0.575,
+    "gameWinningGoals": 0,
+    "gamesPlayed": 4,
+    "goals": 0,
+    "lastName": "Tkachuk",
+    "otGoals": 0,
+    "penaltyMinutes": 13,
+    "playerId": 8480801,
+    "plusMinus": -4,
+    "points": 0,
+    "pointsPerGame": 0.0,
+    "positionCode": "L",
+    "ppGoals": 0,
+    "ppPoints": 0,
+    "seasonId": 20252026,
+    "shGoals": 0,
+    "shPoints": 0,
+    "shootingPct": 0.0,
+    "shootsCatches": "L",
+    "shots": 11,
+    "skaterFullName": "Brady Tkachuk",
+    "teamAbbrevs": "OTT",
+    "timeOnIcePerGame": 1290.5
+  }
+]

@@ -1,0 +1,520 @@
+{
+  "id": 2025030132,
+  "season": 20252026,
+  "gameType": 3,
+  "limitedScoring": false,
+  "gameDate": "2026-04-20",
+  "venue": {
+    "default": "Lenovo Center"
+  },
+  "venueLocation": {
+    "default": "Raleigh"
+  },
+  "startTimeUTC": "2026-04-20T23:30:00Z",
+  "easternUTCOffset": "-04:00",
+  "venueUTCOffset": "-04:00",
+  "tvBroadcasts": [
+    {
+      "id": 307,
+      "market": "N",
+      "countryCode": "US",
+      "network": "ESPN2",
+      "sequenceNumber": 12
+    },
+    {
+      "id": 282,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "SN",
+      "sequenceNumber": 21
+    },
+    {
+      "id": 4,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "CBC",
+      "sequenceNumber": 101
+    },
+    {
+      "id": 281,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "TVAS",
+      "sequenceNumber": 120
+    },
+    {
+      "id": 561,
+      "market": "H",
+      "countryCode": "US",
+      "network": "FDSNSO",
+      "sequenceNumber": 202
+    }
+  ],
+  "gameState": "OFF",
+  "gameScheduleState": "OK",
+  "periodDescriptor": {
+    "number": 5,
+    "periodType": "OT",
+    "otPeriods": 2,
+    "maxRegulationPeriods": 3
+  },
+  "awayTeam": {
+    "id": 9,
+    "commonName": {
+      "default": "Senators",
+      "fr": "Sénateurs"
+    },
+    "abbrev": "OTT",
+    "score": 2,
+    "sog": 39,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/OTT_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/OTT_dark.svg",
+    "placeName": {
+      "default": "Ottawa"
+    },
+    "placeNameWithPreposition": {
+      "default": "Ottawa",
+      "fr": "d'Ottawa"
+    }
+  },
+  "homeTeam": {
+    "id": 12,
+    "commonName": {
+      "default": "Hurricanes"
+    },
+    "abbrev": "CAR",
+    "score": 3,
+    "sog": 49,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/CAR_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/CAR_dark.svg",
+    "placeName": {
+      "default": "Carolina",
+      "fr": "Caroline"
+    },
+    "placeNameWithPreposition": {
+      "default": "Carolina",
+      "fr": "de la Caroline"
+    }
+  },
+  "shootoutInUse": false,
+  "otInUse": true,
+  "clock": {
+    "timeRemaining": "06:07",
+    "secondsRemaining": 367,
+    "running": false,
+    "inIntermission": false
+  },
+  "displayPeriod": 1,
+  "gameOutcome": {
+    "lastPeriodType": "OT",
+    "otPeriods": 2
+  },
+  "plays": [
+    {
+      "eventId": 53,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:00",
+      "timeRemaining": "20:00",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 502,
+      "typeDescKey": "faceoff",
+      "sortOrder": 11,
+      "details": {
+        "eventOwnerTeamId": 12,
+        "losingPlayerId": 8482116,
+        "winningPlayerId": 8478427,
+        "xCoord": 0,
+        "yCoord": 0,
+        "zoneCode": "N"
+      }
+    },
+    {
+      "eventId": 58,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:04",
+      "timeRemaining": "19:56",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 503,
+      "typeDescKey": "hit",
+      "sortOrder": 12,
+      "details": {
+        "xCoord": 0,
+        "yCoord": 41,
+        "zoneCode": "N",
+        "eventOwnerTeamId": 9,
+        "hittingPlayerId": 8482105,
+        "hitteePlayerId": 8482093
+      }
+    },
+    {
+      "eventId": 84,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:19",
+      "timeRemaining": "19:41",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 525,
+      "typeDescKey": "takeaway",
+      "sortOrder": 13,
+      "details": {
+        "xCoord": -64,
+        "yCoord": -7,
+        "zoneCode": "O",
+        "playerId": 8478427,
+        "eventOwnerTeamId": 12
+      }
+    },
+    {
+      "eventId": 99,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "00:38",
+      "timeRemaining": "19:22",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 504,
+      "typeDescKey": "giveaway",
+      "sortOrder": 16,
+      "details": {
+        "xCoord": -2,
+        "yCoord": 32,
+        "zoneCode": "N",
+        "eventOwnerTeamId": 12,
+        "playerId": 8482093
+      }
+    },
+    {
+      "eventId": 67,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "01:08",
+      "timeRemaining": "18:52",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 502,
+      "typeDescKey": "faceoff",
+      "sortOrder": 30,
+      "details": {
+        "eventOwnerTeamId": 9,
+        "losingPlayerId": 8476873,
+        "winningPlayerId": 8474189,
+        "xCoord": -69,
+        "yCoord": 22,
+        "zoneCode": "D"
+      }
+    },
+    {
+      "eventId": 73,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "01:21",
+      "timeRemaining": "18:39",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 508,
+      "typeDescKey": "blocked-shot",
+      "sortOrder": 35,
+      "details": {
+        "xCoord": 66,
+        "yCoord": 21,
+        "zoneCode": "D",
+        "blockingPlayerId": 8476873,
+        "shootingPlayerId": 8477998,
+        "eventOwnerTeamId": 9,
+        "reason": "blocked"
+      }
+    },
+    {
+      "eventId": 183,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "05:14",
+      "timeRemaining": "14:46",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 509,
+      "typeDescKey": "penalty",
+      "sortOrder": 92,
+      "details": {
+        "xCoord": 13,
+        "yCoord": 15,
+        "zoneCode": "N",
+        "typeCode": "MIN",
+        "descKey": "roughing",
+        "duration": 2,
+        "committedByPlayerId": 8480801,
+        "drawnByPlayerId": 8478427,
+        "eventOwnerTeamId": 9
+      }
+    },
+    {
+      "eventId": 193,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "06:31",
+      "timeRemaining": "13:29",
+      "situationCode": "1451",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 103,
+      "details": {
+        "xCoord": -80,
+        "yCoord": 5,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8482702,
+        "scoringPlayerTotal": 2,
+        "assist1PlayerId": 8475791,
+        "assist1PlayerTotal": 2,
+        "assist2PlayerId": 8482809,
+        "assist2PlayerTotal": 3,
+        "eventOwnerTeamId": 12,
+        "goalieInNetId": 8476999,
+        "awayScore": 0,
+        "homeScore": 1,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-car-stankoven-scores-ppg-against-linus-ullmark-6393515035112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-car-stankoven-marque-un-but-en-a-n-contre-linus-ullmark-6393513776112",
+        "highlightClip": 6393515035112,
+        "highlightClipFr": 6393513776112,
+        "discreteClip": 6393513501112,
+        "discreteClipFr": 6393514936112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025030132/ev193.json"
+    },
+    {
+      "eventId": 293,
+      "periodDescriptor": {
+        "number": 1,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "08:49",
+      "timeRemaining": "11:11",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 509,
+      "typeDescKey": "penalty",
+      "sortOrder": 144,
+      "details": {
+        "xCoord": 84,
+        "yCoord": 5,
+        "zoneCode": "D",
+        "typeCode": "MIN",
+        "descKey": "roughing",
+        "duration": 2,
+        "committedByPlayerId": 8480830,
+        "drawnByPlayerId": 8480208,
+        "eventOwnerTeamId": 12
+      }
+    },
+    {
+      "eventId": 732,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "07:50",
+      "timeRemaining": "12:10",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 421,
+      "details": {
+        "xCoord": 73,
+        "yCoord": 4,
+        "zoneCode": "O",
+        "shotType": "tip-in",
+        "scoringPlayerId": 8478427,
+        "scoringPlayerTotal": 1,
+        "assist1PlayerId": 8473533,
+        "assist1PlayerTotal": 1,
+        "eventOwnerTeamId": 12,
+        "goalieInNetId": 8476999,
+        "awayScore": 0,
+        "homeScore": 2,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-car-aho-scores-goal-against-linus-ullmark-6393517773112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-car-aho-marque-un-but-contre-linus-ullmark-6393516017112",
+        "highlightClip": 6393517773112,
+        "highlightClipFr": 6393516017112,
+        "discreteClip": 6393517070112,
+        "discreteClipFr": 6393517565112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025030132/ev732.json"
+    },
+    {
+      "eventId": 769,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "10:47",
+      "timeRemaining": "09:13",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 459,
+      "details": {
+        "xCoord": -83,
+        "yCoord": -11,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8480208,
+        "scoringPlayerTotal": 1,
+        "assist1PlayerId": 8482105,
+        "assist1PlayerTotal": 1,
+        "eventOwnerTeamId": 9,
+        "goalieInNetId": 8475883,
+        "awayScore": 1,
+        "homeScore": 2,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-car-batherson-scores-goal-against-frederik-andersen-6393516422112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-car-batherson-marque-un-but-contre-frederik-andersen-6393516421112",
+        "highlightClip": 6393516422112,
+        "highlightClipFr": 6393516421112,
+        "discreteClip": 6393516526112,
+        "discreteClipFr": 6393518082112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025030132/ev769.json"
+    },
+    {
+      "eventId": 853,
+      "periodDescriptor": {
+        "number": 2,
+        "periodType": "REG",
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "16:40",
+      "timeRemaining": "03:20",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "left",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 536,
+      "details": {
+        "xCoord": -79,
+        "yCoord": 28,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8481528,
+        "scoringPlayerTotal": 1,
+        "assist1PlayerId": 8482092,
+        "assist1PlayerTotal": 1,
+        "assist2PlayerId": 8482105,
+        "assist2PlayerTotal": 2,
+        "eventOwnerTeamId": 9,
+        "goalieInNetId": 8475883,
+        "awayScore": 2,
+        "homeScore": 2,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-car-cozens-scores-goal-against-frederik-andersen-6393518024112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-car-cozens-marque-un-but-contre-frederik-andersen-6393517633112",
+        "highlightClip": 6393518024112,
+        "highlightClipFr": 6393517633112,
+        "discreteClip": 6393519086112,
+        "discreteClipFr": 6393517824112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025030132/ev853.json"
+    },
+    {
+      "eventId": 213,
+      "periodDescriptor": {
+        "number": 5,
+        "periodType": "OT",
+        "otPeriods": 2,
+        "maxRegulationPeriods": 3
+      },
+      "timeInPeriod": "13:53",
+      "timeRemaining": "06:07",
+      "situationCode": "1551",
+      "homeTeamDefendingSide": "right",
+      "typeCode": 505,
+      "typeDescKey": "goal",
+      "sortOrder": 1449,
+      "details": {
+        "xCoord": -64,
+        "yCoord": 0,
+        "zoneCode": "O",
+        "shotType": "snap",
+        "scoringPlayerId": 8476921,
+        "scoringPlayerTotal": 1,
+        "assist1PlayerId": 8477940,
+        "assist1PlayerTotal": 1,
+        "assist2PlayerId": 8480817,
+        "assist2PlayerTotal": 1,
+        "eventOwnerTeamId": 12,
+        "goalieInNetId": 8476999,
+        "awayScore": 2,
+        "homeScore": 3,
+        "highlightClipSharingUrl": "https://nhl.com/video/ott-car-martinook-scores-goal-against-linus-ullmark-6393527879112",
+        "highlightClipSharingUrlFr": "https://nhl.com/fr/video/ott-car-martinook-marque-un-but-contre-linus-ullmark-6393526706112",
+        "highlightClip": 6393527879112,
+        "highlightClipFr": 6393526706112,
+        "discreteClip": 6393526526112,
+        "discreteClipFr": 6393526800112
+      },
+      "pptReplayUrl": "https://wsr.nhle.com/sprites/20252026/2025030132/ev213.json"
+    }
+  ],
+  "rosterSpots": [
+    {
+      "teamId": 9,
+      "playerId": 8473503,
+      "firstName": {
+        "default": "James"
+      },
+      "lastName": {
+        "default": "Reimer"
+      },
+      "sweaterNumber": 47,
+      "positionCode": "G",
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/OTT/8473503.png"
+    },
+    {
+      "teamId": 9,
+      "playerId": 8473512,
+      "firstName": {
+        "default": "Claude"
+      },
+      "lastName": {
+        "default": "Giroux"
+      },
+      "sweaterNumber": 28,
+      "positionCode": "R",
+      "headshot": "https://assets.nhle.com/mugs/nhl/20252026/OTT/8473512.png"
+    }
+  ],
+  "regPeriods": 3,
+  "summary": {}
+}

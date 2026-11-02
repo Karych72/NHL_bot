@@ -15,8 +15,11 @@ the paginated response — i.e. what ``ModernNhlLoader.fetch_paginated`` returns
 fixtures for ``https://api-web.nhle.com/*`` hold the whole JSON object — what
 ``ModernNhlLoader.get_json`` returns.
 
+Playoff fixtures (``nhl_playoff_*.json``, Task 104) are the same reports with
+``gameTypeId=3`` for one OTT skater and goalie, plus a double-overtime playoff game.
+
 Run (needs network): ``.venv/bin/python scripts/capture_nhl_fixtures.py``.
-Last capture: 2026-08-13, season 20252026 (finished).
+Last capture: 2026-08-13, season 20252026 (finished); playoff fixtures — 2026-11-02.
 """
 
 from __future__ import annotations
@@ -67,6 +70,15 @@ PLAYS_PER_TYPE = {
     "takeaway": 1,
 }
 
+REGULAR_SEASON, PLAYOFFS = 2, 3
+# CAR 3 : 2 OTT on 2026-04-20, first round — won in the second overtime (period 5).
+PLAYOFF_GAME_ID = 2025030132
+# B. Tkachuk (OTT; in no regular-season fixture — a "playoff-only" player for the
+# tests) and Ullmark, OTT's playoff goalie; WSH missed the playoffs.
+PLAYOFF_SKATER_IDS = (8480801,)
+PLAYOFF_GOALIE_ID = 8476999
+PLAYOFF_BOXSCORE_PLAYER_IDS = (8480801, 8476999, 8475883)  # + Andersen (CAR goalie)
+
 
 def write_fixture(name: str, payload: Any, source_url: str) -> None:
     """Store *payload* as ``tests/fixtures/<name>`` and echo its source URL."""
@@ -75,9 +87,9 @@ def write_fixture(name: str, payload: Any, source_url: str) -> None:
     print(f"{name:<40} <- {source_url}")
 
 
-def season_report_url(path: str, *filters: str) -> str:
-    """Stats API URL for a season report, e.g. ``skater/summary``, with filters."""
-    expr = "%20and%20".join((f"seasonId={SEASON_ID}", "gameTypeId=2", *filters))
+def season_report_url(path: str, game_type: int, *filters: str) -> str:
+    """Stats API URL for a season report, e.g. ``skater/summary``, of *game_type*, with filters."""
+    expr = "%20and%20".join((f"seasonId={SEASON_ID}", f"gameTypeId={game_type}", *filters))
     return f"{STATS_API}{path}?cayenneExp={expr}"
 
 
@@ -103,53 +115,91 @@ def capture_report(loader: ModernNhlLoader, name: str, url: str, sort_key: str) 
     write_fixture(name, loader.fetch_paginated(url, sort_key, page_size=200), url)
 
 
-def capture_player_report(loader: ModernNhlLoader, name: str, report: str, players: str) -> None:
-    """Capture a season player report (``skater/*``, ``goalie/*``) filtered to *players*."""
-    capture_report(loader, name, season_report_url(report, players), "playerId")
+def capture_player_report(
+    loader: ModernNhlLoader, name: str, report: str, game_type: int, players: str
+) -> None:
+    """Capture a season player report (``skater/*``, ``goalie/*``) of *game_type* filtered to *players*."""
+    capture_report(loader, name, season_report_url(report, game_type, players), "playerId")
 
 
-def capture_stats_reports(loader: ModernNhlLoader) -> None:
-    skaters = any_of("playerId", SKATER_IDS)
-    goalie = any_of("playerId", [GOALIE_ID])
-    teams = any_of("teamId", (HOME_TEAM_ID, AWAY_TEAM_ID))
+def capture_stats_reports(
+    loader: ModernNhlLoader,
+    game_type: int,
+    prefix: str,
+    skater_ids: Iterable[int],
+    bios_ids: Iterable[int],
+    goalie_id: int,
+    team_ids: Iterable[int],
+) -> None:
+    """Capture the season reports of *game_type* into ``<prefix>*.json`` fixtures."""
+    skaters = any_of("playerId", skater_ids)
+    goalie = any_of("playerId", [goalie_id])
+    teams = any_of("teamId", team_ids)
 
     capture_report(
         loader,
-        "nhl_team_reference.json",
-        f"{STATS_API}team?cayenneExp={any_of('id', (HOME_TEAM_ID, AWAY_TEAM_ID))}",
-        "id",
-    )
-    capture_report(
-        loader, "nhl_team_summary.json", season_report_url("team/summary", teams), "teamId"
-    )
-    capture_report(
-        loader, "nhl_games_meta.json", f"{STATS_API}game?cayenneExp=id={GAME_ID}", "id"
+        f"{prefix}team_summary.json",
+        season_report_url("team/summary", game_type, teams),
+        "teamId",
     )
     for name, report in (
-        ("nhl_skater_summary.json", "skater/summary"),
-        ("nhl_skater_timeonice.json", "skater/timeonice"),
-        ("nhl_skater_faceoff_percentages.json", "skater/faceoffpercentages"),
-        ("nhl_skater_shootout.json", "skater/shootout"),
-        ("nhl_skater_realtime.json", "skater/realtime"),
-        ("nhl_skater_goals_for_against.json", "skater/goalsForAgainst"),
-        ("nhl_skater_puck_possessions.json", "skater/puckPossessions"),
-        ("nhl_skater_shottype.json", "skater/shottype"),
+        ("skater_summary.json", "skater/summary"),
+        ("skater_timeonice.json", "skater/timeonice"),
+        ("skater_faceoff_percentages.json", "skater/faceoffpercentages"),
+        ("skater_shootout.json", "skater/shootout"),
+        ("skater_realtime.json", "skater/realtime"),
+        ("skater_goals_for_against.json", "skater/goalsForAgainst"),
+        ("skater_puck_possessions.json", "skater/puckPossessions"),
+        ("skater_shottype.json", "skater/shottype"),
     ):
-        capture_player_report(loader, name, report, skaters)
-    # The bios fixture takes SKATER_IDS plus the landing player; Sandin (roster
-    # defenceman) is not among them and models a player bios doesn't know yet → NULL.
+        capture_player_report(loader, prefix + name, report, game_type, skaters)
     capture_player_report(
-        loader,
-        "nhl_skater_bios.json",
-        "skater/bios",
-        any_of("playerId", (*SKATER_IDS, LANDING_PLAYER_ID)),
+        loader, f"{prefix}skater_bios.json", "skater/bios", game_type, any_of("playerId", bios_ids)
     )
     for name, report in (
-        ("nhl_goalie_summary.json", "goalie/summary"),
-        ("nhl_goalie_bios.json", "goalie/bios"),
-        ("nhl_goalie_saves_by_strength.json", "goalie/savesByStrength"),
+        ("goalie_summary.json", "goalie/summary"),
+        ("goalie_bios.json", "goalie/bios"),
+        ("goalie_saves_by_strength.json", "goalie/savesByStrength"),
     ):
-        capture_player_report(loader, name, report, goalie)
+        capture_player_report(loader, prefix + name, report, game_type, goalie)
+
+
+def capture_game(
+    loader: ModernNhlLoader, game_id: int, prefix: str, boxscore_player_ids: Iterable[int]
+) -> None:
+    """Capture one finished game: its Stats REST record and the trimmed gamecenter payloads."""
+    capture_report(
+        loader, f"{prefix}games_meta.json", f"{STATS_API}game?cayenneExp=id={game_id}", "id"
+    )
+
+    pbp_url = f"{WEB_API}gamecenter/{game_id}/play-by-play"
+    pbp = loader.get_json(pbp_url)
+    kept_plays = []
+    for type_key, limit in PLAYS_PER_TYPE.items():
+        kept_plays.extend([p for p in pbp["plays"] if p.get("typeDescKey") == type_key][:limit])
+    kept_plays.sort(key=lambda p: p["sortOrder"])
+    pbp["plays"] = kept_plays
+    pbp["rosterSpots"] = pbp["rosterSpots"][:2]
+    write_fixture(f"{prefix}game_play_by_play.json", pbp, pbp_url)
+
+    box_url = f"{WEB_API}gamecenter/{game_id}/boxscore"
+    box = loader.get_json(box_url)
+    for side in ("homeTeam", "awayTeam"):
+        box["playerByGameStats"][side] = {
+            group: [p for p in players if p.get("playerId") in boxscore_player_ids]
+            for group, players in box["playerByGameStats"][side].items()
+        }
+    write_fixture(f"{prefix}game_boxscore.json", box, box_url)
+
+    landing_url = f"{WEB_API}gamecenter/{game_id}/landing"
+    landing = loader.get_json(landing_url)
+    landing.pop("tvBroadcasts", None)  # not read by the loader
+    landing["summary"] = {
+        # Only threeStars is read by the loader; scoring/penalties duplicate
+        # what play-by-play already covers, at far higher volume.
+        k: v for k, v in landing["summary"].items() if k == "threeStars"
+    }
+    write_fixture(f"{prefix}game_landing.json", landing, landing_url)
 
 
 def capture_web_payloads(loader: ModernNhlLoader) -> None:
@@ -178,41 +228,44 @@ def capture_web_payloads(loader: ModernNhlLoader) -> None:
     # reads; one record each is enough to keep the response shape.
     write_fixture("nhl_player_landing.json", trim_lists(loader.get_json(landing_url), keep=1), landing_url)
 
-    pbp_url = f"{WEB_API}gamecenter/{GAME_ID}/play-by-play"
-    pbp = loader.get_json(pbp_url)
-    kept_plays = []
-    for type_key, limit in PLAYS_PER_TYPE.items():
-        kept_plays.extend([p for p in pbp["plays"] if p.get("typeDescKey") == type_key][:limit])
-    kept_plays.sort(key=lambda p: p["sortOrder"])
-    pbp["plays"] = kept_plays
-    pbp["rosterSpots"] = pbp["rosterSpots"][:2]
-    write_fixture("nhl_game_play_by_play.json", pbp, pbp_url)
 
-    box_url = f"{WEB_API}gamecenter/{GAME_ID}/boxscore"
-    box = loader.get_json(box_url)
-    for side in ("homeTeam", "awayTeam"):
-        box["playerByGameStats"][side] = {
-            group: [p for p in players if p.get("playerId") in BOXSCORE_PLAYER_IDS]
-            for group, players in box["playerByGameStats"][side].items()
-        }
-    write_fixture("nhl_game_boxscore.json", box, box_url)
-
-    landing_url = f"{WEB_API}gamecenter/{GAME_ID}/landing"
-    landing = loader.get_json(landing_url)
-    landing.pop("tvBroadcasts", None)  # not read by the loader
-    landing["summary"] = {
-        # Only threeStars is read by the loader; scoring/penalties duplicate
-        # what play-by-play already covers, at far higher volume.
-        k: v for k, v in landing["summary"].items() if k == "threeStars"
-    }
-    write_fixture("nhl_game_landing.json", landing, landing_url)
+def capture_playoffs(loader: ModernNhlLoader) -> None:
+    """Capture the ``nhl_playoff_*.json`` fixtures: ``gameTypeId=3`` reports and a playoff game."""
+    capture_stats_reports(
+        loader,
+        PLAYOFFS,
+        "nhl_playoff_",
+        PLAYOFF_SKATER_IDS,
+        PLAYOFF_SKATER_IDS,
+        PLAYOFF_GOALIE_ID,
+        [AWAY_TEAM_ID],
+    )
+    capture_game(loader, PLAYOFF_GAME_ID, "nhl_playoff_", PLAYOFF_BOXSCORE_PLAYER_IDS)
 
 
 def main() -> None:
     loader = ModernNhlLoader()
     loader.season_id = SEASON_ID
-    capture_stats_reports(loader)
+    capture_report(
+        loader,
+        "nhl_team_reference.json",
+        f"{STATS_API}team?cayenneExp={any_of('id', (HOME_TEAM_ID, AWAY_TEAM_ID))}",
+        "id",
+    )
+    # The bios fixture takes SKATER_IDS plus the landing player; Sandin (roster
+    # defenceman) is not among them and models a player bios doesn't know yet → NULL.
+    capture_stats_reports(
+        loader,
+        REGULAR_SEASON,
+        "nhl_",
+        SKATER_IDS,
+        (*SKATER_IDS, LANDING_PLAYER_ID),
+        GOALIE_ID,
+        (HOME_TEAM_ID, AWAY_TEAM_ID),
+    )
     capture_web_payloads(loader)
+    capture_game(loader, GAME_ID, "nhl_", BOXSCORE_PLAYER_IDS)
+    capture_playoffs(loader)
 
 
 if __name__ == "__main__":

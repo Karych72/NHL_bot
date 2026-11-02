@@ -1,0 +1,32 @@
+[
+  {
+    "evGoalsAgainst": 7,
+    "evSavePct": 0.931372,
+    "evSaves": 95,
+    "evShotsAgainst": 102,
+    "gamesPlayed": 4,
+    "gamesStarted": 4,
+    "goalieFullName": "Linus Ullmark",
+    "goalsAgainst": 9,
+    "lastName": "Ullmark",
+    "losses": 4,
+    "otLosses": 0,
+    "playerId": 8476999,
+    "ppGoalsAgainst": 2,
+    "ppSavePct": 0.90909,
+    "ppSaves": 20,
+    "ppShotsAgainst": 22,
+    "savePct": 0.93233,
+    "saves": 124,
+    "seasonId": 20252026,
+    "shGoalsAgainst": 0,
+    "shSavePct": 1.0,
+    "shSaves": 9,
+    "shShotsAgainst": 9,
+    "shootsCatches": "L",
+    "shotsAgainst": 133,
+    "teamAbbrevs": "OTT",
+    "ties": null,
+    "wins": 0
+  }
+]
