@@ -150,5 +150,9 @@ def _env_float(name: str, default: float) -> float:
         ) from None
 
 
+# Роль для SQL, который пишет модель в ответах на статистические вопросы (Задача 83): только
+# чтение (миграция 0015); хост, порт и база — те же `PG_*`.
+AI_PG_USER = _env("AI_PG_USER", "nhl_ai_reader")
+
 ENABLE_PUSH_DIGEST = _env_bool("ENABLE_PUSH_DIGEST", False)
 PUSH_SEND_INTERVAL_SEC = _env_float("PUSH_SEND_INTERVAL_SEC", 0.05)

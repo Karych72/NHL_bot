@@ -4,8 +4,9 @@
 фраза `scripts/ai_router_eval.jsonl` уходит модели тем же запросом, что в боте
 (`ai_router.call_model`, без записи в журнал `ai_questions`), и сверяется с ожидаемым
 инструментом и параметрами (проверяются только перечисленные в наборе) или с текстовым
-ответом (`"tool": null`). Текстовые ответы печатаются целиком — их проверяют глазами на
-выдуманные факты; ответы с цифрами помечены. В конце — точность, стоимость вопроса
+ответом (`"tool": null`); `stats_question` — передача ответам по статистике (Задача 83).
+Текстовые ответы печатаются целиком — их
+проверяют глазами на выдуманные факты; ответы с цифрами помечены. В конце — точность, стоимость вопроса
 (средняя и максимальная, из `usage`) и размер префикса (`messages.count_tokens`).
 
 Запуск: `make ai-eval` (нужны `ANTHROPIC_API_KEY` и БД с командами сезона в `.env`).
@@ -32,7 +33,7 @@ MIN_ACCURACY = 0.9
 async def main() -> int:
     cases = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines()]
     params = ai_router.request_params("")
-    prefix = await ai_router._client().messages.count_tokens(**params)
+    prefix = await ai_router.client().messages.count_tokens(**params)
     passed, costs = 0, []
     for case in cases:
         response = await ai_router.call_model(case["q"])

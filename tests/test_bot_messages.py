@@ -24,7 +24,7 @@ import pytest
 
 def _tables(text: str) -> List[List[List[str]]]:
     """Таблицы rich-сообщения в тексте экрана: таблица — строки, строка — тексты ячеек
-    (теги сняты, HTML-сущности раскрыты); строка «линия плей-офф» — одна ячейка."""
+    (теги сняты, HTML-сущности раскрыты); строка пунктира плей-офф — одна ячейка."""
     return [
         [
             [html.unescape(re.sub(r"<[^>]+>", "", cell)) for cell in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row)]
@@ -93,8 +93,10 @@ def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module)
 
     table = bot_messages._table([["#", "К"], ["1.", "A"], ["2.", "B"], ["3.", "C"]], "rl", playoff_line_after=2)
 
-    assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], ["линия плей-офф"], ["3.", "C"]]]
-    assert '<td colspan="2" align="center"><i>линия плей-офф</i></td>' in table
+    line = bot_messages._PLAYOFF_LINE
+    assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], [line], ["3.", "C"]]]
+    assert f'<td colspan="2" align="center">{line}</td>' in table
+    assert set(line) == {"┄"}, "черта — пунктир, без подписи"
 
 
 def test_table_stripes_only_tables_longer_than_ten_rows(bot_module):
@@ -565,13 +567,13 @@ def test_last_n_form_record_rule_84_2_ot_empty_net_goal_counts_as_loss(bot_modul
 def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview(1, "", "NYR")
+        text, footer = bot_messages.matchup_season_preview("", "NYR")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
 
     with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview(1, "?", "?")
+        text, footer = bot_messages.matchup_season_preview("?", "?")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
@@ -581,7 +583,7 @@ def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+        text, footer = bot_messages.matchup_season_preview("AAA", "BBB")
     assert text.startswith("<b>AAA @ BBB</b>\n")
     assert "нет в базе бота" in text
     assert "<b>AAA</b>" not in text and "<b>BBB</b>" not in text, "аббревиатуры в тексте — без <b>"
@@ -592,7 +594,7 @@ def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
     bot_messages = bot_module("bot_messages")
     empty = {"count_rows": 0}
     with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, _footer = bot_messages.matchup_season_preview(1, "<i>AB", "CD&EF")
+        text, _footer = bot_messages.matchup_season_preview("<i>AB", "CD&EF")
     assert "&lt;i&gt;AB" in text
     assert "CD&amp;EF" in text
     assert "<i>AB" not in text
@@ -602,6 +604,7 @@ def _preview_stats_row(home="BBB"):
     """Ответ запроса `teams_stats` для пары AAA @ home (общий для тестов превью)."""
     return {
         "abbr": ["AAA", home],
+        "name": ["Aaa Club", f"{home} Club"],
         "games_played": [10, 10],
         "wins": [7, 3],
         "losses": [3, 7],
@@ -618,11 +621,9 @@ def _preview_stats_row(home="BBB"):
     }
 
 
-def _render_preview(bot_messages, predictions=None, home="BBB", game_id=777):
-    """Превью AAA @ home; `predictions` — строки `game_predictions` {task: p} (None = записей нет).
-
-    Возвращает ((тело, подвал), mock uncached `fetch_all`).
-    """
+def _render_preview(bot_messages, home="BBB"):
+    """Превью AAA @ home: (тело, подвал). Прогноз превью не читает (Задача 96) — некэшированный
+    `fetch_all` (им читается `game_predictions`) падает."""
     stats_row = _preview_stats_row(home)
 
     def fake_cached(query, params=None, columns=None):
@@ -634,38 +635,30 @@ def _render_preview(bot_messages, predictions=None, home="BBB", game_id=777):
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    predictions = predictions or {}
-    pred = {
-        "count_rows": len(predictions),
-        "task": list(predictions),
-        "probability": list(predictions.values()),
-    }
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
-            patch.object(bot_messages, "fetch_all", return_value=pred) as mock_fetch:
-        parts = bot_messages.matchup_season_preview(game_id, "AAA", home)
-    return parts, mock_fetch
+            patch.object(bot_messages, "fetch_all", side_effect=AssertionError("превью читает прогноз")):
+        return bot_messages.matchup_season_preview("AAA", home)
 
 
 def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module):
     bot_messages = bot_module("bot_messages")
-    (text, footer), _ = _render_preview(bot_messages)
+    text, footer = _render_preview(bot_messages)
 
-    # Тело открывает матч без «— сезон …»: сезон ушёл в подвал.
-    assert text.startswith("<b>AAA @ BBB</b>")
+    # Тело открывает матч полными названиями (Задача 98), без «— сезон …»: сезон ушёл в подвал.
+    assert text.startswith("<b>Aaa Club @ BBB Club</b>")
     assert "сезон" not in text.splitlines()[0]
     assert footer.splitlines()[0].startswith("Сезон ")
-    # Одна таблица «метрика · гости · хозяева», аббревиатуры — в шапке колонок,
+    # Одна таблица «метрика · гости · хозяева», названия — в шапке колонок,
     # разница шайб со знаком.
     [table] = _tables(text)
     assert table[:4] == [
-        ["", "AAA", "BBB"],
+        ["", "Aaa Club", "BBB Club"],
         ["Очки", "14", "6"],
         ["% очков", "70%", "30%"],
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
     ]
     assert table[-1] == ["Разница шайб", "+1.5", "-0.9"]
-    # Нет записи в game_predictions -> ни строки оценки, ни заглушки.
-    assert "Оценка модели" not in text + footer
+    assert footer == f"Сезон {bot_messages.config.CURRENT_SEASON}", "строку прогноза добавляет вызывающий"
     assert "н/д" not in text
 
 
@@ -673,7 +666,7 @@ def test_matchup_season_preview_bolds_best_value_per_metric(bot_module):
     """Лучшее значение метрики — `<b>` внутри ячейки; у «Пропущено/игра» лучшее — меньшее;
     равные значения и строки баланса/формы/серии без выделения."""
     bot_messages = bot_module("bot_messages")
-    (text, _footer), _ = _render_preview(bot_messages)
+    text, _footer = _render_preview(bot_messages)
 
     rows = {
         re.sub(r"<[^>]+>", "", cells[0]): cells[1:]
@@ -698,42 +691,63 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    pred = {"count_rows": 0, "task": [], "probability": []}
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
-            patch.object(bot_messages, "fetch_all", return_value=pred):
-        text, _footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached):
+        text, _footer = bot_messages.matchup_season_preview("AAA", "BBB")
 
     [points] = [r for r in re.findall(r"<tr>(.*?)</tr>", text) if ">Очки<" in r]
     assert "<b>" not in points
 
 
-def test_matchup_season_preview_appends_win_and_total_to_footer(bot_module):
-    bot_messages = bot_module("bot_messages")
-    (text, footer), mock_fetch = _render_preview(
-        bot_messages, {"over_5_5": 0.468, "home_win": 0.574}
-    )
+def _with_prediction(bot_messages, predictions, home="BBB"):
+    """`with_model_prediction("Сезон 2026/27", 777, home)` при строках `game_predictions`
+    {task: p}; в `teams` хозяева называются «<home> Club». Возвращает (подвал, mock `fetch_all`)."""
+    rows = {"count_rows": len(predictions), "task": list(predictions),
+            "probability": list(predictions.values())}
+    name = {"count_rows": 1, "name": [f"{home} Club"]}
+    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch, \
+            patch.object(bot_messages, "cached_fetch_all", return_value=name):
+        return bot_messages.with_model_prediction("Сезон 2026/27", 777, home), mock_fetch
 
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа BBB — 57%, тотал больше 5.5 — 47%"
-    assert "Оценка модели" not in text and "🤖" not in footer
+
+def test_with_model_prediction_appends_win_and_total_to_footer(bot_module):
+    bot_messages = bot_module("bot_messages")
+    footer, mock_fetch = _with_prediction(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
+
+    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB Club — 57%, тотал больше 5.5 — 47%"
     # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
     query, params = mock_fetch.call_args.args[:2]
     assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
     assert params == (777,)
 
 
-def test_matchup_season_preview_shows_total_without_win(bot_module):
-    """Гейт победы не пройден — строки home_win нет, тотал выходит один."""
+def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_module):
+    """Код — параметром, в верхнем регистре без пробелов; команды нет в `teams` — LookupError,
+    а не код вместо названия (Задача 98)."""
     bot_messages = bot_module("bot_messages")
-    (_text, footer), _ = _render_preview(bot_messages, {"over_5_5": 0.55})
+    found = {"count_rows": 1, "name": ["Washington Capitals"]}
+    with patch.object(bot_messages, "cached_fetch_all", return_value=found) as mock_fetch:
+        assert bot_messages.team_name_for_abbrev(" wsh ") == "Washington Capitals"
+    assert mock_fetch.call_args.args[1] == (bot_messages.config.SEASON_ID, "WSH")
 
+    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
+            pytest.raises(LookupError, match="ZZZ"):
+        bot_messages.team_name_for_abbrev("ZZZ")
+
+
+def test_with_model_prediction_shows_total_without_win(bot_module):
+    """Гейт победы не пройден — строки home_win нет, тотал выходит один."""
+    footer, _ = _with_prediction(bot_module("bot_messages"), {"over_5_5": 0.55})
     assert footer.splitlines()[-1] == "Оценка модели (не совет): тотал больше 5.5 — 55%"
 
 
-def test_matchup_season_preview_escapes_home_abbrev_in_prediction_line(bot_module):
-    bot_messages = bot_module("bot_messages")
-    (_text, footer), _ = _render_preview(bot_messages, {"home_win": 0.5}, home="B&B")
+def test_with_model_prediction_without_rows_keeps_footer(bot_module):
+    footer, _ = _with_prediction(bot_module("bot_messages"), {})
+    assert footer == "Сезон 2026/27"
 
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B — 50%"
+
+def test_with_model_prediction_escapes_home_name(bot_module):
+    footer, _ = _with_prediction(bot_module("bot_messages"), {"home_win": 0.5}, home="B&B")
+    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B Club — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
@@ -764,9 +778,8 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
             return {"count_rows": 1, "winner_id": [222]}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
-            patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "task": [], "probability": []}):
-        text, _footer = bot_messages.matchup_season_preview(1, "AAA", "BBB")
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
+        text, _footer = bot_messages.matchup_season_preview("AAA", "BBB")
 
     [table] = _tables(text)
     assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
@@ -1606,16 +1619,16 @@ def test_team_list_text_reports_empty_season(bot_module):
 
 
 # ---------------------------------------------------------------------------
-# Wild Card: линия плей-офф после WC2
+# Wild Card: черта плей-офф после WC2
 # ---------------------------------------------------------------------------
 
 def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     bot_module, fake_db_router
 ):
     """Метрополитен из шести команд: топ-3 дивизиона вне гонки, остальные три —
-    WC1, WC2, затем линия плей-офф и третий претендент с обычным номером."""
+    WC1, WC2, затем черта плей-офф и третий претендент с обычным номером."""
     bot_messages = bot_module("bot_messages")
-    # short_name, games_played, points, procent_points, wins, losses, ot,
+    # name, games_played, points, procent_points, wins, losses, ot,
     # division_name, conference_name — очки убывают с номером команды.
     rows = [
         (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(6)
@@ -1630,7 +1643,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
     [table] = _tables(wc)
     assert [row[:2] for row in table] == [
-        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], ["линия плей-офф"], ["3.", "T5"],
+        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], [bot_messages._PLAYOFF_LINE], ["3.", "T5"],
     ]
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
     assert text.startswith("<b>Турнирная таблица NHL</b>\n\n")
@@ -1661,7 +1674,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
         ["1.", "T0", "40", "20", "60.0"],
         ["2.", "T1", "39", "20", "60.0"],
         ["3.", "T2", "38", "20", "60.0"],
-        ["линия плей-офф"],
+        [bot_messages._PLAYOFF_LINE],
         ["4.", "T3", "37", "20", "60.0"],
     ]
     assert len(table) == 1 + 9 + 1, "шапка, девять команд и одна линия"
@@ -1686,7 +1699,7 @@ def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
     query_text, _params = cursor.executed[-1]
     assert (
         "pss.games >= LEAST(20, (SELECT CEIL(MAX(ts.games_played) / 2.0) "
-        "FROM teams_stats ts WHERE ts.season_id = pl.season_id))"
+        "FROM teams_stats ts WHERE ts.season_id = pl.season_id AND ts.game_type = pl.game_type))"
     ) in query_text
 
 

@@ -23,6 +23,7 @@ NHL_bot/
 ├── requirements.txt / requirements-dev.txt / requirements-modeling.txt  # Lock-файлы, генерируются `make lock` (не редактировать)
 │
 ├── data_tables/                        # DDL — схемы всех таблиц PostgreSQL
+│   ├── ai_reader_grants.sql            # GRANT SELECT роли nhl_ai_reader на таблицы данных: миграция 0015 (\ir) и `make db-tables` (Задача 83)
 │   ├── t.all_goals.sql
 │   ├── t.game_goalie_stats.sql
 │   ├── t.game_player_stats.sql
@@ -65,7 +66,23 @@ NHL_bot/
 │       ├── 0013_goal_clips.up.sql       # Кэш клипов голов: file_id Telegram и подпись по голу (Задача 87)
 │       ├── 0013_goal_clips.down.sql
 │       ├── 0014_chat_game_sent.up.sql   # Отметка «итог матча ушёл в чат» по паре (чат, матч) (Задача 85)
-│       └── 0014_chat_game_sent.down.sql
+│       ├── 0014_chat_game_sent.down.sql
+│       ├── 0015_ai_stats.up.sql         # Роль nhl_ai_reader (только чтение) и журнал ai_stats_log (Задача 83)
+│       ├── 0015_ai_stats.down.sql
+│       ├── 0016_premium_access.up.sql   # Премиум чата до даты; удаляет список текущих пользователей 0012 (Задача 96)
+│       ├── 0016_premium_access.down.sql
+│       ├── 0017_bot_actions.up.sql      # Журнал действий bot_actions и история подписок bot_subscription_events (триггер) (Задача 99)
+│       ├── 0017_bot_actions.down.sql
+│       ├── 0018_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
+│       ├── 0018_premium_payments.down.sql
+│       ├── 0019_games_game_type.up.sql   # games.game_type: 2 — регулярка, 3 — плей-офф; бэкфилл 2 (Задача 101)
+│       ├── 0019_games_game_type.down.sql
+│       ├── 0020_bot_schedules.up.sql     # Расписания экранов bot_schedules; bot_actions: schedule_sent / schedule_deleted (Задача 107)
+│       ├── 0020_bot_schedules.down.sql
+│       ├── 0021_schedule_created.up.sql  # bot_actions: schedule_created — расписание с карточки (Задача 108)
+│       ├── 0021_schedule_created.down.sql
+│       ├── 0022_aggregates_game_type.up.sql  # game_type в PK пяти сезонных агрегатов, бэкфилл 2 (Задача 103)
+│       └── 0022_aggregates_game_type.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -101,6 +118,9 @@ NHL_bot/
 ├── scripts/                            # Утилиты вне пайплайна (запускаются вручную)
 │   ├── ai_router_eval.py               # `make ai-eval`: контрольный набор свободного текста против Claude API (Задача 81)
 │   ├── ai_router_eval.jsonl            # Фразы набора с ожидаемым экраном или текстовым ответом
+│   ├── ai_stats_eval.py                # `make ai-stats-eval`: контрольный набор статистических вопросов против Claude API и БД (Задача 83)
+│   ├── ai_stats_eval.jsonl             # Вопросы с ожидаемыми числами (точечные, обзоры игроков, нет данных, уточнения, цепочки)
+│   ├── bot_users_report.sh             # Отчёт по пользователям обоих ботов: подписки, ИИ, действия, премиум (только чтение)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
 │   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
@@ -118,9 +138,13 @@ NHL_bot/
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99), тикер расписаний (Задача 107)
+│   ├── schedule_repo.py                # Расписания экранов bot_schedules: next_run_at на zoneinfo, создание, выборка к отправке, удаление (Задача 107)
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
-│   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит в сутки, журнал ai_questions (Задача 81)
+│   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
+│   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97)
+│   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
 │   ├── keyboards.py                    # build_menu(), callback_message() — общие помощники кнопок
@@ -284,7 +308,11 @@ NHL Stats API                          NHL Web API
 
 ### Стратегия загрузки
 
-- **Сезонные таблицы:** UPSERT по PK `(team_id, season_id)` или `(player_id, season_id)`.
+- **Сезонные таблицы:** UPSERT по PK — у `teams` и `rosters` `(team_id | player_id, season_id)`,
+  у пяти агрегатов (`teams_stats`, `players_*`, `goalies_season_stats`) ещё и `game_type`
+  (2 регулярка, 3 плей-офф; миграция 0022, Задача 103). Загрузчик пишет оба типа — отчёты
+  `gameTypeId=2` и `3`, игры `gameType in (2,3)`; `teams` — только из регулярки, `scheduled_games`
+  — только регулярка (Задача 104). Экраны бота и обзор ИИ читают агрегаты с фильтром `game_type = 2`.
 - **Per-game таблицы (`games`, `all_goals`, `shot_attempts`, `game_*_stats`):** `DELETE … WHERE game_id = ANY(window) → INSERT`. Идемпотентно при повторных запусках на пересекающихся окнах.
 - **Пагинация:** API с ответами `{data, total}` выгружаются постранично (`fetch_paginated`, запрошенный размер страницы 200–1000). API сам режет страницу ниже `limit` (100 строк у отчётов полевых, 1000 у `game`), а без явного `sort` порядок записей между страницами плавает. Поэтому выгрузка всегда идёт с сортировкой по уникальному ключу (`playerId` / `teamId` / `id`, Задача 62).
 - **Retry-логика:** до 10 попыток, экспоненциальный backoff, обработка HTTP 429 (Rate Limit) через заголовок `Retry-After`.
@@ -334,7 +362,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 следит за свежестью данных, и успешная рассылка не скрывает упавшую ночную загрузку. Повторные
 прогоны одного дня идемпотентны: per-game таблицы — `DELETE` по `game_id` окна и `INSERT` в одной транзакции, сезонные — UPSERT. Расписание, здоровье сервиса,
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
-загрузчика заодно обновляет `scheduled_games` (расписание на сегодня и завтра, Задача 22A; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением).
+загрузчика заодно обновляет `scheduled_games` (расписание на две недели вперёд, Задачи 22A и 100; игры, у которых нет обеих команд в `teams` сезона, пропускаются с предупреждением).
 Идущий матч (Stats REST `gameStateId` 3–6) ночной прогон не видит ни в `games`, ни в
 `scheduled_games` — он появляется в `games`, когда gamecenter отдаёт `OFF`. Сезонные таблицы
 (`teams_stats`, `players_season_stats`…) из Stats REST могут ночью уже учитывать матч, которого
@@ -362,7 +390,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 Сервис `predict` в `docker-compose.yml` (без профиля — выкатывается на прод; образ — стадия
 `modeling`, в релизе `ghcr.io/karych72/nhl_bot:<тег>-modeling`). Раз в сутки в 12:00 UTC (слот
 `scheduled_retrain.seconds_until_next_run`), после успешного свежего sync (`run_after_sync` из
-`scheduled_retrain` — общее предусловие), прогоняет `build-dataset --mode predict` →
+`scheduled_retrain` — общее предусловие), прогоняет `build-dataset --mode predict
+--target-day-to <завтра UTC>` (цели — сегодня и завтра, хотя `scheduled_games` держит две недели) →
 `predict` → `publish-predictions` → `publish-goals`; модели — из `deploy/models/` в образе, не
 обучаются. Догоняющий прогон при старте — если статуса нет или он старше суток. Статус —
 `all_data/publish_status.json` в томе `syncdata`, healthcheck — ok и моложе 26 часов. Тесты —
@@ -391,6 +420,23 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 `tests/test_bot_application.py`. Подписки (Задача 63): одна команда
 `/subscriptions` и кнопки `sub:…` в `bot.py` правят одно сообщение через `edit_text`, а читают
 и пишут `bot_subscriptions` через `subscription_repo.py`.
+
+Экраны команд — функции `show_*(bot, chat_id)` без `Message`; хендлер команды
+(`_command_handler`), экран ИИ (`AI_SCREENS`, сигнатура `(bot, chat_id, params)`) и расписание
+зовут одну и ту же функцию. **Расписания (Задача 107):** `run_polling` рядом со
+`start_polling()` запускает asyncio-задачу `run_schedule_ticker` — раз в минуту
+`send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
+`AI_SCREENS` без дайджеста за дату и `open_command` без `subscriptions` / `help`) через
+`push_digest_job._throttled` → `schedule_repo.advance` от `now` (после простоя уходит одна
+пропущенная отправка). Без премиума чат получает только старейшее активное расписание;
+`TelegramForbiddenError` → `deactivate_chat` гасит подписки и расписания. Тикер живёт в
+процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке (ночь и
+день с 12:30 UTC), а расписанию нужно любое время суток. Двух процессов бота на одну базу
+нет; появятся — `FOR UPDATE SKIP LOCKED` в `due`. Список и удаление — кнопки `sub:s`,
+`sub:s:<id>` меню `/subscriptions`. Создание (Задача 108) — карточка-черновик из ответа
+`schedule_screen` (`schedule_draft` → `_schedule_card`); кнопки `sch:…` (`callback_schedule_card`)
+несут черновик целиком — состояния у бота нет; «Сохранить» проверяет лимит 107 и зовёт
+`schedule_repo.create`.
 
 Сквозные сценарии «запрос → ответ» (`/standings`, `/stats` и `/team_stats` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 закреплены в `tests/test_bot_integration.py`:
@@ -440,11 +486,57 @@ polling, таймаут сессии 300 с ради альбомов видео
 или уточнение, фактов не сообщает. Экран рисует `bot.AI_SCREENS` тем же кодом, что команда или
 кнопка, но новым сообщением; апдейты обрабатываются конкурентно, и ожидание модели не держит
 остальные. Системный промпт и инструменты стабильны и кэшируются, дата —
-в вопросе. Лимит в сутки по МСК — 20 вопросов чатам из `ai_existing_users` (подписчики на
-момент миграции 0012), 5 — остальным, сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
+в вопросе. Лимит (`ai_router.limit_refusal`, Задача 96): премиуму (`premium.is_premium`) — 20 вопросов
+в сутки по МСК, бесплатным — 3 в календарную неделю МСК и не больше 8 за всё время; вопрос —
+строка `ai_questions` или `ai_stats_log` (выбор `stats_question` не в счёт), сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
 или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
 командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
-`tests/test_bot_ai_router.py`.
+`tests/test_bot_ai_router.py`. Инструмент `schedule_screen` (Задача 108) — просьба присылать
+экран регулярно: экран — `anyOf` из схем инструментов `SCHEDULE_TOOLS` (у `open_command` —
+`SCHEDULE_COMMANDS`) или `null`, частота, день, время, пояс — `null`, если не названы; ответ —
+карточка `sch:…` в `bot.py`. Просьба о расписании (`bot._SCHEDULE_REQUEST`) идёт сюда и в окне
+продолжения диалога 83.
+
+### Ответы на статистические вопросы: `ai_stats.py` (Задача 83)
+
+Маршрутизатор 81 получает ещё инструмент `stats_question` (бесплатным тоже — в пределах их
+лимита, решение человека 2026-10-29); выбранный (или любое сообщение в течение 30 минут после ответа 83) уходит в
+`ai_stats.answer`. Это один диалог `claude-sonnet-5-5` (effort `medium`) с инструментами:
+`run_sql` (один SELECT, до 50 строк; ошибка SQL, в том числе таймаут, возвращается модели как
+попытка), `player_overview` (фиксированная выборка по игроку текущего сезона: сезон и прошлый,
+10 последних игр, серия с очками; для вратаря свой набор) и `finish` (`answer` / `no_data` /
+`off_topic` / `clarify` и признак продолжения). Принудительный `tool_choice` Sonnet 5.5 не
+принимает, поэтому инструмент на каждом ходу требует промпт, а ответ без него — громкий сбой.
+Черновик `answer` проверяет отдельный вызов с промптом ревьюера (инструмент `verdict`):
+`ok` — черновик пользователю; `clarify` — только если сам вопрос неоднозначен (однофамильцы, «Нью-Йорк»):
+вместо черновика уходит вопрос ревьюера; `fix` — вопрос однозначен, а черновик ошибочен: модель
+получает замечание и делает одну повторную попытку (в тех же потолках), новый черновик снова на
+ревью. Второй `fix` (исход `rejected`) или потолок на повторе — «Не удалось ответить точно —
+попробуйте переформулировать вопрос»; отклонённые черновики остаются в журнале (шаги `review`),
+пользователю не уходят. В обзоре игрока признак `game_log_incomplete` («лог игр неполный: N из M»,
+если строк `game_player_stats` меньше игр сезона) убирает серию и просит модель сказать о неполноте.
+
+SQL идёт под ролью `nhl_ai_reader` (миграция 0015; `SELECT` на таблицы данных из
+`data_tables/ai_reader_grants.sql`) — граница безопасности, а не промпт. Слои: (1) любая `;` в
+теле запроса модели — ошибка запроса (psycopg2 шлёт simple query, где через `;` идёт несколько
+операторов; одной обёртки против `SELECT 1) AS x; SET …; SELECT … FROM (SELECT 1` мало);
+(2) запрос оборачивается в `SELECT * FROM (<sql>) AS q LIMIT n`; (3) права роли (только `SELECT`
+на таблицы данных) и read-only транзакция (`default_transaction_read_only` на роли и в параметрах
+соединения); (4) сторожевой таймер клиента (`threading.Timer` → `conn.cancel`, таймаут + 1 с)
+останавливает запрос, что бы ни случилось с серверным `statement_timeout` (5 с). Роль в PG16
+вправе менять свои настройки (`ALTER ROLE … SET`), запретить это нельзя — защита не опирается на
+неизменность `rolconfig`, параметры задаются заново при каждом подключении. Объём выдачи
+ограничен: обёртка отбрасывает строки длиннее 4000 байт (`octet_length(ROW(q.*)::text)`, память бота),
+Python обрезает ячейки до 300 символов и весь результат до 20 000 символов с флагом `truncated`
+(стоимость вызова модели). Потолки на вопрос: 4
+SQL-попытки, 7 вызовов модели, $0.10 по `usage`; сверх них — «уточните вопрос» и исход
+`ceiling`. Промпты и аннотация схемы лежат в `telegram_bot/prompts/`; схема для модели
+собирается из `data_tables/t.*.sql` разрешённых таблиц (`ai_stats.AI_TABLES`), системный блок
+кэшируется, дата — в сообщении пользователя. Журнал — `ai_stats_log` (шаги, черновик, вердикт,
+вызовы со стоимостью); он же источник истории (последние 3 пары) и учитывается в лимите
+`ai_router.limit_refusal`. Проверки: `tests/test_bot_ai_stats.py` (цикл с подменённой
+моделью), `TestAiReaderRole` в `tests/test_db_nhl.py` (роль на настоящей БД), `make
+ai-stats-eval` (контрольный набор против настоящего API).
 
 ### Меню статистики: `/stats`, `/team_stats`
 
@@ -624,6 +716,7 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 | Колонка | Тип | Описание |
 |---|---|---|
 | `team_id` | int | FK → teams (team_id, season_id) |
+| `game_type` | smallint | 2 — регулярка, 3 — плей-офф; PK `(team_id, season_id, game_type)` |
 | `games_played` | int | Сыгранные матчи |
 | `wins`, `losses`, `ot` | int | Победы, поражения, OT-поражения |
 | `points` | int | Очки |
@@ -659,13 +752,15 @@ fetch_all(query_text, params, columns) → {col1: [...], col2: [...], 'count_row
 #### `players_season_stats` — Сезонная статистика полевых игроков
 
 28 колонок, основные: `player_id`, `goals`, `assists`, `points`, `pim`, `shots`, `games`, `hits`, `blocked`, `plus_minus`, `time_on_ice_per_game`, `power_play_goals`, `power_play_points`, `face_off_pct`, `shot_pct`, `game_winning_goals`.
-FK `(player_id, season_id) → rosters`; индекс `idx_players_season_stats_season (season_id)` под лидерборды.
-То же самое (FK на rosters + индекс на season_id) — у `players_advanced_stats` и `players_shot_types`.
+PK `(player_id, season_id, game_type)` — `game_type` 2 регулярка, 3 плей-офф (Задача 103);
+FK `(player_id, season_id) → rosters`; индекс `idx_players_season_stats_season (season_id, game_type)` под лидерборды.
+То же самое (PK с `game_type`, FK на rosters, индекс) — у `players_advanced_stats` и `players_shot_types`.
 
 #### `goalies_season_stats` — Сезонная статистика вратарей
 
 24 колонки, основные: `player_id`, `wins`, `losses`, `shutouts`, `save_percentage`, `goal_against_average`, `games`, `saves`, `shots_against`, `goals_against`.
-FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_season (season_id)` под лидерборды вратарей.
+PK `(player_id, season_id, game_type)`, как у полевых; FK `(player_id, season_id) → rosters`;
+индекс `idx_goalies_season_stats_season (season_id, game_type)` под лидерборды вратарей.
 
 #### `games` — Матчи
 
@@ -686,7 +781,9 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 
 #### `scheduled_games` — Будущие игры (Задача 22A)
 
-Цели predict-датасета: незавершённые игры регулярки на сегодня и завтра (UTC). `games` хранит
+Незавершённые игры регулярки на 14 дней вперёд от сегодня (UTC, `SCHEDULE_WINDOW_DAYS`).
+Читают их ближайшие матчи `/BOS_FULL` (Задача 100) и predict-датасет — ежедневная публикация
+берёт из них только сегодня и завтра (`--target-day-to`, `pipeline/scheduled_publish.py`). `games` хранит
 только сыгранные, поэтому будущие лежат отдельно; загрузчик заменяет содержимое сезона при каждом прогоне.
 
 | Колонка | Тип | Описание |
@@ -703,8 +800,9 @@ FK `(player_id, season_id) → rosters`; индекс `idx_goalies_season_stats_
 `publish-predictions` (`home_win`) и `publish-goals` (`over_5_5`, `model = goals`) →
 `game_predictions` → бот (читает только PG). Ежедневно публикует сервис `predict`
 (`pipeline/scheduled_publish.py`). Строки есть только у игр, где у обеих команд ≥ 5 игр в сезоне.
-Бот читает обе задачи в превью `/tonight` (`matchup_season_preview`, запрос без кэша по `game_id`
-кнопки) и добавляет в подвал строку «Оценка модели (не совет): победа HOME — N%, тотал больше
+Бот читает обе задачи только для премиум-чата (Задача 96): `with_model_prediction` (запрос без
+кэша по `game_id`) вызывают превью по кнопке `/tonight` и рассылка превью при отправке каждому чату,
+общее превью `matchup_season_preview` прогноза не содержит. В подвал добавляется строка «Оценка модели (не совет): победа HOME — N%, тотал больше
 5.5 — M%»; части без
 строки в таблице пропускаются, нет ни одной — нет и строки.
 Строки задачи целиком заменяются при каждой публикации; при непройденном гейте
@@ -807,7 +905,11 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 #### `get_game_stats(game_id)` → game_team_stats + games + teams
 
-Возвращает: `goals`, `pim`, `blocked`, `hits`, `shots`, `is_overtime`, `is_shootouts`, `field`, `team_name`. Сортировка: `field DESC` (home первым).
+Возвращает: `goals`, `pim`, `blocked`, `hits`, `shots`, `is_overtime`, `is_shootouts`, `field`, `team_name` (полное `teams.name`, Задача 98). Сортировка: `field DESC` (home первым).
+
+Тип возврата `RETURNS TABLE` через `CREATE OR REPLACE` не меняется, поэтому файл функции
+начинается с `DROP FUNCTION IF EXISTS` (как `get_goals_game.sql`):
+`make db-functions` пересоздаёт её при каждом деплое.
 
 #### `get_goals_game(game_id)` → all_goals + rosters (JOIN по scorer, assist1, assist2)
 
@@ -830,7 +932,7 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 ### `game_message.txt` — Карточка матча
 
 ```
-🏒 Rangers 3:2 Lightning (OT)            ← хозяева первыми, счёт между командами
+🏒 New York Rangers 3:2 Tampa Bay Lightning (OT) ← хозяева первыми; полные названия (Задача 98)
 Периоды: 1:1, 0:0, 1:1, 1:0             ← формы до матча в итоге нет (только в превью)
 
 1-й период                              ← обычный текст, не <pre>; период без голов не выводится
@@ -847,7 +949,7 @@ Shesterkin — 26/28, 92.86%, 65:00
 Vasilevskiy — 29/32, 90.63%, 65:00
 
 Звёзды матча
-1. Panarin (NYR) — 2+1
+1. Panarin (NYR) — 2+1                  ← звёзды и таблицы лидеров — с кодом клуба (Задача 98)
 2. Kucherov (TBL) — 1+2
 3. Shesterkin (NYR) — 26/28, 92.86%
 ```
@@ -872,7 +974,7 @@ HTML; `bot_messages.rich_message(text)` делает блок строк абз�
 список `rich_list()` — отдельными блоками (Задачи 88–89; правила стиля — `docs/telegram_bot.md`
 §«Стиль сообщений»). Таблица — `bot_messages._table(rows, align)`:
 `<table compact>` (компактные ячейки, Bot API 10.3; `striped` — у таблиц длиннее 10 строк) с шапкой `<th>`, выравниванием по
-колонкам и, в турнирной таблице, строкой «линия плей-офф» на всю ширину; колонки раскладывает
+колонкам и, в турнирной таблице, строкой пунктира (`_PLAYOFF_LINE`) на всю ширину; колонки раскладывает
 Telegram, поэтому ни обрезки фамилий, ни выбрасывания колонок под ширину телефона нет. Лимит —
 `RICH_MESSAGE_MAX_LENGTH` (32 768 символов, считается по исходному HTML); `truncate_telegram_text`
 режет целыми строками, чтобы не разорвать таблицу или тег. Меню статистики и их таблицы — rich:
@@ -910,7 +1012,7 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 ### `league_table.txt` — Турнирная таблица
 
 Группировка по конференциям и дивизионам: Atlantic, Metropolitan, Central, Pacific. Колонки: место / Команда / Очки / Игры / % очков.
-В дивизионе черта «линия плей-офф» отделяет топ-3 (прямой выход в плей-офф). Блок Wild Card
+В дивизионе пунктирная черта отделяет топ-3 (прямой выход в плей-офф). Блок Wild Card
 конференции — команды вне топ-3 своих дивизионов, не больше пяти (`_WILD_CARD_SHOWN`): `WC1`,
 `WC2`, затем черта и три ближайших претендента. Команды, ещё не сыгравшие в сезоне, в `teams_stats`
 отсутствуют и в таблицу не попадают.
@@ -922,12 +1024,21 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 большинство/меньшинство/вбрасывания, топ-5 бомбардиров и топ-5 по среднему времени на льду
 (`rosters ⋈ players_season_stats`, `_team_skaters()`) и вратари (`rosters ⋈ goalies_season_stats`)
 для `current_team_id`/`season_id = config.SEASON_ID` — таблицами `_table()`.
-В конце — `/BOS_FULL`: `team_full_stats()`, все игроки клуба тремя таблицами — нападающие,
-защитники, вратари (с хотя бы одной игрой) — с колонками экрана страны (`_player_group_table()`),
-тот же хендлер `cmd_team_profile` (группа `_FULL` в `TEAM_COMMAND_PATTERN`).
+В конце — `/BOS_FULL`: `team_full_stats()`, полная версия того же экрана (Задача 100), тот же
+шаблон и хендлер `cmd_team_profile` (группа `_FULL` в `TEAM_COMMAND_PATTERN`). Шапка и блок
+«Сезон» у обоих экранов из одного `_team_season_context()`; в `_FULL` у показателей «Сезона» —
+место в лиге (`_league_place()`: меньше пропущенных — выше, равные делят место), большинство в
+штуках, в меньшинстве — пропущенные. Затем `_team_games_context()`: дома/в гостях и голы по
+периодам без овертайма (`games` ⋈ `game_team_stats` своих и соперника, исход —
+`_team_game_outcome()`), последние 5 матчей со счётом и пометкой ОТ/Б, ближайшие 3 из
+`scheduled_games`; и все игроки клуба тремя таблицами — нападающие, защитники, вратари (с хотя
+бы одной игрой) — с колонками экрана страны (`_player_group_table()`). ИИ открывает `_FULL`
+только на просьбу всех игроков, состава или подробностей (`all_players=true`).
 Вход — команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
 `bot.py` по `TEAM_COMMAND_PATTERN`) и инструмент `team_profile` свободного текста; аббревиатура
-резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C).
+резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C). В тексте
+клуб — полным названием без кода (Задача 98); там, где на руках только код (прогноз модели,
+подпись к видео гола), название даёт `team_name_for_abbrev()`.
 
 `players_season_stats` не хранит команду игрока — очки/голы за весь сезон целиком относятся
 к тому `current_team_id`, что сейчас стоит в `rosters` (последний обработанный ростер,

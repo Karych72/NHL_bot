@@ -111,10 +111,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("\n<ul><li>/today — ", hm)
         legend = hm.split("<details><summary>Обозначения</summary>", 1)[1]
         self.assertIn("ПШ — победная шайба", legend)
-        start = help_text.START_MESSAGE
-        self.assertIn("<b>Быстрый старт</b>", start)
-        self.assertNotIn("/countries", start, "полный перечень команд — в /help")
-        self.assertTrue(start.endswith("<footer>Все команды и обозначения — /help</footer>"))
+        self.assertTrue(help_text.START_MESSAGE.endswith("<footer>Все команды — /help</footer>"))
         explained = help_text.ADVANCED_COMMAND_INTRO.split("<details><summary>", 1)[1]
         self.assertIn("Corsi", explained)
 
@@ -128,13 +125,12 @@ class Phase1UxCommandsTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIn(f"/{cmd} — ", help_text.HELP_MESSAGE)
 
-    def test_start_and_help_note_regular_season_only(self):
+    def test_help_notes_regular_season_only(self):
+        """Оговорка про плей-офф — только в /help: /start её не несёт (решение человека 2026-10-31)."""
         help_text = _load_help_text()
-        for name in ("START_MESSAGE", "HELP_MESSAGE"):
-            with self.subTest(message=name):
-                msg = getattr(help_text, name)
-                self.assertIn("регулярный чемпионат", msg)
-                self.assertIn("плей-офф", msg)
+        self.assertIn("регулярный чемпионат", help_text.HELP_MESSAGE)
+        self.assertIn("плей-офф", help_text.HELP_MESSAGE)
+        self.assertNotIn("плей-офф", help_text.START_MESSAGE)
 
     def test_tonight_reply_intro_escapes_league_date(self):
         nhl = _load_nhl_scoreboard()
@@ -155,7 +151,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
     def test_team_table_includes_season_and_as_of(self):
         bot_messages = _load_bot_messages()
         standings_row = {
-            "short_name": ["BOS"],
+            "name": ["Boston Bruins"],
             "games_played": [82],
             "points": [110],
             "procent_points": [0.671],
@@ -179,11 +175,11 @@ class Phase1UxCommandsTest(unittest.TestCase):
             text = bot_messages.team_table()
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
-        self.assertIn("BOS", text)
+        self.assertIn("Boston Bruins", text)
         self.assertIn("<table compact>", text)
         self.assertNotIn("<pre>", text)
         self.assertIn(
-            '<tr><td align="right">1.</td><td>BOS</td><td align="right">110</td>'
+            '<tr><td align="right">1.</td><td>Boston Bruins</td><td align="right">110</td>'
             '<td align="right">82</td><td align="right">0.7</td></tr>',
             text,
         )

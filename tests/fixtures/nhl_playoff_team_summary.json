@@ -1,0 +1,29 @@
+[
+  {
+    "faceoffWinPct": 0.585271,
+    "gamesPlayed": 4,
+    "goalsAgainst": 11,
+    "goalsAgainstPerGame": 2.75,
+    "goalsFor": 5,
+    "goalsForPerGame": 1.25,
+    "losses": 4,
+    "otLosses": null,
+    "penaltyKillNetPct": 0.866666,
+    "penaltyKillPct": 0.866667,
+    "pointPct": 0.0,
+    "points": 0,
+    "powerPlayNetPct": 0.047619,
+    "powerPlayPct": 0.047619,
+    "regulationAndOtWins": 0,
+    "seasonId": 20252026,
+    "shotsAgainstPerGame": 33.75,
+    "shotsForPerGame": 27.5,
+    "teamFullName": "Ottawa Senators",
+    "teamId": 9,
+    "teamShutouts": 0,
+    "ties": null,
+    "wins": 0,
+    "winsInRegulation": 0,
+    "winsInShootout": 0
+  }
+]

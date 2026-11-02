@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List
 
@@ -21,6 +22,12 @@ import pytest
 from tests._telegram_fakes import body, rich_html
 
 TEAMS = [("BOS",), ("WSH",)]
+# Строка `teams_stats ⋈ teams` клуба 15 (колонки `_TEAM_PROFILE_STATS_COLUMNS`): без неё оба
+# экрана клуба ответили бы одним текстом «ещё не сыграла».
+WSH_STATS = (
+    15, "Washington Capitals", "Capitals", "Metropolitan", "Eastern", 17, 10, 5, 2, 22, 64.71,
+    3.1, 2.65, 30.5, 28, 21.5, 80, 51.25, 12, 56, 9,
+)
 
 
 class FakeMessages:
@@ -61,24 +68,30 @@ def _text(text: str) -> SimpleNamespace:
 
 @pytest.fixture
 def ai(bot_module, fake_db_router, monkeypatch):
-    """Фабрика окружения: чат задал сегодня `asked` вопросов, `existing` — текущий
-    пользователь; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
+    """Фабрика окружения: чат задал `asked` = (за сутки, за неделю, всего) вопросов, `premium` —
+    у него премиум; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
 
-    def _make(result: Any, asked: int = 0, existing: bool = False):
+    def _make(result: Any, asked: tuple = (0, 0, 0), premium: bool = False):
         bot = bot_module("bot")
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
-            ("count(*) FROM ai_questions", [(asked, existing)]),
+            ("FILTER (WHERE asked_at", [asked]),
+            ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=timezone.utc),)] if premium else []),
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
+            ("ts.power_play_goals_against FROM teams_stats", [WSH_STATS]),
+            ("SELECT name FROM teams WHERE season_id", [("Washington Capitals",)]),
             ("max(day) AS day FROM games", [(None,)]),
             ("", []),
         ])
-        # Журнал пишет через `get_connection`, импортированный в ai_router по имени.
+        # Журналы пишут через `get_connection`, импортированный в модуль по имени.
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+        monkeypatch.setattr(bot, "get_connection", bot_module("database").get_connection)
+        # Пояс черновика по умолчанию — из расписаний чата (Задача 108).
+        monkeypatch.setattr(bot_module("schedule_repo"), "get_connection", bot_module("database").get_connection)
         messages = FakeMessages(result)
-        monkeypatch.setattr(ai_router, "_client", lambda: SimpleNamespace(messages=messages))
+        monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
         return bot, cursor, messages
 
     return _make
@@ -136,8 +149,8 @@ async def test_open_command_replies_like_the_command(
 async def test_team_profile_replies_like_team_command(
     ai, make_message, fake_bot, api, all_players, command
 ):
-    """Клуб найден (маршрут `TEAM_ID`), статистики нет: профиль и полный список отвечают
-    разными текстами, так что сравнение различает `all_players`."""
+    """Клуб найден (маршрут `TEAM_ID`), игр и игроков нет: короткий и полный экран отвечают
+    разными текстами (места в лиге, подвал), так что сравнение различает `all_players`."""
     bot, _, _ = ai(_response(_tool_use("team_profile", team="WSH", all_players=all_players)))
     await _ask(bot, make_message, fake_bot, "как там Овечкин")
     other_command = "/WSH" if all_players else "/WSH_FULL"
@@ -199,11 +212,110 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
     bot = bot_module("bot")
     ai_router = bot_module("ai_router")
     tools = ai_router.build_tools(["BOS"])
-    assert [t["name"] for t in tools] == list(bot.AI_SCREENS)
+    # `stats_question` — не экран: его вопрос уходит в `ai_stats` (Задача 83); `schedule_screen` —
+    # карточка расписания (Задача 108).
+    assert [t["name"] for t in tools] == [*bot.AI_SCREENS, "stats_question", "schedule_screen"]
     assert set(ai_router.SCREEN_COMMANDS) == set(bot.AI_COMMANDS)
     for tool in tools:
         assert tool["strict"] is True
         assert tool["input_schema"]["additionalProperties"] is False
+
+
+def test_schedule_tool_offers_exactly_the_schedulable_screens(bot_module):
+    """Задача 108: экраны `schedule_screen` — набор расписаний 107, параметры — схемы тех же
+    инструментов-экранов; варианты строгие, экран можно не узнать (`null`)."""
+    bot = bot_module("bot")
+    tools = {t["name"]: t for t in bot_module("ai_router").build_tools(["BOS", "WSH"])}
+    schema = tools["schedule_screen"]["input_schema"]
+    *options, unknown = schema["properties"]["screen"]["anyOf"]
+
+    assert unknown == {"type": "null"}
+    assert schema["required"] == ["screen", "freq", "weekday", "month_day", "time", "timezone"]
+    assert [o["properties"]["tool"]["const"] for o in options] == list(bot.SCHEDULE_SCREENS)
+    for option in options:
+        name = option["properties"]["tool"]["const"]
+        assert option["additionalProperties"] is False
+        assert option["required"] == list(option["properties"])
+        params = {k: v for k, v in option["properties"].items() if k != "tool"}
+        if name == "open_command":
+            assert params["command"]["enum"] == list(bot.SCHEDULE_COMMANDS)
+        else:
+            assert params == tools[name]["input_schema"]["properties"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_request_gets_a_draft_card(ai, make_message, fake_bot, api):
+    """Пояс городом, время с минутами округляется до получаса, ряд «Когда» — дни недели."""
+    bot, _, _ = ai(_response(_tool_use(
+        "schedule_screen", screen={"tool": "leaders", "category": "goals"}, freq="week", weekday=5,
+        month_day=None, time="10:17", timezone="Asia/Yekaterinburg",
+    )))
+    await _ask(bot, make_message, fake_bot, "присылай лидеров по голам по пятницам в 10:17 по Екатеринбургу")
+
+    [card] = api.sent_rich
+    text = body(card)
+    for line in ("Экран: Лидеры · Лучшие снайперы", "Когда: по пятницам", "Время: 10:30",
+                 "Пояс: Екатеринбург (UTC+5)"):
+        assert line in text
+    labels = [b.text for row in card.reply_markup.inline_keyboard for b in row]
+    assert "•Пт" in labels and "✅ Сохранить" in labels
+
+
+@pytest.mark.asyncio
+async def test_unknown_zone_and_screen(ai, make_message, fake_bot, api):
+    """Пояса нет в `zoneinfo` — МСК (у чата нет расписаний); экран не понят — без карточки."""
+    params = dict(freq=None, weekday=None, month_day=None, time=None, timezone="Mars/Olympus")
+    bot, _, _ = ai(_response(_tool_use("schedule_screen", screen={"tool": "open_command", "command": "today"},
+                                       **params)))
+    await _ask(bot, make_message, fake_bot, "присылай итоги ночи")
+    assert "Пояс: Москва (UTC+3)" in body(api.sent_rich[-1])
+
+    bot, _, _ = ai(_response(_tool_use("schedule_screen", screen=None, **params)))
+    await _ask(bot, make_message, fake_bot, "присылай что-нибудь")
+    assert body(api.sent_rich[-1]) == rich_html(bot._UNKNOWN_SCREEN_TEXT)
+    assert api.sent_rich[-1].reply_markup is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "routed"),
+    [("присылай лидеров по голам каждую пятницу", True), ("а у Малкина?", False)],
+)
+async def test_schedule_request_bypasses_the_stats_dialog_window(
+    ai, bot_module, make_message, fake_bot, api, monkeypatch, text, routed
+):
+    """Окно продолжения 83 открыто: просьба о расписании всё равно идёт маршрутизатору, а
+    продолжение диалога — ответам по статистике без него."""
+    ai_stats = bot_module("ai_stats")
+    stats_answers: List[str] = []
+
+    async def answer(chat_id, question, history):
+        stats_answers.append(question)
+        return "ответ"
+
+    bot, _, messages = ai(_response(_tool_use(
+        "schedule_screen", screen={"tool": "leaders", "category": "goals"}, freq="week", weekday=5,
+        month_day=None, time=None, timezone=None,
+    )))
+    monkeypatch.setattr(ai_stats, "recent_pairs", lambda chat_id: [{"outcome": "answer"}])
+    monkeypatch.setattr(ai_stats, "answer", answer)
+    await _ask(bot, make_message, fake_bot, text)
+
+    assert bool(messages.calls) is routed
+    assert stats_answers == ([] if routed else [text])
+
+
+def test_team_profile_defaults_to_short_screen(bot_module):
+    """Задача 100: вопрос о клубе открывает короткий экран, `all_players=true` — только по
+    просьбе всех игроков, состава или подробностей; правила «вопрос об игроке →
+    all_players=true» нет ни в промпте, ни в описании инструмента."""
+    ai_router = bot_module("ai_router")
+    (team_profile,) = [t for t in ai_router.build_tools(["BOS"]) if t["name"] == "team_profile"]
+    assert "По умолчанию all_players=false" in team_profile["description"]
+    assert "team_profile с all_players=false" in ai_router.SYSTEM_PROMPT
+    assert "«подробно про Бостон») — team_profile с all_players=true" in ai_router.SYSTEM_PROMPT
+    for text in (ai_router.SYSTEM_PROMPT, team_profile["description"]):
+        assert "его команды в текущем сезоне с all_players=true" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -248,24 +360,41 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
 
 
 # ---------------------------------------------------------------------------
-# Суточный лимит
+# Лимит (Задача 96): премиум — 20 в сутки; бесплатный — 3 в неделю и 8 за всё время.
+# Сам счёт (границы суток и недели МСК, источники) — на настоящей БД, tests/test_db_nhl.py.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("existing", "asked", "model_called"),
-    [(True, 19, True), (True, 20, False), (False, 4, True), (False, 5, False)],
+    ("premium", "asked", "refusal", "limit"),
+    [
+        (True, (19, 30, 500), None, None),
+        (True, (20, 20, 20), "LIMIT_TEXT", "day"),
+        (False, (2, 2, 7), None, None),
+        (False, (0, 3, 3), "WEEK_LIMIT_TEXT", "week"),
+        # Потолок за всё время — раньше недельного: новой недели бесплатный уже не дождётся.
+        (False, (0, 0, 8), "TOTAL_LIMIT_TEXT", "total"),
+        (False, (0, 3, 8), "TOTAL_LIMIT_TEXT", "total"),
+    ],
 )
-async def test_daily_limit_is_20_for_existing_users_and_5_for_new(
-    ai, bot_module, make_message, fake_bot, api, existing, asked, model_called
+async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
+    ai, bot_module, make_message, fake_bot, api, premium, asked, refusal, limit
 ):
-    bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, existing=existing)
+    """Отказ модель не вызывает и в `ai_questions` не пишется — только строкой `ai_limit`
+    с видом лимита в журнал действий (Задача 99)."""
+    bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, premium=premium)
     await _ask(bot, make_message, fake_bot)
 
-    assert bool(messages.calls) is model_called
-    if not model_called:
-        assert _replies(api) == [_as_reply(bot_module("ai_router").LIMIT_TEXT)]
-        assert not any(q.startswith("INSERT") for q, _ in cursor.executed)
+    assert bool(messages.calls) is (refusal is None)
+    if refusal is not None:
+        assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
+        assert ("/premium" in getattr(bot_module("ai_router"), refusal)) is not premium
+        message = make_message("")
+        assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
+            ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", limit))
+        ]
+    # Премиум — по чату вопроса.
+    assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]
 
 
 # ---------------------------------------------------------------------------

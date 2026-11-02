@@ -64,6 +64,7 @@ if _HERE not in sys.path:
 
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
+    MODEL_PREDICTION_TEASER,
     MSK,
     country_name,
     country_night_blocks,
@@ -74,7 +75,9 @@ from bot_messages import (  # noqa: E402
     night_goals,
     rich_footer,
     rich_message,
+    with_model_prediction,
 )
+import premium  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402
     fetch_score,
@@ -127,9 +130,10 @@ UPCOMING_START_MSK = time(15, 30)
 # попадает в D.
 _NIGHT_SHIFT = timedelta(hours=12)
 
-# Матчи, которые загрузчик пишет в ``games``: регулярка (``gameType`` 2) по расписанию
-# (``gameScheduleState`` OK) — перенесённый или отменённый матч ночь не держит.
-_REGULAR_SEASON_GAME_TYPE = 2
+# Матчи, которые загрузчик пишет в ``games``: регулярка и плей-офф (``gameType`` 2 и 3,
+# Задача 104) по расписанию (``gameScheduleState`` OK) — перенесённый или отменённый матч
+# ночь не держит.
+_LOADED_GAME_TYPES = (2, 3)
 _SCHEDULED_AS_PLANNED = "OK"
 
 # Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
@@ -168,11 +172,11 @@ def _msk_moment(night: date, at: time) -> datetime:
 
 
 def night_is_loaded(night: date) -> bool:
-    """Все ли матчи регулярки ночи *night* из расписания NHL уже в ``games``.
+    """Все ли матчи регулярки и плей-офф ночи *night* из расписания NHL уже в ``games``.
 
     Зачем: дайджест не должен уходить неполным. Слейт берётся из ``score/{night}``
-    NHL API, а не из ``scheduled_games``: та держит только не начавшиеся игры
-    окна «сегодня+завтра UTC», и идущий или только что закончившийся матч из неё
+    NHL API, а не из ``scheduled_games``: та держит только не начавшиеся игры,
+    и идущий или только что закончившийся матч из неё
     выпадает раньше, чем попадает в ``games``.
 
     Аргументы:
@@ -182,7 +186,7 @@ def night_is_loaded(night: date) -> bool:
         int(g["id"])
         for g in fetch_score(night)["games"]
         if g["gameDate"] == night.isoformat()
-        and g["gameType"] == _REGULAR_SEASON_GAME_TYPE
+        and g["gameType"] in _LOADED_GAME_TYPES
         and g["gameScheduleState"] == _SCHEDULED_AS_PLANNED
     ]
     loaded = fetch_all(
@@ -198,7 +202,7 @@ class _GameSubscriptions(NamedTuple):
     """Подписки чата, которые ведут на один матч ночи (``subscribed_games``)."""
 
     teams: List[str]
-    """Аббревиатуры подписанных команд матча, хозяева первыми."""
+    """Полные названия подписанных команд матча, хозяева первыми."""
     countries: List[Tuple[str, str]]
     """(код, блок игроков страны) подписанных стран, чьи игроки играли, — по алфавиту."""
 
@@ -221,7 +225,7 @@ def subscribed_games(night: date) -> _SubscribedGames:
     if not rows:
         return {}
     games = fetch_all(
-        "SELECT g.game_id, g.home_team_id, trim(h.abbreviation), g.away_team_id, trim(a.abbreviation) "
+        "SELECT g.game_id, g.home_team_id, h.name, g.away_team_id, a.name "
         "FROM games g "
         "JOIN teams h ON h.team_id = g.home_team_id AND h.season_id = g.season_id "
         "JOIN teams a ON a.team_id = g.away_team_id AND a.season_id = g.season_id "
@@ -256,7 +260,7 @@ def subscribed_games(night: date) -> _SubscribedGames:
     return result
 
 
-async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
+async def throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     """Выполняет одну отправку и выдерживает паузу до следующей.
 
     Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
@@ -462,7 +466,7 @@ async def _send_album(bot: Bot, chat_id: int, album: List[_Clip]) -> None:
     if len(album) == 1:
         _, video, params, _ = album[0]
         sent = [
-            await _throttled(
+            await throttled(
                 lambda: bot.send_video(
                     chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
                     supports_streaming=True, **params,
@@ -479,7 +483,7 @@ async def _send_album(bot: Bot, chat_id: int, album: List[_Clip]) -> None:
             for n, (_, video, params, _) in enumerate(album)
         ]
         sent = list(
-            await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
+            await throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
         )
     for (key, video, _, goal_text), message in zip(album, sent):
         assert message.video is not None  # ответ на отправку видео всегда содержит video
@@ -563,7 +567,7 @@ async def run_game_broadcast(
                             )
                         ]]
                     )
-                await _throttled(
+                await throttled(
                     partial(
                         bot.send_rich_message,
                         chat_id=chat_id,
@@ -615,10 +619,11 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
     Зачем: бот на виду у подписчика весь день — с 15:30 МСК на каждом прогоне (раз в
-    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд и строка
-    оценки модели, если прогноз опубликован): ближайший по началу ещё не начавшийся матч
-    дня, которого он не получал (решение человека 2026-10-25). Превью собирается раз на
-    матч, а не на подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
+    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд, премиум-чату —
+    и строка оценки модели, если прогноз опубликован, Задача 96): ближайший по началу ещё не
+    начавшийся матч дня, которого он не получал (решение человека 2026-10-25). Превью
+    собирается раз на матч, а не на подписчика, и без прогноза — его строка добавляется при
+    отправке каждому чату. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
     ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
@@ -635,15 +640,19 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = matchup_season_preview(game_id, away, home)
+            previews[game_id] = matchup_season_preview(away, home)
         body, footer = previews[game_id]
+        if premium.is_premium(chat_id):
+            footer = with_model_prediction(footer, game_id, home)
+        else:
+            footer = f"{footer}\n{MODEL_PREDICTION_TEASER}"
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
             + rich_footer(f"{footer}\n{SUBSCRIPTIONS_FOOTER}")
         )
         try:
-            await _throttled(
+            await throttled(
                 partial(
                     bot.send_rich_message,
                     chat_id=chat_id,

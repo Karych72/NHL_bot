@@ -52,7 +52,7 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "abbreviation", "first_year_of_play", "city", "active", "short_name",
     ),
     "teams_stats": (
-        "team_id", "season_id", "games_played", "wins", "losses", "ot", "points",
+        "team_id", "season_id", "game_type", "games_played", "wins", "losses", "ot", "points",
         "procent_points", "goals_per_game", "goals_against_per_game",
         "power_play_percentage", "power_play_goals", "power_play_goals_against",
         "power_play_opportunities", "penalty_kill_percentage", "shots_per_game",
@@ -73,15 +73,16 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "short_handed_time_on_ice_per_game", "power_play_time_on_ice_per_game",
         "oz_faceoff_pct", "dz_faceoff_pct", "nz_faceoff_pct", "shootout_goals",
         "shootout_shots", "shootout_gd_goals", "shootout_pct", "player_id", "season_id",
+        "game_type",
     ),
     "players_advanced_stats": (
-        "player_id", "season_id", "sat_pct", "usat_pct", "goals_pct", "oz_start_pct",
+        "player_id", "season_id", "game_type", "sat_pct", "usat_pct", "goals_pct", "oz_start_pct",
         "dz_start_pct", "nz_start_pct", "on_ice_shooting_pct", "ev_goals_for",
         "ev_goals_against", "ev_goals_for_pct", "pp_goals_for", "pp_goals_against",
         "sh_goals_for", "sh_goals_against",
     ),
     "players_shot_types": (
-        "player_id", "season_id", "goals_wrist", "shots_wrist", "goals_slap",
+        "player_id", "season_id", "game_type", "goals_wrist", "shots_wrist", "goals_slap",
         "shots_slap", "goals_snap", "shots_snap", "goals_backhand", "shots_backhand",
         "goals_tip_in", "shots_tip_in", "goals_deflected", "shots_deflected",
         "goals_wrap_around", "shots_wrap_around",
@@ -93,11 +94,11 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "games", "games_started", "shots_against", "goals_against",
         "time_on_ice_per_game", "power_play_save_percentage",
         "short_handed_save_percentage", "even_strength_save_percentage", "player_id",
-        "season_id",
+        "season_id", "game_type",
     ),
     "games": (
         "game_id", "day", "home_team_id", "away_team_id", "winner_id", "is_overtime",
-        "is_shootouts", "season", "season_id",
+        "is_shootouts", "season", "season_id", "game_type",
     ),
     "all_goals": (
         "goal_player_id", "total_goals", "assist_player1_id", "assist_total_1",

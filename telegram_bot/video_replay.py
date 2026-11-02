@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 import requests
 
+from bot_messages import team_name_for_abbrev
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)
@@ -89,13 +90,20 @@ def goal_caption(replay: dict) -> str:
     Зачем: видео из кнопки карточки приходило без подписи — по клипу не понять,
     чей гол.
 
+    Команды — полным названием из ``teams`` по коду из ответа (Задача 98).
+
     Аргументы: ``replay`` — ответ ``/v1/ppt-replay/{game_id}/{event_id}``.
     """
+    def team(abbrev: str) -> str:
+        return html.escape(team_name_for_abbrev(abbrev))
+
     goal = replay["goal"]
-    away, home = replay["awayTeam"]["abbrev"], replay["homeTeam"]["abbrev"]
-    scorer = f"🚨 <b>{html.escape(goal['name']['default'])}</b> ({goal['teamAbbrev']['default']})"
+    away, home = team(replay["awayTeam"]["abbrev"]), team(replay["homeTeam"]["abbrev"])
+    scorer = (
+        f"🚨 <b>{html.escape(goal['name']['default'])}</b> ({team(goal['teamAbbrev']['default'])})"
+    )
     if goal["periodDescriptor"]["periodType"] == "SO":
-        return f"{scorer} — гол в серии буллитов, {away}–{home}"
+        return f"{scorer} — гол в серии буллитов, {away} – {home}"
     lines = [f"{scorer} — {goal['goalsToDate']}-й гол в сезоне"]
     assists = [
         f"{html.escape(a['name']['default'])} ({a['assistsToDate']})" for a in goal["assists"]

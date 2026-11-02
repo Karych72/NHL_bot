@@ -135,12 +135,12 @@ make env-example
 | Таблица | PK | Гранулярность |
 |---------|----|----|
 | `teams` | `(team_id, season_id)` | команда × сезон (название, дивизион, конференция) |
-| `teams_stats` | `(team_id, season_id)` | агрегаты команды за сезон |
+| `teams_stats` | `(team_id, season_id, game_type)` | агрегаты команды за сезон (`game_type` 2 регулярка, 3 плей-офф) |
 | `rosters` | `(player_id, season_id)` | состав: игроки, привязанные к команде на сезон |
-| `players_season_stats` | `(player_id, season_id)` | сезонная статистика полевых |
-| `players_advanced_stats` | `(player_id, season_id)` | Corsi/Fenwick/GF%/zone-start и т.п. |
-| `players_shot_types` | `(player_id, season_id)` | броски по типам (wrist/snap/slap/…) |
-| `goalies_season_stats` | `(player_id, season_id)` | сезонная статистика вратарей |
+| `players_season_stats` | `(player_id, season_id, game_type)` | сезонная статистика полевых |
+| `players_advanced_stats` | `(player_id, season_id, game_type)` | Corsi/Fenwick/GF%/zone-start и т.п. |
+| `players_shot_types` | `(player_id, season_id, game_type)` | броски по типам (wrist/snap/slap/…) |
+| `goalies_season_stats` | `(player_id, season_id, game_type)` | сезонная статистика вратарей |
 
 **Игры и per-game-факты:**
 
@@ -235,13 +235,16 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 Метод `ModernNhlLoader.run()` идёт строго последовательно. Шаги 2-8 выполняет
 `build_season_reference_rows()` (возвращает `SeasonReferenceRows`, именованный
 кортеж — Задача 19, финальное ревью), которую `run()` вызывает одним шагом
-между 1 и 9; ниже они расписаны по вызываемым внутри неё методам:
+между 1 и 9; ниже они расписаны по вызываемым внутри неё методам.
+Сезонные отчёты шагов 2 и 4–7 запрашиваются для обоих типов игр — `gameTypeId=2` (регулярка) и
+`gameTypeId=3` (плей-офф), строки агрегатов получают `game_type` 2 и 3 (Задача 104); до старта
+плей-офф отчёты типа 3 пусты, и ежедневный sync пишет только регулярку:
 
 1. **`load_team_reference()`** — справочник команд (`/stats/rest/en/team`) +
    текущая турнирная таблица (`/v1/standings/now`) для названий
    дивизионов / конференций.
-2. **`build_teams_and_stats()`** — `teams` + `teams_stats` из
-   `team/summary` за сезон.
+2. **`build_teams()`** + **`build_teams_stats()`** — `teams` из `team/summary` регулярки
+   (в плей-офф-отчёте только 16 клубов), `teams_stats` — из `team/summary` каждого типа.
 3. **`build_rosters()`** — обход всех команд через `/v1/roster/{TRI}/{SEASON_ID}`.
 4. **`build_player_season_stats()`** — `players_season_stats` из совокупности
    отчётов: `skater/summary`, `skater/timeonice`,
@@ -254,11 +257,12 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 7. **`build_player_shot_types()`** — `players_shot_types` из
    `skater/shottype`.
 8. **`supplement_rosters_from_reports()`** — добавляет в `rosters` тех, кто
-   есть в сезонных отчётах, но кого не вернул `/v1/roster/{TRI}` (call-up,
-   короткие контракты). Точечные пропуски добиваются через
-   `/v1/player/{pid}/landing`.
-9. **`fetch_final_games()`** — список **завершённых** игр (`gameStateId=7`)
-   за `SEASON_ID` в окне дат через
+   есть в сезонных отчётах обоих типов, но кого не вернул `/v1/roster/{TRI}` (call-up,
+   короткие контракты, вызванные только на плей-офф). Точечные пропуски добиваются через
+   `/v1/player/{pid}/landing`. Страна (`fill_nationality`) — из `skater/bios`/`goalie/bios`
+   обоих типов, регулярка приоритетнее.
+9. **`fetch_final_games()`** — список **завершённых** игр (`gameStateId=7`) регулярки и
+   плей-офф (`gameType in (2,3)`) за `SEASON_ID` в окне дат через
    `https://api.nhle.com/stats/rest/en/game?cayenneExp=...`.
 10. **`build_game_rows()`** — для каждой игры **три** запроса:
     `/v1/gamecenter/{game_id}/play-by-play`, `/v1/gamecenter/{game_id}/boxscore`
@@ -279,7 +283,7 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
     2. `UPSERT` в сезонные таблицы (`ON CONFLICT … DO UPDATE`);
     3. `INSERT` в per-game таблицы;
     4. `scheduled_games` сезона целиком заменяется (`DELETE` + `INSERT`) незавершёнными играми
-       регулярки (`gameStateId` 1/2) на `SCHEDULE_WINDOW_DAYS` UTC-дней от сегодня — не от
+       регулярки (`gameStateId` 1/2) на `SCHEDULE_WINDOW_DAYS` (14) UTC-дней от сегодня — не от
        окна `--date-from/--date-to`; игры, уже лежащие в `games`, и игры, у которых нет обеих команд в `teams` сезона (в начале сезона `team/summary` ещё пуст), пропускаются (Задача 22A);
     5. `COMMIT`. На любом исключении выше — `ROLLBACK` всей транзакции,
        подключение закрывается.
@@ -296,7 +300,7 @@ Date window 2026-09-01 .. 2027-03-29 (season_id=20262027, games.season=26/27)
 |-----|--------------|
 | `https://api.nhle.com/stats/rest/en/team` | Справочник всех команд (id, triCode, fullName). |
 | `https://api-web.nhle.com/v1/standings/now` | Текущая турнирная таблица (для дивизиона/конференции). |
-| `https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=seasonId=…&gameTypeId=2` | Командные сезонные агрегаты (regular, `gameTypeId=2`). |
+| `https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=gameTypeId={2,3}%20and%20seasonId=…` | Командные сезонные агрегаты регулярки и плей-офф. |
 | `https://api-web.nhle.com/v1/roster/{TRI}/{SEASON_ID}` | Текущий ростер команды на сезон. |
 | `https://api.nhle.com/stats/rest/en/skater/{summary,timeonice,faceoffpercentages,shootout,realtime,goalsForAgainst,puckPossessions,shottype}?cayenneExp=…` | Сезонные отчёты по полевым. |
 | `https://api.nhle.com/stats/rest/en/goalie/{summary,savesByStrength}?cayenneExp=…` | Сезонные отчёты по вратарям. |
@@ -381,8 +385,8 @@ rm -rf all_data/raw/{season_id}
 включает эту игру) снова сходит в сеть и перезапишет кэш свежим ответом.
 
 **Порядок ON CONFLICT** в UPSERT-ах сохраняет именно ключевые колонки:
-`(team_id, season_id)` или `(player_id, season_id)`. Никаких суррогатных
-ключей нет.
+`(team_id, season_id)` или `(player_id, season_id)`, у пяти сезонных агрегатов —
+плюс `game_type` (Задача 103). Никаких суррогатных ключей нет.
 
 ---
 

@@ -21,10 +21,11 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -137,12 +138,16 @@ class TestNhlSchema(unittest.TestCase):
                     "to apply data_tables/t.*.sql"
                 )
             self.assertEqual(pk, ["team_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "teams_stats"), ["team_id", "season_id"])
             self.assertEqual(_pk_columns(cur, "rosters"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_season_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "goalies_season_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_advanced_stats"), ["player_id", "season_id"])
-            self.assertEqual(_pk_columns(cur, "players_shot_types"), ["player_id", "season_id"])
+            # Миграция 0022 (Задача 103): регулярка и плей-офф — отдельные строки агрегатов.
+            self.assertEqual(
+                _pk_columns(cur, "teams_stats"), ["team_id", "season_id", "game_type"]
+            )
+            for table in ("players_season_stats", "goalies_season_stats",
+                          "players_advanced_stats", "players_shot_types"):
+                self.assertEqual(
+                    _pk_columns(cur, table), ["player_id", "season_id", "game_type"], table
+                )
             self.assertEqual(_pk_columns(cur, "games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "scheduled_games"), ["game_id"])
             self.assertEqual(_pk_columns(cur, "game_predictions"), ["game_id", "task"])
@@ -174,6 +179,37 @@ class TestNhlSchema(unittest.TestCase):
                 str(row[0]).startswith("bigint"),
                 f"expected bigint season_id, got {row[0]!r}",
             )
+
+    def test_game_type_is_regular_or_playoff(self):
+        """Миграции 0019 и 0022 (Задачи 101, 103): game_type у games и сезонных агрегатов —
+        smallint NOT NULL, только 2 или 3; индекс лидербордов агрегатов — (season_id, game_type)."""
+        tables = ("games", "teams_stats", "players_season_stats", "goalies_season_stats",
+                  "players_advanced_stats", "players_shot_types")
+        with self.conn.cursor() as cur:
+            for table in tables:
+                with self.subTest(table=table):
+                    cur.execute(
+                        "SELECT data_type, is_nullable FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = %s "
+                        "AND column_name = 'game_type'",
+                        (table,),
+                    )
+                    self.assertEqual(
+                        cur.fetchone(), ("smallint", "NO"), f"{table}.game_type — run: make db-migrate"
+                    )
+                    cur.execute(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conrelid = %s::regclass AND conname = %s",
+                        (f"public.{table}", f"{table}_game_type_check"),
+                    )
+                    row = cur.fetchone()
+                    self.assertIsNotNone(row, f"{table}_game_type_check missing — run: make db-migrate")
+                    self.assertEqual(row[0], "CHECK ((game_type = ANY (ARRAY[2, 3])))")
+            for table in tables[2:]:
+                cur.execute(
+                    "SELECT pg_get_indexdef(%s::regclass)", (f"public.idx_{table}_season",)
+                )
+                self.assertTrue(cur.fetchone()[0].endswith("(season_id, game_type)"), table)
 
     def test_bot_subscriptions_migration_applied(self):
         with self.conn.cursor() as cur:
@@ -278,7 +314,8 @@ class TestSubscriptionRepoSql(unittest.TestCase):
     def _delete_rows(self):
         # psycopg2: `with conn` — транзакция, а не закрытие; закрывает `closing`.
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for table in ("bot_subscriptions", "bot_chat_game_sent"):
+            for table in ("bot_subscriptions", "bot_chat_game_sent", "bot_subscription_events",
+                          "bot_actions"):
                 cur.execute(
                     f"DELETE FROM {table} WHERE chat_id IN (%s, %s)", (self.CHAT, self.OTHER_CHAT)
                 )
@@ -368,6 +405,74 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
         self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"]))
 
+    def _events(self, chat_id=CHAT):
+        """История подписок чата (Задача 99) по порядку: (kind, team_id, country, active)."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, team_id, country, active FROM bot_subscription_events "
+                "WHERE chat_id = %s ORDER BY id",
+                (chat_id,),
+            )
+            return cur.fetchall()
+
+    def _actions(self, chat_id=CHAT):
+        """Журнал действий чата (Задача 99) по порядку: (user_id, kind, data)."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s ORDER BY id",
+                (chat_id,),
+            )
+            return cur.fetchall()
+
+    def test_subscription_events_only_on_insert_and_real_active_change(self):
+        """Задача 99: триггер пишет вставку и фактическую смену ``active``; повторное
+        включение уже включённой и отметка рассылки событий не дают."""
+        repo = self.repo
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.mark_digest_night_sent(self.CHAT, self.NIGHT)
+        repo.deactivate_team_scores(self.CHAT, self.TEAM)
+        repo.upsert_team_scores(self.CHAT, self.TEAM)
+        # Страна включается через ON CONFLICT DO UPDATE — ветку UPDATE внутри INSERT.
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
+        repo.upsert_country(self.CHAT, "RUS")
+
+        self.assertEqual(self._events(), [
+            ("team_scores", self.TEAM, None, True),
+            ("morning_digest", None, None, True),
+            ("team_scores", self.TEAM, None, False),
+            ("team_scores", self.TEAM, None, True),
+            ("country_players", None, "RUS", True),
+            ("country_players", None, "RUS", False),
+            ("country_players", None, "RUS", True),
+        ])
+
+    def test_deactivate_chat_logs_blocked_and_all_subscriptions_off(self):
+        """Задача 99: блокировка — строка ``blocked`` без ``user_id`` и разом погашенные
+        подписки чата; так её отличают от отписки."""
+        repo = self.repo
+        repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        repo.upsert_country(self.CHAT, "RUS")
+        repo.upsert_country(self.OTHER_CHAT, "RUS")
+        repo.deactivate_chat(self.CHAT)
+
+        self.assertEqual(self._actions(), [(None, "blocked", None)])
+        # Порядок строк одного UPDATE не задан.
+        self.assertEqual(sorted(self._events()[2:]), [
+            ("country_players", None, "RUS", False), ("morning_digest", None, None, False),
+        ])
+        self.assertEqual(self._actions(self.OTHER_CHAT), [])
+        self.assertEqual(self._events(self.OTHER_CHAT), [("country_players", None, "RUS", True)])
+
+    def test_log_action_writes_command_row(self):
+        import bot
+
+        bot.log_action(self.CHAT, 7, "command", "help")
+
+        self.assertEqual(self._actions(), [(7, "command", "help")])
+
     def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
         repo = self.repo
         self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
@@ -447,7 +552,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
     CHAT = -999000070
     SEASON = 99999999
-    TEAMS = ((900011, "AAA", "Metropolitan"), (900012, "BBB", "Metropolitan"), (900013, "CCC", "Atlantic"))
+    TEAMS = (
+        (900011, "AAA", "Aaa Club", "Metropolitan"),
+        (900012, "BBB", "Bbb Club", "Metropolitan"),
+        (900013, "CCC", "Ccc Club", "Atlantic"),
+    )
 
     def setUp(self):
         from unittest import mock
@@ -460,11 +569,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         self._cleanup()
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for team_id, abbrev, division in self.TEAMS:
+            for team_id, abbrev, name, division in self.TEAMS:
                 cur.execute(
-                    "INSERT INTO teams (team_id, season_id, abbreviation, division_name) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (team_id, self.SEASON, abbrev, division),
+                    "INSERT INTO teams (team_id, season_id, abbreviation, name, division_name) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (team_id, self.SEASON, abbrev, name, division),
                 )
         for patcher in (
             mock.patch.object(config, "SEASON_ID", self.SEASON),
@@ -475,7 +584,8 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+            for table in ("bot_subscriptions", "bot_subscription_events"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = %s", (self.CHAT,))
             cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
 
     def _rows(self):
@@ -546,11 +656,12 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
         ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
-        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1])
+        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1])
         self.assertEqual(
             [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
             [("➕ Дайджест", "sub:d"), ("➕ Предстоящие матчи", "sub:u"),
-             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"), ("Готово", "sub:x")],
+             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
+             ("⏰ Расписания (0)", "sub:s"), ("Готово", "sub:x")],
         )
         self.assertEqual(self._rows(), [])
 
@@ -621,7 +732,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         _, _, buttons = await self._press("sub:T")
         self.assertIn(("Metropolitan (1)", "sub:D:1"), buttons)
         _, text, buttons = await self._press("sub:m")
-        self.assertIn("<li>Команды: BBB</li>", text)
+        self.assertIn("<li>Команды: Bbb Club</li>", text, "текст — полным названием, кнопки — кодом")
         self.assertIn(("🏒 Команды (1)", "sub:T"), buttons)
 
         hint, _, buttons = await self._press("sub:t:1:900012")
@@ -698,13 +809,14 @@ class TestCountryNightSql(unittest.TestCase):
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO teams (team_id, season_id, abbreviation, short_name) "
-                "VALUES (%s, %s, 'HOM', 'Home'), (%s, %s, 'AWY', 'Away')",
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
                 (self.TEAM, self.SEASON, self.OPPONENT, self.SEASON),
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, is_shootouts, "
-                "season_id) VALUES (%s, %s, %s, %s, TRUE, %s), (%s, %s, %s, %s, FALSE, %s)",
+                "season_id, game_type) VALUES (%s, %s, %s, %s, TRUE, %s, 2), "
+                "(%s, %s, %s, %s, FALSE, %s, 2)",
                 (self.GAME, self.NIGHT, self.TEAM, self.OPPONENT, self.SEASON,
                  self.GAME2, self.NIGHT, self.OPPONENT, self.TEAM, self.SEASON),
             )
@@ -782,19 +894,19 @@ class TestCountryNightSql(unittest.TestCase):
         block_game = "\n".join([
             "<b>ZZZ</b>",
             "",
-            "Скорер&lt; (HOM, ц)",
+            "Скорер&lt; (Home Club, ц)",
             "2+0 · +1 · 5 бр. · 1 хит · вбр. 7/12 · 20:10",
             "",
-            "Крыло (HOM)",
+            "Крыло (Home Club)",
             "0+1 · −1 · 2 бр. · 3 хита · 15:30",
             "",
-            "Защитник (HOM, защ)",
+            "Защитник (Home Club, защ)",
             "0+0 · +0 · 1 бр. · 5 блоков · 22:00",
             "",
-            "Стенка (HOM)",
+            "Стенка (Home Club)",
             "30/33 · 90.91% · 59:47",
         ])
-        block_game2 = "<b>ZZZ</b>\n\nГость (AWY)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
+        block_game2 = "<b>ZZZ</b>\n\nГость (Away Club)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
             self.messages.country_night_blocks("ZZZ", self.NIGHT),
             [(self.GAME, block_game), (self.GAME2, block_game2)],
@@ -806,7 +918,7 @@ class TestCountryNightSql(unittest.TestCase):
     def test_score_line_is_the_first_line_of_the_card(self):
         """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
         line = self.messages.game_score_line(self.GAME)
-        self.assertEqual(line, "🏒 <b>Home 3:2 Away</b>")
+        self.assertEqual(line, "🏒 <b>Home Club 3:2 Away Club</b>")
         self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
@@ -840,8 +952,8 @@ class TestCountryNightSql(unittest.TestCase):
 
         blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
         self.assertEqual(subscribed[both], {
-            self.GAME: (["HOM"], [("ZZZ", blocks[self.GAME])]),
-            self.GAME2: (["HOM"], [("ZZZ", blocks[self.GAME2])]),
+            self.GAME: (["Home Club"], [("ZZZ", blocks[self.GAME])]),
+            self.GAME2: (["Home Club"], [("ZZZ", blocks[self.GAME2])]),
         })
         self.assertEqual(
             {game: (subs.teams, [code for code, _ in subs.countries]) for game, subs in subscribed[yyy].items()},
@@ -851,7 +963,8 @@ class TestCountryNightSql(unittest.TestCase):
 
     def _delete_subscriptions(self, chats):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_subscriptions WHERE chat_id = ANY(%s)", (list(chats),))
+            for table in ("bot_subscriptions", "bot_subscription_events", "bot_actions"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (list(chats),))
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -953,8 +1066,8 @@ class TestPredictionLogSql(unittest.TestCase):
             )
             cur.execute(
                 "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
-                "is_overtime, season_id) VALUES (%s, %s, %s, %s, %s, TRUE, %s), "
-                "(%s, %s, %s, %s, NULL, FALSE, %s)",
+                "is_overtime, season_id, game_type) VALUES (%s, %s, %s, %s, %s, TRUE, %s, 2), "
+                "(%s, %s, %s, %s, NULL, FALSE, %s, 2)",
                 (self.PLAYED, today, self.HOME, self.AWAY, self.HOME, self.SEASON,
                  self.UNPLAYED, today, self.HOME, self.AWAY, self.SEASON),
             )
@@ -977,6 +1090,281 @@ class TestPredictionLogSql(unittest.TestCase):
         # Игра без победителя остаётся без исхода.
         unplayed = rows[(self.UNPLAYED, today)]
         self.assertEqual((unplayed[3], unplayed[4], unplayed[5], unplayed[6]), (None, None, None, None))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestRegularSeasonOnlySql(unittest.TestCase):
+    """Задача 102: форма, H2H, дата таблицы, игры ``/BOS_FULL``, лог игр обзора ИИ и датасет
+    модели читают только регулярку. Вымышленный сезон: две победы HOM в регулярке и поздняя
+    игра плей-офф (``game_type = 3``), выигранная AWY, — она не должна попасть ни в один ответ.
+    Строки удаляются до и после."""
+
+    SEASON = 99999102
+    HOME = 900102
+    AWAY = 900103
+    PLAYER = -102
+    GOALIE = -103
+    REG1 = 2099991021
+    REG2 = 2099991022
+    PLAYOFF = 2099991023
+
+    def setUp(self):
+        import ai_stats
+        import bot_messages
+
+        self.messages = bot_messages
+        self.ai_stats = ai_stats
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        season_patch = patch.object(config, "SEASON_ID", self.SEASON)
+        season_patch.start()
+        self.addCleanup(season_patch.stop)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
+                (self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # (игра, день, хозяева, гости, победитель, тип)
+            for game in (
+                (self.REG1, date(2099, 1, 1), self.HOME, self.AWAY, self.HOME, 2),
+                (self.REG2, date(2099, 1, 3), self.AWAY, self.HOME, self.HOME, 2),
+                (self.PLAYOFF, date(2099, 4, 20), self.HOME, self.AWAY, self.AWAY, 3),
+            ):
+                cur.execute(
+                    "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                    "is_overtime, is_shootouts, season_id, game_type) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, FALSE, %s, %s)",
+                    (*game[:5], self.SEASON, game[5]),
+                )
+                winner, loser = game[4], ({game[2], game[3]} - {game[4]}).pop()
+                cur.execute(
+                    "INSERT INTO game_team_stats (game_id, team_id, field, goals, fst_period_goals, "
+                    "snd_period_goals, trd_period_goals, shots) "
+                    "VALUES (%s, %s, %s, 2, 1, 1, 0, 30), (%s, %s, %s, 1, 0, 0, 1, 25)",
+                    (game[0], winner, "home" if winner == game[2] else "away",
+                     game[0], loser, "home" if loser == game[2] else "away"),
+                )
+                cur.execute(
+                    "INSERT INTO game_player_stats (player_id, team_id, game_id, goals, assists, "
+                    "shots) VALUES (%s, %s, %s, 1, 0, 3)",
+                    (self.PLAYER, self.HOME, game[0]),
+                )
+                cur.execute(
+                    "INSERT INTO game_goalie_stats (player_id, team_id, game_id, saves, shots) "
+                    "VALUES (%s, %s, %s, 24, 25)",
+                    (self.GOALIE, self.HOME, game[0]),
+                )
+                cur.execute(
+                    "INSERT INTO shot_attempts (game_id, event_id, sort_order, team_id, event_type) "
+                    "VALUES (%s, 1, 1, %s, 'shot-on-goal')",
+                    (game[0], self.HOME),
+                )
+
+    def _games(self):
+        return [self.REG1, self.REG2, self.PLAYOFF]
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("shot_attempts", "game_goalie_stats", "game_player_stats", "game_team_stats"):
+                cur.execute(f"DELETE FROM {table} WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM games WHERE game_id = ANY(%s)", (self._games(),))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def test_form_streak_h2h_and_standings_day_skip_playoff(self):
+        # С плей-офф было бы 2-1-0, «L1», (2, 1) и 2099-04-20.
+        self.assertEqual(self.messages._last_n_form_record(self.HOME), "2-0-0")
+        self.assertEqual(self.messages._current_streak(self.HOME), "W2")
+        self.assertEqual(self.messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
+        self.assertEqual(self.messages._standings_as_of_day(), "2099-01-03")
+
+    def test_team_full_games_skip_playoff(self):
+        context = self.messages._team_games_context(self.HOME)
+        self.assertIn("Дома: 1-0-0 · в гостях: 1-0-0", context["season_extra"])
+        self.assertEqual(
+            context["recent_games"].splitlines(),
+            ["03.01 · в гостях · AWY · 2:1 · В", "01.01 · дома · AWY · 2:1 · В"],
+        )
+
+    def test_ai_overview_game_logs_skip_playoff(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(self.ai_stats._OVERVIEW_SKATER_GAMES_SQL, (self.PLAYER, self.SEASON))
+            self.assertEqual([r[0] for r in cur.fetchall()], ["2099-01-03", "2099-01-01"])
+            cur.execute(self.ai_stats._OVERVIEW_GOALIE_GAMES_SQL, (self.GOALIE, self.SEASON))
+            self.assertEqual([r[0] for r in cur.fetchall()], ["2099-01-03", "2099-01-01"])
+
+    def test_dataset_loaders_skip_playoff(self):
+        from modeling.dataset_builder.base import (
+            DatasetBuildConfig,
+            load_history_team_stats,
+            load_shot_attempts,
+            load_target_games,
+        )
+
+        cfg = DatasetBuildConfig(mode="train", output_dir=Path("."), season_ids=[self.SEASON])
+        regular = [self.REG1, self.REG2]
+        with closing(_connect()) as conn:
+            self.assertEqual(load_target_games(conn, cfg)["game_id"].tolist(), regular)
+            self.assertEqual(
+                load_target_games(conn, cfg, with_outcome=True)["game_id"].tolist(), regular
+            )
+            self.assertEqual(
+                sorted(set(load_history_team_stats(conn, cfg)["game_id"])), regular
+            )
+            self.assertEqual(load_shot_attempts(conn, cfg)["game_id"].tolist(), regular)
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestRegularSeasonAggregatesSql(unittest.TestCase):
+    """Задача 103: экраны бота и обзор ИИ читают из сезонных агрегатов только регулярку.
+    Вымышленный сезон: у HOM, его игрока и вратаря в каждой из пяти таблиц две строки —
+    регулярка и плей-офф (``game_type = 3``) с числами-метками 333–888, которых нет в регулярке:
+    ни одна метка не должна попасть в ответ, ни одна строка — задвоиться. Строки удаляются
+    до и после."""
+
+    SEASON = 99999103
+    HOME = 900104
+    AWAY = 900105
+    PLAYER = -104
+    GOALIE = -105
+    PLAYOFF_MARKS = ("333", "444", "555", "777", "888", "99.9")
+
+    def setUp(self):
+        import ai_stats
+        import bot_messages
+
+        self.messages = bot_messages
+        self.ai_stats = ai_stats
+        # Шаблоны экранов (`messages/*.txt`) читаются относительно telegram_bot/.
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(TELEGRAM_BOT)
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        season_patch = patch.object(config, "SEASON_ID", self.SEASON)
+        season_patch.start()
+        self.addCleanup(season_patch.stop)
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) "
+                "VALUES (%s, %s, 'HOM', 'Home Club'), (%s, %s, 'AWY', 'Away Club')",
+                (self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # Порог лидерборда Corsi — LEAST(20, половина игр лидера): по регулярке 10, игрок с 12
+            # проходит; 40 игр плей-офф (нарочно больше регулярки) без фильтра подняли бы порог до 20.
+            cur.execute(
+                "INSERT INTO teams_stats (team_id, season_id, game_type, games_played, wins, "
+                "losses, ot, points, procent_points) VALUES "
+                "(%s, %s, 2, 20, 12, 6, 2, 26, 65.0), (%s, %s, 3, 40, 444, 3, 0, 888, 50.0), "
+                "(%s, %s, 2, 20, 8, 10, 2, 18, 45.0)",
+                (self.HOME, self.SEASON, self.HOME, self.SEASON, self.AWAY, self.SEASON),
+            )
+            # Места в лиге у `/BOS_FULL` сравнивают показатели регулярки — без NULL, как у загрузчика.
+            cur.execute(
+                "UPDATE teams_stats SET goals_per_game = 3.1, goals_against_per_game = 2.8, "
+                "shots_per_game = 30.5, shots_allowed = 28.5, power_play_percentage = 21.5, "
+                "penalty_kill_percentage = 80.5, face_off_win_percentage = 50.5, "
+                "power_play_goals = 12, power_play_opportunities = 60, "
+                "power_play_goals_against = 10 WHERE season_id = %s AND game_type = 2",
+                (self.SEASON,),
+            )
+            cur.execute(
+                "INSERT INTO rosters (player_id, season_id, lastname, position, nationality, "
+                "current_team_id) VALUES (%s, %s, 'Skater', 'C', 'ZZZ', %s), "
+                "(%s, %s, 'Keeper', 'G', 'ZZZ', %s)",
+                (self.PLAYER, self.SEASON, self.HOME, self.GOALIE, self.SEASON, self.HOME),
+            )
+            # (тип, игры, голы, передачи, очки, смены, время за игру, Corsi, голы с кистевого);
+            # 11 игр плей-офф тоже выше порога 10 — без фильтра JOIN на pss задвоил бы Corsi.
+            for row in ((2, 12, 11, 6, 17, 400, "18:00", 52.5, 5),
+                        (3, 11, 555, 222, 777, 150, "19:00", 99.9, 333)):
+                cur.execute(
+                    "INSERT INTO players_season_stats (player_id, season_id, game_type, games, "
+                    "goals, assists, points, shifts, time_on_ice_per_game) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, *row[:7]),
+                )
+                cur.execute(
+                    "INSERT INTO players_advanced_stats (player_id, season_id, game_type, sat_pct) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, row[0], row[7]),
+                )
+                cur.execute(
+                    "INSERT INTO players_shot_types (player_id, season_id, game_type, goals_wrist) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (self.PLAYER, self.SEASON, row[0], row[8]),
+                )
+            cur.execute(
+                "INSERT INTO goalies_season_stats (player_id, season_id, game_type, games, wins, "
+                "losses, ot, saves, shots_against, save_percentage, goal_against_average, "
+                "shutouts) VALUES (%s, %s, 2, 15, 9, 4, 2, 400, 430, 93.0, 2.5, 1), "
+                "(%s, %s, 3, 9, 444, 3, 0, 250, 270, 92.6, 2.2, 0)",
+                (self.GOALIE, self.SEASON, self.GOALIE, self.SEASON),
+            )
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("players_season_stats", "players_advanced_stats", "players_shot_types",
+                          "goalies_season_stats", "rosters", "teams_stats", "teams"):
+                cur.execute(f"DELETE FROM {table} WHERE season_id = %s", (self.SEASON,))
+
+    def assertNoPlayoff(self, text):
+        for mark in self.PLAYOFF_MARKS:
+            self.assertNotIn(mark, text)
+
+    def test_leaderboards_show_each_player_once(self):
+        for table, column in (("players_season_stats", "points"),
+                              ("goalies_season_stats", "wins"),
+                              ("players_advanced_stats", "sat_pct"),
+                              ("players_shot_types", "goals_wrist")):
+            with self.subTest(table=table):
+                text, _n, total = self.messages.player_stats_with_count("Лидеры", table, column)
+                self.assertEqual(total, 1)
+                self.assertNoPlayoff(text)
+
+    def test_team_screens_read_regular_totals(self):
+        text, _n, total = self.messages.team_stats_with_count(["points"])
+        self.assertEqual(total, 2)
+        self.assertNoPlayoff(text)
+        self.assertNoPlayoff(self.messages.team_table())
+        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview("AWY", "HOM")))
+        for screen in (self.messages.team_profile, self.messages.team_full_stats):
+            with self.subTest(screen=screen.__name__):
+                text = screen("HOM")
+                self.assertIn("Skater", text)
+                self.assertIn("Keeper", text)
+                self.assertNoPlayoff(text)
+
+    def test_country_screens_read_regular_totals(self):
+        with patch.object(self.messages, "COUNTRY_MIN_PLAYERS", 1):
+            self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
+        for group in ("F", "G"):
+            with self.subTest(group=group):
+                table, _n, total = self.messages._player_group_table(
+                    self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
+                )
+                self.assertEqual(total, 1)
+                self.assertNoPlayoff(table)
+
+    def test_ai_overview_seasons_read_regular_totals(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                self.ai_stats._OVERVIEW_SKATER_SEASONS_SQL,
+                (self.PLAYER, self.SEASON, self.SEASON - 10001),
+            )
+            self.assertEqual([r[:2] for r in cur.fetchall()], [(self.SEASON, 12)])
+            cur.execute(
+                self.ai_stats._OVERVIEW_GOALIE_SEASONS_SQL,
+                (self.GOALIE, self.SEASON, self.SEASON - 10001),
+            )
+            self.assertEqual([r[:2] for r in cur.fetchall()], [(self.SEASON, 15)])
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -1022,58 +1410,677 @@ class TestGoalClipCacheSql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
-class TestAiQuestionsSql(unittest.TestCase):
-    """Суточный лимит и журнал свободного текста (Задача 81) на настоящих ``ai_questions`` и
-    ``ai_existing_users``. Юнит-тесты подменяют ответ БД, здесь проверяется сам SQL: граница
-    суток по МСК и лимит текущего пользователя. Чаты — отрицательные, как в
-    ``TestSubscriptionRepoSql``; строки удаляются до и после."""
+class TestAiLimitSql(unittest.TestCase):
+    """Премиум и лимит вопросов к ИИ (Задачи 81, 96) на настоящих ``premium_access``,
+    ``ai_questions`` и ``ai_stats_log``. Юнит-тесты подменяют ответ БД, здесь проверяется сам
+    SQL: срок премиума, границы суток и недели по МСК, потолок за всё время, что считается
+    вопросом. Чаты — отрицательные, как в ``TestSubscriptionRepoSql``; строки удаляются до и
+    после."""
 
-    NEW_CHAT = -999000081
-    EXISTING_CHAT = -999000082
+    FREE_CHAT = -999000081
+    PREMIUM_CHAT = -999000082
+    EXPIRED_CHAT = -999000083
+    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT]
+    # Минута до начала текущих суток / недели по МСК — уже не в счёт.
+    BEFORE_DAY = ("(date_trunc('day', now() AT TIME ZONE 'Europe/Moscow') - interval '1 minute') "
+                  "AT TIME ZONE 'Europe/Moscow'")
+    BEFORE_WEEK = BEFORE_DAY.replace("'day'", "'week'")
 
     def setUp(self):
         import ai_router
+        import premium
 
-        self.ai = ai_router
+        self.ai, self.premium = ai_router, premium
         self._cleanup()
         self.addCleanup(self._cleanup)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("INSERT INTO ai_existing_users (chat_id) VALUES (%s)", (self.EXISTING_CHAT,))
-
-    def _cleanup(self):
-        chats = [self.NEW_CHAT, self.EXISTING_CHAT]
-        with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM ai_questions WHERE chat_id = ANY(%s)", (chats,))
-            cur.execute("DELETE FROM ai_existing_users WHERE chat_id = ANY(%s)", (chats,))
-
-    def test_limit_counts_todays_questions_by_moscow_day(self):
-        ai = self.ai
-        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW)
-        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING)
-
-        ai._log_question(self.NEW_CHAT, "лидеры", "screen", 900, tool="leaders",
-                         tool_input={"category": "goals"}, cost_usd=0.004)
-        ai._log_question(self.NEW_CHAT, "погода", "error", 30000, error="APITimeoutError")
-        ai._log_question(self.EXISTING_CHAT, "таблица", "text", 700, answer="Пока не умею")
-        # Минута до полуночи по Москве — вчерашний вопрос, в сегодняшний лимит не входит.
-        with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO ai_questions (chat_id, question, outcome, latency_ms, asked_at) "
-                "VALUES (%s, 'вчера', 'text', 1, (date_trunc('day', now() AT TIME ZONE "
-                "'Europe/Moscow') - interval '1 minute') AT TIME ZONE 'Europe/Moscow')",
-                (self.NEW_CHAT,),
+                "INSERT INTO premium_access (chat_id, expires_at) VALUES "
+                "(%s, now() + interval '1 day'), (%s, now() - interval '1 second')",
+                (self.PREMIUM_CHAT, self.EXPIRED_CHAT),
             )
 
-        # Сбой API лимит не списывает: из трёх строк NEW_CHAT в счёт — только сегодняшний экран.
-        self.assertEqual(ai.questions_left(self.NEW_CHAT), ai.DAILY_LIMIT_NEW - 1)
-        self.assertEqual(ai.questions_left(self.EXISTING_CHAT), ai.DAILY_LIMIT_EXISTING - 1)
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for table in ("ai_questions", "ai_stats_log", "premium_access"):
+                cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    def _asked(self, chat_id, n, at="now()", table="ai_questions", outcome="text"):
+        """``n`` вопросов чата в журнале ``table`` моментом ``at`` (SQL-выражение)."""
+        extra = "continuation, " if table == "ai_stats_log" else ""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for _ in range(n):
+                cur.execute(
+                    f"INSERT INTO {table} (chat_id, question, {extra}outcome, latency_ms, asked_at) "
+                    f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, {at})",
+                    (chat_id, outcome),
+                )
+
+    def test_is_premium_only_until_expiry(self):
+        self.assertTrue(self.premium.is_premium(self.PREMIUM_CHAT))
+        self.assertFalse(self.premium.is_premium(self.EXPIRED_CHAT))
+        self.assertFalse(self.premium.is_premium(self.FREE_CHAT))
+
+    def test_premium_limit_is_per_moscow_day(self):
+        ai = self.ai
+        self._asked(self.PREMIUM_CHAT, 5, at=self.BEFORE_DAY)
+        self._asked(self.PREMIUM_CHAT, ai.PREMIUM_DAILY_LIMIT - 1)
+        self.assertIsNone(ai.limit_refusal(self.PREMIUM_CHAT))
+        self._asked(self.PREMIUM_CHAT, 1)
+        self.assertEqual(ai.limit_refusal(self.PREMIUM_CHAT), ai.LIMIT_TEXT)
+
+    def test_free_limit_is_per_moscow_week_from_monday(self):
+        ai = self.ai
+        # Истёкший премиум — бесплатный чат.
+        self._asked(self.EXPIRED_CHAT, 2, at=self.BEFORE_WEEK)
+        self._asked(self.EXPIRED_CHAT, ai.FREE_WEEKLY_LIMIT - 1)
+        self.assertIsNone(ai.limit_refusal(self.EXPIRED_CHAT))
+        self._asked(self.EXPIRED_CHAT, 1)
+        self.assertEqual(ai.limit_refusal(self.EXPIRED_CHAT), ai.WEEK_LIMIT_TEXT)
+
+    def test_free_total_cap_counts_whole_history(self):
+        ai = self.ai
+        self._asked(self.FREE_CHAT, ai.FREE_TOTAL_LIMIT - 1, at="now() - interval '60 days'")
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
+        self._asked(self.FREE_CHAT, 1, at="now() - interval '30 days'")
+        self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.TOTAL_LIMIT_TEXT)
+
+    def test_each_question_counts_once_and_failures_do_not(self):
+        """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
+        ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``
+        маршрутизатором и сбои (``error``) в счёт не идут."""
+        ai = self.ai
+        ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"}, cost_usd=0.004)
+        ai._log_question(self.FREE_CHAT, "погода", "error", 30000, error="APITimeoutError")
+        ai._log_question(self.FREE_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")
+        self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="clarify")
+        self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.WEEK_LIMIT_TEXT)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT tool, tool_input, cost_usd FROM ai_questions "
-                "WHERE chat_id = %s AND outcome = 'screen'",
-                (self.NEW_CHAT,),
+                "WHERE chat_id = %s AND tool = 'leaders'",
+                (self.FREE_CHAT,),
             )
             self.assertEqual(cur.fetchall(), [("leaders", {"category": "goals"}, Decimal("0.004000"))])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestPremiumPaymentsSql(unittest.TestCase):
+    """Оплата премиума (Задача 97) на настоящих ``premium_access`` и ``premium_payments``:
+    продление от «сейчас» или от действующего срока, идемпотентность по ``charge_id``, откат
+    срока при возврате. Чаты — отрицательные, строки удаляются до и после."""
+
+    NEW_CHAT = -999000091
+    ACTIVE_CHAT = -999000092
+    EXPIRED_CHAT = -999000093
+    CHATS = [NEW_CHAT, ACTIVE_CHAT, EXPIRED_CHAT]
+
+    def setUp(self):
+        import premium
+
+        self.premium = premium
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        self.active_until = self._query(
+            "INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() + interval '10 days'), "
+            "(%s, now() - interval '5 days') RETURNING expires_at",
+            (self.ACTIVE_CHAT, self.EXPIRED_CHAT),
+        )[0][0]
+
+    def _cleanup(self):
+        for table in ("premium_payments", "premium_access"):
+            self._query(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _days(self, later, earlier):
+        """Разница двух timestamptz в сутках."""
+        [(days,)] = self._query("SELECT extract(epoch FROM (%s::timestamptz - %s::timestamptz)) / 86400",
+                                (later, earlier))
+        return float(days)
+
+    def test_new_and_expired_chats_extend_from_now(self):
+        for chat in (self.NEW_CHAT, self.EXPIRED_CHAT):
+            until = self.premium.extend_premium(chat, f"t97-{chat}", 100, False)
+            [(now,)] = self._query("SELECT now()")
+            self.assertAlmostEqual(self._days(until, now), 30, places=2)
+            self.assertTrue(self.premium.is_premium(chat))
+
+    def test_active_chat_extends_from_its_expiry(self):
+        until = self.premium.extend_premium(self.ACTIVE_CHAT, "t97-active", 100, False)
+        self.assertAlmostEqual(self._days(until, self.active_until), 30, places=4)
+        self.assertEqual(self.premium.premium_until(self.ACTIVE_CHAT), until)
+
+    def test_same_charge_id_does_not_extend_twice(self):
+        first = self.premium.extend_premium(self.NEW_CHAT, "t97-dup", 100, False)
+        again = self.premium.extend_premium(self.NEW_CHAT, "t97-dup", 100, False)
+        self.assertEqual(first, again)
+        self.assertEqual(
+            self._query("SELECT count(*) FROM premium_payments WHERE chat_id = %s", (self.NEW_CHAT,)),
+            [(1,)],
+        )
+
+    def test_recurring_payment_extends_and_is_journaled(self):
+        first = self.premium.extend_premium(self.NEW_CHAT, "t97-first", 100, False)
+        second = self.premium.extend_premium(self.NEW_CHAT, "t97-renew", 100, True)
+        self.assertAlmostEqual(self._days(second, first), 30, places=4)
+        self.assertEqual(
+            self._query("SELECT is_recurring, amount_stars, paid_until = %s FROM premium_payments "
+                        "WHERE telegram_payment_charge_id = 't97-renew'", (second,)),
+            [(True, 100, True)],
+        )
+
+    def test_paid_subscription_is_a_live_unrefunded_payment_not_a_manual_grant(self):
+        self.assertFalse(self.premium.has_paid_subscription(self.ACTIVE_CHAT))  # ручная выдача
+        self.premium.extend_premium(self.ACTIVE_CHAT, "t97-sub", 100, False)
+        self.assertTrue(self.premium.has_paid_subscription(self.ACTIVE_CHAT))
+        self.premium.mark_refunded("t97-sub")
+        self.assertFalse(self.premium.has_paid_subscription(self.ACTIVE_CHAT))
+        self.premium.extend_premium(self.NEW_CHAT, "t97-old", 100, False)
+        self._query("UPDATE premium_payments SET paid_until = now() - interval '1 day' "
+                    "WHERE chat_id = %s", (self.NEW_CHAT,))
+        self.assertFalse(self.premium.has_paid_subscription(self.NEW_CHAT))
+
+    def test_refund_rolls_back_expiry_and_marks_payment(self):
+        self.premium.extend_premium(self.ACTIVE_CHAT, "t97-refund", 100, False)
+        self.assertEqual(self.premium.find_refundable_payment("t97-refund"), self.ACTIVE_CHAT)
+
+        self.premium.mark_refunded("t97-refund")
+
+        self.assertEqual(self.premium.premium_until(self.ACTIVE_CHAT), self.active_until)
+        self.assertIsNotNone(self._query(
+            "SELECT refunded_at FROM premium_payments WHERE telegram_payment_charge_id = 't97-refund'"
+        )[0][0])
+        with self.assertRaises(LookupError):
+            self.premium.find_refundable_payment("t97-refund")
+        with self.assertRaises(LookupError):
+            self.premium.mark_refunded("t97-refund")
+        with self.assertRaises(LookupError):
+            self.premium.find_refundable_payment("t97-missing")
+
+    def test_refund_never_moves_expiry_into_the_past(self):
+        self.premium.extend_premium(self.NEW_CHAT, "t97-short", 100, False)
+        self._query("UPDATE premium_access SET expires_at = now() + interval '1 day' WHERE chat_id = %s",
+                    (self.NEW_CHAT,))
+        self.premium.mark_refunded("t97-short")
+        self.assertFalse(self.premium.is_premium(self.NEW_CHAT))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
+    """Расписания экранов (Задача 107) на настоящей ``bot_schedules``: миграция и её CHECK-и,
+    тикер (``bot.send_due_schedules``) — просрочка, блокировка, сбой, лимит без премиума — и
+    список с удалением в ``/subscriptions`` через ``Dispatcher.feed_update``. Telegram —
+    записывающая сессия; чаты отрицательные, строки удаляются до и после."""
+
+    CHAT = -999000107
+    OTHER_CHAT = -999000108
+    CHATS = [CHAT, OTHER_CHAT]
+    LEADERS = ("leaders", {"category": "goals"})
+
+    def setUp(self):
+        import bot
+        import schedule_repo
+
+        self.bot = bot
+        self.repo = schedule_repo
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for table in ("bot_schedules", "bot_subscriptions", "bot_subscription_events", "bot_actions",
+                      "premium_access"):
+            self._query(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _create(self, chat_id, screen=LEADERS, overdue="3 days"):
+        """Ежедневное расписание 10:00 МСК, чья отправка просрочена на `overdue`; его id."""
+        schedule_id = self.repo.create(chat_id, screen[0], screen[1], "day", None, None, time(10, 0),
+                                       "Europe/Moscow", datetime.now(timezone.utc))
+        self._query("UPDATE bot_schedules SET next_run_at = now() - %s::interval WHERE id = %s",
+                       (overdue, schedule_id))
+        return schedule_id
+
+    def _fake_bot(self):
+        from aiogram import Bot
+
+        from tests._telegram_fakes import FAKE_TOKEN, FakeSession
+
+        return Bot(FAKE_TOKEN, session=FakeSession())
+
+    def _next_runs(self, chat_id):
+        return [r for (r,) in self._query(
+            "SELECT next_run_at FROM bot_schedules WHERE chat_id = %s ORDER BY id", (chat_id,))]
+
+    def test_migration_rolls_back_and_applies_again(self):
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            # Откат в обратном порядке миграций: 0021 расширяет CHECK, который пересоздаёт 0020.
+            cur.execute((migrations / "0021_schedule_created.down.sql").read_text())
+            cur.execute((migrations / "0020_bot_schedules.down.sql").read_text())
+            self.assertFalse(_base_table_exists(cur, "bot_schedules"))
+            cur.execute((migrations / "0020_bot_schedules.up.sql").read_text())
+            cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
+            self.assertTrue(_base_table_exists(cur, "bot_schedules"))
+            conn.rollback()
+
+    def test_checks_reject_week_without_day_and_quarter_hours(self):
+        for freq, weekday, month_day, local in (
+            ("week", None, None, "10:00"), ("day", None, None, "10:15"),
+            ("day", 5, None, "10:00"), ("month", None, 29, "10:00"),
+        ):
+            with self.subTest(freq=freq, weekday=weekday, month_day=month_day, local=local):
+                with self.assertRaises(psycopg2.errors.CheckViolation):
+                    self._query(
+                        "INSERT INTO bot_schedules (chat_id, screen, freq, weekday, month_day, local_time, "
+                        "timezone, next_run_at) VALUES (%s, 'leaders', %s, %s, %s, %s, 'Europe/Moscow', now())",
+                        (self.CHAT, freq, weekday, month_day, local),
+                    )
+
+    async def test_overdue_schedule_is_sent_once_and_moves_past_now(self):
+        schedule_id = self._create(self.CHAT)
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        await self.bot.send_due_schedules(fake_bot, now)
+        await self.bot.send_due_schedules(fake_bot, now)
+
+        [sent] = fake_bot.session.sent_rich
+        self.assertEqual(sent.chat_id, self.CHAT)
+        [next_run] = self._next_runs(self.CHAT)
+        self.assertGreater(next_run, now)
+        self.assertLessEqual(next_run - now, timedelta(days=1))
+        self.assertEqual(
+            self._query("SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s", (self.CHAT,)),
+            [(None, "schedule_sent", f"{schedule_id}:leaders")],
+        )
+
+    async def test_blocked_chat_loses_schedules_and_subscriptions(self):
+        from aiogram.exceptions import TelegramForbiddenError
+        from aiogram.methods import GetMe, SendRichMessage
+
+        import subscription_repo
+
+        self._create(self.CHAT)
+        subscription_repo.upsert_chat_kind(self.CHAT, "morning_digest")
+        fake_bot = self._fake_bot()
+        fake_bot.session.fail_next(SendRichMessage, TelegramForbiddenError(GetMe(), "blocked"))
+        await self.bot.send_due_schedules(fake_bot, datetime.now(timezone.utc))
+
+        self.assertEqual(self.repo.list_for_chat(self.CHAT), [])
+        self.assertEqual(
+            self._query("SELECT active FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,)), [(False,)]
+        )
+
+    async def test_failed_schedule_does_not_stop_the_next_one(self):
+        # `help` на расписание не ставится — экран падает KeyError, как любой сбой экрана.
+        self._create(self.CHAT, ("open_command", {"command": "help"}), overdue="2 hours")
+        self._create(self.OTHER_CHAT, overdue="1 hour")
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        with self.assertLogs("bot", "ERROR"):
+            await self.bot.send_due_schedules(fake_bot, now)
+
+        self.assertEqual([m.chat_id for m in fake_bot.session.sent_rich], [self.OTHER_CHAT])
+        self.assertGreater(self._next_runs(self.CHAT)[0], now)
+
+    async def test_free_chat_gets_only_its_oldest_schedule(self):
+        self._create(self.CHAT, ("open_command", {"command": "team"}), overdue="1 hour")
+        self._create(self.CHAT, overdue="2 hours")
+        fake_bot = self._fake_bot()
+        now = datetime.now(timezone.utc)
+        await self.bot.send_due_schedules(fake_bot, now)
+
+        [sent] = fake_bot.session.sent_rich
+        direct = self._fake_bot()
+        await self.bot.show_team(direct, self.CHAT)
+        self.assertEqual(sent, direct.session.sent_rich[0], "ушёл старейший — экран /team, не лидеры")
+        self.assertTrue(all(r > now for r in self._next_runs(self.CHAT)), "слот сдвинут у обоих")
+
+        self._query("INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() + interval '1 day')",
+                       (self.CHAT,))
+        self._query("UPDATE bot_schedules SET next_run_at = now() - interval '1 minute' WHERE chat_id = %s",
+                       (self.CHAT,))
+        await self.bot.send_due_schedules(fake_bot, datetime.now(timezone.utc))
+        self.assertEqual(len(fake_bot.session.sent_rich), 3, "премиуму — оба")
+
+    async def test_subscriptions_list_and_delete_through_dispatcher(self):
+        from aiogram.types import Update
+
+        from tests._telegram_fakes import _callback_data, body
+
+        mine = self._create(self.CHAT)
+        foreign = self._create(self.OTHER_CHAT)
+        dispatcher = self.bot.build_dispatcher()
+        fake_bot = self._fake_bot()
+
+        async def press(data):
+            update = Update.model_validate({"update_id": 1, "callback_query": _callback_data(data, self.CHAT, 1)})
+            await dispatcher.feed_update(fake_bot, update)
+            edit = fake_bot.session.edited_texts[-1]
+            return fake_bot.session.answers[-1], body(edit), [
+                b.callback_data for row in edit.reply_markup.inline_keyboard for b in row
+            ]
+
+        _, main_html, main_buttons = await press("sub:m")
+        self.assertIn("sub:s", main_buttons)
+        _, html_list, buttons = await press("sub:s")
+        self.assertIn("Лидеры · Лучшие снайперы — ежедневно 10:00 (МСК)", html_list)
+        self.assertEqual(buttons, [f"sub:s:{mine}", "sub:m"])
+
+        hint, _, _ = await press(f"sub:s:{foreign}")
+        self.assertEqual(hint, "Расписание не найдено")
+        self.assertEqual(len(self.repo.list_for_chat(self.OTHER_CHAT)), 1)
+
+        hint, html_after, buttons = await press(f"sub:s:{mine}")
+        self.assertEqual(hint, "Расписание удалено")
+        self.assertIn("Пока ничего нет.", html_after)
+        self.assertEqual(buttons, ["sub:m"])
+        self.assertEqual(
+            self._query("SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s "
+                           "AND kind = 'schedule_deleted'", (self.CHAT,)),
+            [(1, "schedule_deleted", str(mine))],
+        )
+
+    async def test_card_saves_a_row_and_logs_it_through_dispatcher(self):
+        """Задача 108: «Сохранить» карточки пишет строку с первой отправкой в будущем и
+        `schedule_created` (миграция 0021); второе бесплатное — отказ без записи."""
+        from aiogram.types import Update
+
+        from tests._telegram_fakes import _callback_data
+
+        dispatcher = self.bot.build_dispatcher()
+        fake_bot = self._fake_bot()
+        draft = self.bot.Draft("leaders", {"category": "goals"}, "week", 5, 20, "Europe/Moscow")
+        for update_id in (1, 2):
+            update = Update.model_validate({
+                "update_id": update_id,
+                "callback_query": _callback_data(self.bot._encode("s", draft), self.CHAT, 1),
+            })
+            await dispatcher.feed_update(fake_bot, update)
+
+        [schedule] = self.repo.list_for_chat(self.CHAT)
+        self.assertEqual((schedule.screen, schedule.params, schedule.freq, schedule.weekday, schedule.local_time),
+                         ("leaders", {"category": "goals"}, "week", 5, time(10, 0)))
+        [next_run] = self._next_runs(self.CHAT)
+        self.assertGreater(next_run, datetime.now(timezone.utc))
+        self.assertEqual(next_run.astimezone(ZoneInfo("Europe/Moscow")).isoweekday(), 5)
+        self.assertEqual(
+            self._query("SELECT kind, data FROM bot_actions WHERE chat_id = %s AND kind = 'schedule_created'",
+                        (self.CHAT,)),
+            [("schedule_created", f"{schedule.id}:leaders")],
+        )
+        self.assertIn("/premium", fake_bot.session.sent_rich[-1].rich_message.html)
+
+    def test_migration_0021_rolls_back_and_applies_again(self):
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            insert = "INSERT INTO bot_actions (chat_id, kind) VALUES (%s, 'schedule_created')"
+            cur.execute((migrations / "0021_schedule_created.down.sql").read_text())
+            cur.execute("SAVEPOINT before_insert")
+            with self.assertRaises(psycopg2.errors.CheckViolation):
+                cur.execute(insert, (self.CHAT,))
+            cur.execute("ROLLBACK TO SAVEPOINT before_insert")
+            cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
+            cur.execute(insert, (self.CHAT,))
+            conn.rollback()
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiStatsWindow(unittest.TestCase):
+    """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
+    строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""
+
+    CHAT = -999000084
+    OTHER = -999000085
+
+    def setUp(self):
+        import ai_stats
+
+        self.ai = ai_stats
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM ai_stats_log WHERE chat_id = ANY(%s)", ([self.CHAT, self.OTHER],))
+
+    def _add(self, chat, question, outcome, minutes_ago, answer=None):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, answer, latency_ms, "
+                "asked_at) VALUES (%s, %s, false, %s, %s, 1, now() - %s * interval '1 minute')",
+                (chat, question, outcome, answer or f"ответ {question}", minutes_ago),
+            )
+
+    def _questions(self, chat):
+        return [p["question"] for p in self.ai.recent_pairs(chat)]
+
+    def test_window_applies_to_every_row_not_only_the_newest(self):
+        self._add(self.CHAT, "давний", "answer", 180)
+        self.assertEqual(self._questions(self.CHAT), [], "все строки вне окна")
+
+        self._add(self.CHAT, "почти вышел", "answer", 29.5)
+        self._add(self.OTHER, "чужой", "answer", 1)
+        self.assertEqual(self._questions(self.CHAT), ["почти вышел"], "давняя пара за окном не тянется")
+
+        self._add(self.CHAT, "сбой", "error", 2)
+        self._add(self.CHAT, "уточнение", "clarify", 1, answer="Какой Хьюз?")
+        pairs = self.ai.recent_pairs(self.CHAT)
+        self.assertEqual([p["question"] for p in pairs], ["почти вышел", "уточнение"], "от старых к новым")
+        self.assertEqual(pairs[-1]["outcome"], "clarify")
+        self.assertEqual(pairs[-1]["answer"], "Какой Хьюз?")
+
+    def test_window_closes_after_thirty_minutes_and_keeps_three_pairs(self):
+        self._add(self.CHAT, "вышел", "answer", 30.5)
+        self.assertEqual(self._questions(self.CHAT), [])
+        for i, minutes in enumerate((20, 15, 10, 5)):
+            self._add(self.CHAT, f"в{i}", "answer", minutes)
+        self.assertEqual(self._questions(self.CHAT), ["в1", "в2", "в3"])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestAiReaderRole(unittest.TestCase):
+    """Роль `nhl_ai_reader` (Задача 83, миграция 0015) — граница безопасности для SQL, который
+    пишет модель: читает только таблицы данных, не пишет и не создаёт, не видит таблиц бота."""
+
+    @staticmethod
+    def _reader():
+        return psycopg2.connect(
+            host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+            database=config.PG_DATABASE,
+        )
+
+    def _error_code(self, sql: str, before: str = "") -> str:
+        """pgcode ошибки, с которой роль встречает *sql* (опционально после *before*)."""
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            # Автокоммит: SET действует со следующей транзакции, а не с уже открытой.
+            conn.autocommit = True
+            if before:
+                cur.execute(before)
+            with self.assertRaises(psycopg2.Error) as raised:
+                cur.execute(sql)
+            return raised.exception.pgcode
+
+    def test_reads_data_tables_with_role_defaults(self):
+        import ai_stats
+
+        with closing(self._reader()) as conn, conn.cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            self.assertEqual(cur.fetchone()[0], "5s")
+            cur.execute("SHOW default_transaction_read_only")
+            self.assertEqual(cur.fetchone()[0], "on")
+            for table in ai_stats.AI_TABLES:
+                cur.execute(f"SELECT count(*) FROM {table}")
+                self.assertGreaterEqual(cur.fetchone()[0], 0)
+
+    def test_grants_are_exactly_select_on_ai_tables(self):
+        import ai_stats
+
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name, privilege_type FROM information_schema.role_table_grants "
+                "WHERE grantee = 'nhl_ai_reader' AND table_schema = 'public'"
+            )
+            grants = cur.fetchall()
+        self.assertEqual({p for _, p in grants}, {"SELECT"})
+        self.assertEqual({t for t, _ in grants}, set(ai_stats.AI_TABLES))
+
+    def test_bot_tables_are_invisible(self):
+        for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
+                      "premium_access", "premium_payments", "prediction_log", "game_predictions", "schema_migrations",
+                      "bot_actions", "bot_subscription_events", "bot_schedules"):
+            self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
+
+    def test_cannot_write_or_create_even_with_read_only_switched_off(self):
+        off = "SET default_transaction_read_only = off"
+        for sql in ("INSERT INTO games (game_id, season_id) VALUES (-1, 20212022)",
+                    "UPDATE games SET day = day", "DELETE FROM games",
+                    "CREATE TABLE ai_reader_probe (x int)", "DROP TABLE games"):
+            # Права роли держат сами, без read-only сессии...
+            self.assertEqual(self._error_code(sql, off), "42501", sql)
+            # ...а read-only по умолчанию — вторая линия защиты.
+            self.assertIn(self._error_code(sql), ("25006", "42501"), sql)
+
+    def test_cannot_switch_to_another_role(self):
+        self.assertEqual(self._error_code("SET ROLE postgres"), "42501")
+
+    def test_run_readonly_turns_denials_and_timeout_into_model_errors(self):
+        import ai_stats
+
+        denied = ai_stats.run_readonly("SELECT * FROM bot_subscriptions")
+        self.assertIsNone(denied.rows)
+        self.assertIn("permission denied", denied.error)
+        slow = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("statement timeout", slow.error)
+        # count(*) — одна строка и на пустой схеме CI (данных там нет).
+        ok = ai_stats.run_readonly("SELECT count(*) FROM games;")
+        self.assertIsNone(ok.error)
+        self.assertEqual(ok.rows, 1)
+
+    def test_run_readonly_rejects_multi_statement_attacks(self):
+        """SQL модели — один SELECT: ни `SET`, ни `COMMIT`, ни запись не проходят, как бы их ни
+        склеивали точкой с запятой (simple query выполнил бы все операторы подряд)."""
+        import time
+
+        import ai_stats
+
+        def large_objects() -> int:
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM pg_largeobject_metadata")
+                return cur.fetchone()[0]
+
+        def role_settings():
+            with closing(_connect()) as conn, conn.cursor() as cur:
+                cur.execute("SELECT rolconfig FROM pg_roles WHERE rolname = 'nhl_ai_reader'")
+                return cur.fetchone()[0]
+
+        before, settings = large_objects(), role_settings()
+        started = time.monotonic()
+        attacks = (
+            # Закрывающая скобка и `;` внутри: обёртку обходят, если `;` пропустить.
+            "SELECT 1) AS x; SET statement_timeout=0; SELECT pg_sleep(7) FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET transaction_read_only=off; "
+            "SELECT lo_from_bytea(0,'\\x41'::bytea); COMMIT; SELECT 1 FROM (SELECT 1",
+            "SELECT 1) AS x; COMMIT; SET default_transaction_read_only=off; COMMIT; "
+            "ALTER ROLE nhl_ai_reader SET statement_timeout = 0; COMMIT; SELECT 1 FROM (SELECT 1",
+            "SET statement_timeout = 0; SELECT pg_sleep(7)",
+            "SELECT set_config('statement_timeout', '0', false); SELECT pg_sleep(7)",
+            "SET transaction_read_only = off; CREATE TEMP TABLE probe (x int); "
+            "INSERT INTO probe VALUES (1); SELECT * FROM probe",
+            "SET transaction_read_only = off; SELECT lo_from_bytea(0, '\\x41'); COMMIT; SELECT 1",
+            "SELECT lo_from_bytea(0, '\\x41')",
+            "WITH ins AS (INSERT INTO games (game_id, season_id) VALUES (-1, 20212022) RETURNING 1) "
+            "SELECT * FROM ins",
+        )
+        for sql in attacks:
+            outcome = ai_stats.run_readonly(sql)
+            self.assertIsNotNone(outcome.error, sql)
+            self.assertIsNone(outcome.rows, sql)
+        self.assertLess(time.monotonic() - started, 5, "таймаут не обойдён: pg_sleep(7) не выполнялся")
+        self.assertEqual(large_objects(), before, "large object не создан")
+        self.assertEqual(role_settings(), settings, "роль не изменила свои настройки")
+
+    def test_run_readonly_limits_result_volume(self):
+        """Объём выдачи: огромная строка не доходит до бота (отброшена SQL-ом), крупные ячейки и
+        весь результат обрезаются; модель получает не больше `RESULT_CHARS` символов."""
+        import json
+
+        import ai_stats
+
+        # Python по размеру не фильтрует: 0 строк значит, что строку отбросил сам SQL. Размер —
+        # любой больше ROW_BYTES; гигабайты только замедляют прогон на раннере CI.
+        huge = ai_stats.run_readonly("SELECT repeat('x', 1000000) AS v FROM generate_series(1, 3)")
+        self.assertEqual(huge.rows, 0, "строка длиннее ROW_BYTES отброшена на стороне SQL")
+        self.assertLessEqual(len(huge.text), ai_stats.RESULT_CHARS)
+        # Колонка с именем `q` не подменяет собой строку в фильтре размера.
+        named_q = ai_stats.run_readonly(
+            "SELECT 'x' AS q, repeat('y', 1000000) AS big FROM generate_series(1, 3)"
+        )
+        self.assertEqual(named_q.rows, 0)
+        null_q = json.loads(ai_stats.run_readonly("SELECT NULL::int AS q, 5 AS goals").text)
+        self.assertEqual(null_q["rows"], [[None, 5]], "NULL в колонке q не отбрасывает строку")
+
+        cells = ai_stats.run_readonly("SELECT repeat('y', 3000) AS v FROM generate_series(1, 50)")
+        payload = json.loads(cells.text)
+        self.assertEqual(len(payload["rows"][0][0]), ai_stats.CELL_CHARS + 1)
+        self.assertTrue(payload["truncated"])
+        self.assertLessEqual(len(cells.text), ai_stats.RESULT_CHARS)
+
+        # Без таблиц данных: на схеме CI они пусты.
+        ordinary = json.loads(ai_stats.run_readonly(
+            "SELECT g AS game_id, current_date + g AS day FROM generate_series(1, 3) AS g"
+        ).text)
+        self.assertEqual((len(ordinary["rows"]), ordinary["truncated"]), (3, False))
+
+    def test_watchdog_cancels_a_query_even_if_server_timeout_is_off(self):
+        """Сторожевой таймер клиента — страховка на случай, если серверный `statement_timeout`
+        сброшен: соединение без таймаута, а запрос всё равно отменяется."""
+        import time
+        from unittest.mock import patch
+
+        import ai_stats
+
+        def no_server_timeout():
+            return psycopg2.connect(
+                host=config.PG_HOST, port=config.PG_PORT, user=config.AI_PG_USER,
+                database=config.PG_DATABASE, options="-c statement_timeout=0",
+            )
+
+        started = time.monotonic()
+        with patch.object(ai_stats, "_reader_connection", no_server_timeout), \
+                patch.object(ai_stats, "STATEMENT_TIMEOUT_SEC", 1):
+            outcome = ai_stats.run_readonly("SELECT pg_sleep(30)")
+        self.assertIn("canceling statement", outcome.error)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
@@ -1237,9 +2244,12 @@ class TestNhlLoadedData(unittest.TestCase):
         with self.conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM teams WHERE season_id = %s", (sid,))
             nt = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM teams_stats WHERE season_id = %s", (sid,))
+            # Регулярка: в плей-офф только 16 клубов, а teams строится из регулярки (Задача 104).
+            cur.execute(
+                "SELECT COUNT(*) FROM teams_stats WHERE season_id = %s AND game_type = 2", (sid,)
+            )
             ns = cur.fetchone()[0]
-        self.assertEqual(nt, ns, "teams and teams_stats should have same team count per season_id")
+        self.assertEqual(nt, ns, "teams and regular-season teams_stats should have same team count")
         self.assertGreaterEqual(nt, 1)
 
 

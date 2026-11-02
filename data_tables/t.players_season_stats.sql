@@ -35,7 +35,10 @@ CREATE TABLE players_season_stats(
     shootout_pct                            double precision,
     player_id                               int NOT NULL,
     season_id                               bigint NOT NULL,
-    PRIMARY KEY (player_id, season_id),
+    -- 2 — регулярка, 3 — плей-офф (миграция 0022, Задача 103): итог игрока за каждый тип.
+    game_type                               smallint NOT NULL
+        CONSTRAINT players_season_stats_game_type_check CHECK (game_type IN (2, 3)),
+    PRIMARY KEY (player_id, season_id, game_type),
     -- Сезонная статистика существует только для игрока, известного в этом сезоне
     -- (rosters.PK = player_id+season_id). Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (player_id, season_id) REFERENCES rosters (player_id, season_id)
@@ -45,5 +48,6 @@ CREATE TABLE players_season_stats(
 -- (table_name="players_season_stats" — см. telegram_bot/leaderboard_specs.py:7-18,48
 -- и telegram_bot/stats_handlers.py:271-292,308):
 --   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
--- PRIMARY KEY(player_id, season_id) начинается с player_id и этот фильтр не обслуживает.
-CREATE INDEX idx_players_season_stats_season ON players_season_stats (season_id);
+-- PRIMARY KEY(player_id, season_id, game_type) начинается с player_id и этот фильтр не
+-- обслуживает. game_type — второй колонкой: экраны читают регулярку (Задача 103).
+CREATE INDEX idx_players_season_stats_season ON players_season_stats (season_id, game_type);

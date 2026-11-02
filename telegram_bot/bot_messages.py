@@ -103,14 +103,15 @@ def _pss_join_sql(table_name: str) -> sql.Composable:
         # числу матчей (1 игра сыграна → порог 1).
         return sql.SQL(
             "INNER JOIN players_season_stats pss ON pl.player_id = pss.player_id "
-            "AND pss.season_id = pl.season_id AND pss.games >= LEAST(20, ("
+            "AND pss.season_id = pl.season_id AND pss.game_type = pl.game_type "
+            "AND pss.games >= LEAST(20, ("
             "SELECT CEIL(MAX(ts.games_played) / 2.0) FROM teams_stats ts "
-            "WHERE ts.season_id = pl.season_id)) "
+            "WHERE ts.season_id = pl.season_id AND ts.game_type = pl.game_type)) "
         )
     if table_name == "players_shot_types":
         return sql.SQL(
             "LEFT JOIN players_season_stats pss ON pl.player_id = pss.player_id "
-            "AND pss.season_id = pl.season_id "
+            "AND pss.season_id = pl.season_id AND pss.game_type = pl.game_type "
         )
     return sql.SQL("")
 
@@ -193,7 +194,7 @@ def _table(
     Аргументы:
         rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
         align: по символу на колонку — `l` (влево) или `r` (вправо).
-        playoff_line_after: после стольких строк тела — строка «линия плей-офф» на всю
+        playoff_line_after: после стольких строк тела — пунктир `_PLAYOFF_LINE` на всю
             ширину (турнирная таблица: топ-3 дивизиона, две путёвки Wild Card).
         bold: ячейки тела жирным — пары (строка тела, колонка), с нуля; то, на что
             экран отвечает (лучшее значение превью матча).
@@ -209,11 +210,15 @@ def _table(
     parts = [row(head, "th")]
     for i, cells in enumerate(body):
         if i == playoff_line_after:
-            parts.append(f'<tr><td colspan="{len(align)}" align="center"><i>линия плей-офф</i></td></tr>')
+            parts.append(f'<tr><td colspan="{len(align)}" align="center">{_PLAYOFF_LINE}</td></tr>')
         parts.append(row(cells, "td", i))
     attrs = "compact striped" if len(body) > _STRIPED_MIN_ROWS else "compact"
     return f"<table {attrs}>" + "".join(parts) + "</table>"
 
+
+# Линия плей-офф: рамок у отдельных строк rich-таблица не знает, поэтому черта — строка
+# пунктира на всю ширину; длина — чтобы не раздвигать таблицу на телефоне.
+_PLAYOFF_LINE = "┄" * 28
 
 # Полосы — только у таблиц длиннее десятка строк: на длинной они ведут глаз по строке,
 # на короткой — лишний шум (spike Задачи 88, `docs/telegram_bot.md` §«Стиль сообщений»).
@@ -649,10 +654,15 @@ def _fmt_pct_stat(val: Union[int, float, None]) -> str:
     return s.rstrip("0").rstrip(".") + "%"
 
 
+# Команда текущего сезона по коду: `SELECT <колонка> ` + это, параметры (сезон, код в верхнем регистре).
+_TEAM_BY_ABBREV_SQL = (
+    "FROM teams WHERE season_id = %s AND upper(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1"
+)
+
+
 def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
     row = cached_fetch_all(
-        "SELECT team_id FROM teams WHERE season_id = %s "
-        "AND upper(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1",
+        "SELECT team_id " + _TEAM_BY_ABBREV_SQL,
         (config.SEASON_ID, abbrev_u),
         columns=["team_id"],
     )
@@ -661,12 +671,42 @@ def _team_id_for_abbrev(abbrev_u: str) -> Optional[int]:
     return int(row["team_id"][0])
 
 
+def team_name_for_abbrev(abbrev: str) -> str:
+    """Полное название `teams.name` («Minnesota Wild») по коду команды текущего сезона.
+
+    Зачем: экраны, где команда известна только кодом (прогноз модели, подпись к видео
+    гола), пишут её полным названием (Задача 98). У обоих команда
+    уже есть в `teams` (матч или клуб из БД), поэтому её отсутствие — ошибка данных,
+    а не случай для показа кода.
+
+    Аргументы:
+        abbrev: код команды (`teams.abbreviation` = `abbrev` NHL API), регистр не важен;
+            в SQL — только параметром.
+
+    Raises:
+        LookupError: команды или её названия нет в `teams` сезона.
+    """
+    code = abbrev.strip().upper()
+    row = cached_fetch_all(
+        "SELECT name " + _TEAM_BY_ABBREV_SQL, (config.SEASON_ID, code), columns=["name"],
+    )
+    if not row["count_rows"] or not row["name"][0]:
+        raise LookupError(f"Команды {code} нет в teams сезона {config.SEASON_ID}")
+    return str(row["name"][0])
+
+
 _TEAM_RECENT_GAMES_COLUMNS = [
     "winner_id",
     "is_overtime",
     "is_shootouts",
     "ot_empty_net_win",
 ]
+
+# Колонка `ot_empty_net_win` для `_team_game_outcome()` (правило NHL 84.2) по игре `g`.
+_OT_EMPTY_NET_WIN_SQL = (
+    "EXISTS (SELECT 1 FROM all_goals a WHERE a.game_id = g.game_id "
+    "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
+)
 
 # В сезоне у команды не больше 82 игр — с запасом на предмет ошибок в данных.
 _CURRENT_STREAK_LOOKBACK_LIMIT = 100
@@ -716,7 +756,8 @@ def _team_game_outcome(
 
 def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     """Разряды (`_team_game_outcome()`) последних `limit` завершённых игр
-    сезона команды `team_id`, от новой игры к старой.
+    регулярного сезона команды `team_id`, от новой игры к старой (плей-офф —
+    `game_type = 3` — в форму и серию не входит, Задача 102).
 
     Единственное место, где строится запрос «последние игры команды» и
     разбирается его строка — общее для `_last_n_form_record()` (`limit=5`,
@@ -733,15 +774,19 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     пустой список, если в текущем сезоне у команды нет завершённых игр.
     """
     row = cached_fetch_all(
-        "SELECT winner_id, is_overtime, is_shootouts, "
-        "EXISTS (SELECT 1 FROM all_goals a WHERE a.game_id = g.game_id "
-        "AND a.winner_goal AND a.empty_net AND a.period >= 4) AS ot_empty_net_win "
-        "FROM games g WHERE season_id = %s AND winner_id IS NOT NULL "
+        "SELECT winner_id, is_overtime, is_shootouts, " + _OT_EMPTY_NET_WIN_SQL
+        + "FROM games g WHERE season_id = %s AND game_type = 2 AND winner_id IS NOT NULL "
         "AND (home_team_id = %s OR away_team_id = %s) "
         "ORDER BY day DESC NULLS LAST, game_id DESC LIMIT %s",
         (config.SEASON_ID, team_id, team_id, limit),
         columns=_TEAM_RECENT_GAMES_COLUMNS,
     )
+    return _row_outcomes(team_id, row)
+
+
+def _row_outcomes(team_id: int, row: Dict) -> List[str]:
+    """Разряды (`_team_game_outcome()`) строк выборки с колонками
+    `_TEAM_RECENT_GAMES_COLUMNS` — общий разбор для формы и игр `/BOS_FULL`."""
     return [
         _team_game_outcome(
             team_id,
@@ -754,6 +799,11 @@ def _recent_team_outcomes(team_id: int, limit: int) -> List[str]:
     ]
 
 
+def _outcomes_record(outcomes: List[str]) -> str:
+    """Запись W-L-OTL из разрядов `_team_game_outcome()`; без игр — `0-0-0`."""
+    return f"{outcomes.count('W')}-{outcomes.count('L')}-{outcomes.count('OTL')}"
+
+
 def _last_n_form_record(team_id: int, n: int = 5) -> str:
     """Формат W-L-OTL по последним n завершённым играм (как в таблице очков);
     без игр — `0-0-0` (команда ещё не играла в сезоне).
@@ -762,11 +812,7 @@ def _last_n_form_record(team_id: int, n: int = 5) -> str:
     см. `_team_game_outcome()`), чтобы форма и текущая серия
     (`_current_streak()`) не могли разойтись в подсчёте ПО.
     """
-    outcomes = _recent_team_outcomes(team_id, n)
-    w = outcomes.count("W")
-    losses = outcomes.count("L")
-    otl = outcomes.count("OTL")
-    return f"{w}-{losses}-{otl}"
+    return _outcomes_record(_recent_team_outcomes(team_id, n))
 
 
 def _current_streak(team_id: int) -> str:
@@ -799,11 +845,11 @@ def _current_streak(team_id: int) -> str:
 
 
 def _h2h_season_wins(tid_a: int, tid_b: int) -> Optional[Tuple[int, int]]:
-    """Победы команд `tid_a` и `tid_b` в личных встречах сезона или None,
-    если они ещё не встречались."""
+    """Победы команд `tid_a` и `tid_b` в личных встречах регулярного сезона или None,
+    если они ещё не встречались; серия плей-офф в счёт не идёт (Задача 102)."""
     row = cached_fetch_all(
-        "SELECT winner_id FROM games WHERE season_id = %s AND winner_id IS NOT NULL "
-        "AND ((home_team_id = %s AND away_team_id = %s) "
+        "SELECT winner_id FROM games WHERE season_id = %s AND game_type = 2 "
+        "AND winner_id IS NOT NULL AND ((home_team_id = %s AND away_team_id = %s) "
         "     OR (home_team_id = %s AND away_team_id = %s))",
         (config.SEASON_ID, tid_a, tid_b, tid_b, tid_a),
         columns=["winner_id"],
@@ -844,14 +890,27 @@ def _team_record_line(
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
 
 
-def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
-    """Строка оценки модели для превью: победа хозяев и тотал больше 5.5; None, если прогноза нет.
+# Вместо оценки модели бесплатному чату (Задача 97B): строка того же подвала.
+MODEL_PREDICTION_TEASER = "🔒 Прогноз модели — в премиуме: /premium"
 
-    Читает `game_predictions` (Задачи 22B, 73) по точному `game_id`. Публикация пишет строки
-    только для игр, где у обеих команд не меньше 5 игр в сезоне, и только для победы,
-    прошедшей гейт, — поэтому ни сезон, ни статус модели бот не проверяет; каждой части
-    строки может не быть отдельно. Запрос без кэша: ежедневная публикация заменяет строки.
+
+def with_model_prediction(footer: str, game_id: int, home_abbr: str) -> str:
+    """Подвал превью (`matchup_season_preview`) со строкой оценки модели: победа хозяев и тотал
+    больше 5.5; прогноза нет — подвал как есть.
+
+    Зачем: прогноз — только премиуму (Задача 96), поэтому строку добавляет вызывающий, знающий
+    чат, а не общее превью (у рассылки оно одно на все чаты). Читает `game_predictions`
+    (Задачи 22B, 73) по точному `game_id`. Публикация пишет строки только для игр, где у обеих
+    команд не меньше 5 игр в сезоне, и только для победы, прошедшей гейт, — поэтому ни сезон,
+    ни статус модели бот не проверяет; каждой части строки может не быть отдельно. Запрос без
+    кэша: ежедневная публикация заменяет строки.
+
+    Аргументы:
+        footer: подвал превью.
+        game_id: матч из расписания.
+        home_abbr: аббревиатура хозяев, как в превью; в строке — полное название.
     """
+    esc_home = html.escape(team_name_for_abbrev(home_abbr))
     rows = fetch_all(
         "SELECT task, probability FROM game_predictions "
         "WHERE game_id = %s AND task IN ('home_win', 'over_5_5')",
@@ -865,8 +924,8 @@ def _model_prediction_line(game_id: int, esc_home: str) -> Optional[str]:
     if "over_5_5" in pct:
         parts.append(f"тотал больше 5.5 — {pct['over_5_5']}%")
     if not parts:
-        return None
-    return "Оценка модели (не совет): " + ", ".join(parts)
+        return footer
+    return f"{footer}\nОценка модели (не совет): " + ", ".join(parts)
 
 
 def _fmt_signed(val: Union[int, float, None]) -> str:
@@ -884,13 +943,16 @@ _GOALS_AGAINST_LABEL = "Пропущено/игра"
 def _matchup_compare_table(
     away_abbr: str,
     home_abbr: str,
+    away_name: str,
+    home_name: str,
     ra: Dict[str, Union[int, float, None]],
     rh: Dict[str, Union[int, float, None]],
 ) -> str:
     """Таблица превью матча (`_table`) в три колонки «метрика · гости · хозяева» с
-    аббревиатурами в шапке — очки, баланс, форма и серия, личные встречи (если
-    были), метрики сезона. Лучшее из двух значений метрики — жирным (у пропущенных
-    голов — меньшее); баланс, форма и серия и равные значения — без выделения.
+    полными названиями в шапке (коды — для поиска `team_id`) — очки, баланс, форма
+    и серия, личные встречи (если были), метрики сезона. Лучшее из двух значений
+    метрики — жирным (у пропущенных голов — меньшее); баланс, форма и серия и равные
+    значения — без выделения.
     """
     def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
         gf, ga = r["goals_per_game"], r["goals_against_per_game"]
@@ -955,43 +1017,42 @@ def _matchup_compare_table(
         if label == _GOALS_AGAINST_LABEL:  # единственная метрика, где меньше — лучше
             lv, rv = -lv, -rv
         bold.append((r, 1 if lv > rv else 2))
-    rows = [["", away_abbr, home_abbr], *([label, left, right] for label, left, right in pairs)]
+    rows = [["", away_name, home_name], *([label, left, right] for label, left, right in pairs)]
     return _table(rows, "lrr", bold=bold)
 
 
-def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tuple[str, str]:
+def matchup_season_preview(away_abbr: str, home_abbr: str) -> Tuple[str, str]:
     """
-    Сезонное сравнение по teams.abbreviation (= abbrev из NHL API).
-
-    `game_id` — игра из расписания: по нему в подвал превью добавляется строка
-    модельной оценки (если она опубликована; при раннем выходе, когда обеих
-    команд нет в teams_stats, строки нет).
+    Сезонное сравнение по teams.abbreviation (= abbrev из NHL API); команды в тексте —
+    полным названием `teams.name`.
 
     Возвращает: (тело — построчный HTML для `rich_message()`, метрики — таблица
-    `_table`; строки подвала для `rich_footer()` — сезон и оценка модели). Подвал
-    отдельно: вызывающий дописывает в него свои строки (рассылка — ссылку на
-    подписки), а подвал у сообщения один и последний.
+    `_table`; строки подвала для `rich_footer()` — сезон). Подвал отдельно:
+    вызывающий дописывает в него свои строки (премиум-чату — оценку модели,
+    `with_model_prediction`; рассылка — ссылку на подписки), а подвал у сообщения
+    один и последний. Превью одно на все чаты, поэтому от чата не зависит.
     """
     a = (away_abbr or "").strip().upper()
     h = (home_abbr or "").strip().upper()
     if not a or not h or a == "?" or h == "?":
         return "Не удалось сопоставить команды с данными в базе.", ""
 
-    esc_a = html.escape(away_abbr)
-    esc_h = html.escape(home_abbr)
     season_esc = html.escape(str(config.CURRENT_SEASON))
 
     stats = cached_fetch_all(
-        "SELECT upper(trim(COALESCE(t.abbreviation, ''))) AS abbr, ts.games_played, ts.wins, ts.losses, ts.ot, "
+        "SELECT upper(trim(COALESCE(t.abbreviation, ''))) AS abbr, t.name, ts.games_played, "
+        "ts.wins, ts.losses, ts.ot, "
         "ts.points, ts.procent_points, ts.goals_per_game, ts.goals_against_per_game, "
         "ts.power_play_percentage, ts.penalty_kill_percentage, "
         "ts.shots_per_game, ts.face_off_win_percentage "
         "FROM teams_stats ts "
         "INNER JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s AND upper(trim(COALESCE(t.abbreviation, ''))) = ANY(%s)",
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
+        "AND upper(trim(COALESCE(t.abbreviation, ''))) = ANY(%s)",
         (config.SEASON_ID, [a, h]),
         columns=[
             "abbr",
+            "name",
             "games_played",
             "wins",
             "losses",
@@ -1008,10 +1069,13 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tupl
     )
 
     by_abbr: Dict[str, Dict[str, Union[int, float, None]]] = {}
+    # Полное название — для показа (Задача 98); команды нет в базе — показываем код.
+    names = {a: away_abbr, h: home_abbr}
     for i in range(stats["count_rows"]):
         ab = stats["abbr"][i]
         if not ab:
             continue
+        names[str(ab).strip().upper()] = stats["name"][i]
         by_abbr[str(ab).strip().upper()] = {
             "games_played": stats["games_played"][i],
             "wins": stats["wins"][i],
@@ -1027,17 +1091,17 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tupl
             "face_off_win_percentage": stats["face_off_win_percentage"][i],
         }
 
+    esc_a, esc_h = html.escape(names[a]), html.escape(names[h])
     header = f"<b>{esc_a} @ {esc_h}</b>"
     footer = f"Сезон {season_esc}"
 
-    def _one_line_team_html(ab: str, row: Optional[Dict[str, Union[int, float, None]]]) -> str:
-        eab = html.escape(ab)
+    def _one_line_team_html(esc_name: str, row: Optional[Dict[str, Union[int, float, None]]]) -> str:
         if not row:
-            return f"{eab}: нет строки в базе для сезона."
+            return f"{esc_name}: нет строки в базе для сезона."
         rec_line = _team_record_line(
             row["wins"], row["losses"], row["ot"], row["points"], row["procent_points"]
         )
-        return f"{eab} — {rec_line}"
+        return f"{esc_name} — {rec_line}"
 
     ra, rh = by_abbr.get(a), by_abbr.get(h)
     if ra is None and rh is None:
@@ -1045,15 +1109,10 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tupl
 
     parts: List[str] = [header]
     if ra is None or rh is None:
-        parts.append(_one_line_team_html(away_abbr, ra))
-        parts.append(_one_line_team_html(home_abbr, rh))
+        parts.append(_one_line_team_html(esc_a, ra))
+        parts.append(_one_line_team_html(esc_h, rh))
     else:
-        parts.append(_matchup_compare_table(a, h, ra, rh))
-
-    prediction = _model_prediction_line(game_id, esc_h)
-    if prediction:
-        footer += f"\n{prediction}"
-
+        parts.append(_matchup_compare_table(a, h, names[a], names[h], ra, rh))
     return "\n".join(parts), footer
 
 
@@ -1118,7 +1177,7 @@ def player_stats_with_count(
         "{join_pss}"
         "LEFT JOIN rosters r ON pl.player_id = r.player_id AND r.season_id = pl.season_id "
         "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = pl.season_id "
-        "WHERE pl.season_id = %s "
+        "WHERE pl.season_id = %s AND pl.game_type = 2 "
         # NULLS LAST keeps unranked players (no value reported) at the bottom of
         # leaderboards instead of at the top under DESC's default NULLS FIRST.
         "ORDER BY {order_col} DESC NULLS LAST, {second_col} DESC NULLS LAST "
@@ -1231,8 +1290,10 @@ def player_stat_leaderboard_page(
 
 
 def _standings_as_of_day() -> str:
+    """Дата «по состоянию на» у `/standings`: последний день регулярки сезона — таблица
+    по плей-офф не меняется, и его дни дату не сдвигают (Задача 102)."""
     row = cached_fetch_all(
-        "SELECT max(day)::text AS d FROM games WHERE season_id = %s",
+        "SELECT max(day)::text AS d FROM games WHERE season_id = %s AND game_type = 2",
         (config.SEASON_ID,),
         columns=["d"],
     )
@@ -1254,7 +1315,7 @@ def _standings_sort_key(team: Dict[str, Union[int, str, float, None]]) -> Tuple:
     pts = int(team.get("points") or 0)
     wins = int(team.get("wins") or 0)
     losses = int(team.get("losses") or 0)
-    name = str(team.get("short_name") or "")
+    name = str(team.get("name") or "")
     return (-pts, -wins, losses, name)
 
 
@@ -1277,7 +1338,7 @@ def _standings_row(label: str, team: Dict[str, Union[int, str, float, None]]) ->
     """Строка таблицы `/standings`: метка места (« 1.», «WC1») и показатели команды."""
     return [
         label,
-        str(team.get("short_name") or "—").strip(),
+        str(team.get("name") or "—").strip(),
         str(int(team.get("points") or 0)),
         str(int(team.get("games_played") or 0)),
         _fmt_standings_pct(team.get("procent_points")),
@@ -1297,9 +1358,9 @@ def _wild_card_block(
         teams = sorted(by_division.get(div) or [], key=_standings_sort_key)
         conf_teams.extend(teams)
         for t in teams[:3]:
-            top3_names.add(str(t.get("short_name") or "").strip())
+            top3_names.add(str(t.get("name") or "").strip())
     remaining = [
-        t for t in conf_teams if str(t.get("short_name") or "").strip() not in top3_names
+        t for t in conf_teams if str(t.get("name") or "").strip() not in top3_names
     ]
     remaining.sort(key=_standings_sort_key)
     if not remaining:
@@ -1376,14 +1437,14 @@ def team_table() -> str:
     отдаёт текст с причиной вместо таблицы с одними заголовками секций и
     без единой строки команды."""
     stats = cached_fetch_all(
-        "SELECT short_name, games_played, points, procent_points, wins, "
+        "SELECT t.name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
         "ORDER BY conference_name, division_name, points DESC",
         (config.SEASON_ID,),
-        columns=['short_name', 'games_played', 'points', 'procent_points',
+        columns=['name', 'games_played', 'points', 'procent_points',
                  'wins', 'losses', 'ot', 'division_name', 'conference_name'],
     )
 
@@ -1397,7 +1458,7 @@ def team_table() -> str:
     teams: List[Dict[str, Union[int, str, float, None]]] = []
     for i in range(stats['count_rows']):
         teams.append({
-            'short_name': (stats['short_name'][i] or '—').strip(),
+            'name': (stats['name'][i] or '—').strip(),
             'games_played': stats['games_played'][i],
             'points': stats['points'][i],
             'procent_points': stats['procent_points'][i],
@@ -1475,24 +1536,26 @@ def team_list_text() -> str:
     )
 
 
-def season_teams_by_division() -> Dict[str, List[Tuple[int, str]]]:
+def season_teams_by_division() -> Dict[str, List[Tuple[int, str, str]]]:
     """Команды сезона по дивизионам для меню `/subscriptions`: {дивизион: [(team_id,
-    аббревиатура)]} с теми же названиями и порядком дивизионов, что у `/standings`
-    (Восток, затем Запад); внутри — по аббревиатуре. Все четыре дивизиона есть всегда,
-    у пустого сезона списки пустые."""
+    аббревиатура, полное название)]} — код для кнопок, название для текста. Названия
+    и порядок дивизионов — как у `/standings` (Восток, затем Запад); внутри — по
+    аббревиатуре. Все четыре дивизиона есть всегда, у пустого сезона списки пустые."""
     rows = cached_fetch_all(
-        "SELECT team_id, trim(abbreviation), division_name FROM teams "
+        "SELECT team_id, trim(abbreviation), name, division_name FROM teams "
         "WHERE season_id = %s AND NULLIF(trim(abbreviation), '') IS NOT NULL "
         "ORDER BY trim(abbreviation)",
         (config.SEASON_ID,),
-        columns=["team_id", "abbr", "division"],
+        columns=["team_id", "abbr", "name", "division"],
     )
-    result: Dict[str, List[Tuple[int, str]]] = {
+    result: Dict[str, List[Tuple[int, str, str]]] = {
         div: [] for div in _STANDINGS_DIV_EAST + _STANDINGS_DIV_WEST
     }
     for i in range(rows["count_rows"]):
         if rows["division"][i] in result:
-            result[rows["division"][i]].append((int(rows["team_id"][i]), rows["abbr"][i]))
+            result[rows["division"][i]].append(
+                (int(rows["team_id"][i]), rows["abbr"][i], rows["name"][i])
+            )
     return result
 
 
@@ -1530,7 +1593,7 @@ def _team_skaters(team_id: int, order_by: str, limit: int) -> Dict:
         "pss.plus_minus, pss.time_on_ice_per_game "
         "FROM rosters r "
         "JOIN players_season_stats pss "
-        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id "
+        "  ON r.player_id = pss.player_id AND r.season_id = pss.season_id AND pss.game_type = 2 "
         f"WHERE r.current_team_id = %s AND r.season_id = %s ORDER BY {order_by} LIMIT %s",
         (team_id, config.SEASON_ID, limit),
         columns=_TEAM_SKATER_COLUMNS,
@@ -1551,7 +1614,7 @@ def _team_goalies_table(team_id: int) -> str:
         "gs.save_percentage, gs.goal_against_average "
         "FROM rosters r "
         "JOIN goalies_season_stats gs "
-        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id "
+        "  ON r.player_id = gs.player_id AND r.season_id = gs.season_id AND gs.game_type = 2 "
         "WHERE r.current_team_id = %s AND r.season_id = %s AND gs.games > 0 "
         "ORDER BY gs.games DESC, gs.wins DESC",
         (team_id, config.SEASON_ID),
@@ -1577,6 +1640,7 @@ _TEAM_PROFILE_STATS_COLUMNS = [
     "wins", "losses", "ot", "points", "procent_points", "goals_per_game",
     "goals_against_per_game", "shots_per_game", "shots_allowed",
     "power_play_percentage", "penalty_kill_percentage", "face_off_win_percentage",
+    "power_play_goals", "power_play_opportunities", "power_play_goals_against",
 ]
 
 
@@ -1597,26 +1661,36 @@ def _team_places(
     return me, place(div), place(conf), place(ordered)
 
 
-def team_profile(abbrev: str) -> str:
-    """Статистика клуба сезона `config.SEASON_ID`: место в дивизионе/конференции/
-    лиге, баланс и форма, голы и броски за игру, спецбригады, лучшие бомбардиры
-    и вратари.
+def _league_place(
+    rows: List[Dict[str, Any]], me: Dict[str, Any], col: str, higher_is_better: bool = True
+) -> int:
+    """Место команды `me` в лиге по колонке `col` среди строк `rows` всей лиги.
 
-    Зачем: ответ на `/BOS` из списка `/team` и экран «Профиль команды» меню
-    `/stats` — главное о клубе одним сообщением. Источники: `teams_stats`
-    (вся лига — ради мест), `rosters ⋈ players_season_stats` и
-    `rosters ⋈ goalies_season_stats` по `(player_id, season_id)` при
-    `current_team_id = team_id`.
+    Правило: 1 + число команд со строго лучшим значением, поэтому равные делят одно место,
+    а не получают порядковые номера. `higher_is_better=False` — «пропущено» и «броски
+    соперника»: меньше — выше.
+    """
+    mine = me[col]
+    if higher_is_better:
+        return 1 + sum(1 for r in rows if r[col] > mine)
+    return 1 + sum(1 for r in rows if r[col] < mine)
 
-    Пустые случаи (Задача 36): неизвестная аббревиатура и команда без строки
-    в `teams_stats` (ещё не сыграла в сезоне) — текст с причиной, не исключение.
+
+def _team_season_context(a: str, ranked: bool) -> Union[str, Tuple[int, Dict[str, Any]]]:
+    """Шапка и блок «Сезон» шаблона `team_profile.txt` — общие для `/BOS` и `/BOS_FULL`.
+
+    Зачем: оба экрана начинаются одинаково (места, баланс, форма, голы, броски, спецбригады),
+    и единственный источник не даёт им разойтись. Источник — `teams_stats ⋈ teams` всей лиги
+    (ради мест).
 
     Аргументы:
-        abbrev: аббревиатура команды (кнопка `tp:<ABBR>` или команда `/ABBR`);
-            резолвится в `team_id` через `_team_id_for_abbrev()` — в SQL
-            попадает только как параметр.
+        a: аббревиатура в верхнем регистре; в SQL — только параметром.
+        ranked: `/BOS_FULL` — у показателей «Сезона» место в лиге (`_league_place()`), у
+            большинства реализация в штуках, у меньшинства пропущенные голы.
+
+    Возвращает: `(team_id, значения шаблона)`; неизвестная аббревиатура или команда без
+    строки в `teams_stats` (ещё не сыграла, Задача 36) — готовый текст с причиной.
     """
-    a = abbrev.strip().upper()
     team_id = _team_id_for_abbrev(a)
     if team_id is None:
         return f"<b>{html.escape(a)}</b>\nКоманда не найдена в базе для этого сезона.\n{_team_footer()}"
@@ -1626,10 +1700,11 @@ def team_profile(abbrev: str) -> str:
         "ts.games_played, ts.wins, ts.losses, ts.ot, ts.points, ts.procent_points, "
         "ts.goals_per_game, ts.goals_against_per_game, ts.shots_per_game, "
         "ts.shots_allowed, ts.power_play_percentage, ts.penalty_kill_percentage, "
-        "ts.face_off_win_percentage "
+        "ts.face_off_win_percentage, ts.power_play_goals, ts.power_play_opportunities, "
+        "ts.power_play_goals_against "
         "FROM teams_stats ts "
         "JOIN teams t ON t.team_id = ts.team_id AND t.season_id = ts.season_id "
-        "WHERE ts.season_id = %s",
+        "WHERE ts.season_id = %s AND ts.game_type = 2",
         (config.SEASON_ID,),
         columns=_TEAM_PROFILE_STATS_COLUMNS,
     )
@@ -1643,6 +1718,157 @@ def team_profile(abbrev: str) -> str:
             f"Команда ещё не сыграла в этом сезоне — статистики нет.\n{_team_footer()}"
         )
     me, div_place, conf_place, league_place = _team_places(team_id, rows)
+    fmt = _format_leader_value
+
+    def place(col: str, higher_is_better: bool = True, detail: str = "") -> str:
+        if not ranked:
+            return ""
+        return f" ({detail}{_league_place(rows, me, col, higher_is_better)}-е)"
+
+    pp_detail = f"{fmt(me['power_play_goals'])} из {fmt(me['power_play_opportunities'])}, "
+    return team_id, {
+        "team_name": html.escape(me["name"] or a),
+        "division": html.escape(me["division_name"] or "—"),
+        "conference": html.escape(me["conference_name"] or "—"),
+        "div_place": div_place,
+        "conf_place": conf_place,
+        "league_place": league_place,
+        "league_size": len(rows),
+        "games": fmt(me["games_played"]),
+        "record": _team_record_line(
+            me["wins"], me["losses"], me["ot"], me["points"], me["procent_points"]
+        ),
+        "form": html.escape(_last_n_form_record(team_id, 5)),
+        "streak": html.escape(_current_streak(team_id)),
+        "gf": _fmt_num_max2(me["goals_per_game"]) + place("goals_per_game"),
+        "ga": _fmt_num_max2(me["goals_against_per_game"])
+        + place("goals_against_per_game", higher_is_better=False),
+        "sf": _fmt_num_max2(me["shots_per_game"]) + place("shots_per_game"),
+        "sa": _fmt_num_max2(me["shots_allowed"])
+        + place("shots_allowed", higher_is_better=False),
+        "pp": _fmt_pct_stat(me["power_play_percentage"])
+        + place("power_play_percentage", detail=pp_detail),
+        "pk": _fmt_pct_stat(me["penalty_kill_percentage"]) + place(
+            "penalty_kill_percentage",
+            detail=f"пропущено {fmt(me['power_play_goals_against'])}, ",
+        ),
+        "fo": _fmt_pct_stat(me["face_off_win_percentage"]) + place("face_off_win_percentage"),
+    }
+
+
+_TEAM_RECENT_GAMES_SHOWN = 5
+_TEAM_UPCOMING_GAMES_SHOWN = 3
+_TEAM_SEASON_GAMES_COLUMNS = [
+    "day", "is_home", "opponent", "gf", "ga", "gf1", "gf2", "gf3", "ga1", "ga2", "ga3",
+    *_TEAM_RECENT_GAMES_COLUMNS,
+]
+
+
+def _team_games_context(team_id: int) -> Dict[str, str]:
+    """Игровые блоки `/BOS_FULL`: дома и в гостях, голы по периодам, последние и ближайшие
+    матчи — значения `season_extra`, `recent_games`, `upcoming_games` шаблона `team_profile.txt`.
+
+    Зачем: то, чего нет в коротком `/BOS`. Сыгранные — `games` ⋈ `game_team_stats` своих и
+    соперника (счёт — `goals`, как в карточке матча: победный буллит в нём уже учтён), исход —
+    `_team_game_outcome()`, как у формы; только регулярка — как форма и блок «Сезон»
+    (Задача 102). Ближайшие — `scheduled_games` (день по Северной
+    Америке, времени начала в БД нет). Нет игр или расписания — блок пустой и не выводится.
+
+    Аргументы:
+        team_id: клуб текущего сезона; в SQL — только параметром.
+    """
+    played = cached_fetch_all(
+        "SELECT g.day, g.home_team_id = %s, t.abbreviation, own.goals, opp.goals, "
+        "own.fst_period_goals, own.snd_period_goals, own.trd_period_goals, "
+        "opp.fst_period_goals, opp.snd_period_goals, opp.trd_period_goals, "
+        "g.winner_id, g.is_overtime, g.is_shootouts, " + _OT_EMPTY_NET_WIN_SQL
+        + "FROM games g "
+        "JOIN game_team_stats own ON own.game_id = g.game_id AND own.team_id = %s "
+        "JOIN game_team_stats opp ON opp.game_id = g.game_id AND opp.team_id <> own.team_id "
+        "JOIN teams t ON t.team_id = opp.team_id AND t.season_id = g.season_id "
+        "WHERE g.season_id = %s AND g.game_type = 2 AND g.winner_id IS NOT NULL "
+        "ORDER BY g.day DESC NULLS LAST, g.game_id DESC",
+        (team_id, team_id, config.SEASON_ID),
+        columns=_TEAM_SEASON_GAMES_COLUMNS,
+    )
+    upcoming = cached_fetch_all(
+        "SELECT s.day, s.home_team_id = %s, t.abbreviation FROM scheduled_games s "
+        "JOIN teams t ON t.season_id = s.season_id AND t.team_id = "
+        "CASE WHEN s.home_team_id = %s THEN s.away_team_id ELSE s.home_team_id END "
+        "WHERE s.season_id = %s AND %s IN (s.home_team_id, s.away_team_id) "
+        "ORDER BY s.day, s.game_id LIMIT %s",
+        (team_id, team_id, config.SEASON_ID, team_id, _TEAM_UPCOMING_GAMES_SHOWN),
+        columns=["day", "is_home", "opponent"],
+    )
+
+    def where(is_home: bool) -> str:
+        return "дома" if is_home else "в гостях"
+
+    outcomes = _row_outcomes(team_id, played)
+    games = [
+        ({col: played[col][i] for col in _TEAM_SEASON_GAMES_COLUMNS}, outcomes[i])
+        for i in range(played["count_rows"])
+    ]
+    season_extra = ""
+    if games:
+
+        def periods(side: str) -> str:
+            return " · ".join(
+                f"{p}-й {sum(g[f'{side}{p}'] for g, _ in games)}" for p in (1, 2, 3)
+            )
+
+        home = _outcomes_record([o for g, o in games if g["is_home"]])
+        away = _outcomes_record([o for g, o in games if not g["is_home"]])
+        season_extra = (
+            f"Дома: {home} · в гостях: {away}\n"
+            f"Голы по периодам (без овертайма): забито {periods('gf')}; "
+            f"пропущено {periods('ga')}"
+        )
+
+    def recent_line(g: Dict[str, Any], outcome: str) -> str:
+        extra = (" Б" if g["is_shootouts"] else " ОТ") if g["is_overtime"] else ""
+        return (
+            f"{g['day']:%d.%m} · {where(g['is_home'])} · {html.escape(g['opponent'])} · "
+            f"{g['gf']}:{g['ga']}{extra} · {'В' if outcome == 'W' else 'П'}"
+        )
+
+    return {
+        "season_extra": season_extra,
+        "recent_games": "\n".join(
+            recent_line(g, o) for g, o in games[:_TEAM_RECENT_GAMES_SHOWN]
+        ),
+        "upcoming_games": "\n".join(
+            f"{upcoming['day'][i]:%d.%m} · {where(upcoming['is_home'][i])} · "
+            f"{html.escape(upcoming['opponent'][i])}"
+            for i in range(upcoming["count_rows"])
+        ),
+    }
+
+
+def team_profile(abbrev: str) -> str:
+    """Статистика клуба сезона `config.SEASON_ID`: место в дивизионе/конференции/
+    лиге, баланс и форма, голы и броски за игру, спецбригады, лучшие бомбардиры
+    и вратари.
+
+    Зачем: ответ на `/BOS` из списка `/team` и экран «Профиль команды» меню
+    `/stats` — главное о клубе одним сообщением. Шапка и «Сезон» —
+    `_team_season_context()`; игроки — `rosters ⋈ players_season_stats` и
+    `rosters ⋈ goalies_season_stats` по `(player_id, season_id)` при
+    `current_team_id = team_id`.
+
+    Пустые случаи (Задача 36): неизвестная аббревиатура и команда без строки
+    в `teams_stats` (ещё не сыграла в сезоне) — текст с причиной, не исключение.
+
+    Аргументы:
+        abbrev: аббревиатура команды (кнопка `tp:<ABBR>` или команда `/ABBR`);
+            резолвится в `team_id` через `_team_id_for_abbrev()` — в SQL
+            попадает только как параметр.
+    """
+    a = abbrev.strip().upper()
+    season = _team_season_context(a, ranked=False)
+    if isinstance(season, str):
+        return season
+    team_id, context = season
 
     fmt = _format_leader_value
     scorers = _team_skaters(team_id, _BY_POINTS, _TEAM_PROFILE_TOP)
@@ -1661,27 +1887,7 @@ def team_profile(abbrev: str) -> str:
     return output_text(
         "messages/team_profile.txt",
         {
-            "team_name": html.escape(me["name"] or a),
-            "abbrev": html.escape(a),
-            "division": html.escape(me["division_name"] or "—"),
-            "conference": html.escape(me["conference_name"] or "—"),
-            "div_place": div_place,
-            "conf_place": conf_place,
-            "league_place": league_place,
-            "league_size": len(rows),
-            "games": fmt(me["games_played"]),
-            "record": _team_record_line(
-                me["wins"], me["losses"], me["ot"], me["points"], me["procent_points"]
-            ),
-            "form": html.escape(_last_n_form_record(team_id, 5)),
-            "streak": html.escape(_current_streak(team_id)),
-            "gf": _fmt_num_max2(me["goals_per_game"]),
-            "ga": _fmt_num_max2(me["goals_against_per_game"]),
-            "sf": _fmt_num_max2(me["shots_per_game"]),
-            "sa": _fmt_num_max2(me["shots_allowed"]),
-            "pp": _fmt_pct_stat(me["power_play_percentage"]),
-            "pk": _fmt_pct_stat(me["penalty_kill_percentage"]),
-            "fo": _fmt_pct_stat(me["face_off_win_percentage"]),
+            **context,
             "scorers_table": _table(scorer_rows, "llrrrr") if scorers["count_rows"] else "",
             "toi_table": _table(toi_rows, "llrr") if toi_leaders["count_rows"] else "",
             "goalies_table": _team_goalies_table(team_id),
@@ -1692,32 +1898,41 @@ def team_profile(abbrev: str) -> str:
 
 
 def team_full_stats(abbrev: str) -> str:
-    """Ответ `/BOS_FULL`: все игроки клуба сезона `config.SEASON_ID` тремя
-    таблицами — нападающие, защитники, вратари — с теми же колонками, что на
-    экране страны (`_player_group_table`); ссылка на него стоит в конце
-    `team_profile()`.
+    """Ответ `/BOS_FULL` — полная версия `team_profile()` (Задача 100).
+
+    Зачем: всё о клубе одним сообщением. Те же шапка и «Сезон», но с местами в лиге у
+    показателей и спецбригадами в штуках (`_team_season_context(ranked=True)`); затем
+    дом/выезд, голы по периодам, последние и ближайшие матчи (`_team_games_context()`) и все
+    игроки клуба тремя таблицами — нападающие, защитники, вратари — с колонками экрана
+    страны (`_player_group_table`). Ссылка на него стоит в конце `team_profile()`.
 
     Аргументы:
-        abbrev: аббревиатура команды из команды `/ABBR_FULL`; неизвестная —
-            текст с причиной.
+        abbrev: аббревиатура команды из команды `/ABBR_FULL`; неизвестная или ещё не
+            сыгравшая — текст с причиной.
     """
     a = abbrev.strip().upper()
-    team_id = _team_id_for_abbrev(a)
-    if team_id is None:
-        return f"<b>{html.escape(a)}</b>\nКоманда не найдена в базе для этого сезона.\n{_team_footer()}"
-    parts = [f"<b>{html.escape(a)}: все игроки</b>"]
+    season = _team_season_context(a, ranked=True)
+    if isinstance(season, str):
+        return season
+    team_id, context = season
+    player_groups = []
     legends = []
     for group, (label, _cond) in PLAYER_GROUPS.items():
         table, n, _total = _player_group_table(_BY_TEAM, team_id, group, None, 0, ranked=False)
         if n:
-            parts += ["", f"<b>{label}</b>", table]
+            player_groups.append((label, table))
             legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
-    if legends:
-        parts.append(rich_details("Обозначения", "\n".join(legends)))
-    else:
-        parts.append("У команды пока нет статистики игроков в этом сезоне.")
-    parts.append(_team_footer(f"профиль клуба: /{html.escape(a)}"))
-    return "\n".join(parts)
+    return output_text(
+        "messages/team_profile.txt",
+        {
+            **context,
+            **_team_games_context(team_id),
+            "player_groups": player_groups,
+            "legend": rich_details("Обозначения", "\n".join(legends)) if legends
+            else "У команды пока нет статистики игроков в этом сезоне.",
+            "footer": _team_footer(f"профиль клуба: /{html.escape(a)}"),
+        },
+    )
 
 
 # Задача 42: страна игрока — rosters.nationality (трёхбуквенный код NHL, одна на
@@ -1737,9 +1952,12 @@ COUNTRY_LABELS: Dict[str, str] = {
 # попадает: у 1–2 игроков «сумма очков страны» — это просто их личная статистика.
 COUNTRY_MIN_PLAYERS = 3
 COUNTRY_NOT_FOUND = "Страна не найдена в рейтинге этого сезона."
+# Условие на `p` (регулярка, Задача 103) стоит здесь, а не в WHERE: так его получают все три
+# запроса стран — рейтинг, счётчик без страны и `_GROUP_SKATERS_SQL`.
 _COUNTRY_FROM = (
     "FROM players_season_stats p "
     "JOIN rosters r ON p.player_id = r.player_id AND p.season_id = r.season_id "
+    "AND p.game_type = 2 "
 )
 
 
@@ -1854,7 +2072,7 @@ _GROUP_GOALIES_SQL = (
     "FROM goalies_season_stats g "
     "JOIN rosters r ON g.player_id = r.player_id AND g.season_id = r.season_id "
     "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
-    "WHERE g.season_id = %s AND {owner} AND g.games > 0 "
+    "WHERE g.season_id = %s AND g.game_type = 2 AND {owner} AND g.games > 0 "
     "ORDER BY g.wins DESC NULLS LAST, r.lastname, r.player_id "
     "LIMIT %s OFFSET %s"
 )
@@ -1998,7 +2216,7 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
     статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
     затем вратари. Матча, где никто из страны не играл, в словаре нет."""
     skaters = fetch_all(
-        "SELECT s.game_id, r.lastname, t.abbreviation, r.position, s.goals, s.assists, s.shots, "
+        "SELECT s.game_id, r.lastname, t.name, r.position, s.goals, s.assists, s.shots, "
         "s.plus_minus, s.hits, s.blocked, s.face_off_wins, s.face_off_taken, s.time_on_ice "
         + _COUNTRY_PLAYERS_FROM.format(stats="game_player_stats", scope=scope)
         + "r.position <> 'G' AND s.time_on_ice IS NOT NULL AND s.time_on_ice <> '00:00' "
@@ -2009,7 +2227,7 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
                  "plus_minus", "hits", "blocked", "fo_wins", "fo_taken", "toi"],
     )
     goalies = fetch_all(
-        "SELECT s.game_id, r.lastname, t.abbreviation, s.saves, s.shots, s.save_percentage, "
+        "SELECT s.game_id, r.lastname, t.name, s.saves, s.shots, s.save_percentage, "
         "s.timeonice "
         + _COUNTRY_PLAYERS_FROM.format(stats="game_goalie_stats", scope=scope)
         + "s.timeonice IS NOT NULL AND s.timeonice <> '00:00' ORDER BY r.lastname",
@@ -2110,7 +2328,7 @@ def team_stats_with_count(
         "COUNT(*) OVER () AS total "
         "FROM teams_stats ts "
         "LEFT JOIN teams t ON ts.team_id = t.team_id AND ts.season_id = t.season_id "
-        "WHERE ts.season_id = %s "
+        "WHERE ts.season_id = %s AND ts.game_type = 2 "
         "ORDER BY {sort} DESC NULLS LAST, t.abbreviation "
         "LIMIT %s OFFSET %s"
     ).format(cols=sql.SQL(", ").join(ids), sort=sort)

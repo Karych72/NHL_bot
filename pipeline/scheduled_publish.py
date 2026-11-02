@@ -50,19 +50,27 @@ def needs_catch_up(status_file: Path, now: datetime) -> bool:
     return age is None or age > MIN_INTERVAL
 
 
-def build_commands() -> List[SyncCommand]:
+def build_commands(now: datetime) -> List[SyncCommand]:
     """Цепочка публикации: датасет ближайших игр → прогноз победы → публикация победы и тотала.
 
     Датасет собирается с ``--min-prior-games 5`` и политикой ``drop`` (значение по умолчанию):
     в него попадают только игры, где у обеих команд не меньше 5 игр в сезоне, — других
     прогнозов бот не показывает. Признаки сверяются с ``metadata.json`` модели победы.
+    Цели — игры не позже завтрашнего дня UTC (``--target-day-to``): ``scheduled_games`` держит
+    две недели расписания (для ``/BOS_FULL``, Задача 100), а прогноз и журнал ``prediction_log``
+    — только про то, что бот покажет в превью сегодня и завтра.
+
+    Аргументы:
+        now: момент прогона (UTC) — от него считается «завтра».
     """
     dataset = f"{WORK_DIR}/dataset_predict.csv"
     home_win_csv = f"{WORK_DIR}/home_win_logreg_predictions.csv"
+    last_day = (now.astimezone(timezone.utc).date() + timedelta(days=1)).isoformat()
     steps = [
         [
             "build-dataset", "--mode", "predict", "--output-dir", WORK_DIR, "--min-prior-games", "5",
             "--train-metadata-path", f"{MODELS_ROOT}/models/home_win/logreg/latest/metadata.json",
+            "--target-day-to", last_day,
         ],
         [
             "predict", "--task", "home_win", "--model", "logreg", "--predict-dataset", dataset,
@@ -83,11 +91,12 @@ def build_commands() -> List[SyncCommand]:
 
 def _run_now() -> bool:
     """Прогон публикации с боевыми путями статусов и текущим временем."""
+    now = datetime.now(timezone.utc)
     return scheduled_retrain.run_after_sync(
-        build_commands(),
+        build_commands(now),
         STATUS_FILE,
         scheduled_sync.STATUS_FILE,
-        datetime.now(timezone.utc),
+        now,
         name="Publish",
     )
 

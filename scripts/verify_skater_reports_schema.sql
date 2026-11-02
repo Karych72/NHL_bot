@@ -78,24 +78,23 @@ BEGIN
     END LOOP;
 END$$;
 
+-- PK — (player_id, season_id, game_type): строки регулярки и плей-офф (миграция 0022, Задача 103).
 DO $$
+DECLARE
+    tbl text;
+    pk text[];
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.table_constraints tc
-        WHERE tc.table_schema = 'public'
-          AND tc.table_name = 'players_advanced_stats'
-          AND tc.constraint_type = 'PRIMARY KEY'
-    ) THEN
-        RAISE EXCEPTION 'players_advanced_stats has no PRIMARY KEY';
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.table_constraints tc
-        WHERE tc.table_schema = 'public'
-          AND tc.table_name = 'players_shot_types'
-          AND tc.constraint_type = 'PRIMARY KEY'
-    ) THEN
-        RAISE EXCEPTION 'players_shot_types has no PRIMARY KEY';
-    END IF;
+    FOREACH tbl IN ARRAY ARRAY['players_season_stats', 'players_advanced_stats', 'players_shot_types']
+    LOOP
+        SELECT array_agg(a.attname::text ORDER BY k.ord) INTO pk
+        FROM pg_index i
+        CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+        WHERE i.indrelid = ('public.' || tbl)::regclass AND i.indisprimary;
+        IF pk IS DISTINCT FROM ARRAY['player_id', 'season_id', 'game_type'] THEN
+            RAISE EXCEPTION '% PRIMARY KEY is %, expected (player_id, season_id, game_type)', tbl, pk;
+        END IF;
+    END LOOP;
 END$$;
 
 SELECT 'skater reports schema OK' AS verify_skater_reports_schema;

@@ -38,7 +38,7 @@ def _arg(argv: list[str], flag: str) -> str:
 
 class BuildCommandsTest(unittest.TestCase):
     def test_dataset_then_win_forecast_then_both_publications(self) -> None:
-        steps = [cmd.argv[cmd.argv.index("modeling.cli") + 1 :] for cmd in build_commands()]
+        steps = [cmd.argv[cmd.argv.index("modeling.cli") + 1 :] for cmd in build_commands(NOW)]
         self.assertEqual([s[0] for s in steps], ["build-dataset", "predict", "publish-predictions", "publish-goals"])
         dataset, predict, publish_win, publish_goals = steps
         self.assertEqual(_arg(dataset, "--mode"), "predict")
@@ -49,12 +49,17 @@ class BuildCommandsTest(unittest.TestCase):
             self.assertEqual(_arg(step, "--artifacts-root"), MODELS_ROOT)
         self.assertEqual(_arg(predict, "--output"), _arg(publish_win, "--predictions"))
         self.assertEqual(_arg(predict, "--predict-dataset"), _arg(publish_goals, "--predict-dataset"))
-        self.assertTrue(all(cmd.cwd == REPO_ROOT for cmd in build_commands()))
+        self.assertTrue(all(cmd.cwd == REPO_ROOT for cmd in build_commands(NOW)))
+
+    def test_targets_end_tomorrow_utc(self) -> None:
+        # scheduled_games holds two weeks (Task 100); the forecast stays on today and tomorrow.
+        (dataset, *_rest) = build_commands(NOW)
+        self.assertEqual(_arg(dataset.argv, "--target-day-to"), "2026-10-16")
 
     def test_dataset_is_built_with_drop_policy_and_five_prior_games(self) -> None:
         # The ≥ 5 games rule of the preview lives in the dataset's cold-start policy
         # (the drop itself — test_modeling_dataset_build.test_cold_start_policy).
-        (dataset, *_rest) = build_commands()
+        (dataset, *_rest) = build_commands(NOW)
         args = build_parser().parse_args(dataset.argv[dataset.argv.index("modeling.cli") + 1 :])
         self.assertEqual(args.cold_start_policy_predict, "drop")
         self.assertEqual(args.min_prior_games, 5)

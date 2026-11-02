@@ -12,7 +12,7 @@ lightgbm==4.6.0
 matplotlib==3.10.1
 pyyaml==6.0.2
 joblib==1.4.2
-pydantic==2.10.6
+pydantic==2.12.5
 # Задача 67: the goal model (modeling/goal_model.py) calls scipy directly — Poisson pmf and
 #   root finding; explicit pin allowed by the human 2026-10-10 (was already locked via scikit-learn).
 scipy==1.17.1

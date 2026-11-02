@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, List, Tuple
 
 import pytest
 from aiogram import Dispatcher
 from aiogram.filters import Command, CommandStart
-from aiogram.methods import SetMyCommands
+from aiogram.methods import AnswerPreCheckoutQuery, CreateInvoiceLink, SetMyCommands
+from aiogram.types import Message, PreCheckoutQuery
 
 from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
@@ -54,7 +56,16 @@ def _commands(router: Any) -> List[str]:
 
 
 @pytest.fixture
-def dispatcher(bot_module) -> Dispatcher:
+def actions(bot_module, monkeypatch) -> List[Tuple[int, int, str, Any]]:
+    """Журнал `bot_actions` (Задача 99) в памяти: (chat_id, user_id, kind, data). Middleware
+    пишет на каждую команду и нажатие, а в CI БД нет; SQL записи — в tests/test_db_nhl.py."""
+    rows: List[Tuple[int, int, str, Any]] = []
+    monkeypatch.setattr(bot_module("bot"), "log_action", lambda *row: rows.append(row))
+    return rows
+
+
+@pytest.fixture
+def dispatcher(bot_module, actions) -> Dispatcher:
     return bot_module("bot").build_dispatcher()
 
 
@@ -68,10 +79,15 @@ def test_dispatcher_checks_commands_then_free_text(dispatcher) -> None:
     assert [r.name for r in dispatcher.sub_routers] == ["standalone", "tail"]
 
 
-def test_throttle_is_the_only_outer_middleware_of_button_presses(bot_module, dispatcher) -> None:
+def test_outer_middlewares_throttle_presses_before_logging_them(bot_module, dispatcher) -> None:
+    """Порядок — поведение: aiogram зовёт outer-middleware по порядку регистрации, и журнал
+    после троттлинга не видит отброшенных нажатий."""
+    bot = bot_module("bot")
     throttle = bot_module("throttle")
-    assert list(dispatcher.callback_query.outer_middleware) == [throttle.enforce_callback_rate_limit]
-    assert list(dispatcher.message.outer_middleware) == []
+    assert list(dispatcher.callback_query.outer_middleware) == [
+        throttle.enforce_callback_rate_limit, bot.log_user_action,
+    ]
+    assert list(dispatcher.message.outer_middleware) == [bot.log_user_action]
 
 
 def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
@@ -82,12 +98,12 @@ def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
     assert [h.callback for h in handlers] == [
         bot.cmd_start, bot.cmd_help, bot.cmd_today, bot.cmd_tonight, bot.cmd_standings,
         bot.cmd_team, bot.cmd_team_profile, bot.cmd_stats, bot.cmd_team_stats, bot.cmd_countries,
-        bot.cmd_subscriptions,
+        bot.cmd_subscriptions, bot.cmd_premium, bot.cmd_paysupport, bot.on_successful_payment,
     ]
     assert isinstance(handlers[0].filters[0].callback, CommandStart)
     assert _commands(router) == [
         "start", "help", "today", "tonight", "standings", "team", "stats", "team_stats", "countries",
-        "subscriptions",
+        "subscriptions", "premium", "paysupport",
     ]
 
 
@@ -102,6 +118,7 @@ def test_standalone_buttons_and_their_order(bot_module, dispatcher) -> None:
         (sh.TONIGHT_GAME_CALLBACK_PATTERN, sh.callback_tonight_game),
         (sh.COUNTRY_CALLBACK_PATTERN, sh.callback_country),
         (r"^gv:(\d+):(\d+)$", sh.handle_goal_video),
+        (bot.SCHEDULE_CALLBACK_PATTERN, bot.callback_schedule_card),
     ]
 
 
@@ -165,14 +182,14 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
     registered = [
         h
         for router in dispatcher.sub_routers
-        for observer in (router.message, router.callback_query)
+        for observer in (router.message, router.callback_query, router.pre_checkout_query)
         for h in observer.handlers
     ]
     for handler in registered:
         assert asyncio.iscoroutinefunction(handler.callback), f"{handler.callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: standalone — 11 команд и 6 кнопок; хвост — 1.
-    assert len(registered) == 17 + 1
+    # Страховка от «проверили пустой список»: standalone — 14 хендлеров сообщений, 7 кнопок и pre_checkout; хвост — 1.
+    assert len(registered) == 22 + 1
     assert {h.callback.__module__ for h in registered} == {"bot", "stats_handlers"}
 
 
@@ -274,7 +291,8 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
         asked.append(text)
         return bot.ai_router.Reply(text="ответ модели", tool=None, params={})
 
-    monkeypatch.setattr(bot.ai_router, "questions_left", lambda chat_id: 5)
+    monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)
+    monkeypatch.setattr(bot.ai_stats, "recent_pairs", lambda chat_id: [])
     monkeypatch.setattr(bot.ai_router, "ask", ask)
 
     await _feed(dispatcher, fake_bot, make_update("как сыграл Колорадо"))
@@ -286,10 +304,10 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
 
 @pytest.mark.asyncio
 async def test_spam_presses_are_stopped_before_any_handler(
-    bot_module, dispatcher, fake_bot, api, make_update
+    bot_module, dispatcher, fake_bot, api, actions, make_update
 ) -> None:
     """Задача 10: девятое нажатие за окно не доходит до хендлера (ни одной правки
-    сообщения), пользователь получает ответ с текстом."""
+    сообщения), пользователь получает ответ с текстом; в журнал (Задача 99) оно не попадает."""
     throttle = bot_module("throttle")
     throttle._hits.clear()
     for _ in range(throttle.CALLBACK_RATE_LIMIT + 1):
@@ -298,6 +316,7 @@ async def test_spam_presses_are_stopped_before_any_handler(
 
     assert len(api.edited_markups) == throttle.CALLBACK_RATE_LIMIT
     assert api.answers[-1] == throttle.RATE_LIMIT_ANSWER_TEXT
+    assert len(actions) == throttle.CALLBACK_RATE_LIMIT
 
 
 @pytest.mark.asyncio
@@ -330,6 +349,46 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
     assert body(card) == rich_html("CARD")
     assert body(pointer) == rich_html(sh._TONIGHT_ALREADY_SENT)
     assert pointer.reply_parameters.message_id == 1, "второй тап — ссылка на неё"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text, name",
+    [("/help", "help"), ("/HELP@nhl_test_bot", "help"), ("/help me", "help"),
+     ("/Team_Stats", "team_stats"), ("/leaders", "leaders")],
+)
+async def test_command_is_logged_by_lowercase_name_with_chat_and_user(
+    dispatcher, fake_bot, actions, make_update, text, name
+) -> None:
+    """Задача 99: имя без `/`, `@бот` и аргументов, в нижнем регистре; неизвестная команда —
+    тоже (`/leaders` убрана, но её набирают)."""
+    await _feed(dispatcher, fake_bot, make_update(text, chat_id=-5, chat_type="group", user_id=7))
+
+    assert actions == [(-5, 7, "command", name)]
+
+
+@pytest.mark.asyncio
+async def test_press_is_logged_with_callback_data(dispatcher, fake_bot, actions, make_update) -> None:
+    await _feed(dispatcher, fake_bot, make_update(data="sub:x", chat_id=-5, user_id=7))
+
+    assert actions == [(-5, 7, "callback", "sub:x")]
+
+
+@pytest.mark.asyncio
+async def test_free_text_is_not_logged(bot_module, dispatcher, fake_bot, actions, make_update, monkeypatch) -> None:
+    """Вопрос к ИИ уже в `ai_questions` / `ai_stats_log` — журнал его не дублирует."""
+    bot = bot_module("bot")
+
+    async def ask(chat_id: int, text: str) -> Any:
+        return bot.ai_router.Reply(text="ответ", tool=None, params={})
+
+    monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)
+    monkeypatch.setattr(bot.ai_stats, "recent_pairs", lambda chat_id: [])
+    monkeypatch.setattr(bot.ai_router, "ask", ask)
+
+    await _feed(dispatcher, fake_bot, make_update("как сыграл Колорадо"))
+
+    assert actions == []
 
 
 # ---------------------------------------------------------------------------
@@ -507,3 +566,170 @@ def test_env_float_raises_on_garbage_value_without_leaking_it(
 
     assert "PUSH_SEND_INTERVAL_SEC" in str(exc_info.value)
     assert "not-a-number" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Премиум за Stars (Задача 97)
+# ---------------------------------------------------------------------------
+
+def _premium_until(days: int) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "until_days, subscribed, status",
+    [(None, False, "Премиума нет"), (5, False, "Премиум до "), (5, True, "Премиум до ")],
+    ids=["free", "manual-grant", "paid-subscription"],
+)
+async def test_premium_command_offers_payment_unless_subscription_is_active(
+    bot_module, dispatcher, fake_bot, api, make_update, monkeypatch, until_days, subscribed, status
+) -> None:
+    """Кнопка оплаты — бесплатному чату и вручную выданному премиуму; при действующей подписке
+    Stars её нет (вторая подписка пошла бы параллельно), вместо неё — как отменить автопродление."""
+    premium = bot_module("premium")
+    monkeypatch.setattr(
+        premium, "premium_until", lambda chat_id: None if until_days is None else _premium_until(until_days)
+    )
+    monkeypatch.setattr(premium, "has_paid_subscription", lambda chat_id: subscribed)
+
+    await _feed(dispatcher, fake_bot, make_update("/premium"))
+
+    [reply] = api.sent_rich
+    html = body(reply)
+    assert status in html
+    assert str(bot_module("ai_router").PREMIUM_DAILY_LIMIT) in html and "100 ⭐" in html
+    assert ("автопродление" in html) is subscribed
+    if subscribed:
+        assert api.sent(CreateInvoiceLink) == []
+        assert reply.reply_markup is None
+        return
+    [invoice] = api.sent(CreateInvoiceLink)
+    assert (invoice.currency, invoice.provider_token) == ("XTR", None)
+    assert [p.amount for p in invoice.prices] == [100]
+    assert invoice.subscription_period == 2592000
+    [button] = [b for row in reply.reply_markup.inline_keyboard for b in row]
+    assert button.url == "https://t.me/$fake-invoice"
+
+
+@pytest.mark.asyncio
+async def test_premium_command_in_group_has_no_button_and_no_invoice(
+    bot_module, dispatcher, fake_bot, api, make_update
+) -> None:
+    await _feed(dispatcher, fake_bot, make_update("/premium", chat_id=-500, chat_type="supergroup"))
+
+    [reply] = api.sent_messages
+    assert "только в личном чате" in reply.text
+    assert reply.reply_markup is None
+    assert api.sent(CreateInvoiceLink) == []
+
+
+@pytest.mark.asyncio
+async def test_paysupport_names_the_support_contact(dispatcher, fake_bot, api, make_update) -> None:
+    await _feed(dispatcher, fake_bot, make_update("/paysupport"))
+
+    [reply] = api.sent_messages
+    assert "@karych_72" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_pre_checkout_is_confirmed_without_database(bot_module, fake_bot, api) -> None:
+    query = PreCheckoutQuery.model_validate(
+        {"id": "q1", "from": {"id": 200, "is_bot": False, "first_name": "T"}, "currency": "XTR",
+         "total_amount": 100, "invoice_payload": "premium"},
+        context={"bot": fake_bot},
+    )
+
+    await bot_module("bot").on_pre_checkout(query)
+
+    [answer] = api.sent(AnswerPreCheckoutQuery)
+    assert (answer.pre_checkout_query_id, answer.ok) == ("q1", True)
+
+
+def _payment_message(fake_bot: Any) -> Message:
+    return Message.model_validate(
+        {"message_id": 1, "date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+         "chat": {"id": 200, "type": "private"},
+         "successful_payment": {
+             "currency": "XTR", "total_amount": 100, "invoice_payload": "premium",
+             "telegram_payment_charge_id": "tg-charge-1", "provider_payment_charge_id": "",
+             "is_recurring": True}},
+        context={"bot": fake_bot},
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_payment_extends_premium_and_thanks(bot_module, fake_bot, api, monkeypatch) -> None:
+    calls: List[Tuple[Any, ...]] = []
+
+    def extend(*args: Any) -> datetime:
+        calls.append(args)
+        return datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(bot_module("premium"), "extend_premium", extend)
+
+    await bot_module("bot").on_successful_payment(_payment_message(fake_bot), fake_bot)
+
+    assert calls == [(200, "tg-charge-1", 100, True)]
+    [reply] = api.sent_messages
+    assert "Премиум до 01.12" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_failed_payment_record_is_logged_with_charge_id_and_raised(
+    bot_module, fake_bot, api, monkeypatch, caplog
+) -> None:
+    def broken(*args: Any) -> datetime:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(bot_module("premium"), "extend_premium", broken)
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await bot_module("bot").on_successful_payment(_payment_message(fake_bot), fake_bot)
+
+    assert "tg-charge-1" in caplog.text and "chat_id=200" in caplog.text
+    assert api.outgoing == []
+
+
+@pytest.mark.asyncio
+async def test_successful_payment_update_reaches_its_handler_through_the_dispatcher(
+    bot_module, dispatcher, fake_bot, api, monkeypatch
+) -> None:
+    """Платёж — сообщение без текста: его не должен забрать ни хвост со свободным текстом,
+    ни промежуточные слои."""
+    from aiogram.types import Update
+
+    calls: List[Tuple[Any, ...]] = []
+
+    def extend(*args: Any) -> datetime:
+        calls.append(args)
+        return datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(bot_module("premium"), "extend_premium", extend)
+    message = _payment_message(fake_bot).model_dump(mode="json", by_alias=True, exclude_none=True)
+    message["from"] = {"id": 200, "is_bot": False, "first_name": "T"}
+
+    await _feed(dispatcher, fake_bot, Update.model_validate({"update_id": 9, "message": message}))
+
+    assert calls == [(200, "tg-charge-1", 100, True)]
+    [reply] = api.sent_messages
+    assert "Премиум до 01.12" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_refund_refunds_stars_then_updates_db_then_cancels_subscription(
+    bot_module, fake_bot, api, monkeypatch
+) -> None:
+    """Порядок реальных вызовов: отмена подписки идёт последней, чтобы её сбой не блокировал возврат."""
+    from aiogram.methods import EditUserStarSubscription, RefundStarPayment
+
+    premium = bot_module("premium")
+    monkeypatch.setattr(premium, "find_refundable_payment", lambda charge_id: 200)
+    monkeypatch.setattr(premium, "mark_refunded", lambda charge_id: api.requests.append("db"))
+
+    await premium.refund(fake_bot, "tg-charge-1")
+
+    assert [r if r == "db" else type(r) for r in api.requests] == [
+        RefundStarPayment, "db", EditUserStarSubscription,
+    ]
+    assert api.requests[2].is_canceled is True

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
@@ -422,8 +423,18 @@ async def test_night_without_games_is_not_sent(push_job, fake_bot, api):
     assert api.outgoing == []
 
 
-def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job):
-    """Ночь готова, когда в ``games`` все матчи регулярки её даты; перенесённый,
+def _games_in_db(loaded_ids, queried):
+    """Подмена ``fetch_all``: из запрошенных id «в ``games``» только *loaded_ids*; запросы — в *queried*."""
+
+    def fetch(query, params, columns):
+        queried.append(sorted(params[0]))
+        return {"game_id": [g for g in params[0] if g in loaded_ids], "count_rows": 0}
+
+    return fetch
+
+
+def test_night_is_loaded_counts_games_played_as_scheduled(push_job):
+    """Ночь готова, когда в ``games`` все матчи регулярки и плей-офф её даты; перенесённый,
     предсезонный и матч соседней даты (в ответе ``score``) ночь не держат."""
     payload = {
         "games": [
@@ -434,26 +445,40 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
             {"id": 2026020060, "gameDate": "2026-10-07", "gameType": 2, "gameScheduleState": "OK"},
         ]
     }
-    queried = []
-
-    def games_in_db(loaded_ids):
-        def fetch(query, params, columns):
-            queried.append(sorted(params[0]))
-            return {"game_id": [g for g in params[0] if g in loaded_ids], "count_rows": 0}
-
-        return fetch
+    queried: list = []
 
     with patch.object(push_job, "fetch_score", return_value=payload) as score, patch.object(
-        push_job, "fetch_all", side_effect=games_in_db({2026020050})
+        push_job, "fetch_all", side_effect=_games_in_db({2026020050}, queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is False
     score.assert_called_once_with(NIGHT)
 
     with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
-        push_job, "fetch_all", side_effect=games_in_db({2026020050, 2026020051})
+        push_job, "fetch_all", side_effect=_games_in_db({2026020050, 2026020051}, queried)
     ):
         assert push_job.night_is_loaded(NIGHT) is True
     assert queried == [[2026020050, 2026020051]] * 2
+
+
+def test_night_of_only_playoff_games_waits_for_them(push_job):
+    """Ночь только с плей-офф (Задача 104): слейт не пуст, и дайджест ждёт, пока
+    загрузчик запишет её матчи, а не уходит пустым сразу."""
+    payload = {
+        "games": [
+            {"id": 2026030111, "gameDate": "2026-10-06", "gameType": 3, "gameScheduleState": "OK"},
+        ]
+    }
+    queried: list = []
+
+    with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
+        push_job, "fetch_all", side_effect=_games_in_db(set(), queried)
+    ):
+        assert push_job.night_is_loaded(NIGHT) is False
+    with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
+        push_job, "fetch_all", side_effect=_games_in_db({2026030111}, queried)
+    ):
+        assert push_job.night_is_loaded(NIGHT) is True
+    assert queried == [[2026030111]] * 2
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +500,8 @@ FOOTER = "<footer>Настроить подписки: /subscriptions</footer>"
 # Причина рассылки — в подвале («По подписке: …»), а не первой строкой: первой идёт счёт.
 RUS_FOOTER = "<footer>По подписке: Россия<br>Настроить подписки: /subscriptions</footer>"
 # Подвал превью предстоящего матча: «Сезон …» из `matchup_season_preview`, затем подписки.
-PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>Настроить подписки: /subscriptions</footer>"
+# Бесплатному вместо оценки модели — тизер (Задача 97B).
+PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium<br>Настроить подписки: /subscriptions</footer>"
 
 
 def _goals(game_id, n, first_event=100):
@@ -924,7 +950,7 @@ async def test_subscriber_of_two_countries_gets_one_short_message_and_each_clip_
 
 @pytest.mark.asyncio
 async def test_game_card_resends_once_after_retry_after(push_env):
-    """``_throttled`` повторяет отправку карточки; без ``await`` 429 вообще не всплыла бы."""
+    """``throttled`` повторяет отправку карточки; без ``await`` 429 вообще не всплыла бы."""
     push_env.api.fail_next(SendRichMessage, _retry_after())
     await push_env.job.run_game_broadcast(
         push_env.bot, NIGHT, False, {111: {GAME_A: push_env.subs(["TOR"], [])}}
@@ -965,24 +991,35 @@ SLATE = {
 @pytest.fixture
 def upcoming_env(push_job, monkeypatch):
     """Рассылка превью с подменой NHL API, превью и БД: ``days`` — дни лиги, за которыми
-    ходили в NHL, ``previews`` — матчи, для которых собиралось превью, ``sent`` — отметки
-    (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` — (id подписки,
-    chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
-    ``run(bot, now)`` — один прогон."""
-    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0)
+    ходили в NHL, ``previews`` — пары (гости, хозяева), для которых собиралось превью,
+    ``sent`` — отметки (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` —
+    (id подписки, chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
+    ``premium`` — чаты с премиумом (Задача 96), ``predicted`` — матчи, чей прогноз читался из
+    ``game_predictions`` (у каждого — победа хозяев 61%); ``run(bot, now)`` — один прогон."""
+    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0,
+                          premium=set(), predicted=[])
 
     def fetch(day):
         env.days.append(day)
         return SLATE
 
-    def preview(game_id, away, home):
-        env.previews.append(game_id)
+    def preview(away, home):
+        env.previews.append((away, home))
         return f"PREVIEW {away} @ {home}", "Сезон 2026/27"
 
     def rows():
         env.read_subs += 1
         return env.chats
 
+    def predictions(query, params, columns):
+        env.predicted.append(params[0])
+        return {"count_rows": 1, "task": ["home_win"], "probability": [0.61]}
+
+    # Строка прогноза — настоящая `with_model_prediction`, подменены только её выборка
+    # и название хозяев из `teams`.
+    monkeypatch.setattr(sys.modules["bot_messages"], "fetch_all", predictions)
+    monkeypatch.setattr(sys.modules["bot_messages"], "team_name_for_abbrev", lambda abbrev: f"{abbrev} Club")
+    monkeypatch.setattr(push_job.premium, "is_premium", lambda chat_id: chat_id in env.premium)
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
     monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
@@ -1039,7 +1076,30 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
     assert by_slot == [[(111, a), (222, a)], [(111, b), (222, b)], [(111, c), (222, c)], []]
     assert api.sent_messages == [], "превью уходят rich-сообщениями"
     assert all(m.rich_message.html.startswith("<p>⏰ Начало в ") for m in api.sent_rich)
-    assert upcoming_env.previews == [GAME_A, GAME_B, 2026020004]
+    assert upcoming_env.previews == [("BOS", "TOR"), ("NYR", "MTL"), ("VAN", "SEA")]
+    assert upcoming_env.predicted == [], "бесплатным прогноз не читается"
+
+
+@pytest.mark.asyncio
+async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env, fake_bot, api):
+    """Задача 96: один матч, два чата — премиум получает строку прогноза, бесплатный нет;
+    превью общее и собирается один раз, прогноз дописывается при отправке, кто бы ни шёл
+    в рассылке первым."""
+    upcoming_env.chats = [(10, 111), (20, 222), (30, 333)]
+    upcoming_env.premium = {222}
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+
+    plain = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + PREVIEW_FOOTER
+    with_prediction = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + (
+        "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа TOR Club — 61%"
+        "<br>Настроить подписки: /subscriptions</footer>"
+    )
+    assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [
+        (111, plain), (222, with_prediction), (333, plain),
+    ]
+    assert upcoming_env.previews == [("BOS", "TOR")]
+    assert upcoming_env.predicted == [GAME_A]
+    assert all("🔒" not in m.rich_message.html for m in api.sent_rich if m.chat_id == 222)
 
 
 @pytest.mark.asyncio
