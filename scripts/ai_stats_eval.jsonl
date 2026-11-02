@@ -16,6 +16,10 @@
 {"id": "a16", "q": "Сколько всего голов у Овечкина?", "kind": "answer", "expect": ["2021/22"]}
 {"id": "a17", "q": "Сколько очков набрал Макдэвид в сезоне 2024/25 и сколько из них голов?", "kind": "answer", "expect": ["100", "26"]}
 {"id": "a18", "q": "Сколько очков у Колорадо в таблице по итогам сезона 2024/25?", "kind": "answer", "expect": ["102"]}
+{"id": "pl1", "q": "Кто выиграл Кубок Стэнли в 2024 году?", "kind": "answer", "expect": [["Флорид", "Florida"]]}
+{"id": "pl2", "q": "С каким счётом в серии закончился финал Кубка Стэнли 2024?", "kind": "answer", "expect": [["Флорид", "Florida"], ["Эдмонтон", "Edmonton", "Ойлерз", "Oilers"], "4", "3"]}
+{"id": "pl3", "q": "Кто набрал больше всех очков в плей-офф 2023/24 и сколько?", "kind": "answer", "expect": [["Макдэвид", "McDavid"], "42"]}
+{"id": "pl4", "q": "Сколько голов забил Макдэвид в сезоне 2023/24?", "kind": "answer", "expect": ["32"]}
 {"id": "o1", "q": "Как играет Кучеров в этом сезоне?", "kind": "answer", "expect_sql": "SELECT p.games, p.points FROM players_season_stats p JOIN rosters r USING (player_id, season_id) WHERE r.lastname = 'Kucherov' AND season_id = {season}"}
 {"id": "o2", "q": "Расскажи про Капризова", "kind": "answer", "expect_sql": "SELECT p.games, p.points FROM players_season_stats p JOIN rosters r USING (player_id, season_id) WHERE r.lastname = 'Kaprizov' AND season_id = {season}"}
 {"id": "o3", "q": "Как Макиннон начал сезон?", "kind": "answer", "expect_sql": "SELECT p.games, p.points FROM players_season_stats p JOIN rosters r USING (player_id, season_id) WHERE r.lastname = 'MacKinnon' AND season_id = {season}"}
@@ -24,7 +28,6 @@
 {"id": "o6", "q": "Как сейчас играет Мичков?", "kind": "answer", "expect_sql": "SELECT p.games, p.points FROM players_season_stats p JOIN rosters r USING (player_id, season_id) WHERE r.lastname = 'Michkov' AND season_id = {season}"}
 {"id": "n1", "q": "Когда вернётся Капризов после травмы?", "kind": ["no_data", "off_topic"]}
 {"id": "n2", "q": "Какой контракт у Овечкина и до какого года?", "kind": ["no_data", "off_topic"]}
-{"id": "n3", "q": "Сколько голов Овечкин забил в плей-офф?", "kind": ["no_data", "off_topic"]}
 {"id": "n4", "q": "Сколько очков Малкин набрал в КХЛ?", "kind": ["no_data", "off_topic"]}
 {"id": "n5", "q": "Кто выиграет сегодня, на кого ставить?", "kind": ["no_data", "off_topic"]}
 {"id": "n6", "q": "Сколько голов за сезон рекорд Гретцки?", "kind": ["no_data", "off_topic"]}
