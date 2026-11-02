@@ -1,0 +1,27 @@
+[
+  {
+    "defensiveZoneFaceoffPct": null,
+    "defensiveZoneFaceoffs": 0,
+    "evFaceoffPct": 0.6,
+    "evFaceoffs": 20,
+    "faceoffWinPct": 0.575,
+    "gamesPlayed": 4,
+    "lastName": "Tkachuk",
+    "neutralZoneFaceoffPct": 0.25,
+    "neutralZoneFaceoffs": 4,
+    "offensiveZoneFaceoffPct": 0.61111,
+    "offensiveZoneFaceoffs": 36,
+    "playerId": 8480801,
+    "positionCode": "L",
+    "ppFaceoffPct": 0.55,
+    "ppFaceoffs": 20,
+    "seasonId": 20252026,
+    "shFaceoffPct": null,
+    "shFaceoffs": 0,
+    "shootsCatches": "L",
+    "skaterFullName": "Brady Tkachuk",
+    "teamAbbrevs": "OTT",
+    "timeOnIcePerGame": 1290,
+    "totalFaceoffs": 40
+  }
+]

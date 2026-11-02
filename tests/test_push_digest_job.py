@@ -457,6 +457,30 @@ def test_night_is_loaded_counts_only_regular_games_played_as_scheduled(push_job)
     assert queried == [[2026020050, 2026020051]] * 2
 
 
+def test_night_of_only_playoff_games_waits_for_them(push_job):
+    """Ночь только с плей-офф (Задача 104): слейт не пуст, и дайджест ждёт, пока
+    загрузчик запишет её матчи, а не уходит пустым сразу."""
+    payload = {
+        "games": [
+            {"id": 2026030111, "gameDate": "2026-10-06", "gameType": 3, "gameScheduleState": "OK"},
+        ]
+    }
+
+    def games_in_db(loaded_ids):
+        return lambda query, params, columns: {
+            "game_id": [g for g in params[0] if g in loaded_ids]
+        }
+
+    with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
+        push_job, "fetch_all", side_effect=games_in_db(set())
+    ):
+        assert push_job.night_is_loaded(NIGHT) is False
+    with patch.object(push_job, "fetch_score", return_value=payload), patch.object(
+        push_job, "fetch_all", side_effect=games_in_db({2026030111})
+    ):
+        assert push_job.night_is_loaded(NIGHT) is True
+
+
 # ---------------------------------------------------------------------------
 # Итоги по матчу (Задачи 61, 76, 85): одно сообщение под подписки чата, альбомы видео,
 # кэш file_id

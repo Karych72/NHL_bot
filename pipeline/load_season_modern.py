@@ -49,10 +49,12 @@ SCHEDULED_GAME_STATE_IDS = (1, 2)
 # narrows its targets to today and tomorrow itself (``pipeline/scheduled_publish.py``).
 SCHEDULE_WINDOW_DAYS = 14
 
-# ``game_type`` of the season aggregate rows (teams_stats, players_*, goalies_season_stats;
-# Task 103): 2 = regular season, the only type the ``gameTypeId=2`` reports here return.
-# Playoff totals (3) arrive with Task 104 under the same key.
+# NHL API ``gameType`` / ``gameTypeId`` = ``game_type`` of ``games`` and of the season
+# aggregate rows (teams_stats, players_*, goalies_season_stats; Tasks 101, 103, 104).
+# The loader writes both: regular-season and playoff totals live side by side under one key.
 REGULAR_SEASON = 2
+PLAYOFFS = 3
+GAME_TYPES = (REGULAR_SEASON, PLAYOFFS)
 
 # gamecenter endpoint name -> cache file suffix.
 _GAME_ENDPOINT_SUFFIXES = {"play-by-play": "pbp", "boxscore": "box", "landing": "landing"}
@@ -298,16 +300,50 @@ class ModernNhlLoader:
             if tri:
                 self.team_standings_by_abbrev[tri] = s
 
-    def build_teams_and_stats(self) -> Tuple[List[tuple], List[tuple]]:
-        summary_url = (
-            "https://api.nhle.com/stats/rest/en/team/summary"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
+    def report_url(self, report: str, game_type: int) -> str:
+        """Stats REST URL of this season's *report* (``skater/summary``, …) for *game_type*.
+
+        The game type goes first in ``cayenneExp`` so a test can route one report of one
+        type by a URL fragment like ``skater/summary?cayenneExp=gameTypeId=3``.
+
+        Args:
+            report: report path under ``stats/rest/en/``.
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
+        return (
+            f"https://api.nhle.com/stats/rest/en/{report}"
+            f"?cayenneExp=gameTypeId={game_type}%20and%20seasonId={self.season_id}"
         )
-        summary_rows = self.fetch_paginated(summary_url, "teamId", page_size=200)
 
+    def fetch_player_report(self, report: str, game_type: int) -> List[dict]:
+        """Every record of the season player report *report* for *game_type*.
+
+        Args:
+            report: ``skater/*`` or ``goalie/*`` report path, keyed by ``playerId``.
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
+        return self.fetch_paginated(self.report_url(report, game_type), "playerId", page_size=1000)
+
+    def fetch_team_summary(self, game_type: int) -> List[dict]:
+        """This season's ``team/summary`` records for *game_type*.
+
+        Args:
+            game_type: ``REGULAR_SEASON`` (every club) or ``PLAYOFFS`` (the 16 that made it).
+        """
+        return self.fetch_paginated(
+            self.report_url("team/summary", game_type), "teamId", page_size=200
+        )
+
+    def build_teams(self, summary_rows: List[dict]) -> List[tuple]:
+        """``teams`` rows of the season from its regular-season ``team/summary`` records.
+
+        Only the regular season lists every club; the playoff summary has 16, so
+        ``build_season_reference_rows`` never passes it here.
+
+        Args:
+            summary_rows: ``fetch_team_summary(REGULAR_SEASON)``.
+        """
         teams_rows: List[tuple] = []
-        teams_stats_rows: List[tuple] = []
-
         for row in summary_rows:
             team_id = to_int(row.get("teamId"))
             meta = self.team_meta_by_id.get(team_id, {})
@@ -339,12 +375,22 @@ class ModernNhlLoader:
                     short_name,
                 )
             )
+        return teams_rows
 
+    def build_teams_stats(self, summary_rows: List[dict], game_type: int) -> List[tuple]:
+        """``teams_stats`` rows of *game_type* from that type's ``team/summary`` records.
+
+        Args:
+            summary_rows: ``fetch_team_summary(game_type)``.
+            game_type: ``REGULAR_SEASON`` or ``PLAYOFFS``.
+        """
+        teams_stats_rows: List[tuple] = []
+        for row in summary_rows:
             teams_stats_rows.append(
                 (
-                    team_id,
+                    to_int(row.get("teamId")),
                     self.season_id,
-                    REGULAR_SEASON,
+                    game_type,
                     optional_int(row.get("gamesPlayed")),
                     optional_int(row.get("wins")),
                     optional_int(row.get("losses")),
@@ -363,7 +409,7 @@ class ModernNhlLoader:
                     optional_pct_from_ratio(row.get("faceoffWinPct")),
                 )
             )
-        return teams_rows, teams_stats_rows
+        return teams_stats_rows
 
     def build_rosters(self, team_rows: List[tuple]) -> List[tuple]:
         rows_by_player: Dict[int, tuple] = {}
@@ -412,7 +458,7 @@ class ModernNhlLoader:
         2025/26 — both carry triCode "UTA"). Building this map from it risked
         picking the stale id, which isn't in this season's ``teams`` table and
         violates ``rosters_current_team_id_season_id_fkey``. *team_rows* is the
-        season-scoped output of ``build_teams_and_stats``, so its triCodes are
+        season-scoped output of ``build_teams``, so its triCodes are
         unambiguous for this ``season_id``.
         """
         out: Dict[str, int] = {}
@@ -573,40 +619,33 @@ class ModernNhlLoader:
         the team roster, the summary reports and player landing alike. Those reports
         list only players with a game in the season and can lag a day behind a
         debutant, so a player missing from them gets NULL ("unknown") — the next
-        sync run's upsert writes the country once the report knows him.
+        sync run's upsert writes the country once the report knows him. Both game
+        types are read, regular season first: a player called up only for the
+        playoffs (Task 104) is in the playoff bios alone.
 
         Args:
             roster_rows: ``rosters`` tuples from ``supplement_rosters_from_reports``.
         """
         nationality: Dict[int, Optional[str]] = {}
-        for report in ("skater/bios", "goalie/bios"):
-            url = (
-                f"https://api.nhle.com/stats/rest/en/{report}"
-                f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-            )
-            for r in self.fetch_paginated(url, "playerId", page_size=1000):
-                nationality[to_int(r.get("playerId"))] = optional_str(r.get("nationalityCode"))
+        for game_type in GAME_TYPES:
+            for report in ("skater/bios", "goalie/bios"):
+                for r in self.fetch_player_report(report, game_type):
+                    nationality.setdefault(
+                        to_int(r.get("playerId")), optional_str(r.get("nationalityCode"))
+                    )
         rows = [row[:7] + (nationality.get(to_int(row[0])),) + row[8:] for row in roster_rows]
         unknown = sum(1 for row in rows if row[7] is None)
         if unknown:
             logger.info("No nationalityCode in bios reports for %d roster row(s)", unknown)
         return rows
 
-    def build_player_advanced_stats(self) -> List[tuple]:
-        gfa_url = (
-            "https://api.nhle.com/stats/rest/en/skater/goalsForAgainst"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater goalsForAgainst report...")
-        gfa_rows = self.fetch_paginated(gfa_url, "playerId", page_size=1000)
+    def build_player_advanced_stats(self, game_type: int) -> List[tuple]:
+        logger.info("Fetching skater goalsForAgainst report (game type %d)...", game_type)
+        gfa_rows = self.fetch_player_report("skater/goalsForAgainst", game_type)
         gfa_by_player = {to_int(r.get("playerId")): r for r in gfa_rows}
 
-        pp_url = (
-            "https://api.nhle.com/stats/rest/en/skater/puckPossessions"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater puckPossessions report...")
-        pp_rows = self.fetch_paginated(pp_url, "playerId", page_size=1000)
+        logger.info("Fetching skater puckPossessions report (game type %d)...", game_type)
+        pp_rows = self.fetch_player_report("skater/puckPossessions", game_type)
         pp_by_player = {to_int(r.get("playerId")): r for r in pp_rows}
 
         all_pids = {p for p in (set(gfa_by_player) | set(pp_by_player)) if p > 0}
@@ -618,7 +657,7 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
-                    REGULAR_SEASON,
+                    game_type,
                     optional_pct_from_ratio(pp.get("satPct")),
                     optional_pct_from_ratio(pp.get("usatPct")),
                     optional_pct_from_ratio(pp.get("goalsPct")),
@@ -638,13 +677,9 @@ class ModernNhlLoader:
             )
         return out
 
-    def build_player_shot_types(self) -> List[tuple]:
-        url = (
-            "https://api.nhle.com/stats/rest/en/skater/shottype"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater shottype report...")
-        rows = self.fetch_paginated(url, "playerId", page_size=1000)
+    def build_player_shot_types(self, game_type: int) -> List[tuple]:
+        logger.info("Fetching skater shottype report (game type %d)...", game_type)
+        rows = self.fetch_player_report("skater/shottype", game_type)
         out: List[tuple] = []
         for r in rows:
             pid = to_int(r.get("playerId"))
@@ -654,7 +689,7 @@ class ModernNhlLoader:
                 (
                     pid,
                     self.season_id,
-                    REGULAR_SEASON,
+                    game_type,
                     optional_int(r.get("goalsWrist")),
                     optional_int(r.get("shotsOnNetWrist")),
                     optional_int(r.get("goalsSlap")),
@@ -673,46 +708,26 @@ class ModernNhlLoader:
             )
         return out
 
-    def build_player_season_stats(self) -> Tuple[List[tuple], List[dict]]:
-        url = (
-            "https://api.nhle.com/stats/rest/en/skater/summary"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        rows = self.fetch_paginated(url, "playerId", page_size=1000)
+    def build_player_season_stats(self, game_type: int) -> Tuple[List[tuple], List[dict]]:
+        rows = self.fetch_player_report("skater/summary", game_type)
 
-        toi_url = (
-            "https://api.nhle.com/stats/rest/en/skater/timeonice"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater time-on-ice report...")
-        toi_rows = self.fetch_paginated(toi_url, "playerId", page_size=1000)
+        logger.info("Fetching skater time-on-ice report (game type %d)...", game_type)
+        toi_rows = self.fetch_player_report("skater/timeonice", game_type)
         toi_by_player = {to_int(t.get("playerId")): t for t in toi_rows}
         if toi_rows:
             logger.debug("timeonice sample keys: %s", list(toi_rows[0].keys()))
 
-        fop_url = (
-            "https://api.nhle.com/stats/rest/en/skater/faceoffpercentages"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater faceoffpercentages report...")
-        fop_rows = self.fetch_paginated(fop_url, "playerId", page_size=1000)
+        logger.info("Fetching skater faceoffpercentages report (game type %d)...", game_type)
+        fop_rows = self.fetch_player_report("skater/faceoffpercentages", game_type)
         fop_by_player = {to_int(t.get("playerId")): t for t in fop_rows}
 
-        so_url = (
-            "https://api.nhle.com/stats/rest/en/skater/shootout"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater shootout report...")
-        so_rows = self.fetch_paginated(so_url, "playerId", page_size=1000)
+        logger.info("Fetching skater shootout report (game type %d)...", game_type)
+        so_rows = self.fetch_player_report("skater/shootout", game_type)
         so_by_player = {to_int(t.get("playerId")): t for t in so_rows}
 
         # summary no longer includes hits / blockedShots (as of 2025–26 API); realtime does
-        rt_url = (
-            "https://api.nhle.com/stats/rest/en/skater/realtime"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching skater realtime report (hits, blocked shots)...")
-        rt_rows = self.fetch_paginated(rt_url, "playerId", page_size=1000)
+        logger.info("Fetching skater realtime report (game type %d)...", game_type)
+        rt_rows = self.fetch_player_report("skater/realtime", game_type)
         rt_by_player = {to_int(t.get("playerId")): t for t in rt_rows}
         if rt_rows:
             logger.debug("realtime sample keys: %s", list(rt_rows[0].keys()))
@@ -768,24 +783,16 @@ class ModernNhlLoader:
                     optional_pct_from_ratio(so.get("shootoutShootingPct")),
                     player_id,
                     self.season_id,
-                    REGULAR_SEASON,
+                    game_type,
                 )
             )
         return out, rows
 
-    def build_goalie_season_stats(self) -> Tuple[List[tuple], List[dict]]:
-        url = (
-            "https://api.nhle.com/stats/rest/en/goalie/summary"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        rows = self.fetch_paginated(url, "playerId", page_size=1000)
+    def build_goalie_season_stats(self, game_type: int) -> Tuple[List[tuple], List[dict]]:
+        rows = self.fetch_player_report("goalie/summary", game_type)
 
-        sbs_url = (
-            "https://api.nhle.com/stats/rest/en/goalie/savesByStrength"
-            f"?cayenneExp=seasonId={self.season_id}%20and%20gameTypeId=2"
-        )
-        logger.info("Fetching goalie saves-by-strength report...")
-        sbs_rows = self.fetch_paginated(sbs_url, "playerId", page_size=1000)
+        logger.info("Fetching goalie saves-by-strength report (game type %d)...", game_type)
+        sbs_rows = self.fetch_player_report("goalie/savesByStrength", game_type)
         sbs_by_player = {to_int(s.get("playerId")): s for s in sbs_rows}
         if sbs_rows:
             logger.debug("savesByStrength sample keys: %s", list(sbs_rows[0].keys()))
@@ -840,14 +847,15 @@ class ModernNhlLoader:
                     safe_pct(ev_saves, ev_shots),
                     player_id,
                     self.season_id,
-                    REGULAR_SEASON,
+                    game_type,
                 )
             )
         return out, rows
 
     def fetch_final_games(self) -> List[dict]:
+        game_types = ",".join(str(t) for t in GAME_TYPES)
         cayenne = (
-            f"season={self.season_id} and gameType=2 and gameStateId=7 and "
+            f"season={self.season_id} and gameType in ({game_types}) and gameStateId=7 and "
             f'gameDate>="{self.start_date}" and gameDate<="{self.end_date}"'
         )
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
@@ -859,6 +867,9 @@ class ModernNhlLoader:
         Same Stats REST endpoint as ``fetch_final_games``, but with the future
         ``gameStateId`` values instead of 7 and a window anchored at today
         (UTC), not at the loader's ``--date-from/--date-to`` history window.
+        Regular season only, unlike ``fetch_final_games``: ``scheduled_games`` feeds the
+        forecast of the regular-season model, and playoffs get none (human's decision,
+        Task 104).
 
         Returns:
             Stats API ``game`` records of the upcoming games of ``self.season_id``.
@@ -867,7 +878,7 @@ class ModernNhlLoader:
         last_day = first_day + timedelta(days=SCHEDULE_WINDOW_DAYS - 1)
         states = ",".join(str(i) for i in SCHEDULED_GAME_STATE_IDS)
         cayenne = (
-            f"season={self.season_id} and gameType=2 and gameStateId in ({states}) and "
+            f"season={self.season_id} and gameType={REGULAR_SEASON} and gameStateId in ({states}) and "
             f'gameDate>="{first_day.isoformat()}" and gameDate<="{last_day.isoformat()}"'
         )
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
@@ -1524,14 +1535,34 @@ class ModernNhlLoader:
         (``advanced_rows`` and ``shot_type_rows``, both keyed on ``r[0]``) — both
         tables carry an FK ``(player_id, season_id) -> rosters``, so a player
         missing from either would otherwise fail that table's UPSERT.
+
+        Every stats table gets rows of both ``GAME_TYPES`` (Task 104); before the
+        playoffs start their reports are empty and only regular-season rows come
+        out. ``teams`` comes from the regular season alone (every club plays it), and
+        the roster gaps are filled from the reports of both types — a player called
+        up only for the playoffs is in no regular-season report.
         """
         logger.info("Building teams and season stats...")
-        teams_rows, teams_stats_rows = self.build_teams_and_stats()
+        regular_team_summary = self.fetch_team_summary(REGULAR_SEASON)
+        teams_rows = self.build_teams(regular_team_summary)
         roster_rows = self.build_rosters(teams_rows)
-        skater_rows, skater_summary_rows = self.build_player_season_stats()
-        goalie_rows, goalie_summary_rows = self.build_goalie_season_stats()
-        advanced_rows = self.build_player_advanced_stats()
-        shot_type_rows = self.build_player_shot_types()
+        teams_stats_rows = self.build_teams_stats(regular_team_summary, REGULAR_SEASON)
+        teams_stats_rows += self.build_teams_stats(self.fetch_team_summary(PLAYOFFS), PLAYOFFS)
+        skater_rows: List[tuple] = []
+        skater_summary_rows: List[dict] = []
+        goalie_rows: List[tuple] = []
+        goalie_summary_rows: List[dict] = []
+        advanced_rows: List[tuple] = []
+        shot_type_rows: List[tuple] = []
+        for game_type in GAME_TYPES:
+            skaters, skater_summary = self.build_player_season_stats(game_type)
+            goalies, goalie_summary = self.build_goalie_season_stats(game_type)
+            skater_rows += skaters
+            skater_summary_rows += skater_summary
+            goalie_rows += goalies
+            goalie_summary_rows += goalie_summary
+            advanced_rows += self.build_player_advanced_stats(game_type)
+            shot_type_rows += self.build_player_shot_types(game_type)
         extra_player_ids = {to_int(r[0]) for r in advanced_rows} | {
             to_int(r[0]) for r in shot_type_rows
         }

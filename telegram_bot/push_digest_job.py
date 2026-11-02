@@ -130,9 +130,10 @@ UPCOMING_START_MSK = time(15, 30)
 # попадает в D.
 _NIGHT_SHIFT = timedelta(hours=12)
 
-# Матчи, которые загрузчик пишет в ``games``: регулярка (``gameType`` 2) по расписанию
-# (``gameScheduleState`` OK) — перенесённый или отменённый матч ночь не держит.
-_REGULAR_SEASON_GAME_TYPE = 2
+# Матчи, которые загрузчик пишет в ``games``: регулярка и плей-офф (``gameType`` 2 и 3,
+# Задача 104) по расписанию (``gameScheduleState`` OK) — перенесённый или отменённый матч
+# ночь не держит.
+_LOADED_GAME_TYPES = (2, 3)
 _SCHEDULED_AS_PLANNED = "OK"
 
 # Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
@@ -171,7 +172,7 @@ def _msk_moment(night: date, at: time) -> datetime:
 
 
 def night_is_loaded(night: date) -> bool:
-    """Все ли матчи регулярки ночи *night* из расписания NHL уже в ``games``.
+    """Все ли матчи регулярки и плей-офф ночи *night* из расписания NHL уже в ``games``.
 
     Зачем: дайджест не должен уходить неполным. Слейт берётся из ``score/{night}``
     NHL API, а не из ``scheduled_games``: та держит только не начавшиеся игры,
@@ -185,7 +186,7 @@ def night_is_loaded(night: date) -> bool:
         int(g["id"])
         for g in fetch_score(night)["games"]
         if g["gameDate"] == night.isoformat()
-        and g["gameType"] == _REGULAR_SEASON_GAME_TYPE
+        and g["gameType"] in _LOADED_GAME_TYPES
         and g["gameScheduleState"] == _SCHEDULED_AS_PLANNED
     ]
     loaded = fetch_all(

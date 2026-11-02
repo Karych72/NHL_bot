@@ -1,0 +1,193 @@
+{
+  "id": 2025030132,
+  "season": 20252026,
+  "gameType": 3,
+  "limitedScoring": false,
+  "gameDate": "2026-04-20",
+  "venue": {
+    "default": "Lenovo Center"
+  },
+  "venueLocation": {
+    "default": "Raleigh"
+  },
+  "startTimeUTC": "2026-04-20T23:30:00Z",
+  "easternUTCOffset": "-04:00",
+  "venueUTCOffset": "-04:00",
+  "tvBroadcasts": [
+    {
+      "id": 307,
+      "market": "N",
+      "countryCode": "US",
+      "network": "ESPN2",
+      "sequenceNumber": 12
+    },
+    {
+      "id": 282,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "SN",
+      "sequenceNumber": 21
+    },
+    {
+      "id": 4,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "CBC",
+      "sequenceNumber": 101
+    },
+    {
+      "id": 281,
+      "market": "N",
+      "countryCode": "CA",
+      "network": "TVAS",
+      "sequenceNumber": 120
+    },
+    {
+      "id": 561,
+      "market": "H",
+      "countryCode": "US",
+      "network": "FDSNSO",
+      "sequenceNumber": 202
+    }
+  ],
+  "gameState": "OFF",
+  "gameScheduleState": "OK",
+  "periodDescriptor": {
+    "number": 5,
+    "periodType": "OT",
+    "otPeriods": 2,
+    "maxRegulationPeriods": 3
+  },
+  "regPeriods": 3,
+  "awayTeam": {
+    "id": 9,
+    "commonName": {
+      "default": "Senators",
+      "fr": "Sénateurs"
+    },
+    "abbrev": "OTT",
+    "score": 2,
+    "sog": 39,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/OTT_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/OTT_dark.svg",
+    "placeName": {
+      "default": "Ottawa"
+    },
+    "placeNameWithPreposition": {
+      "default": "Ottawa",
+      "fr": "d'Ottawa"
+    }
+  },
+  "homeTeam": {
+    "id": 12,
+    "commonName": {
+      "default": "Hurricanes"
+    },
+    "abbrev": "CAR",
+    "score": 3,
+    "sog": 49,
+    "logo": "https://assets.nhle.com/logos/nhl/svg/CAR_light.svg",
+    "darkLogo": "https://assets.nhle.com/logos/nhl/svg/CAR_dark.svg",
+    "placeName": {
+      "default": "Carolina",
+      "fr": "Caroline"
+    },
+    "placeNameWithPreposition": {
+      "default": "Carolina",
+      "fr": "de la Caroline"
+    }
+  },
+  "clock": {
+    "timeRemaining": "06:07",
+    "secondsRemaining": 367,
+    "running": false,
+    "inIntermission": false
+  },
+  "playerByGameStats": {
+    "awayTeam": {
+      "forwards": [
+        {
+          "playerId": 8480801,
+          "sweaterNumber": 7,
+          "name": {
+            "default": "B. Tkachuk"
+          },
+          "position": "L",
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "plusMinus": -2,
+          "pim": 2,
+          "hits": 1,
+          "powerPlayGoals": 0,
+          "sog": 6,
+          "faceoffWinningPctg": 0.777778,
+          "toi": "28:17",
+          "blockedShots": 1,
+          "shifts": 42,
+          "giveaways": 2,
+          "takeaways": 0
+        }
+      ],
+      "defense": [],
+      "goalies": [
+        {
+          "playerId": 8476999,
+          "sweaterNumber": 35,
+          "name": {
+            "default": "L. Ullmark"
+          },
+          "position": "G",
+          "evenStrengthShotsAgainst": "42/44",
+          "powerPlayShotsAgainst": "2/3",
+          "shorthandedShotsAgainst": "2/2",
+          "saveShotsAgainst": "46/49",
+          "savePctg": 0.938776,
+          "evenStrengthGoalsAgainst": 2,
+          "powerPlayGoalsAgainst": 1,
+          "shorthandedGoalsAgainst": 0,
+          "pim": 0,
+          "goalsAgainst": 3,
+          "toi": "93:34",
+          "starter": true,
+          "decision": "L",
+          "shotsAgainst": 49,
+          "saves": 46
+        }
+      ]
+    },
+    "homeTeam": {
+      "forwards": [],
+      "defense": [],
+      "goalies": [
+        {
+          "playerId": 8475883,
+          "sweaterNumber": 31,
+          "name": {
+            "default": "F. Andersen"
+          },
+          "position": "G",
+          "evenStrengthShotsAgainst": "36/38",
+          "powerPlayShotsAgainst": "1/1",
+          "shorthandedShotsAgainst": "0/0",
+          "saveShotsAgainst": "37/39",
+          "savePctg": 0.948718,
+          "evenStrengthGoalsAgainst": 2,
+          "powerPlayGoalsAgainst": 0,
+          "shorthandedGoalsAgainst": 0,
+          "pim": 0,
+          "goalsAgainst": 2,
+          "toi": "93:33",
+          "starter": true,
+          "decision": "W",
+          "shotsAgainst": 39,
+          "saves": 37
+        }
+      ]
+    }
+  },
+  "gameOutcome": {
+    "lastPeriodType": "OT",
+    "otPeriods": 2
+  }
+}

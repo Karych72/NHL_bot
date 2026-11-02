@@ -1,0 +1,27 @@
+[
+  {
+    "birthCity": "Lugnvik",
+    "birthCountryCode": "SWE",
+    "birthDate": "1993-07-31",
+    "birthStateProvinceCode": null,
+    "currentTeamAbbrev": "OTT",
+    "draftOverall": 163,
+    "draftRound": 6,
+    "draftYear": 2012,
+    "firstSeasonForGameType": 20212022,
+    "gamesPlayed": 4,
+    "goalieFullName": "Linus Ullmark",
+    "height": 76,
+    "isInHallOfFameYn": "N",
+    "lastName": "Ullmark",
+    "losses": 4,
+    "nationalityCode": "SWE",
+    "otLosses": 0,
+    "playerId": 8476999,
+    "shootsCatches": "L",
+    "shutouts": 0,
+    "ties": null,
+    "weight": 223,
+    "wins": 0
+  }
+]

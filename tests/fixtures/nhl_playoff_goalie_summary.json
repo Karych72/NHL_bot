@@ -1,0 +1,27 @@
+[
+  {
+    "assists": 0,
+    "gamesPlayed": 4,
+    "gamesStarted": 4,
+    "goalieFullName": "Linus Ullmark",
+    "goals": 0,
+    "goalsAgainst": 9,
+    "goalsAgainstAverage": 2.0269,
+    "lastName": "Ullmark",
+    "losses": 4,
+    "otLosses": 0,
+    "penaltyMinutes": 0,
+    "playerId": 8476999,
+    "points": 0,
+    "savePct": 0.93233,
+    "saves": 124,
+    "seasonId": 20252026,
+    "shootsCatches": "L",
+    "shotsAgainst": 133,
+    "shutouts": 0,
+    "teamAbbrevs": "OTT",
+    "ties": null,
+    "timeOnIce": 15985,
+    "wins": 0
+  }
+]

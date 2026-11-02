@@ -1,0 +1,25 @@
+[
+  {
+    "evTimeOnIce": 3744,
+    "evTimeOnIcePerGame": 936.0,
+    "gamesPlayed": 4,
+    "lastName": "Tkachuk",
+    "otTimeOnIce": 581,
+    "otTimeOnIcePerOtGame": 581.0,
+    "playerId": 8480801,
+    "positionCode": "L",
+    "ppTimeOnIce": 1418,
+    "ppTimeOnIcePerGame": 354.5,
+    "seasonId": 20252026,
+    "shTimeOnIce": 0,
+    "shTimeOnIcePerGame": 0.0,
+    "shifts": 105,
+    "shiftsPerGame": 26.25,
+    "shootsCatches": "L",
+    "skaterFullName": "Brady Tkachuk",
+    "teamAbbrevs": "OTT",
+    "timeOnIce": 5162,
+    "timeOnIcePerGame": 1290.5,
+    "timeOnIcePerShift": 49.1619
+  }
+]

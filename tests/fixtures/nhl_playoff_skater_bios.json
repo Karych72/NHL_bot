@@ -1,0 +1,27 @@
+[
+  {
+    "assists": 0,
+    "birthCity": "Scottsdale",
+    "birthCountryCode": "USA",
+    "birthDate": "1999-09-16",
+    "birthStateProvinceCode": "AZ",
+    "currentTeamAbbrev": "FLA",
+    "currentTeamName": "Florida Panthers",
+    "draftOverall": 4,
+    "draftRound": 1,
+    "draftYear": 2018,
+    "firstSeasonForGameType": 20242025,
+    "gamesPlayed": 4,
+    "goals": 0,
+    "height": 76,
+    "isInHallOfFameYn": "N",
+    "lastName": "Tkachuk",
+    "nationalityCode": "USA",
+    "playerId": 8480801,
+    "points": 0,
+    "positionCode": "L",
+    "shootsCatches": "L",
+    "skaterFullName": "Brady Tkachuk",
+    "weight": 226
+  }
+]
