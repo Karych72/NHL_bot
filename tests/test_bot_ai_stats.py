@@ -617,7 +617,10 @@ def test_system_prompt_is_stable_cached_and_has_only_data_tables(bot_module):
     assert block["cache_control"] == {"type": "ephemeral"}
     assert not re.search(r"\d{4}-\d{2}-\d{2}", text), "дата в префиксе ломает кэш"
     for table in ai_stats.AI_TABLES:
-        assert f"CREATE TABLE {table}(" in text
+        assert f"CREATE TABLE {table}(" in text or f"CREATE OR REPLACE VIEW {table} AS" in text
+    # Представление — целиком, до своей «;»: иначе модель не видит его колонок.
+    assert "CREATE OR REPLACE VIEW playoff_series AS" in text
+    assert "last_day" in text and ") AS s;" in text
     for private in ("bot_subscriptions", "ai_questions", "ai_stats_log", "prediction_log", "game_predictions"):
         assert private not in text
     assert "ai_stats" not in ai_stats._system("stats_reviewer.md")[0]["text"].split("## Схема таблиц")[1]

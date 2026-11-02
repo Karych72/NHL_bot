@@ -38,7 +38,7 @@ AI_TABLES = (
     "games", "teams", "teams_stats", "rosters", "players_season_stats",
     "players_advanced_stats", "players_shot_types", "goalies_season_stats",
     "game_team_stats", "game_player_stats", "game_goalie_stats", "all_goals",
-    "game_three_stars", "shot_attempts", "scheduled_games",
+    "game_three_stars", "shot_attempts", "scheduled_games", "playoff_series",
 )
 
 # Решение человека 2026-10-28: потолки на один вопрос и окно продолжения диалога.
@@ -190,12 +190,15 @@ def _verdict_tools() -> List[Dict[str, Any]]:
 
 @functools.lru_cache(maxsize=1)
 def _schema() -> str:
-    """DDL разрешённых таблиц из `data_tables/t.*.sql` без комментариев — схема для промпта."""
+    """DDL разрешённых таблиц и представлений из `data_tables/t.*.sql` без комментариев — схема
+    для промпта."""
     tables = []
     for name in AI_TABLES:
-        ddl = re.search(r"CREATE TABLE.*?\n\);", (DATA_TABLES / f"t.{name}.sql").read_text(), re.S)
+        ddl = re.search(
+            r"CREATE (?:TABLE.*?\n\)|OR REPLACE VIEW.*?);", (DATA_TABLES / f"t.{name}.sql").read_text(), re.S
+        )
         if ddl is None:
-            raise RuntimeError(f"В data_tables/t.{name}.sql нет CREATE TABLE")
+            raise RuntimeError(f"В data_tables/t.{name}.sql нет CREATE TABLE / CREATE OR REPLACE VIEW")
         tables.append("\n".join(
             line for line in ddl.group(0).splitlines() if not line.strip().startswith("--")
         ))

@@ -32,6 +32,7 @@ NHL_bot/
 │   ├── t.game_three_stars.sql
 │   ├── t.games.sql
 │   ├── t.goalies_season_stats.sql
+│   ├── t.playoff_series.sql            # Представление серий плей-офф из games: миграция 0023 (\ir) и `make db-tables` (Задача 105)
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
 │   ├── t.scheduled_games.sql
@@ -82,7 +83,9 @@ NHL_bot/
 │       ├── 0021_schedule_created.up.sql  # bot_actions: schedule_created — расписание с карточки (Задача 108)
 │       ├── 0021_schedule_created.down.sql
 │       ├── 0022_aggregates_game_type.up.sql  # game_type в PK пяти сезонных агрегатов, бэкфилл 2 (Задача 103)
-│       └── 0022_aggregates_game_type.down.sql
+│       ├── 0022_aggregates_game_type.down.sql
+│       ├── 0023_playoff_series.up.sql        # Представление playoff_series и его GRANT роли nhl_ai_reader (Задача 105)
+│       └── 0023_playoff_series.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -778,6 +781,14 @@ PK `(player_id, season_id, game_type)`, как у полевых; FK `(player_id
 
 Индекс `idx_games_season_day (season_id, day)` — под фильтры `WHERE season_id = %s`
 (частично — с `day`), которыми пользуются день-дайджест, «форма команды» и датасет-билдер.
+
+#### `playoff_series` — Серии плей-офф (представление, Задача 105)
+
+Строка на серию из `games WHERE game_type = 3`, без своей загрузки. `round = (game_id / 100) % 100`,
+`series_number = (game_id / 10) % 10`; пара `team_a_id` / `team_b_id` = `LEAST` / `GREATEST`
+от хозяев и гостей; `wins_a`, `wins_b`, `games_played`, `first_day`, `last_day`; `winner_id` —
+команда с 4 победами, `NULL`, пока серия идёт. Обладатель Кубка — `winner_id` серии `round = 4`.
+Читает только ИИ (`ai_stats.AI_TABLES`); экранов бота нет.
 
 #### `scheduled_games` — Будущие игры (Задача 22A)
 

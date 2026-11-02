@@ -1223,6 +1223,67 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestPlayoffSeriesView(unittest.TestCase):
+    """Задача 105: представление ``playoff_series`` собирает серии из игр плей-офф. Вымышленный
+    сезон 2099: серия раунда 1 (B–A, 4:1 в пользу B, хозяева чередуются), незаконченный финал (C–A, 1:1,
+    C хозяин первой игры) и игра регулярки A–B, которой в сериях быть не должно. Строки
+    удаляются до и после."""
+
+    SEASON = 20992100
+    A, B, C = 900106, 900107, 900108
+
+    def setUp(self):
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        a, b, c = self.A, self.B, self.C
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) VALUES "
+                "(%s, %s, 'TMA', 'Team A'), (%s, %s, 'TMB', 'Team B'), (%s, %s, 'TMC', 'Team C')",
+                (a, self.SEASON, b, self.SEASON, c, self.SEASON),
+            )
+            # (игра, день, хозяева, гости, победитель, тип); game_id — сезон, тип, раунд, серия, игра.
+            for game in (
+                (2099020001, date(2099, 3, 1), a, b, b, 2),
+                (2099030111, date(2099, 4, 20), a, b, b, 3),
+                (2099030112, date(2099, 4, 22), a, b, a, 3),
+                (2099030113, date(2099, 4, 24), b, a, b, 3),
+                (2099030114, date(2099, 4, 26), b, a, b, 3),
+                (2099030115, date(2099, 4, 28), a, b, b, 3),
+                (2099030411, date(2099, 6, 5), c, a, c, 3),
+                (2099030412, date(2099, 6, 7), c, a, a, 3),
+            ):
+                cur.execute(
+                    "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                    "is_overtime, is_shootouts, season_id, game_type) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, FALSE, %s, %s)",
+                    (*game[:5], self.SEASON, game[5]),
+                )
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM games WHERE season_id = %s", (self.SEASON,))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def test_series_score_winner_and_open_final(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT round, series_number, team_a_id, team_b_id, wins_a, wins_b, games_played, "
+                "winner_id, first_day, last_day FROM playoff_series WHERE season_id = %s "
+                "ORDER BY round", (self.SEASON,),
+            )
+            rows = cur.fetchall()
+        self.assertEqual(rows, [
+            (1, 1, self.A, self.B, 1, 4, 5, self.B, date(2099, 4, 20), date(2099, 4, 28)),
+            (4, 1, self.A, self.C, 1, 1, 2, None, date(2099, 6, 5), date(2099, 6, 7)),
+        ])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestRegularSeasonAggregatesSql(unittest.TestCase):
     """Задача 103: экраны бота и обзор ИИ читают из сезонных агрегатов только регулярку.
     Вымышленный сезон: у HOM, его игрока и вратаря в каждой из пяти таблиц две строки —
