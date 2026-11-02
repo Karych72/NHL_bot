@@ -515,7 +515,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 # Факт из прогона загрузчика на скретч-БД (season-load-full, SEASON_ID=20262027,
 # 2026-09-28, до старта сезона): при 0 сыгранных играх лиги пустует не только
 # `games` — `teams`/`teams_stats`/`rosters`/`players_season_stats` тоже, потому
-# что `build_teams_and_stats()` строит их из `team/summary` (агрегат по уже
+# что `build_teams()` строит их из `team/summary` (агрегат по уже
 # сыгранным играм), а `build_rosters()` идёт только по командам из этого же
 # списка (`pipeline/load_season_modern.py:263-338`). Маршрут-заглушка "" ниже
 # отвечает пустой выборкой на любой запрос — это и есть реальное состояние БД

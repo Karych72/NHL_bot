@@ -1,0 +1,24 @@
+[
+  {
+    "defensiveZoneStartPct": 0.32075,
+    "faceoffPct5v5": 0.5789,
+    "gamesPlayed": 4,
+    "goalsPct": 0.0,
+    "individualSatForPer60": 17.276,
+    "individualShotsForPer60": 7.558,
+    "lastName": "Tkachuk",
+    "neutralZoneStartPct": 0.33962,
+    "offensiveZoneStartPct": 0.33962,
+    "offensiveZoneStartRatio": 0.51428,
+    "onIceShootingPct": 0.0,
+    "playerId": 8480801,
+    "positionCode": "L",
+    "satPct": 0.512,
+    "seasonId": 20252026,
+    "shootsCatches": "L",
+    "skaterFullName": "Brady Tkachuk",
+    "teamAbbrevs": "OTT",
+    "timeOnIcePerGame5v5": 833,
+    "usatPct": 0.528
+  }
+]
