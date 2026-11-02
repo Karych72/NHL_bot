@@ -2244,9 +2244,12 @@ class TestNhlLoadedData(unittest.TestCase):
         with self.conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM teams WHERE season_id = %s", (sid,))
             nt = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM teams_stats WHERE season_id = %s", (sid,))
+            # Регулярка: в плей-офф только 16 клубов, а teams строится из регулярки (Задача 104).
+            cur.execute(
+                "SELECT COUNT(*) FROM teams_stats WHERE season_id = %s AND game_type = 2", (sid,)
+            )
             ns = cur.fetchone()[0]
-        self.assertEqual(nt, ns, "teams and teams_stats should have same team count per season_id")
+        self.assertEqual(nt, ns, "teams and regular-season teams_stats should have same team count")
         self.assertGreaterEqual(nt, 1)
 
 
