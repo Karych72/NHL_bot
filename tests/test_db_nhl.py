@@ -25,6 +25,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
@@ -1632,6 +1633,44 @@ class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
                            "AND kind = 'schedule_deleted'", (self.CHAT,)),
             [(1, "schedule_deleted", str(mine))],
         )
+
+    async def test_card_saves_a_row_and_logs_it_through_dispatcher(self):
+        """Задача 108: «Сохранить» карточки пишет строку с первой отправкой в будущем и
+        `schedule_created` (миграция 0021); второе бесплатное — отказ без записи."""
+        from aiogram.types import Update
+
+        from tests._telegram_fakes import _callback_data
+
+        dispatcher = self.bot.build_dispatcher()
+        fake_bot = self._fake_bot()
+        draft = self.bot.Draft("leaders", {"category": "goals"}, "week", 5, 20, "Europe/Moscow")
+        for update_id in (1, 2):
+            update = Update.model_validate({
+                "update_id": update_id,
+                "callback_query": _callback_data(self.bot._encode("s", draft), self.CHAT, 1),
+            })
+            await dispatcher.feed_update(fake_bot, update)
+
+        [schedule] = self.repo.list_for_chat(self.CHAT)
+        self.assertEqual((schedule.screen, schedule.params, schedule.freq, schedule.weekday, schedule.local_time),
+                         ("leaders", {"category": "goals"}, "week", 5, time(10, 0)))
+        [next_run] = self._next_runs(self.CHAT)
+        self.assertGreater(next_run, datetime.now(timezone.utc))
+        self.assertEqual(next_run.astimezone(ZoneInfo("Europe/Moscow")).isoweekday(), 5)
+        self.assertEqual(
+            self._query("SELECT kind, data FROM bot_actions WHERE chat_id = %s AND kind = 'schedule_created'",
+                        (self.CHAT,)),
+            [("schedule_created", f"{schedule.id}:leaders")],
+        )
+        self.assertIn("/premium", fake_bot.session.sent_rich[-1].rich_message.html)
+
+    def test_migration_0021_rolls_back_and_applies_again(self):
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute((migrations / "0021_schedule_created.down.sql").read_text())
+            cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
+            cur.execute("INSERT INTO bot_actions (chat_id, kind) VALUES (%s, 'schedule_created')", (self.CHAT,))
+            conn.rollback()
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

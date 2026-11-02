@@ -88,6 +88,8 @@ def ai(bot_module, fake_db_router, monkeypatch):
         # Журналы пишут через `get_connection`, импортированный в модуль по имени.
         monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
         monkeypatch.setattr(bot, "get_connection", bot_module("database").get_connection)
+        # Пояс черновика по умолчанию — из расписаний чата (Задача 108).
+        monkeypatch.setattr(bot_module("schedule_repo"), "get_connection", bot_module("database").get_connection)
         messages = FakeMessages(result)
         monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
         return bot, cursor, messages
@@ -210,12 +212,97 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
     bot = bot_module("bot")
     ai_router = bot_module("ai_router")
     tools = ai_router.build_tools(["BOS"])
-    # `stats_question` — не экран: его вопрос уходит в `ai_stats` (Задача 83).
-    assert [t["name"] for t in tools] == [*bot.AI_SCREENS, "stats_question"]
+    # `stats_question` — не экран: его вопрос уходит в `ai_stats` (Задача 83); `schedule_screen` —
+    # карточка расписания (Задача 108).
+    assert [t["name"] for t in tools] == [*bot.AI_SCREENS, "stats_question", "schedule_screen"]
     assert set(ai_router.SCREEN_COMMANDS) == set(bot.AI_COMMANDS)
     for tool in tools:
         assert tool["strict"] is True
         assert tool["input_schema"]["additionalProperties"] is False
+
+
+def test_schedule_tool_offers_exactly_the_schedulable_screens(bot_module):
+    """Задача 108: экраны `schedule_screen` — набор расписаний 107, параметры — схемы тех же
+    инструментов-экранов; варианты строгие, экран можно не узнать (`null`)."""
+    bot = bot_module("bot")
+    tools = {t["name"]: t for t in bot_module("ai_router").build_tools(["BOS", "WSH"])}
+    schema = tools["schedule_screen"]["input_schema"]
+    *options, unknown = schema["properties"]["screen"]["anyOf"]
+
+    assert unknown == {"type": "null"}
+    assert schema["required"] == ["screen", "freq", "weekday", "month_day", "time", "timezone"]
+    assert [o["properties"]["tool"]["const"] for o in options] == list(bot.SCHEDULE_SCREENS)
+    for option in options:
+        name = option["properties"]["tool"]["const"]
+        assert option["additionalProperties"] is False
+        assert option["required"] == list(option["properties"])
+        params = {k: v for k, v in option["properties"].items() if k != "tool"}
+        if name == "open_command":
+            assert params["command"]["enum"] == list(bot.SCHEDULE_COMMANDS)
+        else:
+            assert params == tools[name]["input_schema"]["properties"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_request_gets_a_draft_card(ai, make_message, fake_bot, api):
+    """Пояс городом, время с минутами округляется до получаса, ряд «Когда» — дни недели."""
+    bot, _, _ = ai(_response(_tool_use(
+        "schedule_screen", screen={"tool": "leaders", "category": "goals"}, freq="week", weekday=5,
+        month_day=None, time="10:17", timezone="Asia/Yekaterinburg",
+    )))
+    await _ask(bot, make_message, fake_bot, "присылай лидеров по голам по пятницам в 10:17 по Екатеринбургу")
+
+    [card] = api.sent_rich
+    text = body(card)
+    for line in ("Экран: Лидеры · Лучшие снайперы", "Когда: по пятницам", "Время: 10:30",
+                 "Пояс: Екатеринбург (UTC+5)"):
+        assert line in text
+    labels = [b.text for row in card.reply_markup.inline_keyboard for b in row]
+    assert "•Пт" in labels and "✅ Сохранить" in labels
+
+
+@pytest.mark.asyncio
+async def test_unknown_zone_and_screen(ai, make_message, fake_bot, api):
+    """Пояса нет в `zoneinfo` — МСК (у чата нет расписаний); экран не понят — без карточки."""
+    params = dict(freq=None, weekday=None, month_day=None, time=None, timezone="Mars/Olympus")
+    bot, _, _ = ai(_response(_tool_use("schedule_screen", screen={"tool": "open_command", "command": "today"},
+                                       **params)))
+    await _ask(bot, make_message, fake_bot, "присылай итоги ночи")
+    assert "Пояс: Москва (UTC+3)" in body(api.sent_rich[-1])
+
+    bot, _, _ = ai(_response(_tool_use("schedule_screen", screen=None, **params)))
+    await _ask(bot, make_message, fake_bot, "присылай что-нибудь")
+    assert body(api.sent_rich[-1]) == rich_html(bot._UNKNOWN_SCREEN_TEXT)
+    assert api.sent_rich[-1].reply_markup is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "routed"),
+    [("присылай лидеров по голам каждую пятницу", True), ("а у Малкина?", False)],
+)
+async def test_schedule_request_bypasses_the_stats_dialog_window(
+    ai, bot_module, make_message, fake_bot, api, monkeypatch, text, routed
+):
+    """Окно продолжения 83 открыто: просьба о расписании всё равно идёт маршрутизатору, а
+    продолжение диалога — ответам по статистике без него."""
+    ai_stats = bot_module("ai_stats")
+    stats_answers: List[str] = []
+
+    async def answer(chat_id, question, history):
+        stats_answers.append(question)
+        return "ответ"
+
+    bot, _, messages = ai(_response(_tool_use(
+        "schedule_screen", screen={"tool": "leaders", "category": "goals"}, freq="week", weekday=5,
+        month_day=None, time=None, timezone=None,
+    )))
+    monkeypatch.setattr(ai_stats, "recent_pairs", lambda chat_id: [{"outcome": "answer"}])
+    monkeypatch.setattr(ai_stats, "answer", answer)
+    await _ask(bot, make_message, fake_bot, text)
+
+    assert bool(messages.calls) is routed
+    assert stats_answers == ([] if routed else [text])
 
 
 def test_team_profile_defaults_to_short_screen(bot_module):

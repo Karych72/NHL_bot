@@ -78,7 +78,9 @@ NHL_bot/
 │       ├── 0019_games_game_type.up.sql   # games.game_type: 2 — регулярка, 3 — плей-офф; бэкфилл 2 (Задача 101)
 │       ├── 0019_games_game_type.down.sql
 │       ├── 0020_bot_schedules.up.sql     # Расписания экранов bot_schedules; bot_actions: schedule_sent / schedule_deleted (Задача 107)
-│       └── 0020_bot_schedules.down.sql
+│       ├── 0020_bot_schedules.down.sql
+│       ├── 0021_schedule_created.up.sql  # bot_actions: schedule_created — расписание с карточки (Задача 108)
+│       └── 0021_schedule_created.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -137,7 +139,7 @@ NHL_bot/
 │   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99), тикер расписаний (Задача 107)
 │   ├── schedule_repo.py                # Расписания экранов bot_schedules: next_run_at на zoneinfo, создание, выборка к отправке, удаление (Задача 107)
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
-│   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит вопросов, журнал ai_questions (Задачи 81, 96)
+│   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
 │   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
@@ -425,7 +427,10 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке (ночь и
 день с 12:30 UTC), а расписанию нужно любое время суток. Двух процессов бота на одну базу
 нет; появятся — `FOR UPDATE SKIP LOCKED` в `due`. Список и удаление — кнопки `sub:s`,
-`sub:s:<id>` меню `/subscriptions`.
+`sub:s:<id>` меню `/subscriptions`. Создание (Задача 108) — карточка-черновик из ответа
+`schedule_screen` (`schedule_draft` → `_schedule_card`); кнопки `sch:…` (`callback_schedule_card`)
+несут черновик целиком — состояния у бота нет; «Сохранить» проверяет лимит 107 и зовёт
+`schedule_repo.create`.
 
 Сквозные сценарии «запрос → ответ» (`/standings`, `/stats` и `/team_stats` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 закреплены в `tests/test_bot_integration.py`:
@@ -480,7 +485,11 @@ polling, таймаут сессии 300 с ради альбомов видео
 строка `ai_questions` или `ai_stats_log` (выбор `stats_question` не в счёт), сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
 или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
 командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
-`tests/test_bot_ai_router.py`.
+`tests/test_bot_ai_router.py`. Инструмент `schedule_screen` (Задача 108) — просьба присылать
+экран регулярно: экран — `anyOf` из схем инструментов `SCHEDULE_TOOLS` (у `open_command` —
+`SCHEDULE_COMMANDS`) или `null`, частота, день, время, пояс — `null`, если не названы; ответ —
+карточка `sch:…` в `bot.py`. Просьба о расписании (`bot._SCHEDULE_REQUEST`) идёт сюда и в окне
+продолжения диалога 83.
 
 ### Ответы на статистические вопросы: `ai_stats.py` (Задача 83)
 
