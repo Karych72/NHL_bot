@@ -1166,11 +1166,14 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 
 ## Безопасность
 
+Аудит стека, находки и принятые риски — [`security.md`](security.md) (Задача 82).
+
 | Аспект | Реализация |
 |---|---|
-| SQL-инъекции | Whitelist таблиц/колонок + `psycopg2.sql.Identifier` + параметризованные запросы |
-| Токен бота | Хранится в `.env`, файл в `.gitignore` |
-| Пароль БД | Не используется (локальный peer/trust), при необходимости добавляется через env |
+| SQL-инъекции | Whitelist таблиц/колонок + `psycopg2.sql.Identifier` + параметризованные запросы; SQL модели (83) — роль `nhl_ai_reader` только на чтение |
+| Токен бота и ключ Claude API | Локально — `.env` (в `.gitignore`); на VM — Secret Manager → tmpfs `/run` → compose secret (`deploy/compose.prod.yml`) |
+| Пароль БД | Не используется (`trust`, порт только на `127.0.0.1`); изоляция dev-стека — Задача 111 |
+| Логи docker | `json-file` с ротацией 10 МБ × 3 (`x-logging` в `docker-compose.yml`) |
 | Rate limiting NHL API | Retry с exponential backoff, обработка HTTP 429 |
 
 ---
