@@ -651,9 +651,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         [reply] = fake_bot.session.sent_rich
         text, markup = body(reply), reply.reply_markup
         self.assertTrue(text.startswith("<p><b>Ваши подписки</b><br>Пока ничего нет.</p>"))
-        # Когда приходят рассылки — служебное, подвал.
+        # Когда приходят рассылки и как завести расписание — служебное, подвал.
         self.assertTrue(text.endswith(
-            "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
+            "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса."
+            "<br>⏰ Свои расписания — любой экран в своё время: напишите боту"
+            " «присылай лидеров по голам по пятницам в 10».</footer>"
         ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
         self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1])
