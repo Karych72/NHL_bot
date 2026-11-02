@@ -32,6 +32,7 @@
 | 100 | [`/BOS_FULL`: сводка клуба и ИИ по умолчанию — короткий экран](task_100_team_full_summary.md) | Продукт | 🟡 |
 | 107 | [Расписания: хранение, доставка экранов по времени, список в `/subscriptions`](task_107_schedules_delivery.md) | Продукт | 🟡 |
 | 108 | [Расписания: ИИ разбирает текст → карточка-черновик с кнопками](task_108_schedules_ai_form.md) | Продукт | 🟡 |
+| 114 | [ИИ отвечает на вопросы о самом боте](task_114_ai_bot_questions.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
