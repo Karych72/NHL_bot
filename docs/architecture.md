@@ -76,7 +76,9 @@ NHL_bot/
 │       ├── 0018_premium_payments.up.sql  # Журнал платежей Stars за премиум: charge_id уникален, срок после платежа, возврат (Задача 97)
 │       ├── 0018_premium_payments.down.sql
 │       ├── 0019_games_game_type.up.sql   # games.game_type: 2 — регулярка, 3 — плей-офф; бэкфилл 2 (Задача 101)
-│       └── 0019_games_game_type.down.sql
+│       ├── 0019_games_game_type.down.sql
+│       ├── 0020_bot_schedules.up.sql     # Расписания экранов bot_schedules; bot_actions: schedule_sent / schedule_deleted (Задача 107)
+│       └── 0020_bot_schedules.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -132,7 +134,8 @@ NHL_bot/
 │   └── fixtures/                       # Урезанные реальные payload'ы NHL API (nhl_*.json)
 │
 ├── telegram_bot/                       # Telegram-бот
-│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99)
+│   ├── bot.py                          # Точка входа: Dispatcher, роутеры, команды, журнал действий bot_actions (Задача 99), тикер расписаний (Задача 107)
+│   ├── schedule_repo.py                # Расписания экранов bot_schedules: next_run_at на zoneinfo, создание, выборка к отправке, удаление (Задача 107)
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота, лимит вопросов, журнал ai_questions (Задачи 81, 96)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
@@ -409,6 +412,20 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 `tests/test_bot_application.py`. Подписки (Задача 63): одна команда
 `/subscriptions` и кнопки `sub:…` в `bot.py` правят одно сообщение через `edit_text`, а читают
 и пишут `bot_subscriptions` через `subscription_repo.py`.
+
+Экраны команд — функции `show_*(bot, chat_id)` без `Message`; хендлер команды
+(`_command_handler`), экран ИИ (`AI_SCREENS`, сигнатура `(bot, chat_id, params)`) и расписание
+зовут одну и ту же функцию. **Расписания (Задача 107):** `run_polling` рядом со
+`start_polling()` запускает asyncio-задачу `run_schedule_ticker` — раз в минуту
+`send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
+`AI_SCREENS` без дайджеста за дату и `open_command` без `subscriptions` / `help`) через
+`push_digest_job._throttled` → `schedule_repo.advance` от `now` (после простоя уходит одна
+пропущенная отправка). Без премиума чат получает только старейшее активное расписание;
+`TelegramForbiddenError` → `deactivate_chat` гасит подписки и расписания. Тикер живёт в
+процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке (ночь и
+день с 12:30 UTC), а расписанию нужно любое время суток. Двух процессов бота на одну базу
+нет; появятся — `FOR UPDATE SKIP LOCKED` в `due`. Список и удаление — кнопки `sub:s`,
+`sub:s:<id>` меню `/subscriptions`.
 
 Сквозные сценарии «запрос → ответ» (`/standings`, `/stats` и `/team_stats` с пагинацией, карточка матча по `/start game_<id>`, `/today`)
 закреплены в `tests/test_bot_integration.py`:

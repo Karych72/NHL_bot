@@ -2,19 +2,23 @@
 
 Роль в пайплайне: `bot.py` собирает `Dispatcher` aiogram 3.31 из двух роутеров —
 команды и кнопки, затем свободный текст, — вешает троттлинг нажатий (`throttle.py`) и
-журнал действий (`bot_actions`, Задача 99) и запускает long polling. Меню и листание таблиц статистики живут в
-`stats_handlers.py`; здесь — команды верхнего уровня, подписки, свободный текст и
-сборка `Dispatcher`.
+журнал действий (`bot_actions`, Задача 99) и запускает long polling, а рядом — тикер
+расписаний экранов (Задача 107). Меню и листание таблиц статистики живут в
+`stats_handlers.py`; здесь — команды верхнего уровня, подписки, расписания, свободный текст
+и сборка `Dispatcher`.
 """
 
 import asyncio
 import html
 import logging
 import re
+from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import (
@@ -32,11 +36,14 @@ import ai_router
 import ai_stats
 import config
 import premium
+import schedule_repo
 import subscription_repo
 from database import get_connection
-from leaderboard_specs import ADVANCED_METRICS
+from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
+from push_digest_job import throttled
 from throttle import enforce_callback_rate_limit
 from bot_messages import (
+    COUNTRY_LABELS,
     MSK,
     country_rankings,
     day_digest,
@@ -129,10 +136,6 @@ def build_tonight_match_keyboard(games) -> Optional[InlineKeyboardMarkup]:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Команды, которые открывает и свободный текст (`AI_COMMANDS`), принимают (message, bot):
-# так их одинаково зовёт и aiogram (бот подставляется по имени параметра), и `on_free_text`.
-
-
 # Кнопки приветствия ведут в меню `/subscriptions` (`callback_subscriptions`): нажатие
 # перерисовывает приветствие экраном подписок. «Утренний дайджест» — переключатель `sub:d`:
 # у подписанного нажатие дайджест выключит, подсказка нажатия об этом скажет.
@@ -155,9 +158,9 @@ async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
     await message.answer_rich(rich_message(START_MESSAGE), reply_markup=START_KEYBOARD)
 
 
-async def cmd_help(message: Message, bot: Bot) -> None:
+async def show_help(bot: Bot, chat_id: int) -> None:
     """`/help`: список команд бота."""
-    await message.answer_rich(rich_message(HELP_MESSAGE))
+    await _send(bot, chat_id, HELP_MESSAGE)
 
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
@@ -237,32 +240,36 @@ async def on_successful_payment(message: Message, bot: Bot) -> None:
     await message.answer(f"Спасибо! Премиум до {until.astimezone(MSK):%d.%m}.")
 
 
-async def cmd_tonight(message: Message, bot: Bot) -> None:
+async def _send(bot: Bot, chat_id: int, text: str, markup: Optional[InlineKeyboardMarkup] = None) -> None:
+    """Экран новым сообщением в чат `chat_id` — так его шлют команда, ИИ и расписание."""
+    await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(text), reply_markup=markup)
+
+
+# Экраны команд — функции от (бот, чат), без `Message`: их зовут и хендлер команды, и ответ
+# ИИ, и тикер расписаний (Задача 107). Хендлер — `_command_handler(экран)`.
+
+
+async def show_tonight(bot: Bot, chat_id: int) -> None:
     """`/tonight`: расписание сегодняшнего дня из NHL API плюс кнопки матчей."""
     try:
         payload = await asyncio.to_thread(fetch_score, league_today())
     except ScoreboardFetchError:
         logger.exception("NHL score request failed")
-        await message.answer_rich(rich_message(
-            "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже."
-        ))
+        await _send(bot, chat_id, "Сейчас не удалось загрузить расписание NHL. Попробуйте чуть позже.")
         return
     games = slate_games_sorted(payload)
     # Проза без счётных элементов — сноска без чисел приходит из хелпера
     # по умолчанию (truncate_telegram_text), а не из литерала здесь.
     text = truncate_telegram_text(tonight_reply_intro(payload))
-    await message.answer_rich(
-        rich_message(text),
-        reply_markup=build_tonight_match_keyboard(games) if games else None,
-    )
+    await _send(bot, chat_id, text, build_tonight_match_keyboard(games) if games else None)
 
 
-async def cmd_standings(message: Message, bot: Bot) -> None:
+async def show_standings(bot: Bot, chat_id: int) -> None:
     """`/standings`: турнирная таблица лиги."""
-    await message.answer_rich(rich_message(team_table()))
+    await _send(bot, chat_id, team_table())
 
 
-async def cmd_today(message: Message, bot: Bot) -> None:
+async def show_today(bot: Bot, chat_id: int) -> None:
     """`/today`: дайджест матчей прошедшей ночи по Москве (`last_night_day()`).
 
     Ночь без матчей (выходной день лиги или данные ещё не загружены) — честная
@@ -272,16 +279,16 @@ async def cmd_today(message: Message, bot: Bot) -> None:
     night = last_night_day()
     day_label, games = day_digest(night)
     if all(gid == 0 for gid, _text, _meta in games):
-        await message.answer_rich(rich_message(
-            f"Прошедшей ночью ({night}) матчей в базе нет — показываю последний игровой день."
-        ))
+        await _send(
+            bot, chat_id, f"Прошедшей ночью ({night}) матчей в базе нет — показываю последний игровой день."
+        )
         day_label, games = day_digest()
-    await dispatch_day_digest_messages(bot, message.chat.id, day_label, games)
+    await dispatch_day_digest_messages(bot, chat_id, day_label, games)
 
 
-async def cmd_team(message: Message, bot: Bot) -> None:
+async def show_team(bot: Bot, chat_id: int) -> None:
     """`/team`: команды сезона кликабельными командами `/ABBR`."""
-    await message.answer_rich(rich_message(team_list_text()))
+    await _send(bot, chat_id, team_list_text())
 
 
 def team_profile_text(abbrev: str, full: bool) -> str:
@@ -296,23 +303,23 @@ async def cmd_team_profile(message: Message, match: re.Match) -> None:
     """`/BOS` и т.п.: профиль клуба, `/BOS_FULL` — все его игроки (`team_profile_text`);
     `match` — совпадение `TEAM_COMMAND_PATTERN`."""
     abbrev, full = match.group(1), match.group(2)
-    await message.answer_rich(rich_message(team_profile_text(abbrev, bool(full))))
+    assert message.bot is not None
+    await _send(message.bot, message.chat.id, team_profile_text(abbrev, bool(full)))
 
 
-async def cmd_stats(message: Message, bot: Bot) -> None:
+async def show_stats(bot: Bot, chat_id: int) -> None:
     """`/stats`: лидеры игроков — все метрики полевых и вратарей кнопками одного экрана."""
-    await message.answer_rich(rich_message(STATS_COMMAND_INTRO), reply_markup=stats_menu_keyboard())
+    await _send(bot, chat_id, STATS_COMMAND_INTRO, stats_menu_keyboard())
 
 
-async def cmd_team_stats(message: Message, bot: Bot) -> None:
+async def show_team_stats(bot: Bot, chat_id: int) -> None:
     """`/team_stats`: рейтинги команд — голы, броски, спецбригады, вбрасывания."""
-    await message.answer_rich(rich_message(TEAM_STATS_COMMAND_INTRO), reply_markup=team_stats_keyboard())
+    await _send(bot, chat_id, TEAM_STATS_COMMAND_INTRO, team_stats_keyboard())
 
 
-async def cmd_countries(message: Message, bot: Bot) -> None:
+async def show_countries(bot: Bot, chat_id: int) -> None:
     """`/countries`: рейтинг стран сезона и кнопки стран (Задача 49)."""
-    text, markup = country_rankings_reply()
-    await message.answer_rich(rich_message(text), reply_markup=markup)
+    await _send(bot, chat_id, *country_rankings_reply())
 
 
 _DELIVERY_NOTE = (
@@ -324,8 +331,9 @@ _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполни
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
 # `sub:u` предстоящие матчи (Задача 78), `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
 # (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
-# `sub:x` «Готово». Самая длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
-SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|u|T|C|x|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3})$"
+# `sub:x` «Готово», `sub:s` расписания (Задача 107), `sub:s:<id>` удалить расписание. Самая
+# длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
+SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|u|T|C|x|s|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3}|s:\d+)$"
 _DIVISION_BUTTON_COLUMNS = 2
 _TEAM_BUTTON_COLUMNS = 4
 _COUNTRY_BUTTON_COLUMNS = 3
@@ -343,10 +351,11 @@ def _sub_button(
 
 
 def _subscriptions_main_screen(
-    digest: bool, upcoming: bool, team_names: List[str], countries: List[str]
+    digest: bool, upcoming: bool, team_names: List[str], countries: List[str], schedules: int
 ) -> _Screen:
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
-    (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю.
+    (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю, в том
+    числе к `schedules` расписаниям чата.
     Текст — построчный HTML для `rich_message()`: подписки — список, расписание — подвал."""
     items = []
     if digest:
@@ -366,9 +375,58 @@ def _subscriptions_main_screen(
             InlineKeyboardButton(text=f"🏒 Команды ({len(team_names)})", callback_data="sub:T"),
             InlineKeyboardButton(text=f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
         ],
+        [InlineKeyboardButton(text=f"⏰ Расписания ({schedules})", callback_data="sub:s")],
         [InlineKeyboardButton(text="Готово", callback_data="sub:x")],
     ])
     return "\n".join(lines), markup
+
+
+# Дни недели в «по пятницам», индекс — ISO-день недели минус 1.
+_WEEKDAYS_DATIVE = (
+    "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям",
+)
+_SCHEDULE_HINT = "Создать — напишите боту, например: присылай лидеров по голам по пятницам в 10."
+
+
+def _schedule_label(schedule: schedule_repo.Schedule) -> str:
+    """Подпись расписания в списке: «Лидеры · Лучшие снайперы — по пятницам 10:00 (МСК)»."""
+    p = schedule.params
+    if schedule.screen == "open_command":
+        screen = f"/{p['command']}"
+    elif schedule.screen == "team_profile":
+        screen = f"/{p['team']}" + ("_FULL" if p["all_players"] else "")
+    elif schedule.screen == "leaders":
+        screen = "Лидеры · " + PLAYER_STAT_TITLES[("players_season_stats", p["category"])]
+    elif schedule.screen == "country_players":
+        screen = "Игроки · " + COUNTRY_LABELS[p["country"]]
+    else:
+        screen = "Лидеры · " + PLAYER_STAT_TITLES[ADVANCED_METRICS[p["metric"]]]
+    if schedule.freq == "day":
+        when = "ежедневно"
+    elif schedule.freq == "week":
+        assert schedule.weekday is not None
+        when = "по " + _WEEKDAYS_DATIVE[schedule.weekday - 1]
+    elif schedule.month_day == 0:
+        when = "в последний день месяца"
+    else:
+        when = f"{schedule.month_day}-го числа"
+    zone = "МСК" if schedule.timezone == "Europe/Moscow" else schedule.timezone
+    return f"{screen} — {when} {schedule.local_time:%H:%M} ({zone})"
+
+
+def _subscriptions_schedules_screen(schedules: List[schedule_repo.Schedule]) -> _Screen:
+    """Расписания чата списком и кнопка 🗑 у каждого (`sub:s:<id>`); как создать — в подвале."""
+    labels = [_schedule_label(s) for s in schedules]
+    rows = [
+        [InlineKeyboardButton(text=f"🗑 {label}", callback_data=f"sub:s:{s.id}")]
+        for s, label in zip(schedules, labels)
+    ]
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="sub:m")])
+    body = rich_list([html.escape(label) for label in labels]) if labels else "Пока ничего нет."
+    return (
+        "\n".join(["<b>Расписания</b>", body, rich_footer(_SCHEDULE_HINT)]),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 def _subscriptions_divisions_screen(
@@ -430,19 +488,20 @@ def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
         for team_id, _, name in teams
         if team_id in subs.team_ids
     )
-    return _subscriptions_main_screen(subs.digest, subs.upcoming, names, subs.countries)
+    schedules = len(schedule_repo.list_for_chat(chat_id))
+    return _subscriptions_main_screen(subs.digest, subs.upcoming, names, subs.countries, schedules)
 
 
-async def cmd_subscriptions(message: Message, bot: Bot) -> None:
-    """`/subscriptions`: меню подписок — сводка, дайджест, предстоящие матчи, команды и
-    страны (Задачи 63, 78)."""
+async def show_subscriptions(bot: Bot, chat_id: int) -> None:
+    """`/subscriptions`: меню подписок — сводка, дайджест, предстоящие матчи, команды,
+    страны и расписания (Задачи 63, 78, 107)."""
     try:
-        text, markup = _subscriptions_main_screen_for(message.chat.id)
+        text, markup = _subscriptions_main_screen_for(chat_id)
     except psycopg2.Error:
         logger.exception("subscriptions DB error")
-        await message.answer_rich(rich_message(_SUBSCRIPTIONS_DB_ERROR))
+        await _send(bot, chat_id, _SUBSCRIPTIONS_DB_ERROR)
         return
-    await message.answer_rich(rich_message(text), reply_markup=markup)
+    await _send(bot, chat_id, text, markup)
 
 
 def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
@@ -481,7 +540,8 @@ def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
 async def callback_subscriptions(callback: CallbackQuery) -> None:
     """Кнопки `sub:…` меню `/subscriptions`: переключают подписку (каждое нажатие сразу
     пишется в БД) и перерисовывают то же сообщение; ✅ рисуются по данным БД после записи,
-    поэтому при сбое записи отметки нет. «Готово» убирает клавиатуру."""
+    поэтому при сбое записи отметки нет. «Готово» убирает клавиатуру. `sub:s:<id>` стирает
+    расписание этого чата (чужое запрос с `chat_id` не найдёт) и пишет `schedule_deleted`."""
     message = callback_message(callback)
     chat_id = message.chat.id
     assert callback.data is not None
@@ -490,7 +550,14 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
     try:
         if action in ("d", "u", "t", "c"):
             hint = _toggle_subscription(chat_id, action, args)
-        if action in ("m", "d", "u", "x"):
+        if action == "s" and args:
+            deleted = schedule_repo.delete(chat_id, int(args[0]))
+            if deleted:
+                log_action(chat_id, callback.from_user.id, "schedule_deleted", args[0])
+            hint = "Расписание удалено" if deleted else "Расписание не найдено"
+        if action == "s":
+            text, markup = _subscriptions_schedules_screen(schedule_repo.list_for_chat(chat_id))
+        elif action in ("m", "d", "u", "x"):
             text, markup = _subscriptions_main_screen_for(chat_id)
         elif action in ("T", "D", "t"):
             teams_by_division = season_teams_by_division()
@@ -525,44 +592,67 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
     )
 
 
+# Экран без параметров — функция от (бот, чат).
+_CommandScreen = Callable[[Bot, int], Awaitable[None]]
+
+
+def _command_handler(show: _CommandScreen) -> Callable[[Message, Bot], Awaitable[None]]:
+    """Хендлер команды aiogram (`message`, `bot`) из экрана `show`: ответ — в чат сообщения."""
+    async def handler(message: Message, bot: Bot) -> None:
+        await show(bot, message.chat.id)
+    handler.__doc__ = show.__doc__
+    return handler
+
+
+cmd_help = _command_handler(show_help)
+cmd_tonight = _command_handler(show_tonight)
+cmd_standings = _command_handler(show_standings)
+cmd_today = _command_handler(show_today)
+cmd_team = _command_handler(show_team)
+cmd_stats = _command_handler(show_stats)
+cmd_team_stats = _command_handler(show_team_stats)
+cmd_countries = _command_handler(show_countries)
+cmd_subscriptions = _command_handler(show_subscriptions)
+
+
 # Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
 # кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
-AI_COMMANDS: Dict[str, Callable[[Message, Bot], Awaitable[None]]] = {
-    "today": cmd_today,
-    "tonight": cmd_tonight,
-    "standings": cmd_standings,
-    "team": cmd_team,
-    "stats": cmd_stats,
-    "team_stats": cmd_team_stats,
-    "countries": cmd_countries,
-    "subscriptions": cmd_subscriptions,
-    "help": cmd_help,
+AI_COMMANDS: Dict[str, _CommandScreen] = {
+    "today": show_today,
+    "tonight": show_tonight,
+    "standings": show_standings,
+    "team": show_team,
+    "stats": show_stats,
+    "team_stats": show_team_stats,
+    "countries": show_countries,
+    "subscriptions": show_subscriptions,
+    "help": show_help,
 }
 
 
-async def _ai_digest_for_date(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
+async def _ai_digest_for_date(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
     """Дайджест игрового дня `params["date"]` — как `/today`, но за выбранную дату."""
     day_label, games = day_digest(params["date"])
-    await dispatch_day_digest_messages(bot, message.chat.id, day_label, games)
+    await dispatch_day_digest_messages(bot, chat_id, day_label, games)
 
 
-async def _ai_team_profile(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
+async def _ai_team_profile(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
     """Профиль клуба, как `/WSH` (`all_players=false`) или `/WSH_FULL` (`true`)."""
-    text = team_profile_text(params["team"], params["all_players"])
-    await message.answer_rich(rich_message(text))
+    await _send(bot, chat_id, team_profile_text(params["team"], params["all_players"]))
 
 
 def _ai_reply(screen: Callable[[Dict[str, Any]], Tuple[str, InlineKeyboardMarkup]]):
-    """Экран из функции «параметры → (текст, кнопки)» ответом на вопрос пользователя."""
-    async def _send(message: Message, bot: Bot, params: Dict[str, Any]) -> None:
-        text, markup = screen(params)
-        await message.answer_rich(rich_message(text), reply_markup=markup)
-    return _send
+    """Экран из функции «параметры → (текст, кнопки)» новым сообщением в чат."""
+    async def _reply(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
+        await _send(bot, chat_id, *screen(params))
+    return _reply
 
 
-# Инструмент модели (`ai_router.build_tools`) → функция экрана.
-AI_SCREENS: Dict[str, Callable[[Message, Bot, Dict[str, Any]], Awaitable[None]]] = {
-    "open_command": lambda message, bot, p: AI_COMMANDS[p["command"]](message, bot),
+_ParamScreen = Callable[[Bot, int, Dict[str, Any]], Awaitable[None]]
+
+# Инструмент модели (`ai_router.build_tools`) → функция экрана (бот, чат, параметры).
+AI_SCREENS: Dict[str, _ParamScreen] = {
+    "open_command": lambda bot, chat_id, p: AI_COMMANDS[p["command"]](bot, chat_id),
     "digest_for_date": _ai_digest_for_date,
     "team_profile": _ai_team_profile,
     "leaders": _ai_reply(lambda p: stat_page_reply("st", f"players_season_stats:{p['category']}", 0)),
@@ -571,6 +661,66 @@ AI_SCREENS: Dict[str, Callable[[Message, Bot, Dict[str, Any]], Awaitable[None]]]
         lambda p: stat_page_reply("sa", "{}:{}".format(*ADVANCED_METRICS[p["metric"]]), 0)
     ),
 }
+
+# Экраны, которые ставятся на расписание (Задача 107): ключ — `bot_schedules.screen`, параметры
+# — как у инструмента модели. Не ставятся меню подписок и справка (не отчёты) и дайджест за
+# фиксированную дату: итоги прошедшей ночи — `open_command` с `today`.
+SCHEDULE_COMMANDS: Dict[str, _CommandScreen] = {
+    name: show for name, show in AI_COMMANDS.items() if name not in ("subscriptions", "help")
+}
+SCHEDULE_SCREENS: Dict[str, _ParamScreen] = {
+    **{name: screen for name, screen in AI_SCREENS.items() if name != "digest_for_date"},
+    "open_command": lambda bot, chat_id, p: SCHEDULE_COMMANDS[p["command"]](bot, chat_id),
+}
+
+
+async def send_due_schedules(bot: Bot, now: datetime) -> None:
+    """Шлёт экраны расписаний, чья отправка наступила к `now`, и сдвигает их на следующий слот.
+
+    Зачем: один проход тикера (`run_schedule_ticker`). Без премиума чат получает только самое
+    старое активное расписание, остальные пропускают слот (лимит, Задача 107). Заблокировавший
+    бота чат (`TelegramForbiddenError`) теряет подписки и расписания (`deactivate_chat`). Сбой
+    одного расписания логируется с его `id` и не мешает остальным чатам получить своё; слот
+    сдвигается в любом случае, иначе сломанное расписание слалось бы каждую минуту.
+
+    Аргументы: `bot` — бот процесса; `now` — момент прохода (aware).
+    """
+    blocked: Set[int] = set()
+    for schedule in await asyncio.to_thread(schedule_repo.due, now):
+        chat_id = schedule.chat_id
+        try:
+            if chat_id not in blocked and (
+                schedule.oldest or await asyncio.to_thread(premium.is_premium, chat_id)
+            ):
+                await throttled(
+                    partial(SCHEDULE_SCREENS[schedule.screen], bot, chat_id, schedule.params), chat_id
+                )
+                await asyncio.to_thread(
+                    log_action, chat_id, None, "schedule_sent", f"{schedule.id}:{schedule.screen}"
+                )
+        except TelegramForbiddenError:
+            logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+            blocked.add(chat_id)
+            await asyncio.to_thread(subscription_repo.deactivate_chat, chat_id)
+        except Exception:
+            logger.exception("schedule id=%s failed", schedule.id)
+        await asyncio.to_thread(schedule_repo.advance, schedule, now)
+
+
+async def run_schedule_ticker(bot: Bot) -> None:
+    """«Будильник» расписаний: раз в минуту, в начале минуты, — `send_due_schedules`.
+
+    Зачем в процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке
+    (ночь и день с 12:30 UTC), а расписанию нужно любое время суток (решение человека,
+    Задача 107). Сбой прохода (например, БД недоступна) логируется, следующий проход — через
+    минуту: упавшая задача asyncio молча остановила бы все расписания при живом боте.
+    """
+    while True:
+        try:
+            await send_due_schedules(bot, datetime.now(timezone.utc))
+        except Exception:
+            logger.exception("schedule tick failed")
+        await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
 # Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), неделя, всего.
@@ -613,7 +763,7 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
         await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
         return
-    await AI_SCREENS[reply.tool](message, bot, reply.params)
+    await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
 
 
 async def _answer_stats(message: Message, question: str, history: List[Dict[str, Any]]) -> None:
@@ -635,14 +785,16 @@ def is_plain_text(message: Message) -> bool:
     return not (entities and entities[0].type == "bot_command" and entities[0].offset == 0)
 
 
-def log_action(chat_id: int, user_id: int, kind: str, data: Optional[str]) -> None:
+def log_action(chat_id: int, user_id: Optional[int], kind: str, data: Optional[str]) -> None:
     """Строка журнала `bot_actions` (Задача 99).
 
     Зачем: по журналу видно, сколько у бота пользователей и кто возвращается, какие экраны
     открывают и что делают до лимита ИИ — без него действия вне ИИ следа в БД не оставляют.
 
-    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал; `kind` — `command`,
-    `callback` или `ai_limit`; `data` — имя команды, `callback_data` или вид лимита.
+    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` никого:
+    шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent` или
+    `schedule_deleted` (Задача 107); `data` — имя команды, `callback_data`, вид лимита,
+    `<id>:<экран>` отправленного или `<id>` удалённого расписания.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -777,8 +929,14 @@ def build_dispatcher() -> Dispatcher:
 
 
 async def run_polling(token: str) -> None:
-    """Long polling бота с токеном `token` (в проде `config.TOKEN`) до сигнала остановки."""
-    await build_dispatcher().start_polling(Bot(token))
+    """Long polling бота с токеном `token` (в проде `config.TOKEN`) до сигнала остановки;
+    рядом — тикер расписаний (`run_schedule_ticker`), он останавливается вместе с polling."""
+    bot = Bot(token)
+    ticker = asyncio.create_task(run_schedule_ticker(bot))
+    try:
+        await build_dispatcher().start_polling(bot)
+    finally:
+        ticker.cancel()
 
 
 def main() -> None:

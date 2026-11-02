@@ -259,7 +259,7 @@ def subscribed_games(night: date) -> _SubscribedGames:
     return result
 
 
-async def _throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
+async def throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
     """Выполняет одну отправку и выдерживает паузу до следующей.
 
     Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
@@ -465,7 +465,7 @@ async def _send_album(bot: Bot, chat_id: int, album: List[_Clip]) -> None:
     if len(album) == 1:
         _, video, params, _ = album[0]
         sent = [
-            await _throttled(
+            await throttled(
                 lambda: bot.send_video(
                     chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
                     supports_streaming=True, **params,
@@ -482,7 +482,7 @@ async def _send_album(bot: Bot, chat_id: int, album: List[_Clip]) -> None:
             for n, (_, video, params, _) in enumerate(album)
         ]
         sent = list(
-            await _throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
+            await throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
         )
     for (key, video, _, goal_text), message in zip(album, sent):
         assert message.video is not None  # ответ на отправку видео всегда содержит video
@@ -566,7 +566,7 @@ async def run_game_broadcast(
                             )
                         ]]
                     )
-                await _throttled(
+                await throttled(
                     partial(
                         bot.send_rich_message,
                         chat_id=chat_id,
@@ -651,7 +651,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             + rich_footer(f"{footer}\n{SUBSCRIPTIONS_FOOTER}")
         )
         try:
-            await _throttled(
+            await throttled(
                 partial(
                     bot.send_rich_message,
                     chat_id=chat_id,
