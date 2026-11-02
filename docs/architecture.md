@@ -103,6 +103,7 @@ NHL_bot/
 │   ├── ai_router_eval.jsonl            # Фразы набора с ожидаемым экраном или текстовым ответом
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
+│   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
 │   └── verify_skater_reports_schema.sql
 │
 ├── tests/                              # pytest + unittest (`make test-fast`, `make ci-local`)
