@@ -116,6 +116,10 @@ class FakeCursor:
     def fetchall(self) -> List[tuple]:
         return self.rows
 
+    def fetchone(self) -> Optional[tuple]:
+        """Первая строка ответа — для `INSERT … RETURNING id`."""
+        return self.rows[0] if self.rows else None
+
     def __enter__(self) -> "FakeCursor":
         return self
 

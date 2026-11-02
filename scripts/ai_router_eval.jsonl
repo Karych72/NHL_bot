@@ -60,3 +60,12 @@
 {"q": "состав Тампы", "tool": "team_profile", "params": {"team": "TBL", "all_players": true}}
 {"q": "где играет Пастрняк", "tool": "team_profile", "params": {"team": "BOS", "all_players": false}}
 {"q": "подробно про Бостон", "tool": "team_profile", "params": {"team": "BOS", "all_players": true}}
+{"q": "присылай лидеров по голам каждую пятницу в 10", "tool": "schedule_screen", "params": {"screen": {"tool": "leaders", "category": "goals"}, "freq": "week", "weekday": 5, "time": "10:00", "timezone": null}}
+{"q": "профиль BOS раз в месяц 1-го числа", "tool": "schedule_screen", "params": {"screen": {"tool": "team_profile", "team": "BOS", "all_players": false}, "freq": "month", "month_day": 1}}
+{"q": "процент отражённых каждый день в 9 по Екатеринбургу", "tool": "schedule_screen", "params": {"screen": {"tool": "open_command", "command": "stats"}, "freq": "day", "time": "09:00", "timezone": "Asia/Yekaterinburg"}}
+{"q": "каждое утро в 8:30 присылай итоги ночи", "tool": "schedule_screen", "params": {"screen": {"tool": "open_command", "command": "today"}, "freq": "day", "time": "08:30"}}
+{"q": "турнирную таблицу в последний день месяца", "tool": "schedule_screen", "params": {"screen": {"tool": "open_command", "command": "standings"}, "freq": "month", "month_day": 0}}
+{"q": "присылай русских игроков по понедельникам в 10:17", "tool": "schedule_screen", "params": {"screen": {"tool": "country_players", "country": "RUS"}, "freq": "week", "weekday": 1, "time": "10:30"}}
+{"q": "по воскресеньям в 21:00 по нью-йоркскому времени лидеров по очкам", "tool": "schedule_screen", "params": {"screen": {"tool": "leaders", "category": "points"}, "freq": "week", "weekday": 7, "time": "21:00", "timezone": "America/New_York"}}
+{"q": "присылай мне что-нибудь интересное каждый день", "tool": "schedule_screen", "params": {"screen": null}}
+{"q": "покажи лидеров по голам", "tool": "leaders", "params": {"category": "goals"}}

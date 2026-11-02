@@ -118,6 +118,7 @@ def test_standalone_buttons_and_their_order(bot_module, dispatcher) -> None:
         (sh.TONIGHT_GAME_CALLBACK_PATTERN, sh.callback_tonight_game),
         (sh.COUNTRY_CALLBACK_PATTERN, sh.callback_country),
         (r"^gv:(\d+):(\d+)$", sh.handle_goal_video),
+        (bot.SCHEDULE_CALLBACK_PATTERN, bot.callback_schedule_card),
     ]
 
 
@@ -187,8 +188,8 @@ def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
     for handler in registered:
         assert asyncio.iscoroutinefunction(handler.callback), f"{handler.callback.__qualname__} is not async"
 
-    # Страховка от «проверили пустой список»: standalone — 14 хендлеров сообщений, 6 кнопок и pre_checkout; хвост — 1.
-    assert len(registered) == 21 + 1
+    # Страховка от «проверили пустой список»: standalone — 14 хендлеров сообщений, 7 кнопок и pre_checkout; хвост — 1.
+    assert len(registered) == 22 + 1
     assert {h.callback.__module__ for h in registered} == {"bot", "stats_handlers"}
 
 

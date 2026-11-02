@@ -12,9 +12,10 @@ import asyncio
 import html
 import logging
 import re
-from datetime import datetime, timezone
+import zoneinfo
+from datetime import datetime, time as dtime, timezone
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
@@ -388,28 +389,33 @@ _WEEKDAYS_DATIVE = (
 _SCHEDULE_HINT = "Создать — напишите боту, например: присылай лидеров по голам по пятницам в 10."
 
 
+def _screen_label(screen: str, p: Dict[str, Any]) -> str:
+    """Подпись экрана расписания: «/standings», «/WSH_FULL», «Лидеры · Лучшие снайперы»."""
+    if screen == "open_command":
+        return f"/{p['command']}"
+    if screen == "team_profile":
+        return f"/{p['team']}" + ("_FULL" if p["all_players"] else "")
+    if screen == "leaders":
+        return "Лидеры · " + PLAYER_STAT_TITLES[("players_season_stats", p["category"])]
+    if screen == "country_players":
+        return "Игроки · " + COUNTRY_LABELS[p["country"]]
+    return "Лидеры · " + PLAYER_STAT_TITLES[ADVANCED_METRICS[p["metric"]]]
+
+
+def _when_label(freq: str, weekday: Optional[int], month_day: Optional[int]) -> str:
+    """Подпись частоты: «ежедневно», «по пятницам», «1-го числа», «в последний день месяца»."""
+    if freq == "day":
+        return "ежедневно"
+    if freq == "week":
+        assert weekday is not None
+        return "по " + _WEEKDAYS_DATIVE[weekday - 1]
+    return "в последний день месяца" if month_day == 0 else f"{month_day}-го числа"
+
+
 def _schedule_label(schedule: schedule_repo.Schedule) -> str:
     """Подпись расписания в списке: «Лидеры · Лучшие снайперы — по пятницам 10:00 (МСК)»."""
-    p = schedule.params
-    if schedule.screen == "open_command":
-        screen = f"/{p['command']}"
-    elif schedule.screen == "team_profile":
-        screen = f"/{p['team']}" + ("_FULL" if p["all_players"] else "")
-    elif schedule.screen == "leaders":
-        screen = "Лидеры · " + PLAYER_STAT_TITLES[("players_season_stats", p["category"])]
-    elif schedule.screen == "country_players":
-        screen = "Игроки · " + COUNTRY_LABELS[p["country"]]
-    else:
-        screen = "Лидеры · " + PLAYER_STAT_TITLES[ADVANCED_METRICS[p["metric"]]]
-    if schedule.freq == "day":
-        when = "ежедневно"
-    elif schedule.freq == "week":
-        assert schedule.weekday is not None
-        when = "по " + _WEEKDAYS_DATIVE[schedule.weekday - 1]
-    elif schedule.month_day == 0:
-        when = "в последний день месяца"
-    else:
-        when = f"{schedule.month_day}-го числа"
+    screen = _screen_label(schedule.screen, schedule.params)
+    when = _when_label(schedule.freq, schedule.weekday, schedule.month_day)
     zone = "МСК" if schedule.timezone == "Europe/Moscow" else schedule.timezone
     return f"{screen} — {when} {schedule.local_time:%H:%M} ({zone})"
 
@@ -662,16 +668,230 @@ AI_SCREENS: Dict[str, _ParamScreen] = {
     ),
 }
 
-# Экраны, которые ставятся на расписание (Задача 107): ключ — `bot_schedules.screen`, параметры
-# — как у инструмента модели. Не ставятся меню подписок и справка (не отчёты) и дайджест за
-# фиксированную дату: итоги прошедшей ночи — `open_command` с `today`.
+# Экраны, которые ставятся на расписание (Задача 107; набор — `ai_router.SCHEDULE_TOOLS` и
+# `SCHEDULE_COMMANDS`): ключ — `bot_schedules.screen`, параметры — как у инструмента модели.
 SCHEDULE_COMMANDS: Dict[str, _CommandScreen] = {
-    name: show for name, show in AI_COMMANDS.items() if name not in ("subscriptions", "help")
+    name: AI_COMMANDS[name] for name in ai_router.SCHEDULE_COMMANDS
 }
 SCHEDULE_SCREENS: Dict[str, _ParamScreen] = {
-    **{name: screen for name, screen in AI_SCREENS.items() if name != "digest_for_date"},
+    **{name: AI_SCREENS[name] for name in ai_router.SCHEDULE_TOOLS},
     "open_command": lambda bot, chat_id, p: SCHEDULE_COMMANDS[p["command"]](bot, chat_id),
 }
+
+
+class Draft(NamedTuple):
+    """Черновик расписания на карточке (Задача 108): `day` — ISO-день недели у 'week' или
+    число месяца у 'month' (0 — последний); `slot` — получас суток 0–47; None — не выбрано."""
+
+    screen: str
+    params: Dict[str, Any]
+    freq: Optional[str]
+    day: Optional[int]
+    slot: Optional[int]
+    tz: str
+
+
+# Кнопки карточки (Задача 108). Состояния у бота нет: каждая кнопка несёт черновик целиком,
+# каким он станет после нажатия, — `sch:<вид>:<экран>:<частота>:<день>:<слот>:<пояс>`; вид `e`
+# — карточка, `z` — выбор пояса, `s` — сохранить; `sch:x` — отмена. Экран — буква инструмента и
+# аргумент (`lgoals`, `tWSH_FULL`, `oteam_stats`), пусто — не выбрано, пояс — IANA-имя. Черновик
+# живёт в `callback_data`, а не строкой в БД: самый длинный (`oteam_stats`, `month`, `28`, `47`,
+# `America/Argentina/ComodRivadavia`) — 62 байта из 64.
+SCHEDULE_CALLBACK_PATTERN = r"^sch:(x|[ezs]:[otlca]\w+:(day|week|month)?:\d{0,2}:\d{0,2}:[\w/+-]+)$"
+# Инструмент → (буква, параметр-аргумент); у клуба аргумент — `WSH` или `WSH_FULL`.
+_SCREEN_CODES = {
+    "open_command": ("o", "command"), "team_profile": ("t", ""), "leaders": ("l", "category"),
+    "country_players": ("c", "country"), "advanced_metric": ("a", "metric"),
+}
+# Допустимые аргументы экранов — те же наборы, что `enum` инструментов; клуб — шаблоном.
+_SCREEN_ARGS = {
+    "command": ai_router.SCHEDULE_COMMANDS, "category": ai_router.LEADER_CATEGORIES,
+    "country": tuple(COUNTRY_LABELS), "metric": tuple(ADVANCED_METRICS),
+}
+# IANA-зоны `zoneinfo`: каталог обходится один раз, а не на каждое нажатие.
+_ZONES = frozenset(zoneinfo.available_timezones())
+_DAYS = {"day": (None,), "week": tuple(range(1, 8)), "month": tuple(range(29))}
+_FREQ_BUTTONS = (("day", "День"), ("week", "Неделя"), ("month", "Месяц"))
+_WEEKDAYS_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+_TIME_PRESETS = (18, 24, 36, 42)  # 09:00, 12:00, 18:00, 21:00
+# Пояса РФ кнопкой «Сменить»; другой пояс — просьбой текстом с городом.
+_RU_ZONES = {
+    "Europe/Kaliningrad": "Калининград", "Europe/Moscow": "Москва", "Europe/Samara": "Самара",
+    "Asia/Yekaterinburg": "Екатеринбург", "Asia/Omsk": "Омск", "Asia/Krasnoyarsk": "Красноярск",
+    "Asia/Irkutsk": "Иркутск", "Asia/Yakutsk": "Якутск", "Asia/Vladivostok": "Владивосток",
+}
+_UNKNOWN_SCREEN_TEXT = (
+    "Не понял, какой экран присылать. Например: «присылай лидеров по голам по пятницам в 10», "
+    "«профиль BOS раз в месяц 1-го числа», «турнирную таблицу каждый день в 9»."
+)
+_SCHEDULE_LIMIT_TEXT = (
+    "Без премиума — одно расписание, оно уже есть: /subscriptions. Больше расписаний — в премиуме: /premium"
+)
+_CARD_NOTE = "Ночь догружается до 11:00 МСК: раньше экран может прийти без последних матчей."
+_ZONE_NOTE = "Другой пояс — напишите просьбу заново с городом, например: «… в 10 по Нью-Йорку»."
+
+
+def _encode(view: str, d: Draft) -> str:
+    """`callback_data` кнопки, которая открывает вид `view` с черновиком `d`."""
+    code, key = _SCREEN_CODES[d.screen]
+    arg = d.params[key] if key else d.params["team"] + ("_FULL" if d.params["all_players"] else "")
+    fields = ("" if f is None else str(f) for f in (d.freq, d.day, d.slot))
+    return f"sch:{view}:{code}{arg}:" + ":".join(fields) + f":{d.tz}"
+
+
+def _decode(data: str) -> Tuple[str, Draft]:
+    """Вид и черновик из `callback_data` кнопки карточки (обратное `_encode`).
+
+    Raises:
+        ValueError: аргумент экрана, день, слот или пояс вне допустимых — `callback_data`
+            подделана (клиент MTProto шлёт любую): в `bot_schedules.params` CHECK-а нет.
+    """
+    _, view, screen, freq, day, slot, tz = data.split(":")
+    name, key = next((n, k) for n, (c, k) in _SCREEN_CODES.items() if c == screen[0])
+    arg = screen[1:]
+    params: Dict[str, Any] = {key: arg} if key else {"team": arg[:3], "all_players": arg.endswith("_FULL")}
+    draft = Draft(name, params, freq or None, int(day) if day else None, int(slot) if slot else None, tz)
+    valid_arg = arg in _SCREEN_ARGS[key] if key else re.fullmatch(r"[A-Z]{3}(_FULL)?", arg)
+    valid_day = draft.day is None or draft.day in _DAYS[freq or "day"]
+    valid_slot = draft.slot is None or draft.slot < 48
+    if not (valid_arg and valid_day and valid_slot and tz in _ZONES):
+        raise ValueError(f"Подделанная callback_data карточки расписания: {data}")
+    return view, draft
+
+
+def schedule_draft(chat_id: int, p: Dict[str, Any]) -> Optional[Draft]:
+    """Черновик из параметров `schedule_screen`, которые выбрала модель; None — экран не понят.
+
+    Время округляется до получаса (модель могла оставить «10:17»); пояс, которого нет в
+    `zoneinfo`, или не названный — пояс последнего расписания чата, иначе МСК.
+    """
+    if p["screen"] is None:
+        return None
+    params = dict(p["screen"])
+    screen = params.pop("tool")
+    freq = p["freq"]
+    day = p["weekday"] if freq == "week" else p["month_day"] if freq == "month" else None
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", p["time"] or "")
+    # После 23:45 — 00:00 того же дня недели: пограничный случай, правится кнопкой.
+    slot = round((int(match[1]) * 60 + int(match[2])) / 30) % 48 if match else None
+    tz = p["timezone"]
+    if tz not in _ZONES:
+        existing = schedule_repo.list_for_chat(chat_id)
+        tz = existing[-1].timezone if existing else "Europe/Moscow"
+    return Draft(screen, params, freq, day, slot, tz)
+
+
+def _zone_label(tz: str) -> str:
+    """«Москва (UTC+3)»; пояс не из РФ — IANA-имя со смещением на сейчас."""
+    offset = datetime.now(zoneinfo.ZoneInfo(tz)).utcoffset()
+    assert offset is not None
+    minutes = int(offset.total_seconds()) // 60
+    shift = f"{minutes // 60:+d}" + (f":{minutes % 60:02d}" if minutes % 60 else "")
+    return f"{_RU_ZONES.get(tz, tz)} (UTC{shift})"
+
+
+def _slot_time(slot: int) -> dtime:
+    """Время получасового слота суток 0–47."""
+    return dtime(slot // 2, slot % 2 * 30)
+
+
+def _complete(d: Draft) -> bool:
+    """Заполнено ли всё, что нужно для сохранения."""
+    return d.freq is not None and (d.freq == "day" or d.day is not None) and d.slot is not None
+
+
+def _card_button(label: str, selected: bool, d: Draft, view: str = "e") -> InlineKeyboardButton:
+    """Кнопка карточки: у выбранного значения — «•»."""
+    return InlineKeyboardButton(text=("•" if selected else "") + label, callback_data=_encode(view, d))
+
+
+def _schedule_card(d: Draft) -> _Screen:
+    """Карточка-черновик: экран, частота, день, время и пояс; ряд дней зависит от частоты,
+    «Сохранить» — только когда заполнено всё."""
+    pick = "<i>выбрать</i>"
+    when = pick if d.day is None else _when_label(d.freq or "", d.day, d.day)
+    lines = [
+        "<b>⏰ Новое расписание</b>",
+        "Экран: " + html.escape(_screen_label(d.screen, d.params)),
+        "Частота: " + (dict(_FREQ_BUTTONS)[d.freq].lower() if d.freq else pick),
+        *(["Когда: " + when] if d.freq in ("week", "month") else []),
+        "Время: " + (f"{_slot_time(d.slot):%H:%M}" if d.slot is not None else pick),
+        "Пояс: " + html.escape(_zone_label(d.tz)),
+        rich_footer(_CARD_NOTE),
+    ]
+    rows = [[
+        _card_button(label, d.freq == f, d._replace(freq=f, day=d.day if d.freq == f else None))
+        for f, label in _FREQ_BUTTONS
+    ]]
+    if d.freq == "week":
+        rows.append([_card_button(n, d.day == i, d._replace(day=i))
+                     for i, n in enumerate(_WEEKDAYS_SHORT, 1)])
+    if d.freq == "month":
+        days = [_card_button(str(i), d.day == i, d._replace(day=i)) for i in range(1, 29)]
+        rows += build_menu(days, n_cols=7)
+        rows.append([_card_button("Последний день", d.day == 0, d._replace(day=0))])
+    if d.slot is None:
+        rows.append([_card_button(f"{_slot_time(s):%H:%M}", False, d._replace(slot=s)) for s in _TIME_PRESETS])
+    else:
+        rows.append([
+            _card_button("−1ч", False, d._replace(slot=(d.slot - 2) % 48)),
+            _card_button("+1ч", False, d._replace(slot=(d.slot + 2) % 48)),
+            _card_button(":00/:30", False, d._replace(slot=d.slot ^ 1)),
+        ])
+    rows.append([_card_button("Сменить пояс", False, d, "z")])
+    last = [InlineKeyboardButton(text="✖ Отмена", callback_data="sch:x")]
+    if _complete(d):
+        last.insert(0, InlineKeyboardButton(text="✅ Сохранить", callback_data=_encode("s", d)))
+    rows.append(last)
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _zone_picker(d: Draft) -> _Screen:
+    """Выбор пояса из поясов РФ; «« Назад» — к карточке без изменений."""
+    buttons = [_card_button(name, d.tz == tz, d._replace(tz=tz)) for tz, name in _RU_ZONES.items()]
+    rows = build_menu(buttons, n_cols=3)
+    rows.append([_card_button("« Назад", False, d)])
+    return "<b>Часовой пояс</b>\n" + rich_footer(_ZONE_NOTE), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def callback_schedule_card(callback: CallbackQuery) -> None:
+    """Кнопки `sch:…` карточки-черновика: перерисовка карточки или выбора пояса, отмена и
+    сохранение (`schedule_repo.create`, журнал `schedule_created`).
+
+    Лимит 107 проверяется в момент нажатия «Сохранить»: бесплатному чату с активным
+    расписанием — отказ новым сообщением со ссылкой на `/premium`, карточка остаётся.
+    """
+    message = callback_message(callback)
+    chat_id = message.chat.id
+    assert callback.data is not None
+    if callback.data == "sch:x":
+        await callback.answer()
+        await message.edit_text(rich_message=rich_message("Расписание не создано."))
+        return
+    view, d = _decode(callback.data)
+    if view == "s":
+        assert _complete(d) and d.freq is not None and d.slot is not None
+        if not premium.is_premium(chat_id) and schedule_repo.list_for_chat(chat_id):
+            await callback.answer()
+            await message.answer_rich(rich_message(_SCHEDULE_LIMIT_TEXT))
+            return
+        weekday = d.day if d.freq == "week" else None
+        month_day = d.day if d.freq == "month" else None
+        local = _slot_time(d.slot)
+        schedule_id = schedule_repo.create(chat_id, d.screen, d.params, d.freq, weekday, month_day,
+                                           local, d.tz, datetime.now(timezone.utc))
+        log_action(chat_id, callback.from_user.id, "schedule_created", f"{schedule_id}:{d.screen}")
+        label = _schedule_label(schedule_repo.Schedule(
+            schedule_id, chat_id, d.screen, d.params, d.freq, weekday, month_day, local, d.tz, False
+        ))
+        await callback.answer("Расписание сохранено")
+        await message.edit_text(rich_message=rich_message(
+            f"Готово: {html.escape(label)}\n" + rich_footer("Список и удаление — /subscriptions")
+        ))
+        return
+    text, markup = _zone_picker(d) if view == "z" else _schedule_card(d)
+    await callback.answer()
+    await message.edit_text(rich_message=rich_message(text), reply_markup=markup)
 
 
 async def send_due_schedules(bot: Bot, now: datetime) -> None:
@@ -731,6 +951,15 @@ _AI_LIMIT_KINDS = {
 }
 
 
+# Просьба о расписании в окне продолжения 83 идёт маршрутизатору, а не ответам по статистике:
+# глаголы регулярной отправки и «каждый день/неделю/…».
+_SCHEDULE_REQUEST = re.compile(
+    r"присыла|отправля|напомина|расписани|ежедневн|еженедельн|ежемесячн"
+    r"|кажд(ый|ую|ое) (день|недел|месяц|утро|вечер|понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)",
+    re.IGNORECASE,
+)
+
+
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
@@ -739,7 +968,9 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     отказ, уточнение или сообщение о сбое API.
 
     Модель может передать вопрос ответам по статистике (`ai_stats.answer`, Задача 83); а если
-    чат получил такой ответ в последние 30 минут, сообщение идёт туда сразу, без маршрутизатора.
+    чат получил такой ответ в последние 30 минут, сообщение идёт туда сразу, без маршрутизатора,
+    — кроме просьбы о расписании (`_SCHEDULE_REQUEST`). Её модель разбирает инструментом
+    `schedule_screen`, бот отвечает карточкой-черновиком (`_schedule_card`, Задача 108).
     """
     chat_id = message.chat.id
     text = message.text or ""
@@ -751,7 +982,7 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         )
         await message.answer_rich(rich_message(refusal))
         return
-    history = ai_stats.recent_pairs(chat_id)
+    history = [] if _SCHEDULE_REQUEST.search(text) else ai_stats.recent_pairs(chat_id)
     if history:
         await _answer_stats(message, text, history)
         return
@@ -762,6 +993,14 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     if reply.tool is None:
         # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
         await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
+        return
+    if reply.tool == "schedule_screen":
+        draft = schedule_draft(chat_id, reply.params)
+        if draft is None:
+            await message.answer_rich(rich_message(_UNKNOWN_SCREEN_TEXT))
+            return
+        card, markup = _schedule_card(draft)
+        await message.answer_rich(rich_message(card), reply_markup=markup)
         return
     await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
 
@@ -792,9 +1031,10 @@ def log_action(chat_id: int, user_id: Optional[int], kind: str, data: Optional[s
     открывают и что делают до лимита ИИ — без него действия вне ИИ следа в БД не оставляют.
 
     Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` никого:
-    шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent` или
-    `schedule_deleted` (Задача 107); `data` — имя команды, `callback_data`, вид лимита,
-    `<id>:<экран>` отправленного или `<id>` удалённого расписания.
+    шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent`,
+    `schedule_deleted` (Задача 107) или `schedule_created` (Задача 108); `data` — имя команды,
+    `callback_data`, вид лимита, `<id>:<экран>` отправленного или созданного или `<id>`
+    удалённого расписания.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -874,6 +1114,7 @@ def build_standalone_router() -> Router:
         (TONIGHT_GAME_CALLBACK_PATTERN, callback_tonight_game),
         (COUNTRY_CALLBACK_PATTERN, callback_country),
         (GOAL_VIDEO_CALLBACK_PATTERN, handle_goal_video),
+        (SCHEDULE_CALLBACK_PATTERN, callback_schedule_card),
     ):
         router.callback_query.register(callback, _callback(pattern))
     return router

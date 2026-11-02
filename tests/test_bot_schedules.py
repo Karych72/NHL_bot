@@ -10,6 +10,8 @@ from datetime import datetime, time, timezone
 
 import pytest
 
+from tests._telegram_fakes import body
+
 UTC = timezone.utc
 
 
@@ -99,3 +101,177 @@ def test_schedule_label(bot_module, screen, params, freq, weekday, month_day, tz
     )
     title = bot_module("leaderboard_specs").PLAYER_STAT_TITLES[("players_advanced_stats", "sat_pct")]
     assert bot._schedule_label(schedule) == expected.format(title)
+
+
+# ---------------------------------------------------------------------------
+# Карточка-черновик (Задача 108): кнопки `sch:…` через `Dispatcher.feed_update`. БД — фейк:
+# сохранение и журнал проверяются по запросам, дошедшим до неё.
+# ---------------------------------------------------------------------------
+
+MOSCOW = "Europe/Moscow"
+
+
+@pytest.fixture
+def card(bot_module, fake_db_router, monkeypatch, fake_bot, api, make_update):
+    """Фабрика: у чата `schedules` — строки активных расписаний, `premium` — премиум.
+    Возвращает (bot, курсор БД, press): `press(data)` — нажатие, ответ — (тело, {подпись: data})
+    последней правки карточки."""
+
+    def _make(schedules=(), premium=False):
+        bot = bot_module("bot")
+        cursor = fake_db_router([
+            ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=UTC),)] if premium else []),
+            ("INSERT INTO bot_schedules", [(42,)]),
+            ("FROM bot_schedules", list(schedules)),
+            ("INSERT INTO bot_actions", []),
+        ])
+        for module in (bot, bot_module("schedule_repo")):
+            monkeypatch.setattr(module, "get_connection", bot_module("database").get_connection)
+        dispatcher = bot.build_dispatcher()
+
+        async def press(data):
+            bot_module("throttle")._hits.clear()
+            await dispatcher.feed_update(fake_bot, make_update(data=data))
+            edit = api.edited_texts[-1]
+            markup = edit.reply_markup.inline_keyboard if edit.reply_markup else []
+            return body(edit), {b.text: b.callback_data for row in markup for b in row}
+
+        return bot, cursor, press
+
+    return _make
+
+
+def _draft(bot, freq="week", day=5, slot=20, tz=MOSCOW):
+    """Лидеры по голам; по умолчанию — по пятницам 10:00 МСК."""
+    return bot.Draft("leaders", {"category": "goals"}, freq, day, slot, tz)
+
+
+@pytest.mark.asyncio
+async def test_frequency_redraws_the_when_row(card):
+    bot, _, press = card()
+    text, buttons = await press(bot._encode("e", _draft(bot)))
+    assert "Когда: по пятницам" in text and "•Пт" in buttons and "•Неделя" in buttons
+
+    text, buttons = await press(buttons["Месяц"])
+    assert "Когда: <i>выбрать</i>" in text
+    assert [str(i) for i in range(1, 29)] + ["Последний день"] == [k for k in buttons if k[0].isdigit() or k == "Последний день"]
+    assert "Пт" not in buttons and "✅ Сохранить" not in buttons
+
+    text, buttons = await press(buttons["Последний день"])
+    assert "Когда: в последний день месяца" in text and "✅ Сохранить" in buttons
+
+    text, buttons = await press(buttons["День"])
+    assert "Когда" not in text and "Последний день" not in buttons and "✅ Сохранить" in buttons
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot", "button", "expected"),
+    [(47, "+1ч", "00:30"), (0, "−1ч", "23:00"), (47, ":00/:30", "23:00"), (20, ":00/:30", "10:30")],
+)
+async def test_time_buttons_wrap_around_the_day(card, slot, button, expected):
+    bot, _, press = card()
+    _, buttons = await press(bot._encode("e", _draft(bot, slot=slot)))
+    text, _ = await press(buttons[button])
+    assert f"Время: {expected}" in text
+
+
+@pytest.mark.asyncio
+async def test_save_is_hidden_until_everything_is_chosen(card):
+    bot, _, press = card()
+    text, buttons = await press(bot._encode("e", _draft(bot, freq=None, day=None, slot=None)))
+    assert text.count("<i>выбрать</i>") == 2, "частота и время"
+    assert "✅ Сохранить" not in buttons and "✖ Отмена" in buttons
+
+    _, buttons = await press(buttons["Неделя"])
+    _, buttons = await press(buttons["Пт"])
+    assert "✅ Сохранить" not in buttons, "время не выбрано"
+    text, buttons = await press(buttons["09:00"])
+    assert "Время: 09:00" in text and "✅ Сохранить" in buttons
+
+
+@pytest.mark.asyncio
+async def test_zone_picker_changes_the_zone(card):
+    bot, _, press = card()
+    _, buttons = await press(bot._encode("e", _draft(bot, tz="America/New_York")))
+    text, buttons = await press(buttons["Сменить пояс"])
+    assert "Часовой пояс" in text and len(buttons) == 9 + 1
+    text, _ = await press(buttons["Екатеринбург"])
+    assert "Пояс: Екатеринбург (UTC+5)" in text
+
+
+@pytest.mark.asyncio
+async def test_save_writes_the_row_with_next_run_and_logs_it(card, repo):
+    bot, cursor, press = card()
+    before = datetime.now(UTC)
+    text, buttons = await press(bot._encode("s", _draft(bot)))
+
+    assert text.startswith("<p>Готово: Лидеры · Лучшие снайперы — по пятницам 10:00 (МСК)</p>")
+    assert "/subscriptions" in text and buttons == {}
+    [(_, params)] = [(q, p) for q, p in cursor.executed if q.startswith("INSERT INTO bot_schedules")]
+    assert params[1:8] == ("leaders", params[2], "week", 5, None, time(10, 0), MOSCOW)
+    assert params[2].adapted == {"category": "goals"}
+    assert params[8] == repo.next_run_at("week", 5, None, time(10, 0), MOSCOW, before)
+    actions = [p for q, p in cursor.executed if q.startswith("INSERT INTO bot_actions")]
+    assert actions[-1][2:] == ("schedule_created", "42:leaders")
+
+
+def _row():
+    """Строка `_ACTIVE` — уже есть ежедневное расписание /standings."""
+    return (7, 1, "open_command", {"command": "standings"}, "day", None, None, time(9, 0), MOSCOW, True,
+            datetime(2026, 11, 3, 6, 0, tzinfo=UTC))
+
+
+@pytest.mark.asyncio
+async def test_free_chat_with_a_schedule_is_refused_and_keeps_the_draft(card, api):
+    bot, cursor, press = card(schedules=[_row()])
+    await press(bot._encode("e", _draft(bot)))
+    edits = len(api.edited_texts)
+    await press(bot._encode("s", _draft(bot)))
+    assert len(api.edited_texts) == edits, "карточка не тронута"
+    assert body(api.sent_rich[-1]) == f"<p>{bot._SCHEDULE_LIMIT_TEXT}</p>"
+    assert not [q for q, _ in cursor.executed if q.startswith("INSERT INTO bot_schedules")]
+
+
+@pytest.mark.asyncio
+async def test_premium_chat_saves_a_second_schedule(card):
+    bot, cursor, press = card(schedules=[_row()], premium=True)
+    text, _ = await press(bot._encode("s", _draft(bot)))
+    assert text.startswith("<p>Готово:")
+    assert [q for q, _ in cursor.executed if q.startswith("INSERT INTO bot_schedules")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_drops_the_card(card):
+    bot, _, press = card()
+    text, buttons = await press("sch:x")
+    assert text == "<p>Расписание не создано.</p>" and buttons == {}
+
+
+def test_every_draft_fits_telegram_limit_and_decodes_back(bot_module):
+    """Все экраны и аргументы `_SCREEN_ARGS`, клуб с `_FULL`, самый длинный пояс `zoneinfo`."""
+    import re
+    import zoneinfo
+
+    bot = bot_module("bot")
+    longest_zone = max(zoneinfo.available_timezones(), key=len)
+    screens = [("team_profile", {"team": "WSH", "all_players": full}) for full in (True, False)] + [
+        (name, {key: arg}) for name, (_, key) in bot._SCREEN_CODES.items() if key for arg in bot._SCREEN_ARGS[key]
+    ]
+    for screen, params in screens:
+        draft = bot.Draft(screen, params, "month", 28, 47, longest_zone)
+        for view in "ezs":
+            data = bot._encode(view, draft)
+            assert len(data.encode()) <= 64, data
+            assert re.match(bot.SCHEDULE_CALLBACK_PATTERN, data)
+            assert bot._decode(data) == (view, draft)
+
+
+@pytest.mark.parametrize(
+    "data",
+    ["sch:s:ofoo:day::20:Europe/Moscow", "sch:s:tZZZZ:day::20:Europe/Moscow", "sch:s:lgoals:day::48:Europe/Moscow",
+     "sch:s:lgoals:week:8:20:Europe/Moscow", "sch:s:lgoals:day:5:20:Europe/Moscow", "sch:s:lgoals:day::20:Mars/Olympus"],
+)
+def test_forged_callback_fails_loudly(bot_module, data):
+    with pytest.raises(ValueError, match="Подделанная"):
+        bot_module("bot")._decode(data)
