@@ -3,8 +3,8 @@
 **Блок:** релиз+ · **Надобность:** 🟠
 **Область:** `telegram_bot/bot_messages.py`, `modeling/dataset_builder/base.py`, тесты.
 **Зависит от:** 101.
-**Источник:** бывшая подзадача 37B; дизайн — [`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** бывшая подзадача 37B; дизайн — [`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md);
+реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

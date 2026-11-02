@@ -6,8 +6,8 @@
 тесты; дозагрузка в БД.
 **Зависит от:** 101, 102, 103.
 **Источник:** бывшая подзадача 37C, расширена решением человека 2026-10-31; дизайн —
-[`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы «Загрузка» и
-«ИИ»; реестр — [`../open_tasks.md`](../open_tasks.md).
+[`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы «Загрузка» и
+«ИИ»; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
