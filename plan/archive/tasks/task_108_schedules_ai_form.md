@@ -6,7 +6,7 @@
 (из 107), `scripts/ai_router_eval.jsonl`, тесты `tests/test_bot_ai_router.py`,
 `tests/test_bot_schedules.py`, `docs/architecture.md`, `docs/telegram_bot.md`.
 **Зависит от:** 107 (таблица, `next_run_at`, рендер по `chat_id`, лимит).
-**Источник:** обсуждение с человеком 2026-11-01; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** обсуждение с человеком 2026-11-01; реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

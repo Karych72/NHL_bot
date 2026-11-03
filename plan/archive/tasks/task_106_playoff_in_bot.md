@@ -4,8 +4,8 @@
 **Область:** `telegram_bot/bot_messages.py`, `telegram_bot/help_text.py`,
 `telegram_bot/push_digest_job.py`, тесты, `docs/architecture.md`, `docs/data_loading.md`.
 **Зависит от:** 104 (данные), 105 (ИИ отвечает про плей-офф — иначе снятая оговорка обманет).
-**Источник:** бывшая подзадача 37D; дизайн — [`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md);
-реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** бывшая подзадача 37D; дизайн — [`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md);
+реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

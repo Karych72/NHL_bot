@@ -7,8 +7,8 @@
 `tests/test_bot_ai_stats.py`, `tests/test_db_nhl.py`.
 **Зависит от:** 104.
 **Источник:** решение человека 2026-10-31 (ИИ отвечает про плей-офф, экраны — позже); дизайн —
-[`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы «Серии» и
-«ИИ»; реестр — [`../open_tasks.md`](../open_tasks.md).
+[`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы «Серии» и
+«ИИ»; реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

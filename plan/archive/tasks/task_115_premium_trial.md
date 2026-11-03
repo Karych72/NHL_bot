@@ -4,7 +4,7 @@
 **Область:** `telegram_bot/premium.py` (выдача пробника), `telegram_bot/bot.py` (`cmd_start`),
 `telegram_bot/help_text.py` (строка о подарке в приветствии), `docs/telegram_bot.md`.
 **Зависит от:** Задач 96 (`premium_access`, `is_premium`) и 97 (`/premium`, оплата Stars).
-**Источник:** просьба человека 2026-11-02; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-11-02; реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

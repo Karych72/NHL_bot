@@ -5,7 +5,7 @@
 (`make lock`); код — только если 2.12 сломает `modeling/config.py` или вызовы aiogram/anthropic.
 **Зависит от:** ничего.
 **Источник:** замер на VM `nhl-bot` (GCP `nhl-bot-prod`) 2026-11-02 по просьбе человека;
-реестр — [`../open_tasks.md`](../open_tasks.md).
+реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

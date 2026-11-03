@@ -6,7 +6,7 @@
 `team_profile`), `tests/test_bot_integration.py`, `tests/test_bot_ai_router.py`,
 `docs/architecture.md` (§`team_profile.txt`), `docs/telegram_bot.md`.
 **Зависит от:** ни от чего; строится поверх кода 98 (полные названия в заголовке `/BOS_FULL`), он в `develop`.
-**Источник:** обсуждение с человеком 2026-10-31; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** обсуждение с человеком 2026-10-31; реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
