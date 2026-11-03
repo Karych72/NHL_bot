@@ -1003,7 +1003,7 @@ def upcoming_env(push_job, monkeypatch):
         env.days.append(day)
         return SLATE
 
-    def preview(away, home):
+    def preview(game_id, away, home):
         env.previews.append((away, home))
         return f"PREVIEW {away} @ {home}", "Сезон 2026/27"
 

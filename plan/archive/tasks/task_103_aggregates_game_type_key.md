@@ -6,8 +6,8 @@
 `scripts/verify_skater_reports_schema.sql`, тесты.
 **Зависит от:** 102.
 **Источник:** решение человека 2026-10-31 (итоги плей-офф — в те же сезонные таблицы, вариант B);
-дизайн — [`spec`](../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы
-«Сезонные агрегаты», «Загрузка → Ключи upsert», «Потребители»; реестр — [`../open_tasks.md`](../open_tasks.md).
+дизайн — [`spec`](../../../docs/superpowers/specs/2026-10-31-playoffs-data-design.md), разделы
+«Сезонные агрегаты», «Загрузка → Ключи upsert», «Потребители»; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

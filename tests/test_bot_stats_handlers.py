@@ -386,7 +386,7 @@ async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
-    mock_preview.assert_called_once_with("DET", "NYR")
+    mock_preview.assert_called_once_with(555, "DET", "NYR")
     mock_premium.assert_called_once_with(make_callback("").message.chat.id)
     assert [c.args[1] for c in mock_fetch.call_args_list] == ([(555,)] if premium else [])
     [sent] = api.sent_rich

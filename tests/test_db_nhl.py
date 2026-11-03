@@ -651,9 +651,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         [reply] = fake_bot.session.sent_rich
         text, markup = body(reply), reply.reply_markup
         self.assertTrue(text.startswith("<p><b>Ваши подписки</b><br>Пока ничего нет.</p>"))
-        # Когда приходят рассылки — служебное, подвал.
+        # Когда приходят рассылки и как завести расписание — служебное, подвал.
         self.assertTrue(text.endswith(
-            "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
+            "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса."
+            "<br>⏰ Свои расписания — любой экран в своё время: напишите боту"
+            " «присылай лидеров по голам по пятницам в 10».</footer>"
         ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
         self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1])
@@ -1223,6 +1225,67 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestPlayoffSeriesView(unittest.TestCase):
+    """Задача 105: представление ``playoff_series`` собирает серии из игр плей-офф. Вымышленный
+    сезон 2099: серия раунда 1 (B–A, 4:1 в пользу B, хозяева чередуются), незаконченный финал (C–A, 1:1,
+    C хозяин первой игры) и игра регулярки A–B, которой в сериях быть не должно. Строки
+    удаляются до и после."""
+
+    SEASON = 20992100
+    A, B, C = 900106, 900107, 900108
+
+    def setUp(self):
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+        a, b, c = self.A, self.B, self.C
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) VALUES "
+                "(%s, %s, 'TMA', 'Team A'), (%s, %s, 'TMB', 'Team B'), (%s, %s, 'TMC', 'Team C')",
+                (a, self.SEASON, b, self.SEASON, c, self.SEASON),
+            )
+            # (игра, день, хозяева, гости, победитель, тип); game_id — сезон, тип, раунд, серия, игра.
+            for game in (
+                (2099020001, date(2099, 3, 1), a, b, b, 2),
+                (2099030111, date(2099, 4, 20), a, b, b, 3),
+                (2099030112, date(2099, 4, 22), a, b, a, 3),
+                (2099030113, date(2099, 4, 24), b, a, b, 3),
+                (2099030114, date(2099, 4, 26), b, a, b, 3),
+                (2099030115, date(2099, 4, 28), a, b, b, 3),
+                (2099030411, date(2099, 6, 5), c, a, c, 3),
+                (2099030412, date(2099, 6, 7), c, a, a, 3),
+            ):
+                cur.execute(
+                    "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                    "is_overtime, is_shootouts, season_id, game_type) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, FALSE, %s, %s)",
+                    (*game[:5], self.SEASON, game[5]),
+                )
+
+    def _cleanup(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM games WHERE season_id = %s", (self.SEASON,))
+            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+
+    def test_series_score_winner_and_open_final(self):
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT round, series_number, team_a_id, team_b_id, wins_a, wins_b, games_played, "
+                "winner_id, first_day, last_day FROM playoff_series WHERE season_id = %s "
+                "ORDER BY round", (self.SEASON,),
+            )
+            rows = cur.fetchall()
+        self.assertEqual(rows, [
+            (1, 1, self.A, self.B, 1, 4, 5, self.B, date(2099, 4, 20), date(2099, 4, 28)),
+            (4, 1, self.A, self.C, 1, 1, 2, None, date(2099, 6, 5), date(2099, 6, 7)),
+        ])
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestRegularSeasonAggregatesSql(unittest.TestCase):
     """Задача 103: экраны бота и обзор ИИ читают из сезонных агрегатов только регулярку.
     Вымышленный сезон: у HOM, его игрока и вратаря в каждой из пяти таблиц две строки —
@@ -1334,7 +1397,7 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
         self.assertEqual(total, 2)
         self.assertNoPlayoff(text)
         self.assertNoPlayoff(self.messages.team_table())
-        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview("AWY", "HOM")))
+        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview(2099020001, "AWY", "HOM")))
         for screen in (self.messages.team_profile, self.messages.team_full_stats):
             with self.subTest(screen=screen.__name__):
                 text = screen("HOM")
@@ -1616,6 +1679,79 @@ class TestPremiumPaymentsSql(unittest.TestCase):
                     (self.NEW_CHAT,))
         self.premium.mark_refunded("t97-short")
         self.assertFalse(self.premium.is_premium(self.NEW_CHAT))
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestPremiumTrialSql(unittest.TestCase):
+    """Пробный премиум (Задача 115) на настоящих таблицах: новый чат получает 3 дня, чат со
+    строкой ``premium_access`` (и истёкшей) или с историей — нет, повтор не продлевает.
+    Чаты — отрицательные, строки удаляются до и после."""
+
+    CHAT = -999000115
+    TABLES = ("premium_access", "bot_subscriptions", "ai_questions", "ai_stats_log", "bot_actions")
+
+    def setUp(self):
+        import premium
+
+        self.premium = premium
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for table in self.TABLES:
+            self._query(f"DELETE FROM {table} WHERE chat_id = %s", (self.CHAT,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _log_start(self):
+        """Строка журнала, которую middleware пишет до хэндлера `/start`."""
+        self._query("INSERT INTO bot_actions (chat_id, kind, data) VALUES (%s, 'command', 'start')",
+                    (self.CHAT,))
+
+    def test_new_chat_gets_three_days_once(self):
+        self._log_start()
+        until = self.premium.grant_trial(self.CHAT)
+        [(days,)] = self._query("SELECT extract(epoch FROM (%s::timestamptz - now())) / 86400", (until,))
+        self.assertAlmostEqual(float(days), 3, places=2)
+        self.assertTrue(self.premium.is_premium(self.CHAT))
+
+        self._log_start()
+        self.assertIsNone(self.premium.grant_trial(self.CHAT))
+        self.assertEqual(self.premium.premium_until(self.CHAT), until)
+
+    def test_expired_premium_row_means_trial_was_used(self):
+        self._query("INSERT INTO premium_access (chat_id, expires_at) VALUES (%s, now() - interval '1 day')",
+                    (self.CHAT,))
+        self.assertIsNone(self.premium.grant_trial(self.CHAT))
+        self.assertFalse(self.premium.is_premium(self.CHAT))
+
+    def test_chat_with_history_gets_no_trial(self):
+        history = {
+            "subscription": "INSERT INTO bot_subscriptions (chat_id, kind, team_id) VALUES (%s, 'team_scores', 1)",
+            "ai_question": "INSERT INTO ai_questions (chat_id, question, outcome, latency_ms) "
+                           "VALUES (%s, 'q', 'text', 1)",
+            "ai_stats": "INSERT INTO ai_stats_log (chat_id, question, continuation, outcome, latency_ms) "
+                        "VALUES (%s, 'q', false, 'answer', 1)",
+            "earlier_action": "INSERT INTO bot_actions (chat_id, kind, data) VALUES (%s, 'command', 'today')",
+        }
+        for name, sql in history.items():
+            with self.subTest(name):
+                self._cleanup()
+                self._query(sql, (self.CHAT,))
+                self._log_start()
+                self.assertIsNone(self.premium.grant_trial(self.CHAT))
+                self.assertEqual(
+                    self._query("SELECT count(*) FROM premium_access WHERE chat_id = %s", (self.CHAT,)),
+                    [(0,)],
+                )
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

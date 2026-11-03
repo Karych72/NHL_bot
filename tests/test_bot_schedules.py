@@ -103,6 +103,19 @@ def test_schedule_label(bot_module, screen, params, freq, weekday, month_day, tz
     assert bot._schedule_label(schedule) == expected.format(title)
 
 
+def test_main_screen_hints_schedules_only_while_there_are_none(bot_module):
+    """Задача 116: без расписаний главный экран `/subscriptions` подсказывает, как их завести,
+    тем же примером фразы, что экран `sub:s`; у кого расписание есть — подсказки нет."""
+    bot = bot_module("bot")
+    example = "присылай лидеров по голам по пятницам в 10"
+    empty, _ = bot._subscriptions_main_screen(False, False, [], [], 0)
+    assert empty.endswith(f"<br>⏰ Свои расписания — любой экран в своё время: напишите боту «{example}».</footer>")
+    assert bot._SCHEDULE_HINT == f"Создать — напишите боту, например: {example}."
+    one, _ = bot._subscriptions_main_screen(False, False, [], [], 1)
+    assert "Свои расписания" not in one
+    assert one.endswith("<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>")
+
+
 # ---------------------------------------------------------------------------
 # Карточка-черновик (Задача 108): кнопки `sch:…` через `Dispatcher.feed_update`. БД — фейк:
 # сохранение и журнал проверяются по запросам, дошедшим до неё.

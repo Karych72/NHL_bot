@@ -32,6 +32,7 @@ NHL_bot/
 │   ├── t.game_three_stars.sql
 │   ├── t.games.sql
 │   ├── t.goalies_season_stats.sql
+│   ├── t.playoff_series.sql            # Представление серий плей-офф из games: миграция 0023 (\ir) и `make db-tables` (Задача 105)
 │   ├── t.players_season_stats.sql
 │   ├── t.rosters.sql
 │   ├── t.scheduled_games.sql
@@ -82,7 +83,9 @@ NHL_bot/
 │       ├── 0021_schedule_created.up.sql  # bot_actions: schedule_created — расписание с карточки (Задача 108)
 │       ├── 0021_schedule_created.down.sql
 │       ├── 0022_aggregates_game_type.up.sql  # game_type в PK пяти сезонных агрегатов, бэкфилл 2 (Задача 103)
-│       └── 0022_aggregates_game_type.down.sql
+│       ├── 0022_aggregates_game_type.down.sql
+│       ├── 0023_playoff_series.up.sql        # Представление playoff_series и его GRANT роли nhl_ai_reader (Задача 105)
+│       └── 0023_playoff_series.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -92,10 +95,12 @@ NHL_bot/
 │   └── systemd/nhl-bot-secrets.service # Запускает fetch-secrets.sh при загрузке VM, до docker.service
 │
 ├── docs/                               # Документация (архитектура, исследования API, гайды)
+│   ├── ai_capabilities.md              # таблица: на какие вопросы ИИ отвечает, на какие нет
 │   ├── architecture.md                 # ← этот файл
 │   ├── api_data_research.md
 │   ├── data_loading.md                 # установка окружения, БД, загрузка NHL API
 │   ├── pipeline_nulls_and_explicit_null_tz.md   # контракт NULL-семантики лоадера
+│   ├── premium.md                      # что входит в премиум и что нет
 │   └── telegram_bot.md                 # запуск и команды бота
 │
 ├── plan/                               # Планы (индекс: plan/README.md)
@@ -143,7 +148,7 @@ NHL_bot/
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
-│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
@@ -779,6 +784,14 @@ PK `(player_id, season_id, game_type)`, как у полевых; FK `(player_id
 Индекс `idx_games_season_day (season_id, day)` — под фильтры `WHERE season_id = %s`
 (частично — с `day`), которыми пользуются день-дайджест, «форма команды» и датасет-билдер.
 
+#### `playoff_series` — Серии плей-офф (представление, Задача 105)
+
+Строка на серию из `games WHERE game_type = 3`, без своей загрузки. `round = (game_id / 100) % 100`,
+`series_number = (game_id / 10) % 10`; пара `team_a_id` / `team_b_id` = `LEAST` / `GREATEST`
+от хозяев и гостей; `wins_a`, `wins_b`, `games_played`, `first_day`, `last_day`; `winner_id` —
+команда с 4 победами, `NULL`, пока серия идёт. Обладатель Кубка — `winner_id` серии `round = 4`.
+Читает только ИИ (`ai_stats.AI_TABLES`); экранов бота нет.
+
 #### `scheduled_games` — Будущие игры (Задача 22A)
 
 Незавершённые игры регулярки на 14 дней вперёд от сегодня (UTC, `SCHEDULE_WINDOW_DAYS`).
@@ -933,6 +946,7 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 ```
 🏒 New York Rangers 3:2 Tampa Bay Lightning (OT) ← хозяева первыми; полные названия (Задача 98)
+Плей-офф, раунд 1, игра 3               ← только у плей-офф, курсивом; из game_id (`playoff_label`, Задача 106)
 Периоды: 1:1, 0:0, 1:1, 1:0             ← формы до матча в итоге нет (только в превью)
 
 1-й период                              ← обычный текст, не <pre>; период без голов не выводится

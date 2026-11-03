@@ -73,6 +73,7 @@ from help_text import (
     START_MESSAGE,
     STATS_COMMAND_INTRO,
     TEAM_STATS_COMMAND_INTRO,
+    start_message_with_gift,
 )
 from keyboards import build_menu, callback_message
 from stats_handlers import (
@@ -151,12 +152,22 @@ START_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
 
 async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
     """`/start`: приветствие с кнопками подписки; deep link `?start=game_<id>` из карточки
-    матча открывает карточку, битый id — приветствие."""
+    матча открывает карточку, битый id — приветствие.
+
+    Новая личка получает пробный премиум (`premium.grant_trial`, Задача 115) и строку о
+    подарке — в приветствии, а после карточки deep link — отдельным сообщением. В группе
+    пробника нет: премиум там только ручной.
+    """
+    trial_until = premium.grant_trial(message.chat.id) if message.chat.type == "private" else None
+    gift = _TRIAL_GIFT.format(until=f"{trial_until.astimezone(MSK):%d.%m}") if trial_until else None
     args = (command.args or "").split()
     if args and args[0].startswith("game_") and args[0][5:].isdecimal():
         await send_game_card_message(bot, message.chat.id, int(args[0][5:]))
+        if gift:
+            await message.answer_rich(rich_message(gift))
         return
-    await message.answer_rich(rich_message(START_MESSAGE), reply_markup=START_KEYBOARD)
+    text = start_message_with_gift(gift) if gift else START_MESSAGE
+    await message.answer_rich(rich_message(text), reply_markup=START_KEYBOARD)
 
 
 async def show_help(bot: Bot, chat_id: int) -> None:
@@ -166,6 +177,10 @@ async def show_help(bot: Bot, chat_id: int) -> None:
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
     "прогноз модели в превью матчей."
+)
+_TRIAL_GIFT = (
+    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: прогноз модели и ИИ "
+    f"до {ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки. Подробнее — /premium"
 )
 _PREMIUM_CANCEL_HINT = (
     "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
@@ -327,6 +342,10 @@ _DELIVERY_NOTE = (
     "Итоги ночи приходят, когда загружены все её матчи, не позже 11:00 МСК.\n"
     "Превью матчей дня — с 15:30 МСК, по одному раз в полчаса."
 )
+# Пример фразы, создающей расписание (Задача 108): в подсказках главного экрана и `sub:s`.
+_SCHEDULE_EXAMPLE = "присылай лидеров по голам по пятницам в 10"
+# Подсказка главного экрана, пока расписаний нет (Задача 116): иначе о них не узнать.
+_MAIN_SCHEDULE_HINT = f"⏰ Свои расписания — любой экран в своё время: напишите боту «{_SCHEDULE_EXAMPLE}»."
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните make db-migrate на вашей БД PostgreSQL."
 
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
@@ -357,7 +376,8 @@ def _subscriptions_main_screen(
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
     (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю, в том
     числе к `schedules` расписаниям чата.
-    Текст — построчный HTML для `rich_message()`: подписки — список, расписание — подвал."""
+    Текст — построчный HTML для `rich_message()`: подписки — список, расписание рассылок —
+    подвал; пока расписаний 0, в подвале и подсказка, как их завести (Задача 116)."""
     items = []
     if digest:
         items.append("Утренний дайджест")
@@ -368,7 +388,7 @@ def _subscriptions_main_screen(
     if countries:
         items.append("Страны: " + ", ".join(countries))
     lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
-    lines.append(rich_footer(_DELIVERY_NOTE))
+    lines.append(rich_footer(_DELIVERY_NOTE + ("" if schedules else "\n" + _MAIN_SCHEDULE_HINT)))
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
@@ -386,7 +406,7 @@ def _subscriptions_main_screen(
 _WEEKDAYS_DATIVE = (
     "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям",
 )
-_SCHEDULE_HINT = "Создать — напишите боту, например: присылай лидеров по голам по пятницам в 10."
+_SCHEDULE_HINT = f"Создать — напишите боту, например: {_SCHEDULE_EXAMPLE}."
 
 
 def _screen_label(screen: str, p: Dict[str, Any]) -> str:
