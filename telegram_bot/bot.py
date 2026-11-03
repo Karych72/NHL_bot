@@ -342,6 +342,10 @@ _DELIVERY_NOTE = (
     "Итоги ночи приходят, когда загружены все её матчи, не позже 11:00 МСК.\n"
     "Превью матчей дня — с 15:30 МСК, по одному раз в полчаса."
 )
+# Пример фразы, создающей расписание (Задача 108): в подсказках главного экрана и `sub:s`.
+_SCHEDULE_EXAMPLE = "присылай лидеров по голам по пятницам в 10"
+# Подсказка главного экрана, пока расписаний нет (Задача 116): иначе о них не узнать.
+_MAIN_SCHEDULE_HINT = f"⏰ Свои расписания — любой экран в своё время: напишите боту «{_SCHEDULE_EXAMPLE}»."
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните make db-migrate на вашей БД PostgreSQL."
 
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
@@ -372,7 +376,8 @@ def _subscriptions_main_screen(
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
     (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю, в том
     числе к `schedules` расписаниям чата.
-    Текст — построчный HTML для `rich_message()`: подписки — список, расписание — подвал."""
+    Текст — построчный HTML для `rich_message()`: подписки — список, расписание рассылок —
+    подвал; пока расписаний 0, в подвале и подсказка, как их завести (Задача 116)."""
     items = []
     if digest:
         items.append("Утренний дайджест")
@@ -383,7 +388,7 @@ def _subscriptions_main_screen(
     if countries:
         items.append("Страны: " + ", ".join(countries))
     lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
-    lines.append(rich_footer(_DELIVERY_NOTE))
+    lines.append(rich_footer(_DELIVERY_NOTE + ("" if schedules else "\n" + _MAIN_SCHEDULE_HINT)))
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
@@ -401,7 +406,7 @@ def _subscriptions_main_screen(
 _WEEKDAYS_DATIVE = (
     "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям",
 )
-_SCHEDULE_HINT = "Создать — напишите боту, например: присылай лидеров по голам по пятницам в 10."
+_SCHEDULE_HINT = f"Создать — напишите боту, например: {_SCHEDULE_EXAMPLE}."
 
 
 def _screen_label(screen: str, p: Dict[str, Any]) -> str:
