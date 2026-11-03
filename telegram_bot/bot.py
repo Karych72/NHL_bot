@@ -73,6 +73,7 @@ from help_text import (
     START_MESSAGE,
     STATS_COMMAND_INTRO,
     TEAM_STATS_COMMAND_INTRO,
+    start_message_with_gift,
 )
 from keyboards import build_menu, callback_message
 from stats_handlers import (
@@ -151,12 +152,22 @@ START_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
 
 async def cmd_start(message: Message, bot: Bot, command: CommandObject) -> None:
     """`/start`: приветствие с кнопками подписки; deep link `?start=game_<id>` из карточки
-    матча открывает карточку, битый id — приветствие."""
+    матча открывает карточку, битый id — приветствие.
+
+    Новая личка получает пробный премиум (`premium.grant_trial`, Задача 115) и строку о
+    подарке — в приветствии, а после карточки deep link — отдельным сообщением. В группе
+    пробника нет: премиум там только ручной.
+    """
+    trial_until = premium.grant_trial(message.chat.id) if message.chat.type == "private" else None
+    gift = _TRIAL_GIFT.format(until=f"{trial_until.astimezone(MSK):%d.%m}") if trial_until else None
     args = (command.args or "").split()
     if args and args[0].startswith("game_") and args[0][5:].isdecimal():
         await send_game_card_message(bot, message.chat.id, int(args[0][5:]))
+        if gift:
+            await message.answer_rich(rich_message(gift))
         return
-    await message.answer_rich(rich_message(START_MESSAGE), reply_markup=START_KEYBOARD)
+    text = start_message_with_gift(gift) if gift else START_MESSAGE
+    await message.answer_rich(rich_message(text), reply_markup=START_KEYBOARD)
 
 
 async def show_help(bot: Bot, chat_id: int) -> None:
@@ -166,6 +177,10 @@ async def show_help(bot: Bot, chat_id: int) -> None:
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
     "прогноз модели в превью матчей."
+)
+_TRIAL_GIFT = (
+    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: прогноз модели и ИИ "
+    f"до {ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки. Подробнее — /premium"
 )
 _PREMIUM_CANCEL_HINT = (
     "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "

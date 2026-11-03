@@ -148,7 +148,7 @@ NHL_bot/
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
-│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
