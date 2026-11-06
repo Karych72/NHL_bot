@@ -725,6 +725,42 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
 
 class FinalGamesTest(LoaderApiTestCase):
+    def test_games_without_skaters_are_added_to_the_window_by_id(self):
+        """Game outside the date window, left without skaters: its id goes to the
+        Stats API, and it joins the games to load; a game in the window is not asked twice."""
+        instance = make_loader()
+        instance.start_date, instance.end_date = "2026-11-05", "2026-11-06"
+        urls = []
+
+        def fetch_paginated(url, sort_key, page_size=500):
+            urls.append(url)
+            return [{"id": 111}] if "id in" not in url else [{"id": 222}]
+
+        instance.fetch_paginated = fetch_paginated
+        instance.missing_skater_game_ids = lambda: [111, 222]
+
+        with self.assertLogs(loader.logger, "WARNING") as logs:
+            games = instance.games_to_load()
+
+        self.assertEqual([g["id"] for g in games], [111, 222])
+        self.assertIn(f"season={SEASON_ID} and gameStateId=7 and id in (222)", urls[1])
+        self.assertIn("[222]", logs.output[0])
+
+    def test_games_to_load_is_the_window_when_nothing_is_missing(self):
+        instance = make_loader()
+        instance.start_date, instance.end_date = "2026-11-05", "2026-11-06"
+        urls = []
+
+        def fetch_paginated(url, sort_key, page_size=500):
+            urls.append(url)
+            return [{"id": 111}]
+
+        instance.fetch_paginated = fetch_paginated
+        instance.missing_skater_game_ids = lambda: []
+
+        self.assertEqual(instance.games_to_load(), [{"id": 111}])
+        self.assertEqual(len(urls), 1)
+
     def test_fetch_asks_for_finished_regular_season_and_playoff_games(self):
         """Task 104: ``games`` gets both game types (the forecast schedule stays regular-only)."""
         instance = make_loader()

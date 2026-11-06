@@ -903,6 +903,60 @@ class ModernNhlLoader:
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
         return self.fetch_paginated(url, "id", page_size=1000)
 
+    def fetch_games_by_id(self, game_ids: List[int]) -> List[dict]:
+        """Finished games *game_ids* of the season, whatever their date.
+
+        Args:
+            game_ids: NHL game ids, non-empty.
+        """
+        ids = ",".join(str(game_id) for game_id in game_ids)
+        cayenne = f"season={self.season_id} and gameStateId=7 and id in ({ids})"
+        url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
+        return self.fetch_paginated(url, "id", page_size=1000)
+
+    def connect(self):
+        """New PostgreSQL connection with the loader's settings."""
+        return psycopg2.connect(
+            host=self.pg_host,
+            port=self.pg_port,
+            user=self.pg_user,
+            database=self.pg_database,
+        )
+
+    def missing_skater_game_ids(self) -> List[int]:
+        """Games of the season in ``games`` with no ``game_player_stats`` rows.
+
+        Why: such a game has no country block and no goal clips, and it falls out
+        of the sync date window, so without this nothing ever reloads it.
+        """
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT g.game_id FROM games g WHERE g.season_id = %s AND NOT EXISTS "
+                    "(SELECT 1 FROM game_player_stats s WHERE s.game_id = g.game_id) "
+                    "ORDER BY g.game_id",
+                    (self.season_id,),
+                )
+                return [row[0] for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def games_to_load(self) -> List[dict]:
+        """Finished games of the date window plus earlier games left without skaters.
+
+        Why: a bad NHL response must heal on the next sync run, not wait for someone
+        to notice. Each reloaded game is logged; until NHL returns its skaters,
+        ``build_game_rows`` skips it and the next run tries again.
+        """
+        games = self.fetch_final_games()
+        window = {int(game["id"]) for game in games}
+        missing = [g for g in self.missing_skater_game_ids() if g not in window]
+        if not missing:
+            return games
+        logger.warning("Reloading %d game(s) without skater rows: %s", len(missing), missing)
+        return games + self.fetch_games_by_id(missing)
+
     def fetch_scheduled_games(self) -> List[dict]:
         """Fetch not-yet-played regular-season games for the next ``SCHEDULE_WINDOW_DAYS`` UTC days.
 
@@ -1652,7 +1706,7 @@ class ModernNhlLoader:
             self.current_season_label,
         )
         logger.info("Fetching finished games...")
-        games_meta = self.fetch_final_games()
+        games_meta = self.games_to_load()
         logger.info("Finished games to load: %d", len(games_meta))
         scheduled_meta = self.fetch_scheduled_games()
         (
@@ -1666,12 +1720,7 @@ class ModernNhlLoader:
         ) = self.build_game_rows(games_meta)
 
         logger.info("Writing to PostgreSQL...")
-        conn = psycopg2.connect(
-            host=self.pg_host,
-            port=self.pg_port,
-            user=self.pg_user,
-            database=self.pg_database,
-        )
+        conn = self.connect()
         try:
             conn.autocommit = False
             with conn.cursor() as cur:

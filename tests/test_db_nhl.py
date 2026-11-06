@@ -935,6 +935,22 @@ class TestCountryNightSql(unittest.TestCase):
             cur.execute("DELETE FROM rosters WHERE player_id IN (-20, -21, -22, -23)")
         self.assertEqual(names, ["A. Протас", "I. Протас", "Соло"])
 
+    def test_loader_finds_games_of_the_season_without_skaters(self):
+        """Задача 117: матч без `game_player_stats` — в списке на дозагрузку, матч со
+        статистикой — нет; поиск идёт только по сезону загрузчика."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
+        self.addCleanup(sys.path.pop, 0)
+        import load_season_modern
+
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM game_player_stats WHERE game_id = %s", (self.GAME2,))
+        loader = load_season_modern.ModernNhlLoader()
+
+        loader.season_id = self.SEASON
+        self.assertEqual(loader.missing_skater_game_ids(), [self.GAME2])
+        loader.season_id = self.SEASON + 1
+        self.assertEqual(loader.missing_skater_game_ids(), [])
+
     def test_score_line_is_the_first_line_of_the_card(self):
         """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
         line = self.messages.game_score_line(self.GAME)
@@ -2254,6 +2270,17 @@ class TestNhlLoadedData(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls, "conn") and cls.conn:
             cls.conn.close()
+
+    def test_every_game_has_skater_stats(self):
+        """Матч без `game_player_stats` — без блока страны и видео голов (Задача 117);
+        загрузчик дозагружает такие матчи сам, держаться они не должны."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT g.game_id FROM games g WHERE NOT EXISTS "
+                "(SELECT 1 FROM game_player_stats s WHERE s.game_id = g.game_id) ORDER BY 1"
+            )
+            missing = [row[0] for row in cur.fetchall()]
+        self.assertEqual(missing, [])
 
     def test_has_games(self):
         with self.conn.cursor() as cur:
