@@ -11,6 +11,8 @@ it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
 import shutil
 import unittest
@@ -629,6 +631,41 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
                 self.assertEqual(len(calls), 2)  # not cached: network hit both times
                 self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
+
+    def test_boxscore_without_skaters_is_not_cached_and_game_is_skipped(self):
+        """Game 2026020244: OFF boxscore with goalies but no skaters. No rows at
+        all, so the next run loads the whole game, and nothing is cached."""
+        box = load_fixture("nhl_game_boxscore.json")
+        empty = {
+            **box,
+            "playerByGameStats": {
+                side: {**stats, "forwards": [], "defense": []}
+                for side, stats in box["playerByGameStats"].items()
+            },
+        }
+        instance = make_loader()
+        instance.get_json = lambda url: empty
+
+        instance.fetch_game_json(GAME_ID, "boxscore")
+
+        self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
+        self.assertFalse(loader.payload_complete("boxscore", empty))
+        self.assertTrue(loader.payload_complete("boxscore", box))
+
+    def test_cached_boxscore_without_skaters_is_fetched_again_and_replaced(self):
+        """A bad boxscore cached before the check must not stay forever."""
+        box = load_fixture("nhl_game_boxscore.json")
+        cache_path = loader.RAW_CACHE_DIR / str(SEASON_ID) / f"{GAME_ID}.box.json.gz"
+        cache_path.parent.mkdir(parents=True)
+        with gzip.open(cache_path, "wt", encoding="utf-8") as fh:
+            json.dump({**box, "playerByGameStats": {}}, fh)
+        instance = make_loader()
+        instance.get_json = lambda url: box
+
+        self.assertEqual(instance.fetch_game_json(GAME_ID, "boxscore"), box)
+
+        with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), box)
 
     def test_season_reports_are_not_routed_through_the_cache(self):
         """Season-wide reports (team reference + standings) are untouched by

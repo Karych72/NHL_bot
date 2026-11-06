@@ -917,10 +917,28 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertEqual(self.messages.country_night_blocks("XXX", self.NIGHT), [])
         self.assertIsNone(self.messages.country_game_block("XXX", self.GAME))
 
+    def test_namesakes_of_the_season_get_first_name_initial(self):
+        """Однофамильцы сезона различаются инициалом — и в блоке страны, и в SQL карточки;
+        однофамилец из другого сезона не считается, без совпадения — одна фамилия."""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO rosters (player_id, season_id, name, lastname) VALUES "
+                "(-20, %s, 'Aliaksei Protas', 'Протас'), (-21, %s, 'Ilya Protas', 'Протас'), "
+                "(-22, %s, 'Alone Solo', 'Соло'), (-23, %s, 'Other Solo', 'Соло')",
+                (self.SEASON, self.SEASON, self.SEASON, self.SEASON - 10001),
+            )
+            cur.execute(
+                "SELECT player_display_name(name, lastname, season_id) FROM rosters "
+                "WHERE player_id IN (-20, -21, -22) ORDER BY player_id DESC"
+            )
+            names = [row[0] for row in cur.fetchall()]
+            cur.execute("DELETE FROM rosters WHERE player_id IN (-20, -21, -22, -23)")
+        self.assertEqual(names, ["A. Протас", "I. Протас", "Соло"])
+
     def test_score_line_is_the_first_line_of_the_card(self):
         """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
         line = self.messages.game_score_line(self.GAME)
-        self.assertEqual(line, "🏒 <b>Home Club 3:2 Away Club</b>")
+        self.assertEqual(line, "<h4>🏒 Home Club 3:2 Away Club</h4>")
         self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):

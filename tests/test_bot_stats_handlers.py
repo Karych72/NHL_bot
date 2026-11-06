@@ -847,6 +847,27 @@ async def test_dispatch_day_digest_ends_with_hint_and_carries_only_match_buttons
 
 
 @pytest.mark.asyncio
+async def test_dispatch_day_digest_summary_only_keeps_single_game_short(
+    bot_module, fake_bot, api, digest_labels_db
+):
+    """Рассылка: единственный оставшийся матч — сводка с кнопкой карточки, а не сама
+    карточка: подписки на него нет, и длинный текст чат не запрашивал."""
+    stats_handlers = bot_module("stats_handlers")
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_bot, 100, "2025-12-01", [(1, "ПОЛНАЯ КАРТОЧКА", [])],
+        heading="Остальные матчи ночи", summary_only=True,
+    )
+
+    [digest] = api.sent_rich
+    text = body(digest)
+    assert text.startswith("<p><b>Остальные матчи ночи</b></p>")
+    assert "ПОЛНАЯ КАРТОЧКА" not in text
+    assert "1. H1 1:0 A1" in text
+    assert [b.callback_data for row in digest.reply_markup.inline_keyboard for b in row] == ["dg:1"]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons_in_three_columns(
     bot_module, fake_bot, api, digest_labels_db
 ):

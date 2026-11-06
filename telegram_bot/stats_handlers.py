@@ -348,6 +348,7 @@ async def dispatch_day_digest_messages(
     *,
     inter_message_sleep_sec: Optional[float] = None,
     heading: str = "Матчи ночи",
+    summary_only: bool = False,
 ) -> None:
     """Дайджест дня: один матч — одна карточка; несколько — сводка + кнопки разворота.
     Подсказка «Ещё: …» и ссылка на подписки — подвал этого же сообщения, а не отдельное
@@ -359,6 +360,8 @@ async def dispatch_day_digest_messages(
         heading: заголовок сводки (дата и число матчей — в подвале); рассылка без уже
             присланных чату матчей — «Остальные матчи ночи» (Задача 85).
         inter_message_sleep_sec: пауза после каждого сообщения (рассылка).
+        summary_only: сводка и при одном матче — рассылка: карточку чат не запрашивал,
+            она раскрывается кнопкой.
     """
 
     async def _pause() -> None:
@@ -375,7 +378,7 @@ async def dispatch_day_digest_messages(
         await _pause()
         return
 
-    if len(real_games) == 1:
+    if len(real_games) == 1 and not summary_only:
         _gid, text, goals_meta = real_games[0]
         await bot.send_rich_message(
             chat_id=chat_id, rich_message=rich_message(f"{text}\n{hint}"),

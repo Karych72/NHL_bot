@@ -170,6 +170,24 @@ def optional_age_from_birthdate(birth_date) -> Optional[int]:
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
 
+def payload_complete(endpoint: str, payload: dict) -> bool:
+    """Whether a gamecenter *payload* is final and safe to load and cache.
+
+    Why: game 2026020244 reached the DB with goalies but no skaters, and without
+    skater rows the bot has no country block and sends no goal clips for the game.
+
+    Args:
+        endpoint: ``"play-by-play"``, ``"boxscore"`` or ``"landing"``.
+        payload: the endpoint's response.
+    """
+    if payload.get("gameState") != FINAL_GAME_STATE:
+        return False
+    if endpoint != "boxscore":
+        return True
+    stats = payload.get("playerByGameStats") or {}
+    return any(side.get("forwards") or side.get("defense") for side in stats.values())
+
+
 def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
     """Return rounded percentage or ``None`` when inputs are missing/zero.
 
@@ -980,7 +998,9 @@ class ModernNhlLoader:
         every later call reads it straight from disk instead of hitting the
         network — no TTL, no invalidation. "Finished" is judged from the
         payload's own ``gameState`` field (``FINAL_GAME_STATE``), not from
-        the caller. Season-wide report endpoints (standings, summaries, ...)
+        the caller; a boxscore without skaters is not finished yet
+        (``payload_complete``), and one cached earlier is fetched again.
+        Season-wide report endpoints (standings, summaries, ...)
         never go through this method and are always fetched live via
         ``get_json``.
 
@@ -993,10 +1013,12 @@ class ModernNhlLoader:
         cache_path = RAW_CACHE_DIR / str(self.season_id) / f"{game_id}.{suffix}.json.gz"
         if cache_path.exists():
             with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
-                return json.load(fh)
+                cached = json.load(fh)
+            if payload_complete(endpoint, cached):
+                return cached
 
         payload = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/{endpoint}")
-        if payload.get("gameState") == FINAL_GAME_STATE:
+        if payload_complete(endpoint, payload):
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             # Write to a sibling temp file and rename into place: a write
             # truncated by Ctrl-C / a full disk must never leave a
@@ -1030,8 +1052,8 @@ class ModernNhlLoader:
         (every shot attempt of play-by-play, shootout excluded) — in that order.
 
         A game whose gamecenter payloads are not all ``FINAL_GAME_STATE`` yet
-        (the Stats REST list can flip to "finished" before gamecenter does) is
-        skipped with a warning: it produces no rows at all, so ``run()``
+        (the Stats REST list can flip to "finished" before gamecenter does) or
+        whose boxscore has no skaters (``payload_complete``) is skipped with a warning: it produces no rows at all, so ``run()``
         neither writes a half-final game nor deletes an earlier version of it,
         and the next sync run picks it up.
 
@@ -1060,9 +1082,10 @@ class ModernNhlLoader:
             box = self.fetch_game_json(game_id, "boxscore")
             landing = self.fetch_game_json(game_id, "landing")
             states = {p.get("gameState") for p in (pbp, box, landing)}
-            if states != {FINAL_GAME_STATE}:
+            if states != {FINAL_GAME_STATE} or not payload_complete("boxscore", box):
                 logger.warning(
-                    "Game %s: gamecenter gameState %s, not %s yet; skipped until next run",
+                    "Game %s: gamecenter gameState %s or boxscore without skaters, "
+                    "not %s yet; skipped until next run",
                     game_id,
                     sorted(map(str, states)),
                     FINAL_GAME_STATE,

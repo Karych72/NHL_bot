@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION get_three_stars_game (now_game_id bigint)
                   save_percentage   double precision)
 AS $$
 BEGIN
-    RETURN QUERY select ts.star, r.lastname, r.position as player_position, t.abbreviation,
+    RETURN QUERY select ts.star, player_display_name(r.name, r.lastname, r.season_id), r.position as player_position, t.abbreviation,
                  gps.goals, gps.assists, ggs.saves, ggs.shots, ggs.save_percentage
                  from game_three_stars ts
                  left join games g

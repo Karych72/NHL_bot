@@ -285,7 +285,7 @@ class GoalAggregationTest(LoaderApiTestCase):
             "homeTeam": {"sog": 0},
             "awayTeam": {"sog": 0},
             "playerByGameStats": {
-                "homeTeam": {"forwards": [], "defense": [], "goalies": []},
+                "homeTeam": {"forwards": [{"playerId": 8000001}], "defense": [], "goalies": []},
                 "awayTeam": {"forwards": [], "defense": [], "goalies": []},
             },
         }

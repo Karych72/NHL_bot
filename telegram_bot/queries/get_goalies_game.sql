@@ -8,7 +8,7 @@ CREATE OR REPLACE FUNCTION get_goalies_game (now_game_id int)
 AS $$
 BEGIN
     RETURN QUERY select distinct ggs.shots, ggs.saves, ggs.timeonice,
-                 r.lastname, ggs.save_percentage,
+                 player_display_name(r.name, r.lastname, r.season_id), ggs.save_percentage,
                  g.home_team_id = ggs.team_id as is_home
                  from game_goalie_stats ggs
                  left join games g
