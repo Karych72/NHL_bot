@@ -194,7 +194,7 @@ class GoalAggregationTest(LoaderApiTestCase):
                         }
                     ],
                 },
-                "awayTeam": {"forwards": [], "defense": [], "goalies": []},
+                "awayTeam": {"forwards": [{"playerId": 8000002}], "defense": [], "goalies": []},
             },
         }
 
@@ -285,8 +285,8 @@ class GoalAggregationTest(LoaderApiTestCase):
             "homeTeam": {"sog": 0},
             "awayTeam": {"sog": 0},
             "playerByGameStats": {
-                "homeTeam": {"forwards": [], "defense": [], "goalies": []},
-                "awayTeam": {"forwards": [], "defense": [], "goalies": []},
+                "homeTeam": {"forwards": [{"playerId": 8000001}], "defense": [], "goalies": []},
+                "awayTeam": {"forwards": [{"playerId": 8000002}], "defense": [], "goalies": []},
             },
         }
         stub_api(

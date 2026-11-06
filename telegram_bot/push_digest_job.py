@@ -287,8 +287,9 @@ async def run_morning_digest_broadcast(
 ) -> None:
     """Шлёт дайджест ночи *night* подписчикам ``morning_digest``, которым пора.
 
-    Зачем: ровно те же карточки и сводка, что у ``/today`` (``dispatch_day_digest_messages``).
-    В дайджесте чата — только матчи, итог которых ему ещё не ушёл (Задача 85); до крайнего
+    Зачем: та же сводка, что у ``/today`` (``dispatch_day_digest_messages``), но и при одном
+    матче — сводка: полная карточка открывается кнопкой; матч подписки чата на крайнем сроке
+    остаётся карточкой с кнопками видео. В дайджесте чата — только матчи, итог которых ему ещё не ушёл (Задача 85); до крайнего
     срока не берутся и матчи его подписок (``subscribed``): ждущий клипов уйдёт своим
     сообщением. На крайнем сроке рассылка по матчам уже прошла, и матч подписки без отметки
     (её сбой) попадает сюда. Отфильтрованная сводка — «Остальные матчи ночи»; не осталось
@@ -323,6 +324,7 @@ async def run_morning_digest_broadcast(
                 rest,
                 inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
                 heading="Матчи ночи" if len(rest) == len(games) else "Остальные матчи ночи",
+                summary_only=not any(game[0] in subscribed.get(chat_id, {}) for game in rest),
             )
             try:
                 try:
@@ -640,7 +642,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = matchup_season_preview(game_id, away, home)
+            previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
         body, footer = previews[game_id]
         if premium.is_premium(chat_id):
             footer = with_model_prediction(footer, game_id, home)

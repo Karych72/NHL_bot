@@ -267,9 +267,17 @@ def test_game_message_marks_playoff_round_under_score_line(bot_module):
         text, _ = bot_messages.game_message(2025030123)
         score_line = bot_messages.game_score_line(2025030123)
     first, second, _rest = text.split("\n", 2)
-    assert first.startswith("🏒 <b>")
+    assert first.startswith("<h4>🏒 ")
     assert second == "<i>Плей-офф, раунд 1, игра 3</i>"
     assert score_line == f"{first}\n{second}"
+
+
+def test_rich_message_keeps_gap_after_score_heading(bot_module):
+    """Шапка `<h4>` и блок страны под ней разделены тем же зазором, что и абзацы."""
+    rich_message = bot_module("bot_messages").rich_message
+
+    assert rich_message("<h4>Счёт</h4>\n\nРоссия").html == "<h4>Счёт</h4><p>&nbsp;</p><p>Россия</p>"
+    assert rich_message("<h4>Счёт</h4>\nПериоды").html == "<h4>Счёт</h4><p>Периоды</p>"
 
 
 def test_game_message_has_no_playoff_mark_for_regular_game(game_message_text):
@@ -694,8 +702,10 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
     # Одна таблица «метрика · гости · хозяева», названия — в шапке колонок,
     # разница шайб со знаком.
     [table] = _tables(text)
-    assert table[:4] == [
+    assert table[:6] == [
         ["", "Aaa Club", "BBB Club"],
+        ["Место в дивизионе", "—", "—"],
+        ["Место в конференции", "—", "—"],
         ["Очки", "14", "6"],
         ["% очков", "70%", "30%"],
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
@@ -808,8 +818,13 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
     # BBB: в сезоне пока нет завершённых игр -> форма 0-0-0, серия "—".
     bbb_games = _recent_games_rows([])
 
+    league = {col: [None, None] for col in bot_messages._TEAM_PROFILE_STATS_COLUMNS}
+    league.update(count_rows=2, team_id=[111, 222])
+
     def fake_fetch(query, params=None, columns=None):
         q = str(query)
+        if "t.division_name" in q:
+            return league
         if "teams_stats ts" in q:
             return stats_row
         if "FROM games g WHERE" in q:
@@ -828,6 +843,62 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
     assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
     assert ["Серия", "W2", "—"] in table
     assert ["Личные встречи", "0", "1"] in table
+
+
+def _render_preview_with_places(bot_messages, collapsed=False):
+    """Превью AAA @ BBB, где команды — из разных дивизионов одной конференции: лига из
+    трёх команд, AAA (111) вторая в конференции и первая в дивизионе, BBB (222) — третья
+    и вторая, CCC (333) — выше обеих."""
+    stats_row = _preview_stats_row()
+    teams = [(111, "Aaa Club", "Pacific", 14), (222, "BBB Club", "Central", 6),
+             (333, "Ccc Club", "Central", 20)]
+    league = {col: [None] * 3 for col in bot_messages._TEAM_PROFILE_STATS_COLUMNS}
+    league.update(
+        count_rows=3,
+        team_id=[t[0] for t in teams],
+        name=[t[1] for t in teams],
+        division_name=[t[2] for t in teams],
+        conference_name=["Western"] * 3,
+        points=[t[3] for t in teams],
+    )
+    team_ids = {"AAA": 111, "BBB": 222}
+
+    def fake_fetch(query, params=None, columns=None):
+        q = str(query)
+        if "t.division_name" in q:
+            return league
+        if "teams_stats ts" in q:
+            return stats_row
+        if "FROM games g WHERE" in q:
+            return _recent_games_rows([])
+        if "team_id FROM teams" in q:
+            return {"count_rows": 1, "team_id": [team_ids[params[1]]]}
+        if "((home_team_id" in q:
+            return {"count_rows": 0, "winner_id": []}
+        raise AssertionError(f"unexpected query: {q}")
+
+    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
+        return bot_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB", collapsed=collapsed)
+
+
+def test_matchup_season_preview_shows_standings_places(bot_module):
+    """Места в дивизионе и конференции — первыми строками, без жирного: команды могут быть
+    из разных групп, и сравнивать их номера нельзя."""
+    text, _footer = _render_preview_with_places(bot_module("bot_messages"))
+
+    [table] = _tables(text)
+    assert table[1:3] == [["Место в дивизионе", "1-е", "2-е"], ["Место в конференции", "2-е", "3-е"]]
+    assert "<b>1-е</b>" not in text and "<b>2-е</b>" not in text
+
+
+def test_matchup_season_preview_collapsed_hides_table_under_details(bot_module):
+    """Рассылка: заголовок виден, таблица — в свёрнутом блоке."""
+    text, _footer = _render_preview_with_places(bot_module("bot_messages"), collapsed=True)
+
+    heading, details = text.split("\n")
+    assert heading == "<b>Aaa Club @ BBB Club</b>"
+    assert details.startswith("<details><summary>Сравнение команд</summary><table")
+    assert details.endswith("</table></details>")
 
 
 # ---------------------------------------------------------------------------

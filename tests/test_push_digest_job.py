@@ -34,8 +34,8 @@ from aiogram.types import BufferedInputFile
 
 from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
-# Один «настоящий» матч дня: dispatch_day_digest_messages шлёт карточку матча,
-# с подсказкой «Ещё: …» в подвале.
+# Один «настоящий» матч дня: рассылка шлёт сводку с кнопкой карточки (``summary_db``),
+# с подсказкой «Ещё: …» в подвале; сам текст карточки в сообщение не попадает.
 ONE_GAME_DAY = ("2026-01-15", [(2026020001, "<b>BOS 3 : 2 TOR</b>", [])])
 
 # Ночь игровой даты 2026-10-06: прогоны sync — с 18:00 UTC 06.10 до 08:00 UTC 07.10.
@@ -81,12 +81,30 @@ def chat_marks(push_job, monkeypatch):
     return marks
 
 
+@pytest.fixture
+def summary_db(fake_db_router):
+    """БД сводки дайджеста: любой матч — «BOS 1:0 TOR», кнопка «BOS – TOR»."""
+    return fake_db_router([
+        ("JOIN teams th", lambda params: [(gid, "BOS", "TOR") for gid in params[0]]),
+        ("get_game_stats", [
+            (1, 0, 0, 0, 0, False, False, "home", "BOS"),
+            (0, 0, 0, 0, 0, False, False, "away", "TOR"),
+        ]),
+        ("get_goals_game", [
+            ("X", "C", None, None, None, None, None, 1, "01:00", 1, 0,
+             False, False, False, True, 1, 1),
+        ]),
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Утренний дайджест
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_bot, api, chat_marks):
+async def test_morning_digest_reaches_every_active_subscriber(
+    push_job, fake_bot, api, chat_marks, summary_db
+):
     with patch.object(push_job, "day_digest", return_value=ONE_GAME_DAY), patch.object(
         push_job, "list_active_morning_digest_rows", return_value=_rows(111, 222)
     ), patch.object(push_job, "mark_digest_night_sent"):
@@ -95,12 +113,16 @@ async def test_morning_digest_reaches_every_active_subscriber(push_job, fake_bot
     assert [(type(r), r.chat_id) for r in api.outgoing] == [
         (SendRichMessage, 111), (SendRichMessage, 222),
     ]
-    for card in api.sent_rich:
-        html_ = card.rich_message.html
-        assert html_.startswith(rich_html("<b>BOS 3 : 2 TOR</b>")), "первая строка — счёт матча"
+    for digest in api.sent_rich:
+        html_ = digest.rich_message.html
+        assert html_.startswith(rich_html("<b>Матчи ночи</b>"))
+        assert "BOS 3 : 2 TOR" not in html_, "один матч — сводка, карточка открывается кнопкой"
+        assert "1. BOS 1:0 TOR" in html_
         # Подсказка «Ещё: …» — подвал самого сообщения, а не отдельное сообщение.
         assert html_.endswith("Настроить подписки: /subscriptions</footer>")
-        assert "<footer>Ещё: /tonight" in html_
+        assert "Ещё: /tonight" in html_.rsplit("<footer>", 1)[1]
+        [[button]] = digest.reply_markup.inline_keyboard
+        assert button.callback_data == "dg:2026020001"
     assert chat_marks == {(111, 2026020001), (222, 2026020001)}
 
 
@@ -184,7 +206,7 @@ async def test_morning_digest_leaves_out_games_the_chat_already_got_or_will_get(
 
 @pytest.mark.asyncio
 async def test_morning_digest_at_the_deadline_takes_unsent_games_of_subscriptions(
-    push_job, fake_bot, api, chat_marks
+    push_job, fake_bot, api, chat_marks, summary_db
 ):
     """На крайнем сроке рассылка по матчам уже прошла: матч подписки без отметки (её сбой)
     уходит в дайджесте, а не пропадает."""
@@ -194,7 +216,7 @@ async def test_morning_digest_at_the_deadline_takes_unsent_games_of_subscription
         await push_job.run_morning_digest_broadcast(fake_bot, NIGHT, True, {111: {2026020001: "subs"}})
 
     [card] = api.sent_rich
-    assert card.rich_message.html.startswith(rich_html("<b>BOS 3 : 2 TOR</b>"))
+    assert card.rich_message.html.startswith(rich_html("<b>BOS 3 : 2 TOR</b>")), "подписка — полная карточка"
     assert card.rich_message.html.endswith("</footer>")
 
 
@@ -509,7 +531,7 @@ def _goals(game_id, n, first_event=100):
 
 
 @pytest.fixture
-def push_env(push_job, monkeypatch, tmp_path, fake_bot, api, goal_clip_store, chat_marks):
+def push_env(push_job, monkeypatch, tmp_path, fake_bot, api, goal_clip_store, chat_marks, summary_db):
     """Рассылки ночи с подменой БД, NHL и скачивания: бот (``fake_bot``, запросы — в
     ``api``), журнал скачиваний и проверок клипов, кэш клипов ``clips``
     (``goal_clip_store``), отметки (чат, матч) — ``sent`` (как в БД) и ``marked`` (по
@@ -1003,7 +1025,8 @@ def upcoming_env(push_job, monkeypatch):
         env.days.append(day)
         return SLATE
 
-    def preview(game_id, away, home):
+    def preview(game_id, away, home, collapsed):
+        assert collapsed, "в рассылке таблица превью свёрнута"
         env.previews.append((away, home))
         return f"PREVIEW {away} @ {home}", "Сезон 2026/27"
 

@@ -20,12 +20,12 @@ CREATE OR REPLACE FUNCTION get_goals_game (now_game_id int)
 AS $$
 BEGIN
     RETURN QUERY SELECT
-               gs.lastname as scorer,
+               player_display_name(gs.name, gs.lastname, gs.season_id) as scorer,
                gs.position as scorer_position,
                gs.nationality as scorer_nationality,
-	           a1.lastname as assist_1,
+	           player_display_name(a1.name, a1.lastname, a1.season_id) as assist_1,
 	           a1.nationality as assist_1_nationality,
-	           a2.lastname as assist_2,
+	           player_display_name(a2.name, a2.lastname, a2.season_id) as assist_2,
 	           a2.nationality as assist_2_nationality,
 	           g.period,
 	           g.time as goal_time,

@@ -343,7 +343,7 @@ async def test_game_card_renders_full_card(
     assert len(cursor.executed) == 6
     # Формы до матча в итоге матча нет (Задача 84) — голы сразу под периодами.
     assert (
-        "<p>🏒 <b>NYR 3:2 BOS</b><br><i>Периоды: 1:0, 1:1, 1:1</i></p><p>&nbsp;</p>"
+        "<h4>🏒 NYR 3:2 BOS</h4><p><i>Периоды: 1:0, 1:1, 1:1</i></p><p>&nbsp;</p>"
         "<p><b>1-й период</b><br>"
     ) in text
     assert "Форма" not in text
@@ -508,7 +508,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     )
 
     card = api.sent_rich[-1]
-    assert "<b>TOR 1:0 MTL</b>" in body(card)
+    assert "<h4>🏒 TOR 1:0 MTL</h4>" in body(card)
     assert rich_html(
         "<b>1-й период</b>\n12:00 · 1:0 — Matthews [C] (ПШ)\nNylander\n"
     ) in body(card)
@@ -787,7 +787,7 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     (sent,) = api.sent_rich
     assert api.sent_messages == []
     text = body(sent)
-    assert "<b>TOR 1:3 NYR</b>" in text
+    assert "<h4>🏒 TOR 1:3 NYR</h4>" in text
     assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 

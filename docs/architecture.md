@@ -165,7 +165,8 @@ NHL_bot/
 │       ├── get_game_stats.sql
 │       ├── get_goals_game.sql
 │       ├── get_goalies_game.sql
-│       └── get_three_stars_game.sql
+│       ├── get_three_stars_game.sql
+│       └── player_display_name.sql  # фамилия с инициалом у однофамильцев сезона
 │
 ├── modeling/                            # ML-пайплайн: датасет-билдер + обучение + инференс (см. docs/modeling_dataset_builder.md, docs/modeling_training.md)
 │   ├── cli.py                           # `python -m modeling.cli build-dataset|train|evaluate-goals|evaluate-xg|promote|predict|publish-predictions`

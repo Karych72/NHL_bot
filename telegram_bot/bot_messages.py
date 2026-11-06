@@ -229,9 +229,9 @@ _STRIPED_MIN_ROWS = 10
 _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
 
-# Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица, свёрнутый блок,
-# список, подвал — каждый собран своим хелпером в одну строку.
-_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer")
+# Строки-блоки, которые `rich_message()` не вкладывает в абзац: заголовок карточки, таблица,
+# свёрнутый блок, список, подвал — каждый собран своим хелпером в одну строку.
+_BLOCK_TAGS = ("<h4", "<table", "<details", "<ul", "<footer")
 
 
 def _rich_html(text: str) -> str:
@@ -244,7 +244,7 @@ def _rich_html(text: str) -> str:
         nonlocal gap
         if not paragraph:
             return
-        if gap and blocks and blocks[-1].startswith("<p>"):
+        if gap and blocks and blocks[-1].startswith(("<p>", "<h4")):
             blocks.append(_PARAGRAPH_GAP)
         blocks.append("<p>" + "<br>".join(paragraph) + "</p>")
         paragraph.clear()
@@ -457,12 +457,14 @@ def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
 
 
 def _score_line(header: Dict[str, str]) -> str:
-    """HTML-строка счёта «🏒 <b>Хозяева 4:2 Гости</b> (OT)» из `_game_score_header`:
-    первая строка карточки матча и шапка сообщения подписки на страну."""
+    """HTML-строка счёта «<h4>🏒 Хозяева 4:2 Гости (OT)</h4>» из `_game_score_header`:
+    первая строка карточки матча и шапка сообщения подписки на страну. Заголовок, а не
+    `<b>`: среди сообщений рассылки шапка матча должна выделяться (исключение из правила 1
+    стиля, `docs/telegram_bot.md`)."""
     return (
-        f"🏒 <b>{html.escape(header['home'])} {html.escape(header['home_score'])}:"
-        f"{html.escape(header['away_score'])} {html.escape(header['away'])}</b>"
-        f"{html.escape(header['extra'])}"
+        f"<h4>🏒 {html.escape(header['home'])} {html.escape(header['home_score'])}:"
+        f"{html.escape(header['away_score'])} {html.escape(header['away'])}"
+        f"{html.escape(header['extra'])}</h4>"
     )
 
 
@@ -975,21 +977,31 @@ def _matchup_compare_table(
     rh: Dict[str, Union[int, float, None]],
 ) -> str:
     """Таблица превью матча (`_table`) в три колонки «метрика · гости · хозяева» с
-    полными названиями в шапке (коды — для поиска `team_id`) — очки, баланс, форма
-    и серия, личные встречи (если были), метрики сезона. Лучшее из двух значений
-    метрики — жирным (у пропущенных голов — меньшее); баланс, форма и серия и равные
-    значения — без выделения.
+    полными названиями в шапке (коды — для поиска `team_id`) — места в дивизионе и
+    конференции, очки, баланс, форма и серия, личные встречи (если были), метрики сезона.
+    Лучшее из двух значений метрики — жирным (у пропущенных голов — меньшее); места,
+    баланс, форма и серия и равные значения — без выделения: номера мест команд из разных
+    групп не сравниваются.
     """
     def diff(r: Dict[str, Union[int, float, None]]) -> Optional[float]:
         gf, ga = r["goals_per_game"], r["goals_against_per_game"]
         return None if gf is None or ga is None else round(float(gf) - float(ga), 2)
+
+    def places(team_id: Optional[int]) -> Tuple[str, str]:
+        if team_id is None:
+            return "—", "—"
+        _, division, conference, _ = _team_places(team_id, _league_standing_rows())
+        return f"{division}-е", f"{conference}-е"
 
     tid_a = _team_id_for_abbrev(away_abbr)
     tid_h = _team_id_for_abbrev(home_abbr)
     tids = (tid_a, tid_h)
     form = [_last_n_form_record(t, 5) if t is not None else "—" for t in tids]
     streak = [_current_streak(t) if t is not None else "—" for t in tids]
+    place_a, place_h = places(tid_a), places(tid_h)
     pairs: List[Tuple[str, str, str]] = [
+        ("Место в дивизионе", place_a[0], place_h[0]),
+        ("Место в конференции", place_a[1], place_h[1]),
         ("Очки", _format_leader_value(ra["points"]), _format_leader_value(rh["points"])),
         ("% очков", _fmt_pct_points(ra["procent_points"]), _fmt_pct_points(rh["procent_points"])),
         (
@@ -1047,11 +1059,15 @@ def _matchup_compare_table(
     return _table(rows, "lrr", bold=bold)
 
 
-def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tuple[str, str]:
+def matchup_season_preview(
+    game_id: int, away_abbr: str, home_abbr: str, collapsed: bool = False
+) -> Tuple[str, str]:
     """
     Сезонное сравнение по teams.abbreviation (= abbrev из NHL API); команды в тексте —
     полным названием `teams.name`. У матча плей-офф под заголовком — пометка раунда
-    (`playoff_label` по `game_id`); сравнение и тогда по регулярке.
+    (`playoff_label` по `game_id`); сравнение и тогда по регулярке. `collapsed` — таблица
+    в свёрнутом блоке (`rich_details`): рассылка шлёт превью без запроса, а `/tonight`
+    открывает его нажатием, и там таблица развёрнута.
 
     Возвращает: (тело — построчный HTML для `rich_message()`, метрики — таблица
     `_table`; строки подвала для `rich_footer()` — сезон). Подвал отдельно:
@@ -1142,7 +1158,8 @@ def matchup_season_preview(game_id: int, away_abbr: str, home_abbr: str) -> Tupl
         parts.append(_one_line_team_html(esc_a, ra))
         parts.append(_one_line_team_html(esc_h, rh))
     else:
-        parts.append(_matchup_compare_table(a, h, names[a], names[h], ra, rh))
+        table = _matchup_compare_table(a, h, names[a], names[h], ra, rh)
+        parts.append(rich_details("Сравнение команд", table) if collapsed else table)
     return "\n".join(parts), footer
 
 
@@ -1674,6 +1691,28 @@ _TEAM_PROFILE_STATS_COLUMNS = [
 ]
 
 
+def _league_standing_rows() -> List[Dict[str, Any]]:
+    """Строки `teams_stats ⋈ teams` всей лиги за регулярку текущего сезона — источник мест
+    команды (`_team_places`, `_league_place`) в профиле и превью матча."""
+    league = cached_fetch_all(
+        "SELECT ts.team_id, t.name, t.short_name, t.division_name, t.conference_name, "
+        "ts.games_played, ts.wins, ts.losses, ts.ot, ts.points, ts.procent_points, "
+        "ts.goals_per_game, ts.goals_against_per_game, ts.shots_per_game, "
+        "ts.shots_allowed, ts.power_play_percentage, ts.penalty_kill_percentage, "
+        "ts.face_off_win_percentage, ts.power_play_goals, ts.power_play_opportunities, "
+        "ts.power_play_goals_against "
+        "FROM teams_stats ts "
+        "JOIN teams t ON t.team_id = ts.team_id AND t.season_id = ts.season_id "
+        "WHERE ts.season_id = %s AND ts.game_type = 2",
+        (config.SEASON_ID,),
+        columns=_TEAM_PROFILE_STATS_COLUMNS,
+    )
+    return [
+        {col: league[col][i] for col in _TEAM_PROFILE_STATS_COLUMNS}
+        for i in range(league["count_rows"])
+    ]
+
+
 def _team_places(
     team_id: int, rows: List[Dict[str, Any]]
 ) -> Tuple[Dict[str, Any], int, int, int]:
@@ -1725,23 +1764,7 @@ def _team_season_context(a: str, ranked: bool) -> Union[str, Tuple[int, Dict[str
     if team_id is None:
         return f"<b>{html.escape(a)}</b>\nКоманда не найдена в базе для этого сезона.\n{_team_footer()}"
 
-    league = cached_fetch_all(
-        "SELECT ts.team_id, t.name, t.short_name, t.division_name, t.conference_name, "
-        "ts.games_played, ts.wins, ts.losses, ts.ot, ts.points, ts.procent_points, "
-        "ts.goals_per_game, ts.goals_against_per_game, ts.shots_per_game, "
-        "ts.shots_allowed, ts.power_play_percentage, ts.penalty_kill_percentage, "
-        "ts.face_off_win_percentage, ts.power_play_goals, ts.power_play_opportunities, "
-        "ts.power_play_goals_against "
-        "FROM teams_stats ts "
-        "JOIN teams t ON t.team_id = ts.team_id AND t.season_id = ts.season_id "
-        "WHERE ts.season_id = %s AND ts.game_type = 2",
-        (config.SEASON_ID,),
-        columns=_TEAM_PROFILE_STATS_COLUMNS,
-    )
-    rows = [
-        {col: league[col][i] for col in _TEAM_PROFILE_STATS_COLUMNS}
-        for i in range(league["count_rows"])
-    ]
+    rows = _league_standing_rows()
     if not any(r["team_id"] == team_id for r in rows):
         return (
             f"<b>{html.escape(a)}</b>\n"
@@ -2246,7 +2269,8 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
     статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
     затем вратари. Матча, где никто из страны не играл, в словаре нет."""
     skaters = fetch_all(
-        "SELECT s.game_id, r.lastname, t.name, r.position, s.goals, s.assists, s.shots, "
+        "SELECT s.game_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
+        "r.position, s.goals, s.assists, s.shots, "
         "s.plus_minus, s.hits, s.blocked, s.face_off_wins, s.face_off_taken, s.time_on_ice "
         + _COUNTRY_PLAYERS_FROM.format(stats="game_player_stats", scope=scope)
         + "r.position <> 'G' AND s.time_on_ice IS NOT NULL AND s.time_on_ice <> '00:00' "
@@ -2257,7 +2281,8 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
                  "plus_minus", "hits", "blocked", "fo_wins", "fo_taken", "toi"],
     )
     goalies = fetch_all(
-        "SELECT s.game_id, r.lastname, t.name, s.saves, s.shots, s.save_percentage, "
+        "SELECT s.game_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
+        "s.saves, s.shots, s.save_percentage, "
         "s.timeonice "
         + _COUNTRY_PLAYERS_FROM.format(stats="game_goalie_stats", scope=scope)
         + "s.timeonice IS NOT NULL AND s.timeonice <> '00:00' ORDER BY r.lastname",
