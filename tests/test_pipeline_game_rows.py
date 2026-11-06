@@ -130,6 +130,17 @@ class GameRowsTest(LoaderApiTestCase):
                     payload["gameState"] = state
                     self.assertEqual(self._build(**{payload_name: payload}), ([],) * 7)
 
+    def test_boxscore_without_skaters_of_one_side_produces_no_rows(self):
+        """Both sides or none: a game written without the skaters of one team has no
+        country block for its players, so the next run must load the whole game."""
+        box = load_fixture("nhl_game_boxscore.json")
+        for side in ("homeTeam", "awayTeam"):
+            with self.subTest(side=side):
+                shutil.rmtree(loader.RAW_CACHE_DIR / str(SEASON_ID), ignore_errors=True)
+                stats = dict(box["playerByGameStats"])
+                stats[side] = {**stats[side], "forwards": [], "defense": []}
+                self.assertEqual(self._build(box={**box, "playerByGameStats": stats}), ([],) * 7)
+
     def test_is_shootouts_true_for_a_game_actually_decided_in_the_shootout(self):
         pbp = dict(load_fixture("nhl_game_play_by_play.json"))
         pbp["gameOutcome"] = {"lastPeriodType": "SO"}
@@ -632,9 +643,8 @@ class GameJsonCacheTest(LoaderApiTestCase):
                 self.assertEqual(len(calls), 2)  # not cached: network hit both times
                 self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
 
-    def test_boxscore_without_skaters_is_not_cached_and_game_is_skipped(self):
-        """Game 2026020244: OFF boxscore with goalies but no skaters. No rows at
-        all, so the next run loads the whole game, and nothing is cached."""
+    def test_boxscore_without_skaters_is_not_cached(self):
+        """Game 2026020244: OFF boxscore with goalies but no skaters is not kept."""
         box = load_fixture("nhl_game_boxscore.json")
         empty = {
             **box,

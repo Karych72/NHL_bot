@@ -918,36 +918,78 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertIsNone(self.messages.country_game_block("XXX", self.GAME))
 
     def test_namesakes_of_the_season_get_first_name_initial(self):
-        """Однофамильцы сезона различаются инициалом — и в блоке страны, и в SQL карточки;
-        однофамилец из другого сезона не считается, без совпадения — одна фамилия."""
+        """Однофамильцы сезона различаются инициалом на всех экранах матча: авторы и
+        ассистенты, вратари, звёзды, блок страны. Однофамилец из другого сезона не считается."""
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO rosters (player_id, season_id, name, lastname) VALUES "
-                "(-20, %s, 'Aliaksei Protas', 'Протас'), (-21, %s, 'Ilya Protas', 'Протас'), "
-                "(-22, %s, 'Alone Solo', 'Соло'), (-23, %s, 'Other Solo', 'Соло')",
-                (self.SEASON, self.SEASON, self.SEASON, self.SEASON - 10001),
+                "UPDATE rosters SET name = 'Sasha Скорер' WHERE player_id = -1 AND season_id = %s",
+                (self.SEASON,),
             )
             cur.execute(
-                "SELECT player_display_name(name, lastname, season_id) FROM rosters "
-                "WHERE player_id IN (-20, -21, -22) ORDER BY player_id DESC"
+                "UPDATE rosters SET name = 'Gena Стенка' WHERE player_id = -4 AND season_id = %s",
+                (self.SEASON,),
             )
-            names = [row[0] for row in cur.fetchall()]
-            cur.execute("DELETE FROM rosters WHERE player_id IN (-20, -21, -22, -23)")
-        self.assertEqual(names, ["A. Протас", "I. Протас", "Соло"])
+            cur.execute(
+                "INSERT INTO rosters (player_id, season_id, name, lastname) VALUES "
+                "(-20, %s, 'Other Скорер', 'Скорер<'), (-21, %s, 'Other Стенка', 'Стенка'), "
+                "(-22, %s, 'Past Тень', 'Тень')",
+                (self.SEASON, self.SEASON, self.SEASON - 10001),
+            )
+            cur.execute(
+                "UPDATE all_goals SET assist_player1_id = -1, assist_player2_id = -1 "
+                "WHERE game_id = %s AND event_id = 5", (self.GAME,),
+            )
+            cur.execute(
+                "INSERT INTO game_three_stars (game_id, star, player_id, team_id) "
+                "VALUES (%s, 1, -1, %s)", (self.GAME, self.TEAM),
+            )
+            self.addCleanup(self._delete_namesake_rows)
+            cur.execute(
+                "SELECT scorer, assist_1, assist_2 FROM get_goals_game(%s) "
+                "WHERE goal_event_id = 5", (self.GAME,),
+            )
+            goal = cur.fetchone()
+            cur.execute("SELECT lastname FROM get_goalies_game(%s)", (self.GAME,))
+            goalies = {row[0] for row in cur.fetchall()}
+            cur.execute("SELECT lastname FROM get_three_stars_game(%s)", (self.GAME,))
+            star = cur.fetchone()[0]
+            cur.execute(
+                "SELECT player_display_name(name, lastname, season_id) FROM rosters "
+                "WHERE player_id = -2 AND season_id = %s", (self.SEASON,),
+            )
+            alone = cur.fetchone()[0]
+        self.assertEqual(goal, ("S. Скорер<",) * 3)
+        self.assertIn("G. Стенка", goalies)
+        self.assertEqual(star, "S. Скорер<")
+        self.assertEqual(alone, "Тень")
+        block = self.messages.country_game_block("ZZZ", self.GAME)
+        self.assertIn("S. Скорер&lt; (Home Club, ц)", block)
+        self.assertIn("G. Стенка (Home Club)", block)
+
+    def _delete_namesake_rows(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM game_three_stars WHERE game_id = %s", (self.GAME,))
+            cur.execute("DELETE FROM rosters WHERE player_id = -22")
 
     def test_loader_finds_games_of_the_season_without_skaters(self):
-        """Задача 117: матч без `game_player_stats` — в списке на дозагрузку, матч со
-        статистикой — нет; поиск идёт только по сезону загрузчика."""
+        """Задача 117: матч без полевых обеих команд — в списке на дозагрузку, матч с
+        обеими — нет; поиск идёт только по сезону загрузчика."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
         self.addCleanup(sys.path.pop, 0)
         import load_season_modern
 
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM game_player_stats WHERE game_id = %s", (self.GAME2,))
+            cur.execute(
+                "INSERT INTO game_player_stats (player_id, team_id, game_id, time_on_ice) "
+                "VALUES (-8, %s, %s, '10:00')", (self.OPPONENT, self.GAME),
+            )
         loader = load_season_modern.ModernNhlLoader()
 
         loader.season_id = self.SEASON
-        self.assertEqual(loader.missing_skater_game_ids(), [self.GAME2])
+        self.assertEqual(loader.missing_skater_game_ids(), [self.GAME2], "полевые одной команды")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM game_player_stats WHERE game_id = %s", (self.GAME2,))
+        self.assertEqual(loader.missing_skater_game_ids(), [self.GAME2], "полевых нет совсем")
         loader.season_id = self.SEASON + 1
         self.assertEqual(loader.missing_skater_game_ids(), [])
 
@@ -2272,12 +2314,14 @@ class TestNhlLoadedData(unittest.TestCase):
             cls.conn.close()
 
     def test_every_game_has_skater_stats(self):
-        """Матч без `game_player_stats` — без блока страны и видео голов (Задача 117);
-        загрузчик дозагружает такие матчи сам, держаться они не должны."""
+        """Матч без полевых обеих команд — без блока страны и видео голов (Задача 117);
+        загрузчик дозагружает такие матчи текущего сезона сам, держаться они не должны."""
         with self.conn.cursor() as cur:
             cur.execute(
-                "SELECT g.game_id FROM games g WHERE NOT EXISTS "
-                "(SELECT 1 FROM game_player_stats s WHERE s.game_id = g.game_id) ORDER BY 1"
+                "SELECT g.game_id FROM games g WHERE g.season_id = %s AND "
+                "(SELECT count(DISTINCT s.team_id) FROM game_player_stats s "
+                "WHERE s.game_id = g.game_id) < 2 ORDER BY 1",
+                (config.SEASON_ID,),
             )
             missing = [row[0] for row in cur.fetchall()]
         self.assertEqual(missing, [])

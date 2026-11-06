@@ -244,7 +244,7 @@ def _rich_html(text: str) -> str:
         nonlocal gap
         if not paragraph:
             return
-        if gap and blocks and blocks[-1].startswith("<p>"):
+        if gap and blocks and blocks[-1].startswith(("<p>", "<h4")):
             blocks.append(_PARAGRAPH_GAP)
         blocks.append("<p>" + "<br>".join(paragraph) + "</p>")
         paragraph.clear()

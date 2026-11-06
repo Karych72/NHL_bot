@@ -215,9 +215,9 @@ async def test_morning_digest_at_the_deadline_takes_unsent_games_of_subscription
     ), patch.object(push_job, "mark_digest_night_sent"):
         await push_job.run_morning_digest_broadcast(fake_bot, NIGHT, True, {111: {2026020001: "subs"}})
 
-    [digest] = api.sent_rich
-    assert "1. BOS 1:0 TOR" in digest.rich_message.html
-    assert digest.rich_message.html.endswith("</footer>")
+    [card] = api.sent_rich
+    assert card.rich_message.html.startswith(rich_html("<b>BOS 3 : 2 TOR</b>")), "подписка — полная карточка"
+    assert card.rich_message.html.endswith("</footer>")
 
 
 # ---------------------------------------------------------------------------

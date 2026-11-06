@@ -272,6 +272,14 @@ def test_game_message_marks_playoff_round_under_score_line(bot_module):
     assert score_line == f"{first}\n{second}"
 
 
+def test_rich_message_keeps_gap_after_score_heading(bot_module):
+    """Шапка `<h4>` и блок страны под ней разделены тем же зазором, что и абзацы."""
+    rich_message = bot_module("bot_messages").rich_message
+
+    assert rich_message("<h4>Счёт</h4>\n\nРоссия").html == "<h4>Счёт</h4><p>&nbsp;</p><p>Россия</p>"
+    assert rich_message("<h4>Счёт</h4>\nПериоды").html == "<h4>Счёт</h4><p>Периоды</p>"
+
+
 def test_game_message_has_no_playoff_mark_for_regular_game(game_message_text):
     text, _ = game_message_text
     assert "Плей-офф" not in text

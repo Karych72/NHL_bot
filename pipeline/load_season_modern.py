@@ -185,7 +185,8 @@ def payload_complete(endpoint: str, payload: dict) -> bool:
     if endpoint != "boxscore":
         return True
     stats = payload.get("playerByGameStats") or {}
-    return any(side.get("forwards") or side.get("defense") for side in stats.values())
+    sides = [stats.get(side) or {} for side in ("homeTeam", "awayTeam")]
+    return all(side.get("forwards") or side.get("defense") for side in sides)
 
 
 def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
@@ -924,7 +925,7 @@ class ModernNhlLoader:
         )
 
     def missing_skater_game_ids(self) -> List[int]:
-        """Games of the season in ``games`` with no ``game_player_stats`` rows.
+        """Games of the season in ``games`` without ``game_player_stats`` of both teams.
 
         Why: such a game has no country block and no goal clips, and it falls out
         of the sync date window, so without this nothing ever reloads it.
@@ -933,9 +934,9 @@ class ModernNhlLoader:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT g.game_id FROM games g WHERE g.season_id = %s AND NOT EXISTS "
-                    "(SELECT 1 FROM game_player_stats s WHERE s.game_id = g.game_id) "
-                    "ORDER BY g.game_id",
+                    "SELECT g.game_id FROM games g WHERE g.season_id = %s AND "
+                    "(SELECT count(DISTINCT s.team_id) FROM game_player_stats s "
+                    "WHERE s.game_id = g.game_id) < 2 ORDER BY g.game_id",
                     (self.season_id,),
                 )
                 return [row[0] for row in cur.fetchall()]
@@ -1109,7 +1110,8 @@ class ModernNhlLoader:
         (the Stats REST list can flip to "finished" before gamecenter does) or
         whose boxscore has no skaters (``payload_complete``) is skipped with a warning: it produces no rows at all, so ``run()``
         neither writes a half-final game nor deletes an earlier version of it,
-        and the next sync run picks it up.
+        and the next sync run picks it up while the game is in its date window; a
+        game never written is not in ``games``, so ``games_to_load`` cannot return it.
 
         Args:
             games_meta: finished-game summaries as returned by
@@ -1136,14 +1138,16 @@ class ModernNhlLoader:
             box = self.fetch_game_json(game_id, "boxscore")
             landing = self.fetch_game_json(game_id, "landing")
             states = {p.get("gameState") for p in (pbp, box, landing)}
-            if states != {FINAL_GAME_STATE} or not payload_complete("boxscore", box):
+            if states != {FINAL_GAME_STATE}:
                 logger.warning(
-                    "Game %s: gamecenter gameState %s or boxscore without skaters, "
-                    "not %s yet; skipped until next run",
+                    "Game %s: gamecenter gameState %s, not %s yet; skipped until next run",
                     game_id,
                     sorted(map(str, states)),
                     FINAL_GAME_STATE,
                 )
+                continue
+            if not payload_complete("boxscore", box):
+                logger.warning("Game %s: boxscore without skaters; skipped until next run", game_id)
                 continue
 
             period_desc = pbp.get("periodDescriptor") or {}
