@@ -405,6 +405,25 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
         self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"]))
 
+    def test_channel_post_marks(self):
+        """Задача 118: отметка поста в канал — по паре (матч, вид), повторная — no-op; превью
+        матча итогом не считается, отметки чатов канал не трогает."""
+        repo = self.repo
+        game, other_game = 2099990001, 2099990002
+
+        def delete_marks():
+            with closing(_connect()) as conn, conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM bot_channel_posts WHERE game_id IN (%s, %s)", (game, other_game))
+
+        delete_marks()
+        self.addCleanup(delete_marks)
+        repo.mark_channel_posted(game, "preview")
+        repo.mark_channel_posted(game, "preview")
+        repo.mark_channel_posted(other_game, "result")
+        self.assertEqual(repo.channel_posted([game, other_game], "preview"), {game})
+        self.assertEqual(repo.channel_posted([game, other_game], "result"), {other_game})
+        self.assertEqual(repo.chat_games_sent([game, other_game]), set())
+
     def _events(self, chat_id=CHAT):
         """История подписок чата (Задача 99) по порядку: (kind, team_id, country, active)."""
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
@@ -2174,7 +2193,7 @@ class TestAiReaderRole(unittest.TestCase):
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
                       "premium_access", "premium_payments", "prediction_log", "game_predictions", "schema_migrations",
-                      "bot_actions", "bot_subscription_events", "bot_schedules"):
+                      "bot_actions", "bot_subscription_events", "bot_schedules", "bot_channel_posts"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):

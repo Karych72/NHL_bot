@@ -2391,7 +2391,8 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
 def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
     """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
     (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
-    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`)."""
+    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`) и итогам
+    канала (`run_channel_results`, Задача 118)."""
     return sorted(_country_blocks(code, "g.day", night).items())
 
 
@@ -2405,8 +2406,9 @@ def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
     """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
     порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
     в плей-офф 5+ — овертаймы) пропускаются.
-    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) ждёт клипов всех голов
-    матча, а в альбом подписчику страны берёт голы её игроков."""
+    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) и итоги канала
+    (`run_channel_results`) ждут клипов всех голов матча, а в альбом подписчику страны
+    рассылка берёт голы её игроков."""
     goals = fetch_all(
         "SELECT a.game_id, a.event_id, r.nationality "
         "FROM all_goals a "

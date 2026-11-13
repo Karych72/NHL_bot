@@ -30,7 +30,7 @@ from aiogram.exceptions import (
 )
 from aiogram.methods import EditMessageText, SendMediaGroup, SendMessage, SendRichMessage, SendVideo
 
-from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
+from tests._telegram_fakes import BOT_USERNAME, FAKE_TOKEN, body, rich_html
 
 # Один «настоящий» матч дня: рассылка шлёт сводку с кнопкой карточки (``summary_db``),
 # с подсказкой «Ещё: …» в подвале; сам текст карточки в сообщение не попадает.
@@ -1185,22 +1185,36 @@ async def test_game_failure_does_not_stop_digest_and_upcoming_and_still_fails_th
     async def upcoming(bot, now):
         calls.append(("upcoming", now))
 
+    async def channel_results(bot, night, final):
+        calls.append(("channel results", night, final))
+        raise RuntimeError("bot is not a channel admin")
+
+    async def channel_previews(bot, now):
+        calls.append(("channel previews", now))
+
     started = _msk(11, 0)
     with patch.object(push_job, "subscribed_games", return_value={}), patch.object(
         push_job, "run_game_broadcast", games
     ), patch.object(push_job, "run_morning_digest_broadcast", digest), patch.object(
         push_job, "run_upcoming_broadcast", upcoming
+    ), patch.object(push_job, "run_channel_results", channel_results), patch.object(
+        push_job, "run_channel_previews", channel_previews
     ):
         with pytest.raises(RuntimeError, match="ffmpeg"):
             await push_job.broadcast_if_due(fake_bot, started)
 
     assert calls[:2] == ["games", "digest"]
     assert calls[2][0] == "upcoming" and calls[2][1] > started
+    # Канал (Задача 118) — после чатов, итоги ночи на крайнем сроке, затем превью; его сбой
+    # не срывает превью канала.
+    assert calls[3] == ("channel results", NIGHT, True)
+    assert calls[4][0] == "channel previews" and calls[4][1] > started
 
 
 @pytest.mark.asyncio
 async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypatch, set_required_bot_env):
-    """Дневной слот (``--upcoming-only``): только превью, ночь и NHL API о ней не трогаются."""
+    """Дневной слот (``--upcoming-only``): только превью — подписчикам и в канал (Задача 118),
+    ночь и NHL API о ней не трогаются; сбой превью подписчикам не срывает канал."""
     config = bot_module("config")
     set_required_bot_env()
     monkeypatch.setattr(config, "TOKEN", FAKE_TOKEN)
@@ -1213,14 +1227,162 @@ async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypa
     calls = []
 
     async def upcoming(bot, now):
-        calls.append(bot.token)
+        calls.append(("upcoming", bot.token))
+        raise RuntimeError("NHL API")
+
+    async def channel_previews(bot, now):
+        calls.append(("channel previews", bot.token))
 
     async def night(*args):
         raise AssertionError("ночь днём не рассылается")
 
     monkeypatch.setattr(push_job, "run_upcoming_broadcast", upcoming)
+    monkeypatch.setattr(push_job, "run_channel_previews", channel_previews)
     monkeypatch.setattr(push_job, "broadcast_if_due", night)
 
-    await push_job.main(True)
+    with pytest.raises(RuntimeError, match="NHL API"):
+        await push_job.main(True)
 
-    assert calls == [FAKE_TOKEN]
+    assert calls == [("upcoming", FAKE_TOKEN), ("channel previews", FAKE_TOKEN)]
+
+
+# ---------------------------------------------------------------------------
+# Канал (Задача 118): превью без прогноза и итоги матчей с игроками России и Беларуси
+# ---------------------------------------------------------------------------
+
+# Id канала строкой, как его читает `config` из `.env` (@username Telegram принимает так же).
+CHANNEL = "-1001234567890"
+CHANNEL_FOOTER_LINE = f"Вся статистика NHL — в боте @{BOT_USERNAME}"
+
+
+def _team_stats(abbr, name, wins):
+    """Строка ``teams_stats ts`` превью: сезон команды из 10 игр."""
+    return (abbr, name, 10, wins, 10 - wins, 0, 2 * wins, 10.0 * wins, 3.0, 2.5, 20.0, 80.0, 30.0, 50.0)
+
+
+@pytest.fixture
+def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
+    """Канал ``CHANNEL`` без паузы между постами: отметки (game_id, вид) — в ``posted``;
+    NHL ``score`` — ``SLATE``; БД превью и блоков стран — ``fake_db_router``: у любой пары
+    команд есть сезон, ``players`` — {страна: строки ``game_player_stats``}. Превью и блоки
+    стран собираются настоящими сборщиками; запрос прогноза упал бы — маршрута у него нет."""
+    config = bot_module("config")
+    monkeypatch.setattr(config, "CHANNEL_ID", CHANNEL)
+    monkeypatch.setattr(push_job, "_CHANNEL_POST_INTERVAL_SEC", 0)
+    env = SimpleNamespace(posted=set(), players={}, scores=0)
+
+    def fetch(day):
+        env.scores += 1
+        return SLATE
+
+    monkeypatch.setattr(push_job, "fetch_score", fetch)
+    monkeypatch.setattr(
+        push_job, "channel_posted", lambda game_ids, kind: {g for g, k in env.posted if k == kind and g in game_ids}
+    )
+    monkeypatch.setattr(push_job, "mark_channel_posted", lambda game_id, kind: env.posted.add((game_id, kind)))
+    fake_db_router([
+        ("teams_stats ts", lambda params: [_team_stats(abbr, f"{abbr} Club", 6) for abbr in params[1]]),
+        ("team_id FROM teams", []),
+        ("game_player_stats", lambda params: env.players.get(params[1], [])),
+        ("game_goalie_stats", []),
+    ])
+    return env
+
+
+@pytest.mark.asyncio
+async def test_channel_previews_every_upcoming_game_once_without_prediction(push_job, channel_env, fake_bot, api):
+    """С 15:30 МСК все предстоящие матчи дня — сразу, по посту на матч по времени начала:
+    время, команды, сравнение свёрнуто; ни прогноза, ни тизера премиума, ни подписок, ни
+    кнопок — в подвале ссылка на бота. Повторный прогон ничего не дублирует."""
+    await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
+
+    posts = api.sent_rich
+    assert [p.chat_id for p in posts] == [CHANNEL] * 3
+    assert [p.rich_message.html.split("</b>")[0] for p in posts] == [
+        "<p>⏰ Начало в 02:00 МСК<br><b>BOS Club @ TOR Club",
+        "<p>⏰ Начало в 02:30 МСК<br><b>NYR Club @ MTL Club",
+        "<p>⏰ Начало в 05:00 МСК<br><b>VAN Club @ SEA Club",
+    ]
+    for post in posts:
+        html_ = post.rich_message.html
+        assert "<details>" in html_ and "Сравнение команд" in html_
+        assert "<footer>Сезон " in html_ and html_.endswith(f"<br>{CHANNEL_FOOTER_LINE}</footer>")
+        assert not re.search("модел|премиум|🔒|/subscriptions", html_)
+        assert post.reply_markup is None
+    assert channel_env.posted == {(GAME_A, "preview"), (GAME_B, "preview"), (2026020004, "preview")}
+
+
+@pytest.mark.asyncio
+async def test_channel_preview_failure_is_retried_and_does_not_block_other_games(
+    push_job, channel_env, fake_bot, api
+):
+    """Отказ Telegram на превью (бот не админ канала) не срывает остальные матчи, но прогон
+    красный; неудачное превью не отмечено — следующий прогон публикует только его."""
+    api.fail_next(SendRichMessage, TelegramBadRequest(method=_method(), message="need administrator rights"))
+    with pytest.raises(TelegramBadRequest):
+        await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    assert channel_env.posted == {(GAME_B, "preview"), (2026020004, "preview")}
+    assert len(api.sent_rich) == 2
+
+    await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
+    assert len(api.sent_rich) == 3 and "BOS Club @ TOR Club" in api.sent_rich[2].rich_message.html
+
+
+@pytest.mark.asyncio
+async def test_channel_without_channel_id_is_not_touched(push_job, channel_env, bot_module, monkeypatch, fake_bot, api):
+    """Пустой ``CHANNEL_ID`` — канал выключен на стенде: ни постов, ни NHL API, ни БД."""
+    monkeypatch.setattr(bot_module("config"), "CHANNEL_ID", None)
+    await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    await push_job.run_channel_results(fake_bot, NIGHT, True)
+    assert api.requests == [] and channel_env.scores == 0
+
+
+def _skater(game_id, lastname, team):
+    """Строка ``game_player_stats`` блока страны: нападающий с голом."""
+    return (game_id, lastname, team, "L", 1, 0, 3, 1, 2, 0, 0, 0, "17:05")
+
+
+@pytest.mark.asyncio
+async def test_channel_results_are_games_with_russians_or_belarusians_once(push_job, push_env, channel_env, fake_bot):
+    """Итог — только матч, где играли россияне или белорусы: свёрнутая карточка с клипами,
+    на виду блоки обеих стран и ссылка на бота, кнопок нет. Матч ждёт клипов всех голов, на
+    крайнем сроке уходит с тем, что есть; повторный прогон ничего не дублирует."""
+    channel_env.players = {
+        "RUS": [_skater(GAME_A, "Овечкин", "WSH")],
+        "BLR": [_skater(GAME_A, "Протас", "WSH")],
+    }
+    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN"), (GAME_B, 200, "CAN")]
+    push_env.unpublished = {(GAME_A, 101)}
+    await push_job.run_channel_results(fake_bot, NIGHT, False)
+    assert push_env.api.sent_rich == []
+
+    await push_job.run_channel_results(fake_bot, NIGHT, True)
+    await push_job.run_channel_results(fake_bot, NIGHT, True)
+
+    [post] = push_env.api.sent_rich
+    assert post.chat_id == CHANNEL and post.reply_markup is None
+    assert post.rich_message.html == rich_html(
+        f"CARD {GAME_A} clips=[100, 101] collapsed\n\n"
+        "<b>Россия</b>\n\nОвечкин (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05\n\n"
+        "<b>Беларусь</b>\n\nПротас (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05"
+    ) + f"<footer>{CHANNEL_FOOTER_LINE}</footer>"
+    assert channel_env.posted == {(GAME_A, "result")}
+
+
+@pytest.mark.asyncio
+async def test_channel_result_failure_is_marked_and_does_not_block_other_games(
+    push_job, push_env, channel_env, fake_bot
+):
+    """Карточка — отправка и правки: сбой может случиться, когда пост уже в канале, поэтому
+    итог отмечается после любой попытки и не повторяется (дубль хуже пропуска). Следующий
+    матч уходит, прогон красный."""
+    channel_env.players = {"RUS": [_skater(GAME_A, "Овечкин", "WSH"), _skater(GAME_B, "Кучеров", "TBL")]}
+    push_env.api.fail_next(SendRichMessage, TelegramBadRequest(method=_method(), message="message is too long"))
+    with pytest.raises(TelegramBadRequest):
+        await push_job.run_channel_results(fake_bot, NIGHT, True)
+    await push_job.run_channel_results(fake_bot, NIGHT, True)
+
+    [post] = push_env.api.sent_rich
+    assert post.rich_message.html.startswith(rich_html(f"CARD {GAME_B} clips=[] collapsed"))
+    assert channel_env.posted == {(GAME_A, "result"), (GAME_B, "result")}

@@ -159,3 +159,6 @@ PUSH_SEND_INTERVAL_SEC = _env_float("PUSH_SEND_INTERVAL_SEC", 0.05)
 # Чат владельца бота (Задача 119): рассылка шлёт ему каждый матч ночи и первым — его карточка
 # грузит клипы голов в кэш, остальным подписчикам они уходят по `file_id`. Пусто — никому.
 OWNER_CHAT_ID: Optional[int] = int(os.environ["OWNER_CHAT_ID"]) if os.getenv("OWNER_CHAT_ID", "").strip() else None
+# Канал, который ведёт рассылка (Задача 118): @username или числовой id `-100…`, у dev-бота —
+# тестовый. Пусто — канал на этом стенде не публикуется.
+CHANNEL_ID: Optional[str] = os.getenv("CHANNEL_ID", "").strip() or None
