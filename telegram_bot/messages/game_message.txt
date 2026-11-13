@@ -1,4 +1,3 @@
-<i>Периоды: {{ period_scores }}</i>
 {%- if hat_tricks %}
 {{ hat_tricks }}
 {%- endif %}

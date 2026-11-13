@@ -438,7 +438,7 @@ async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", c
         bot, chat_id: куда слать.
         game_id: матч.
         tail: построчный HTML после карточки — блоки стран, подвал.
-        collapsed: карточка под табло свёрнута (``game_message``).
+        collapsed: карточка под шапкой свёрнута (``game_message``).
     """
     events = game_goal_events(game_id)
     known: Dict[int, Tuple[str, str]] = {}
