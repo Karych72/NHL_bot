@@ -993,13 +993,12 @@ class TestCountryNightSql(unittest.TestCase):
         loader.season_id = self.SEASON + 1
         self.assertEqual(loader.missing_skater_game_ids(), [])
 
-    def test_card_starts_with_scoreboard_of_guests_and_hosts(self):
-        """Первая строка карточки — табло (Задача 119): гости слева, `get_game_stats` отдаёт
+    def test_card_starts_with_heading_of_guests_and_hosts(self):
+        """Первая строка карточки — шапка (Задача 119): гости слева, `get_game_stats` отдаёт
         аббревиатуру команды; команды без маскота — шайба."""
         self.assertEqual(
             self.messages.game_message(self.GAME).split("\n")[0],
-            '<table compact><tr><td>🏒 Away Club</td><td align="center"><b>2 : 3</b></td>'
-            '<td align="right">Home Club 🏒</td></tr></table>',
+            "<b><i>🏒 AWAY CLUB 🏒 2 : 3 🏒 HOME CLUB 🏒</i></b>",
         )
 
     def test_game_goal_events_in_game_order(self):

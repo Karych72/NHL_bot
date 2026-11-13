@@ -261,72 +261,65 @@ def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
 
 
 def test_game_message_marks_playoff_round_under_score_line(bot_module):
-    """Карточка матча плей-офф (Задача 106): табло — первой строкой (его видно в уведомлении),
-    пометка раунда — курсивом строкой ниже."""
+    """Карточка матча плей-офф (Задача 106): шапка со счётом — первой строкой (её видно в
+    уведомлении), пометка раунда — курсивом строкой ниже."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
         text = bot_messages.game_message(2025030123)
     first, second, _rest = text.split("\n", 2)
-    assert first.startswith("<table compact><tr><td>")
+    assert first.startswith("<b><i>🍁 ")
     assert second == "<i>Плей-офф, раунд 1, игра 3</i>"
 
 
-def test_game_message_scoreboard_puts_guests_left_with_mascots(game_message_text):
-    """Табло (проба 7a, Задача 119): гости и их маскот слева, счёт «гости : хозяева» по
-    центру, хозяева с маскотом справа; ни `<h4>`, ни пометки ОТ/Б в матче без овертайма."""
+def test_game_message_heading_is_bold_italic_caps_with_mascots_on_both_sides(game_message_text):
+    """Шапка (решение человека 2026-11-13): жирный курсив, названия капсом, маскот с обеих
+    сторон названия, гости слева, счёт «гости : хозяева»; ни таблицы, ни `<h4>`."""
     first, second, _rest = game_message_text.split("\n", 2)
     assert first == (
-        '<table compact><tr><td>🍁 TOR&lt;script&gt;alert(1)&lt;/script&gt;</td>'
-        '<td align="center"><b>0 : 3</b></td><td align="right">BOS 🐻</td></tr></table>'
+        "<b><i>🍁 TOR&lt;SCRIPT&gt;ALERT(1)&lt;/SCRIPT&gt; 🍁 0 : 3 🐻 BOS 🐻</i></b>"
     )
     assert second == "<i>Периоды: 0:2, 0:1, 0:0</i>"
-    assert "<h4" not in game_message_text
+    assert "<h4" not in game_message_text and "<table" not in game_message_text
 
 
-def test_score_line_marks_unknown_team_with_puck(bot_module):
-    """Команда без маскота в словаре — шайба 🏒, а не пустая ячейка."""
+def test_score_line_marks_overtime_and_unknown_team(bot_module):
+    """ОТ/Б — после счёта в шапке (кириллицей); команда без маскота — шайба 🏒."""
     bot_messages = bot_module("bot_messages")
-    header = {"away": "A", "home": "H", "away_abbr": "XXX", "home_abbr": "PIT",
-              "away_score": "1", "home_score": "2"}
-    assert bot_messages._score_line(header).startswith("<table compact><tr><td>🏒 A</td>")
-
-
-def test_card_heading_puts_overtime_and_playoff_marks_under_scoreboard(bot_module):
-    """Пометка ОТ/Б — строкой ниже табло, вместе с раундом плей-офф."""
-    bot_messages = bot_module("bot_messages")
-    header = {"away": "A", "home": "H", "away_abbr": "", "home_abbr": "",
-              "away_score": "1", "home_score": "2", "extra": " (Б)"}
-    heading = bot_messages._card_heading(header, 2025030123)
-    assert heading.split("\n")[1] == "<i>Б · Плей-офф, раунд 1, игра 3</i>"
+    header = {"away": "Buffalo Sabres", "home": "Chicago Blackhawks", "away_abbr": "BUF",
+              "home_abbr": "XXX", "away_score": "2", "home_score": "3", "extra": " (OT)"}
+    assert bot_messages._score_line(header) == (
+        "<b><i>⚔️ BUFFALO SABRES ⚔️ 2 : 3 (ОТ) 🏒 CHICAGO BLACKHAWKS 🏒</i></b>"
+    )
+    assert "(Б)" in bot_messages._score_line({**header, "extra": " (Б)"})
     assert "\n" not in bot_messages._card_heading({**header, "extra": ""}, 2025020123)
 
 
-def test_rich_message_keeps_gap_after_collapsed_block(bot_module):
-    """Свёрнутый блок (строка гола с клипом, свёрнутая карточка) отделён от следующего
-    абзаца тем же зазором, что и абзацы; после таблицы (и табло) зазора нет, видео —
-    отдельный блок, не абзац."""
+def test_rich_message_keeps_gap_after_collapsed_block_and_figure_is_a_block(bot_module):
+    """Свёрнутый блок отделён от следующего абзаца тем же зазором, что и абзацы; после
+    таблицы зазора нет; видео с подписью — отдельный блок, не абзац."""
     bm = bot_module("bot_messages")
-    clip = bm.rich_details("▶ 1:0 — X", '<video src="tg://video?id=goal1"></video>')
+    clip = '<figure><video src="tg://video?id=goal1"></video><figcaption>1:0 — X</figcaption></figure>'
+    block = bm.rich_details("Видео голов (1)", clip)
     table = "<table compact><tr><td>A</td></tr></table>"
 
-    assert bm.rich_message(f"{table}\nПериоды").html == f"{table}<p>Периоды</p>"
-    assert bm.rich_message(f"{clip}\n\nДалее").html == f"{clip}<p>&nbsp;</p><p>Далее</p>"
+    assert block == f"<details><summary>Видео голов (1)</summary>{clip}</details>"
+    assert bm.rich_message(f"{block}\n\nДалее").html == f"{block}<p>&nbsp;</p><p>Далее</p>"
     assert bm.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
-    assert clip.endswith('</summary><video src="tg://video?id=goal1"></video></details>')
 
 
-def test_game_message_collapsed_keeps_only_scoreboard_in_sight(bot_module):
-    """Подписка только на страну: под табло вся карточка — свёрнутый блок «Карточка матча»."""
+def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
+    """Подписка только на страну: под шапкой вся карточка — свёрнутый блок «Карточка матча»,
+    видео голов — вложенный свёрнутый блок в нём."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
         text = bot_messages.game_message(555, clips={10}, collapsed=True)
     first, rest = text.split("\n", 1)
-    assert first.startswith("<table compact><tr><td>")
+    assert first.startswith("<b><i>")
     assert rest.startswith("<details><summary>Карточка матча</summary><p><i>Периоды:")
     assert "\n" not in rest, "свёрнутая карточка — одна строка-блок"
-    assert '<details><summary>▶ 05:30 · 0:1' in rest
+    assert "<details><summary>Видео голов (1)</summary><figure>" in rest
 
 
 def test_game_goal_events_skips_goals_without_event(bot_module):
@@ -391,19 +384,23 @@ def test_game_message_groups_goals_by_period_and_skips_period_without_goals(
     game_message_text,
 ):
     """Голы фикстуры — в 1-м и 2-м периодах: заголовка 3-го нет, время внутри периода,
-    ассистенты — в скобках. Гол с клипом — свёрнутый блок с видео внутри (Задача 119), без
-    клипа — обычная строка; счёт — «гости:хозяева»."""
+    ассистенты — в скобках; голы — одним плотным абзацем, как звёзды. Клипы — под ним
+    одним свёрнутым блоком «Видео голов», у клипа подпись — период и строка гола
+    (Задача 119); гол без клипа — только в списке. Счёт — «гости:хозяева»."""
     text = game_message_text
     scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
     assert (
-        "<b>1-й период</b>\n"
-        f"<details><summary>▶ 05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)</summary>"
-        '<video src="tg://video?id=goal10"></video></details>\n'
+        "\n\n<b>1-й период</b>\n"
+        f"05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)\n"
         f"10:15 · 0:2 — {scorer} [C] (ББ)\n"
-        "\n"
         "<b>2-й период</b>\n"
-        f"<details><summary>▶ 02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</summary>"
-        '<video src="tg://video?id=goal12"></video></details>\n'
+        f"02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)\n"
+        "<details><summary>Видео голов (2)</summary>"
+        '<figure><video src="tg://video?id=goal10"></video>'
+        f"<figcaption>1-й период · 05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)</figcaption></figure>"
+        '<figure><video src="tg://video?id=goal12"></video>'
+        f"<figcaption>2-й период · 02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</figcaption></figure>"
+        "</details>\n\n"
     ) in text
     assert "3-й период" not in text
     assert "<pre>" not in text and "Форма" not in text
@@ -443,9 +440,9 @@ def _overtime_fetch_all(shootout: bool):
 @pytest.mark.parametrize(
     "shootout, expected_block, expected_mark",
     [
-        (False, "<b>Овертайм</b>\n03:12 · 1:2 — Boldy [C] (ПШ)", "<i>OT</i>"),
+        (False, "<b>Овертайм</b>\n03:12 · 1:2 — Boldy [C] (ПШ)", " (ОТ) "),
         # Время буллита (всегда 00:00) не выводится.
-        (True, "<b>Буллиты</b>\n1:2 — Boldy [C] (ПШ)", "<i>Б</i>"),
+        (True, "<b>Буллиты</b>\n1:2 — Boldy [C] (ПШ)", " (Б) "),
     ],
 )
 def test_game_message_titles_overtime_and_shootout_goal(
@@ -457,9 +454,9 @@ def test_game_message_titles_overtime_and_shootout_goal(
             patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
         text = bot_messages.game_message(555)
 
-    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
+    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n" + expected_block in text
     assert "2-й период" not in text
-    assert text.split("\n")[1] == expected_mark
+    assert expected_mark in text.split("\n")[0], "ОТ/Б — в шапке после счёта"
 
 
 def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):

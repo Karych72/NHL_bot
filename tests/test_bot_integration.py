@@ -354,33 +354,27 @@ async def test_game_card_renders_full_card(
     # Запросы карточки по разу, кэш клипов — по голу; подписки чата — ради блока страны
     # (Задача 76).
     assert len(cursor.executed) == 7 + 5
-    # Табло — гости слева (Задача 119); формы до матча в итоге матча нет (Задача 84) —
-    # голы сразу под периодами.
+    # Шапка — жирный курсив капсом, гости слева (Задача 119); формы до матча в итоге матча
+    # нет (Задача 84) — голы сразу под периодами.
     assert text.startswith(
-        '<table compact><tr><td>🐻 BOS</td><td align="center"><b>2 : 3</b></td>'
-        '<td align="right">NYR 🗽</td></tr></table>'
-        "<p><i>Периоды: 0:1, 1:1, 1:1</i></p><p>&nbsp;</p><p><b>1-й период</b></p>"
+        "<p><b><i>🐻 BOS 🐻 2 : 3 🗽 NYR 🗽</i></b><br><i>Периоды: 0:1, 1:1, 1:1</i></p>"
+        "<p>&nbsp;</p><p><b>1-й период</b><br>"
     )
     assert "<h4" not in text and "Форма" not in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
-    # Голы — обычным текстом по периодам, без <pre>: время внутри периода, счёт после
-    # гола «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
-    # передачах) капсом; победная шайба — «ПШ», а не «★». Гол с клипом в кэше — свёрнутый
-    # блок с видео, остальные — строкой.
+    # Голы — одним абзацем по периодам, без <pre>: время внутри периода, счёт после гола
+    # «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
+    # передачах) капсом; победная шайба — «ПШ», а не «★». Клип из кэша — под голами в
+    # свёрнутом блоке «Видео голов», с подписью-строкой гола.
     assert "<pre>" not in text
-    assert rich_html(
-        "<b>1-й период</b>\n"
-        "<details><summary>▶ 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</summary>"
-        '<video src="tg://video?id=goal101"></video></details>\n'
-        "\n"
-        "<b>2-й период</b>\n"
-        "11:40 · 1:1 — Marchand [LW]\n"
-        "15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)\n"
-        "\n"
-        "<b>3-й период</b>\n"
-        "04:10 · 2:2 — Pastrnak [RW] (Marchand)\n"
-        "18:03 · 2:3 — PANARIN [LW] (ПШ)"
-    ) in text, "голы по периодам — отдельные абзацы"
+    assert (
+        "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>"
+        "<b>2-й период</b><br>11:40 · 1:1 — Marchand [LW]<br>15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>"
+        "<b>3-й период</b><br>04:10 · 2:2 — Pastrnak [RW] (Marchand)<br>18:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
+        "<details><summary>Видео голов (1)</summary>"
+        '<figure><video src="tg://video?id=goal101"></video>'
+        "<figcaption>1-й период · 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</figcaption></figure></details>"
+    ) in text, "голы — плотный абзац, клипы — одним свёрнутым блоком"
     assert [(m.id, m.media.media) for m in sent.rich_message.media] == [("goal101", "fid-101")]
     assert sent.reply_markup is None, "видео голов — в карточке, не кнопками"
     # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари —
@@ -503,8 +497,9 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     )
 
     card = api.sent_rich[-1]
-    assert body(card).startswith('<table compact><tr><td>🔴 MTL</td><td align="center"><b>0 : 1</b></td>')
-    assert rich_html("<b>1-й период</b>\n12:00 · 0:1 — Matthews [C] (ПШ) (Nylander)\n") in body(card)
+    assert body(card).startswith("<p><b><i>🔴 MTL 🔴 0 : 1 🍁 TOR 🍁</i></b>")
+    assert "<b>1-й период</b><br>12:00 · 0:1 — Matthews [C] (ПШ) (Nylander)</p>" in body(card)
+    assert "Видео голов" not in body(card), "клипа нет — блока видео нет"
     assert card.reply_markup is None
 
 
@@ -780,7 +775,7 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     (sent,) = api.sent_rich
     assert api.sent_messages == []
     text = body(sent)
-    assert text.startswith('<table compact><tr><td>🗽 NYR</td><td align="center"><b>3 : 1</b></td>')
+    assert text.startswith("<p><b><i>🗽 NYR 🗽 3 : 1 🍁 TOR 🍁</i></b>")
     assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 
