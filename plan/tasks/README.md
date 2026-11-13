@@ -26,6 +26,8 @@
 | 95 | [Превью перед матчем: ИИ-текст «на что смотреть»](task_95_upcoming_preview_ai_text.md) | Продукт | ⚪ |
 | 94 | [Типовые вопросы к ИИ бота: каталог и заготовки ответов](task_94_ai_question_catalog.md) | Продукт | 🟡 |
 | 114 | [ИИ отвечает на вопросы о самом боте](task_114_ai_bot_questions.md) | Продукт | 🟡 |
+| 119 | [Карточка матча: видео голов в свёрнутых блоках, шапка-табло с маскотами](task_119_goal_videos_in_details.md) | Продукт | 🟡 |
+| 118 | [Telegram-канал: предстоящие матчи и Россия/Беларусь](task_118_telegram_channel.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
