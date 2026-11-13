@@ -129,6 +129,8 @@ NHL_bot/
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
 │   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
+│   ├── show_game_card.sh               # Витрина карточки матча на dev-боте кодом рабочей копии (Задача 119)
+│   ├── show_game_card_probe.py         # Шаблон пробы витрины: в него вшивается bot_messages.py
 │   └── verify_skater_reports_schema.sql
 │
 ├── tests/                              # pytest + unittest (`make test-fast`, `make ci-local`)
