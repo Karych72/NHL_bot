@@ -8,8 +8,8 @@
 ровно один раз (Задача 85), сколько бы подписок на него ни вело; отметка — пара (чат, матч).
 Матч подписанной команды или с игроками подписанной страны — одним сообщением под подписки
 чата, на первом прогоне после конца матча, когда NHL выложила клипы всех его голов, а к
-11:00 МСК — с тем, что есть: есть команда — полная карточка с блоками стран, только
-страны — счёт и блоки стран с кнопкой карточки; за сообщением — видео голов этих стран.
+11:00 МСК — с тем, что есть: карточка с видео голов внутри и блоками стран; при подписке
+только на страны карточка под табло свёрнута.
 Дайджест — остальные матчи ночи, как только загружен последний её матч, а к 11:00 МСК — в
 любом случае (Задача 63); отметка ``last_sent_night`` не даёт отправить ночь дважды.
 Предстоящие матчи (Задача 78) — на каждом прогоне с 15:30 МСК одно превью: ближайший ещё
@@ -30,31 +30,18 @@ import asyncio
 import html
 import logging
 import os
-import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
-from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
+from typing import Awaitable, Callable, Dict, List, NamedTuple, Set, Tuple, TypeVar
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import (
     TelegramAPIError,
-    TelegramBadRequest,
     TelegramForbiddenError,
     TelegramRetryAfter,
-)
-from aiogram.types import (
-    BufferedInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaAudio,
-    InputMediaDocument,
-    InputMediaLivePhoto,
-    InputMediaPhoto,
-    InputMediaVideo,
 )
 
 # Запуск из каталога telegram_bot (как make bot).
@@ -69,8 +56,6 @@ from bot_messages import (  # noqa: E402
     country_name,
     country_night_blocks,
     day_digest,
-    game_message,
-    game_score_line,
     matchup_season_preview,
     night_goals,
     rich_footer,
@@ -86,9 +71,8 @@ from nhl_scoreboard import (  # noqa: E402
     slate_games_sorted,
 )
 from stats_handlers import (  # noqa: E402
-    DIGEST_EXPAND_PREFIX,
     dispatch_day_digest_messages,
-    goal_video_markup,
+    send_game_card,
 )
 from subscription_repo import (  # noqa: E402
     chat_games_sent,
@@ -102,12 +86,7 @@ from subscription_repo import (  # noqa: E402
     sent_games,
 )
 from database import fetch_all  # noqa: E402
-from video_replay import (  # noqa: E402
-    cached_goal_clip,
-    download_goal_video,
-    goal_clip_published,
-    save_goal_clip,
-)
+from video_replay import goal_clip_published  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -136,24 +115,7 @@ _NIGHT_SHIFT = timedelta(hours=12)
 _LOADED_GAME_TYPES = (2, 3)
 _SCHEDULED_AS_PLANNED = "OK"
 
-# Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
-_ALBUM_SIZE = 10
-
-# Bot API принимает не больше 50 МБ файлов в одном запросе: альбом из 10 клипов по 8–19 МБ
-# Telegram отверг, и голы ночи 2026-10-13 не ушли (Задача 75). Бюджет — с запасом на
-# multipart-обвязку; клип из кэша (``file_id``) не загружается и бюджет не тратит.
-_UPLOAD_BUDGET_BYTES = 45_000_000
-
-# Подпись к видео и альбому — до 1024 символов видимого текста (UTF-16, без HTML-разметки).
-_CAPTION_LIMIT = 1024
-
-_HTML_TAG = re.compile(r"<[^>]+>")
-
 _T = TypeVar("_T")
-
-# Элемент альбома, как его типизирует ``Bot.send_media_group``; в альбоме рассылки — только видео.
-_AlbumMedia = Union[InputMediaAudio, InputMediaDocument, InputMediaLivePhoto, InputMediaPhoto, InputMediaVideo]
-
 
 def night_of(now: datetime) -> date:
     """Игровая дата ночи, которой принадлежит момент *now*.
@@ -289,7 +251,7 @@ async def run_morning_digest_broadcast(
 
     Зачем: та же сводка, что у ``/today`` (``dispatch_day_digest_messages``), но и при одном
     матче — сводка: полная карточка открывается кнопкой; матч подписки чата на крайнем сроке
-    остаётся карточкой с кнопками видео. В дайджесте чата — только матчи, итог которых ему ещё не ушёл (Задача 85); до крайнего
+    остаётся карточкой с видео голов. В дайджесте чата — только матчи, итог которых ему ещё не ушёл (Задача 85); до крайнего
     срока не берутся и матчи его подписок (``subscribed``): ждущий клипов уйдёт своим
     сообщением. На крайнем сроке рассылка по матчам уже прошла, и матч подписки без отметки
     (её сбой) попадает сюда. Отфильтрованная сводка — «Остальные матчи ночи»; не осталось
@@ -308,13 +270,13 @@ async def run_morning_digest_broadcast(
     if not due:
         return
     day_label, games = day_digest(night)
-    if games[0][0] == 0:
+    if not games:
         logger.info("No games in DB for night %s: digest not sent", night)
         return
-    sent = chat_games_sent([game[0] for game in games])
+    sent = chat_games_sent(games)
     for chat_id in due:
         own = set() if final else set(subscribed.get(chat_id, {}))
-        rest = [game for game in games if (chat_id, game[0]) not in sent and game[0] not in own]
+        rest = [game for game in games if (chat_id, game) not in sent and game not in own]
         if rest:
             send = partial(
                 dispatch_day_digest_messages,
@@ -324,7 +286,7 @@ async def run_morning_digest_broadcast(
                 rest,
                 inter_message_sleep_sec=config.PUSH_SEND_INTERVAL_SEC,
                 heading="Матчи ночи" if len(rest) == len(games) else "Остальные матчи ночи",
-                summary_only=not any(game[0] in subscribed.get(chat_id, {}) for game in rest),
+                summary_only=not any(game in subscribed.get(chat_id, {}) for game in rest),
             )
             try:
                 try:
@@ -338,159 +300,10 @@ async def run_morning_digest_broadcast(
                 deactivate_chat(chat_id)
             except TelegramAPIError as exc:
                 logger.warning("digest send failed chat_id=%s: %s", chat_id, exc)
-            mark_chat_games_sent(chat_id, [game[0] for game in rest])
+            mark_chat_games_sent(chat_id, rest)
         mark_digest_night_sent(chat_id, night)
         # Telegram лимитирует бота ~30 сообщениями в секунду.
         await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
-
-
-# Клип к отправке: ((game_id, event_id), ``file_id`` из кэша или файл mp4 к загрузке,
-# параметры видео, HTML-описание гола ``goal_caption``).
-_Clip = Tuple[Tuple[int, int], Union[str, BufferedInputFile], Dict[str, Any], str]
-
-
-async def _prepare_goal_clips(goals: List[Tuple[int, int]], from_cache: bool = True) -> List[_Clip]:
-    """Клипы голов к отправке: ((game_id, event_id), ``file_id`` из кэша или mp4 к загрузке,
-    параметры, общие для ``send_video`` и ``InputMediaVideo``, описание гола).
-
-    Файлы — ``BufferedInputFile`` в памяти: временные файлы удаляются сразу, а aiogram
-    сам ставит ``attach://`` у каждого файла альбома — без него Telegram альбом не примет.
-
-    Аргументы: ``goals`` — (game_id, event_id); ``from_cache`` — брать ли загруженные ранее
-    клипы из ``bot_goal_clips`` (``False`` — Telegram отверг их ``file_id``, качаем заново).
-    Гол без клипа пропускается с записью в лог.
-    """
-    clips: List[_Clip] = []
-    for key in goals:
-        game_id, event_id = key
-        cached = cached_goal_clip(game_id, event_id) if from_cache else None
-        if cached is not None:
-            clips.append((key, cached[0], {}, cached[1]))
-            continue
-        # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
-        d = await asyncio.to_thread(download_goal_video, game_id, event_id)
-        if d is None:
-            logger.warning("No video for goal game_id=%s event_id=%s", game_id, event_id)
-            continue
-        params: Dict[str, Any] = {"width": d.width, "height": d.height, "duration": d.duration}
-        try:
-            if d.thumb_path:
-                params["thumbnail"] = BufferedInputFile(
-                    Path(d.thumb_path).read_bytes(), filename=f"{event_id}.jpg"
-                )
-            video = BufferedInputFile(Path(d.path).read_bytes(), filename=f"{event_id}.mp4")
-        finally:
-            os.unlink(d.path)
-            if d.thumb_path:
-                os.unlink(d.thumb_path)
-        clips.append((key, video, params, d.caption))
-    return clips
-
-
-def _upload_bytes(clip: _Clip) -> int:
-    """Сколько байт клип добавит к запросу: mp4 и превью; ``file_id`` из кэша — ноль."""
-    _, video, params, _ = clip
-    if isinstance(video, str):
-        return 0
-    thumbnail = params.get("thumbnail")
-    return len(video.data) + (len(thumbnail.data) if thumbnail is not None else 0)
-
-
-def _caption_length(text: str) -> int:
-    """Длина подписи из HTML-текста — видимые символы в UTF-16, как считает Telegram."""
-    return len(html.unescape(_HTML_TAG.sub("", text)).encode("utf-16-le")) // 2
-
-
-def _album_caption(album: List[_Clip]) -> str:
-    """Общая подпись альбома — описания его голов через пустую строку: в альбоме
-    Telegram показывает только одну подпись."""
-    return "\n\n".join(caption for _, _, _, caption in album)
-
-
-def _albums(clips: List[_Clip]) -> List[List[_Clip]]:
-    """Клипы по альбомам в исходном порядке: в каждом не больше ``_ALBUM_SIZE`` клипов,
-    ``_UPLOAD_BUDGET_BYTES`` загружаемых байт и ``_CAPTION_LIMIT`` символов общей подписи.
-    Клип тяжелее бюджета уходит один — Telegram его отвергнет, и ошибка всплывёт."""
-    albums: List[List[_Clip]] = []
-    size = 0
-    for clip in clips:
-        clip_size = _upload_bytes(clip)
-        if (
-            not albums
-            or len(albums[-1]) == _ALBUM_SIZE
-            or size + clip_size > _UPLOAD_BUDGET_BYTES
-            or _caption_length(_album_caption(albums[-1] + [clip])) > _CAPTION_LIMIT
-        ):
-            albums.append([])
-            size = 0
-        albums[-1].append(clip)
-        size += clip_size
-    return albums
-
-
-async def _send_goal_clips(bot: Bot, chat_id: int, goals: List[Tuple[int, int]]) -> None:
-    """Видео голов игроков подписанных стран альбомом — вслед за сообщением о матче, полной
-    карточкой или коротким сообщением стран (Задачи 76, 85).
-
-    Подпись альбома — описания всех его голов (``_album_caption``): кто забил, с чьих
-    передач, когда. Клипы, не влезающие в один запрос (``_albums``), идут несколькими
-    альбомами подряд; одиночный клип — ``send_video``: альбом требует минимум два медиа.
-    Клип из кэша ``bot_goal_clips`` уходит по ``file_id``; ``file_id`` загруженных видео
-    туда записывается (Задача 87). Альбом, в котором Telegram отверг ``file_id`` из кэша, —
-    ошибка в лог и одна повторная отправка с загрузкой клипов заново.
-
-    Аргументы: ``bot``; ``chat_id`` — получатель; ``goals`` — (game_id, event_id) голов
-    стран в матче, каждый один раз.
-    """
-    for album in _albums(await _prepare_goal_clips(goals)):
-        try:
-            await _send_album(bot, chat_id, album)
-        except TelegramBadRequest as exc:
-            stale = [key for key, video, _, _ in album if isinstance(video, str)]
-            if not stale:
-                raise
-            logger.error("chat_id=%s: Telegram rejected cached clips, re-uploading: %s", chat_id, exc)
-            # Заново качаются только клипы из кэша; загруженные в этот раз уже в памяти.
-            fresh = {clip[0]: clip for clip in await _prepare_goal_clips(stale, from_cache=False)}
-            retry = [
-                fresh[clip[0]] if clip[0] in fresh else clip
-                for clip in album
-                if clip[0] in fresh or not isinstance(clip[1], str)
-            ]
-            for retry_album in _albums(retry):
-                await _send_album(bot, chat_id, retry_album)
-
-
-async def _send_album(bot: Bot, chat_id: int, album: List[_Clip]) -> None:
-    """Отправляет клипы ``album`` (см. ``_albums``) одним сообщением: альбом или, если клип
-    один, ``send_video``; ``file_id`` загруженных клипов — в кэш ``bot_goal_clips``."""
-    caption = _album_caption(album)
-    if len(album) == 1:
-        _, video, params, _ = album[0]
-        sent = [
-            await throttled(
-                lambda: bot.send_video(
-                    chat_id=chat_id, video=video, caption=caption, parse_mode="HTML",
-                    supports_streaming=True, **params,
-                ),
-                chat_id,
-            )
-        ]
-    else:
-        media: List[_AlbumMedia] = [
-            InputMediaVideo(
-                media=video, caption=caption if n == 0 else None, parse_mode="HTML",
-                supports_streaming=True, **params,
-            )
-            for n, (_, video, params, _) in enumerate(album)
-        ]
-        sent = list(
-            await throttled(lambda: bot.send_media_group(chat_id=chat_id, media=media), chat_id)
-        )
-    for (key, video, _, goal_text), message in zip(album, sent):
-        assert message.video is not None  # ответ на отправку видео всегда содержит video
-        if not isinstance(video, str):
-            save_goal_clip(*key, message.video.file_id, goal_text)
 
 
 async def _clips_published(
@@ -513,11 +326,9 @@ async def run_game_broadcast(
 
     Зачем: правило «каждый матч ночи — чату ровно один раз» (Задача 85): сколько бы
     подписок ни вело на матч (команда, страны), сообщение одно и собрано под них. Первая
-    строка — счёт матча (видна в уведомлении), подписки «По подписке: …» и ссылка на
-    их настройку — подвал. Есть подписанная команда — полная
-    карточка с кнопками видео голов и блоками стран под ней; только страны — счёт и блоки
-    стран с кнопкой карточки. За сообщением в обоих случаях — видео голов игроков
-    подписанных стран альбомом (``_send_goal_clips``).
+    строка — табло матча (видно в уведомлении), подписки «По подписке: …» и ссылка на
+    их настройку — подвал. Карточка с видео голов в строках голов (``send_game_card``) и
+    блоки стран под ней; подписка только на страны — карточка под табло свёрнута.
     Матч уходит на первом прогоне sync, когда он уже в ``games`` и NHL выложила клипы всех
     его голов; ``final`` (крайний срок ночи) — с тем, что есть. Отметка — пара (чат, матч)
     в ``bot_chat_game_sent``, ставится после любой попытки: сбой Telegram на одном матче
@@ -530,17 +341,15 @@ async def run_game_broadcast(
     if not subscribed:
         return
     sent = chat_games_sent(sorted({game_id for games in subscribed.values() for game_id in games}))
-    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
-    for game_id, event_id, nationality in night_goals(night):
-        goals[game_id].append(((game_id, event_id), nationality))
+    goals: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    for game_id, event_id in night_goals(night):
+        goals[game_id].append((game_id, event_id))
     published: Dict[Tuple[int, int], bool] = {}
-    cards: Dict[int, Tuple[str, List[Dict]]] = {}
-    score_lines: Dict[int, str] = {}
     for chat_id, games in subscribed.items():
         for game_id, subs in games.items():
             if (chat_id, game_id) in sent:
                 continue
-            if not final and not await _clips_published([goal for goal, _ in goals[game_id]], published):
+            if not final and not await _clips_published(goals[game_id], published):
                 logger.info("game_id=%s: клипы ещё не выложены, ждём", game_id)
                 continue
             labels = [html.escape(team) for team in subs.teams] + [
@@ -550,36 +359,12 @@ async def run_game_broadcast(
             # уведомлении, идёт счёт матча.
             footer = rich_footer(f"По подписке: {' · '.join(labels)}\n{SUBSCRIPTIONS_FOOTER}")
             blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
-            countries = {country for country, _ in subs.countries}
             try:
-                if subs.teams:
-                    if game_id not in cards:
-                        cards[game_id] = game_message(game_id)
-                    text, goals_meta = cards[game_id]
-                    markup = goal_video_markup(goals_meta)
-                else:
-                    if game_id not in score_lines:
-                        score_lines[game_id] = game_score_line(game_id)
-                    text = score_lines[game_id]
-                    # Кнопка — на тексте: к альбому Telegram клавиатуру не прикрепляет.
-                    markup = InlineKeyboardMarkup(
-                        inline_keyboard=[[
-                            InlineKeyboardButton(
-                                text="Карточка матча", callback_data=f"{DIGEST_EXPAND_PREFIX}{game_id}"
-                            )
-                        ]]
-                    )
                 await throttled(
                     partial(
-                        bot.send_rich_message,
-                        chat_id=chat_id,
-                        rich_message=rich_message(f"{text}{blocks}\n{footer}"),
-                        reply_markup=markup,
+                        send_game_card, bot, chat_id, game_id, f"{blocks}\n{footer}", collapsed=not subs.teams
                     ),
                     chat_id,
-                )
-                await _send_goal_clips(
-                    bot, chat_id, [goal for goal, nationality in goals[game_id] if nationality in countries]
                 )
             except TelegramForbiddenError:
                 logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
@@ -715,7 +500,7 @@ async def main(upcoming_only: bool) -> None:
     только ``run_upcoming_broadcast`` — днём ночи нет, и NHL API о ней не спрашивается.
 
     ``async with`` закрывает HTTP-сессию бота после рассылки. Таймаут запроса — 300 с:
-    альбом из 10 клипов (~9 МБ каждый) не загрузится за 60 с по умолчанию.
+    карточка с клипами голов (до 45 МБ загрузки) не уйдёт за 60 с по умолчанию.
     """
     config.validate_env()
     if not config.ENABLE_PUSH_DIGEST:

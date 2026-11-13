@@ -25,7 +25,7 @@ from aiogram.methods import (
     SendVideo,
     TelegramMethod,
 )
-from aiogram.types import Chat, Message, MessageId, User, Video
+from aiogram.types import Chat, Message, MessageId, RichBlockVideo, RichMessage, User, Video
 
 # Handlers under test get a real `aiogram.Bot` and real `Message`/`CallbackQuery`
 # objects bound to it; only the network layer is replaced. Every Bot API call a
@@ -47,7 +47,8 @@ class FakeSession(BaseSession):
     makes the next request of that type raise *error* (Telegram errors like «Message to
     be replied not found»); a failed request is not recorded. Message-producing methods
     answer with a ``Message`` whose ``message_id`` counts 1, 2, 3… across the session;
-    an uploaded video gets ``file_id`` ``fid-<n>``, a video sent by ``file_id`` keeps it.
+    an uploaded video gets ``file_id`` ``fid-<n>``, a video sent by ``file_id`` keeps it —
+    and so does every video in ``media`` of a rich message (answered as video blocks).
     """
 
     def __init__(self) -> None:
@@ -101,14 +102,16 @@ class FakeSession(BaseSession):
             **fields,
         )
 
-    def _video_message(self, chat_id: Any, media: Any) -> Message:
+    def _video(self, media: Any) -> Video:
         if isinstance(media, str):
             file_id = media
         else:
             self._uploads += 1
             file_id = f"fid-{self._uploads}"
-        video = Video(file_id=file_id, file_unique_id=file_id, width=1, height=1, duration=1)
-        return self._message(chat_id, video=video)
+        return Video(file_id=file_id, file_unique_id=file_id, width=1, height=1, duration=1)
+
+    def _video_message(self, chat_id: Any, media: Any) -> Message:
+        return self._message(chat_id, video=self._video(media))
 
     async def make_request(self, bot: Bot, method: TelegramMethod[Any], timeout: Optional[int] = None) -> Any:
         for i, (method_type, error) in enumerate(self._errors):
@@ -121,7 +124,9 @@ class FakeSession(BaseSession):
         if isinstance(method, SendMessage):
             return self._message(method.chat_id, text=method.text)
         if isinstance(method, SendRichMessage):
-            return self._message(method.chat_id)
+            media = method.rich_message.media or [] if method.rich_message is not None else []
+            blocks = [RichBlockVideo(video=self._video(m.media.media)) for m in media]
+            return self._message(method.chat_id, rich_message=RichMessage(blocks=blocks))
         if isinstance(method, CreateInvoiceLink):
             return "https://t.me/$fake-invoice"
         if isinstance(method, CopyMessage):

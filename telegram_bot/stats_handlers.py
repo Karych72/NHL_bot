@@ -11,17 +11,23 @@ import html
 import logging
 import os
 import re
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
-    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaVideo,
+    InputRichMessageMedia,
     Message,
     ReplyParameters,
+    RichBlock,
+    RichBlockVideo,
+    Video,
 )
 
 from bot_messages import (
@@ -37,7 +43,9 @@ from bot_messages import (
     digest_game_button_labels,
     digest_shown_match_count,
     game_exists,
+    game_goal_events,
     game_message,
+    goal_clip_media_id,
     matchup_season_preview,
     player_stat_leaderboard_page,
     rich_footer,
@@ -86,8 +94,10 @@ STAT_SCREEN_CALLBACK_PATTERN = (
     rf"^(st|sa|tm):(?:(menu|save)|((?<=st:|sa:)(?:{_PLAYER_STAT_KEYS})|(?<=tm:)(?:{_TEAM_STAT_KEYS})):(\d+))$"
 )
 
-# Кнопка видео гола карточки матча: gv:<game_id>:<event_id>
-GOAL_VIDEO_CALLBACK_PATTERN = r"^gv:(\d+):(\d+)$"
+# Bot API принимает не больше 50 МБ файлов в одном запросе: альбом из 10 клипов по 8–19 МБ
+# Telegram отверг, и голы ночи 2026-10-13 не ушли (Задача 75). Бюджет — с запасом на
+# multipart-обвязку; клип из кэша (``file_id``) не загружается и бюджет не тратит.
+_UPLOAD_BUDGET_BYTES = 45_000_000
 
 
 def _page_nav_rows(
@@ -295,56 +305,131 @@ _DIGEST_MORE_HINT = (
     + SUBSCRIPTIONS_FOOTER
 )
 
-# Кнопки видео голов («▶ 1:0 Nelson 1п 06:33») в два столбца: столбик из десятка
-# кнопок на всю ширину визуально сливался со следующей карточкой матча.
-_GOAL_VIDEO_COLUMNS = 2
+# Клип гола к отправке в карточке: видео (``file_id`` из кэша или mp4 к загрузке) и
+# подпись ``goal_caption`` — она пишется в кэш вместе с ``file_id`` загруженного клипа.
+_Clip = Tuple[InputMediaVideo, str]
 
 
-def _goal_video_buttons(goals_meta: List[Dict]) -> List[InlineKeyboardButton]:
-    return [
-        InlineKeyboardButton(
-            text=g['label'],
-            callback_data=f"gv:{g['game_id']}:{g['event_id']}",
-        )
-        for g in goals_meta
-    ]
+async def _goal_clips(game_id: int, events: Sequence[int], from_cache: bool = True) -> Dict[int, _Clip]:
+    """Клипы голов ``events`` матча для одной карточки, по ``event_id`` в порядке игры.
 
+    Клип из кэша ``bot_goal_clips`` уходит по ``file_id``; остальные скачиваются с NHL и
+    грузятся в самом сообщении, пока помещаются в ``_UPLOAD_BUDGET_BYTES``. Первый не
+    влезший клип прекращает скачивание: его гол и следующие некэшированные останутся
+    строкой без видео и получат клип при следующей отправке карточки (кэш уже пополнен).
 
-def goal_video_markup(goals_meta: List[Dict]) -> Optional[InlineKeyboardMarkup]:
-    """Клавиатура карточки матча: кнопки видео голов в `_GOAL_VIDEO_COLUMNS` столбца.
-
-    Зачем: одна раскладка для карточки из меню и из рассылки подписки на команду.
-
-    Аргументы: ``goals_meta`` — вторая часть ответа ``game_message()``.
-    Без голов — ``None`` (сообщение без клавиатуры).
+    Аргументы: ``game_id``, ``events`` — голы (``game_goal_events``); ``from_cache`` — брать
+    ли кэш (``False`` — Telegram отверг его ``file_id``, качаем заново).
     """
-    gbtn = _goal_video_buttons(goals_meta)
-    return InlineKeyboardMarkup(inline_keyboard=build_menu(gbtn, n_cols=_GOAL_VIDEO_COLUMNS)) if gbtn else None
+    clips: Dict[int, _Clip] = {}
+    budget = _UPLOAD_BUDGET_BYTES
+    for event_id in events:
+        cached = cached_goal_clip(game_id, event_id) if from_cache else None
+        if cached is not None:
+            clips[event_id] = (InputMediaVideo(media=cached[0], supports_streaming=True), cached[1])
+            continue
+        if budget <= 0:
+            continue
+        # В отдельном потоке: скачивание и ffmpeg блокируют event loop (см. video_replay).
+        d = await asyncio.to_thread(download_goal_video, game_id, event_id)
+        if d is None:
+            logger.warning("No video for goal game_id=%s event_id=%s", game_id, event_id)
+            continue
+        try:
+            data = Path(d.path).read_bytes()
+            thumb = Path(d.thumb_path).read_bytes() if d.thumb_path else None
+        finally:
+            os.unlink(d.path)
+            if d.thumb_path:
+                os.unlink(d.thumb_path)
+        size = len(data) + len(thumb or b"")
+        if size > budget:
+            logger.info("game_id=%s event_id=%s: клип не влез в запрос, уйдёт следующей карточкой", game_id, event_id)
+            budget = 0
+            continue
+        budget -= size
+        clips[event_id] = (
+            InputMediaVideo(
+                media=BufferedInputFile(data, filename=f"{event_id}.mp4"),
+                thumbnail=BufferedInputFile(thumb, filename=f"{event_id}.jpg") if thumb else None,
+                width=d.width, height=d.height, duration=d.duration, supports_streaming=True,
+            ),
+            d.caption,
+        )
+    return clips
+
+
+def _rich_videos(blocks: Sequence[RichBlock]) -> Iterator[Video]:
+    """Видео отправленного rich-сообщения в порядке текста, со вложенными блоками."""
+    for block in blocks:
+        if isinstance(block, RichBlockVideo):
+            yield block.video
+        yield from _rich_videos(getattr(block, "blocks", None) or [])
+
+
+async def _send_card(
+    bot: Bot, chat_id: int, game_id: int, clips: Dict[int, _Clip], tail: str, collapsed: bool
+) -> Message:
+    """Одна попытка ``send_game_card``: карточка с клипами ``clips``; ``file_id``
+    загруженных в ней клипов — в кэш ``bot_goal_clips``."""
+    media = [InputRichMessageMedia(id=goal_clip_media_id(evt), media=video) for evt, (video, _) in clips.items()]
+    message = await bot.send_rich_message(
+        chat_id=chat_id,
+        rich_message=rich_message(f"{game_message(game_id, clips, collapsed)}{tail}", media),
+    )
+    assert message.rich_message is not None  # ответ на sendRichMessage несёт само сообщение
+    for (evt, (video, caption)), sent in zip(clips.items(), _rich_videos(message.rich_message.blocks), strict=True):
+        if not isinstance(video.media, str):
+            save_goal_clip(game_id, evt, sent.file_id, caption)
+    return message
+
+
+async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", collapsed: bool = False) -> Message:
+    """Шлёт карточку матча одним rich-сообщением, клипы голов — внутри строк голов.
+
+    Зачем: одна отправка карточки для меню, ``/today`` и рассылки (Задача 119) — видео
+    голов не кнопками под сообщением, а в самой карточке (``_goal_clips``). Протухший
+    ``file_id`` кэша (Telegram отверг сообщение) — ошибка в лог и одна повторная отправка
+    с клипами, скачанными заново.
+
+    Аргументы:
+        bot, chat_id: куда слать.
+        game_id: матч.
+        tail: построчный HTML после карточки — блоки стран, подвал.
+        collapsed: карточка под табло свёрнута (``game_message``).
+    """
+    events = game_goal_events(game_id)
+    clips = await _goal_clips(game_id, events)
+    try:
+        return await _send_card(bot, chat_id, game_id, clips, tail, collapsed)
+    except TelegramBadRequest as exc:
+        if not any(isinstance(video.media, str) for video, _ in clips.values()):
+            raise
+        logger.error("chat_id=%s: Telegram rejected cached clips of game_id=%s, re-uploading: %s", chat_id, game_id, exc)
+    return await _send_card(bot, chat_id, game_id, await _goal_clips(game_id, events, from_cache=False), tail, collapsed)
 
 
 async def send_game_card_message(bot: Bot, chat_id: int, game_id: int) -> Message:
-    """Полная карточка матча с кнопками видео голов; возвращает отправленное
-    сообщение. Подписчику страны под карточкой — блок игроков каждой его страны,
-    сыгравших в матче (Задача 76)."""
+    """Полная карточка матча (``send_game_card``); возвращает отправленное сообщение.
+    Подписчику страны под карточкой — блок игроков каждой его страны, сыгравших в матче
+    (Задача 76)."""
     if not game_exists(game_id):
         return await bot.send_rich_message(
             chat_id=chat_id, rich_message=rich_message("Такого матча нет в базе бота.")
         )
-    text, goals_meta = game_message(game_id)
+    tail = ""
     for country in get_chat_subscriptions(chat_id).countries:
         block = country_game_block(country, game_id)
         if block is not None:
-            text += f"\n\n{block}"
-    return await bot.send_rich_message(
-        chat_id=chat_id, rich_message=rich_message(text), reply_markup=goal_video_markup(goals_meta),
-    )
+            tail += f"\n\n{block}"
+    return await send_game_card(bot, chat_id, game_id, tail)
 
 
 async def dispatch_day_digest_messages(
     bot: Bot,
     chat_id: int,
     day_label: Optional[str],
-    games: List[Tuple[int, str, List[Dict]]],
+    game_ids: List[int],
     *,
     inter_message_sleep_sec: Optional[float] = None,
     heading: str = "Матчи ночи",
@@ -356,7 +441,7 @@ async def dispatch_day_digest_messages(
 
     Аргументы:
         bot, chat_id: куда слать.
-        day_label, games: ответ `day_digest()`.
+        day_label, game_ids: ответ `day_digest()`.
         heading: заголовок сводки (дата и число матчей — в подвале); рассылка без уже
             присланных чату матчей — «Остальные матчи ночи» (Задача 85).
         inter_message_sleep_sec: пауза после каждого сообщения (рассылка).
@@ -369,36 +454,32 @@ async def dispatch_day_digest_messages(
             await asyncio.sleep(inter_message_sleep_sec)
 
     hint = rich_footer(_DIGEST_MORE_HINT)
-    real_games = [(gid, text, meta) for gid, text, meta in games if gid != 0]
 
-    if not real_games:
-        _, text, _ = games[0]
-        safe_text = html.escape(text) if text else ""
-        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(f"{safe_text}\n{hint}"))
+    if not game_ids:
+        empty = (
+            f"За {day_label} завершенных матчей не найдено." if day_label
+            else "В базе пока нет завершенных матчей."
+        )
+        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(f"{html.escape(empty)}\n{hint}"))
         await _pause()
         return
 
-    if len(real_games) == 1 and not summary_only:
-        _gid, text, goals_meta = real_games[0]
-        await bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message(f"{text}\n{hint}"),
-            reply_markup=goal_video_markup(goals_meta),
-        )
+    if len(game_ids) == 1 and not summary_only:
+        await send_game_card(bot, chat_id, game_ids[0], f"\n{hint}")
         await _pause()
         return
 
     day_str = day_label or "—"
-    game_ids = [gid for gid, _t, _m in real_games]
     lines = day_digest_summary_body(game_ids)
     header = f"<b>{html.escape(heading)}</b>\n\n"
     footer = (
-        f"Игровой день {html.escape(day_str)} · матчей: {len(real_games)}\n"
+        f"Игровой день {html.escape(day_str)} · матчей: {len(game_ids)}\n"
         f"Кнопка матча — полная карточка и видео голов.\n{_DIGEST_MORE_HINT}"
     )
     # Матч сводки несёт HTML-теги: резать его по символам нельзя — Telegram
     # отвергнет незакрытый тег. Не влезло — оставляем целые матчи, сколько
     # уместилось, и маркер «показаны N из M» первой строкой подвала.
-    total_games = len(real_games)
+    total_games = len(game_ids)
     shown_games = digest_shown_match_count(header, lines, total_games, tail=f"\n{rich_footer(footer)}")
     if shown_games < total_games:
         footer = truncation_marker(shown_games, total_games, item_word="матчей") + f"\n{footer}"
@@ -519,73 +600,3 @@ async def callback_expand_digest_game(callback: CallbackQuery, bot: Bot, match: 
     assert callback.message is not None
     await callback.answer()
     await send_game_card_message(bot, callback.message.chat.id, int(match.group(1)))
-
-
-async def handle_goal_video(callback: CallbackQuery, bot: Bot, match: re.Match) -> None:
-    """Шлёт клип гола по кнопке `gv:<game_id>:<event_id>` (`match` — совпадение
-    `GOAL_VIDEO_CALLBACK_PATTERN`) с подписью ``goal_caption`` (кто забил, с чьих
-    передач, когда).
-
-    Клип из кэша (``cached_goal_clip``) уходит по ``file_id`` сразу; иначе он скачивается
-    с NHL, грузится в Telegram, и его ``file_id`` запоминается (Задача 87). Протухший
-    ``file_id`` (Telegram отверг) — ошибка в лог и одна повторная загрузка.
-    """
-    assert callback.message is not None
-    game_id, event_id = int(match.group(1)), int(match.group(2))
-    chat_id = callback.message.chat.id
-
-    cached = cached_goal_clip(game_id, event_id)
-    if cached is not None:
-        await callback.answer()
-        file_id, caption = cached
-        try:
-            await bot.send_video(
-                chat_id=chat_id, video=file_id, caption=caption, parse_mode="HTML",
-                supports_streaming=True,
-            )
-            return
-        except TelegramBadRequest as exc:
-            logger.error(
-                "Telegram rejected cached clip game=%s event=%s, re-uploading: %s",
-                game_id, event_id, exc,
-            )
-    else:
-        await callback.answer("Загружаю видео гола...")
-
-    # В отдельном потоке: скачивание MP4 и два прохода ffmpeg блокируют
-    # единственный event loop бота до ~2 минут (см. video_replay).
-    delivery = await asyncio.to_thread(download_goal_video, game_id, event_id)
-    if delivery is None:
-        await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message("Видео пока недоступно."))
-        return
-
-    try:
-        sent = await bot.send_video(
-            chat_id=chat_id,
-            video=FSInputFile(delivery.path),
-            thumbnail=FSInputFile(delivery.thumb_path) if delivery.thumb_path else None,
-            width=delivery.width,
-            height=delivery.height,
-            duration=delivery.duration,
-            supports_streaming=True,
-            caption=delivery.caption,
-            parse_mode="HTML",
-        )
-    except Exception:
-        logger.exception("Failed to send goal video")
-        await bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message("Ошибка при отправке видео.")
-        )
-    else:
-        assert sent.video is not None  # ответ на отправку видео всегда содержит video
-        save_goal_clip(game_id, event_id, sent.video.file_id, delivery.caption)
-    finally:
-        try:
-            os.unlink(delivery.path)
-        except OSError:
-            pass
-        if delivery.thumb_path:
-            try:
-                os.unlink(delivery.thumb_path)
-            except OSError:
-                pass

@@ -235,19 +235,15 @@ def _fake_bot():
 
 
 class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_day_digest_single_game_sends_full_card_with_markup(self):
+    async def test_day_digest_single_game_sends_full_card_without_buttons(self):
+        """Один матч — полная карточка; видео голов внутри неё, кнопок нет (Задача 119)."""
         stats_handlers = _load_stats_handlers()
         bot = _fake_bot()
-        games = [
-            (
-                1,
-                "Полная карточка",
-                [{"label": "Гол", "game_id": 1, "event_id": 2}],
-            ),
-        ]
-        await stats_handlers.dispatch_day_digest_messages(
-            bot, chat_id=42, day_label="2025-03-01", games=games
-        )
+        with patch.object(stats_handlers, "game_message", return_value="Полная карточка"), \
+                patch.object(stats_handlers, "game_goal_events", return_value=[]):
+            await stats_handlers.dispatch_day_digest_messages(
+                bot, chat_id=42, day_label="2025-03-01", game_ids=[1]
+            )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
         self.assertEqual(bot.session.sent_messages, [], "подсказка «Ещё: …» — подвал, не сообщение")
@@ -255,24 +251,19 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(html_.startswith(rich_html("Полная карточка")))
         self.assertTrue(html_.endswith("</footer>"))
         self.assertIn("<footer>Ещё: /tonight", html_)
-        [[video]] = sent[0].reply_markup.inline_keyboard
-        self.assertEqual(video.callback_data, "gv:1:2")
+        self.assertIsNone(sent[0].reply_markup)
 
     async def test_day_digest_multi_sends_one_summary_with_expand_buttons(self):
         """Несколько матчей — одно сообщение-сводка и кнопки dg:<game_id>."""
         stats_handlers = _load_stats_handlers()
         bot = _fake_bot()
-        games = [
-            (101, "<b>Home Away</b> 1:0\n\n<i>x</i>", []),
-            (102, "<b>B C</b> 2:2\n", []),
-        ]
         with patch.object(
             stats_handlers, "digest_game_button_labels", return_value=["1. HOM – AWY", "2. B – C"]
         ), patch.object(
             stats_handlers, "day_digest_summary_body", return_value=["1. Home Away", "2. B C"]
         ):
             await stats_handlers.dispatch_day_digest_messages(
-                bot, chat_id=42, day_label="2025-03-01", games=games
+                bot, chat_id=42, day_label="2025-03-01", game_ids=[101, 102]
             )
         sent = bot.session.sent_rich
         self.assertEqual(len(sent), 1)
@@ -288,15 +279,14 @@ class Phase2UxNavigationTest(unittest.IsolatedAsyncioTestCase):
     async def test_day_digest_synthetic_message_only(self):
         stats_handlers = _load_stats_handlers()
         bot = _fake_bot()
-        games = [(0, "Нет матчей", [])]
         await stats_handlers.dispatch_day_digest_messages(
-            bot, chat_id=7, day_label="2025-01-01", games=games
+            bot, chat_id=7, day_label="2025-01-01", game_ids=[]
         )
         self.assertEqual(len(bot.session.outgoing), 1)
         (rich,) = bot.session.sent_rich
         self.assertEqual(bot.session.sent_messages, [])
         html_ = rich.rich_message.html
-        self.assertTrue(html_.startswith(rich_html("Нет матчей")))
+        self.assertTrue(html_.startswith(rich_html("За 2025-01-01 завершенных матчей не найдено.")))
         self.assertTrue(html_.endswith("</footer>"))
         self.assertIn("/stats", html_.rsplit("<footer>", 1)[1])
 

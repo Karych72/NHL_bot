@@ -1,4 +1,3 @@
-{{ score_line }}
 <i>Периоды: {{ period_scores }}</i>
 {%- if hat_tricks %}
 {{ hat_tricks }}
@@ -8,7 +7,7 @@
 {{ goals_block }}
 {%- endif %}
 
-Броски: {{ home_shots }} - {{ away_shots }} · штрафное время: {{ home_penalties }} - {{ away_penalties }}
+Броски: {{ away_shots }} - {{ home_shots }} · штрафное время: {{ away_penalties }} - {{ home_penalties }}
 Вратари:
 {{ goalkeepers }}
 {%- if three_stars %}

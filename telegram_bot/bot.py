@@ -79,7 +79,6 @@ from keyboards import build_menu, callback_message
 from stats_handlers import (
     COUNTRY_CALLBACK_PATTERN,
     DIGEST_EXPAND_CALLBACK_PATTERN,
-    GOAL_VIDEO_CALLBACK_PATTERN,
     STAT_SCREEN_CALLBACK_PATTERN,
     TONIGHT_GAME_CALLBACK_PATTERN,
     callback_country,
@@ -89,7 +88,6 @@ from stats_handlers import (
     country_page_reply,
     country_rankings_reply,
     dispatch_day_digest_messages,
-    handle_goal_video,
     send_game_card_message,
     stat_page_reply,
     stats_menu_keyboard,
@@ -294,7 +292,7 @@ async def show_today(bot: Bot, chat_id: int) -> None:
     """
     night = last_night_day()
     day_label, games = day_digest(night)
-    if all(gid == 0 for gid, _text, _meta in games):
+    if not games:
         await _send(
             bot, chat_id, f"Прошедшей ночью ({night}) матчей в базе нет — показываю последний игровой день."
         )
@@ -1133,7 +1131,6 @@ def build_standalone_router() -> Router:
         (SUBSCRIPTIONS_CALLBACK_PATTERN, callback_subscriptions),
         (TONIGHT_GAME_CALLBACK_PATTERN, callback_tonight_game),
         (COUNTRY_CALLBACK_PATTERN, callback_country),
-        (GOAL_VIDEO_CALLBACK_PATTERN, handle_goal_video),
         (SCHEDULE_CALLBACK_PATTERN, callback_schedule_card),
     ):
         router.callback_query.register(callback, _callback(pattern))
