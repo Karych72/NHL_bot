@@ -374,12 +374,12 @@ async def test_game_card_renders_full_card(
         '<video src="tg://video?id=goal101"></video></details>\n'
         "\n"
         "<b>2-й период</b>\n"
-        "11:40 · 1:1 — Marchand [LW]\n"
-        "15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)\n"
+        "31:40 · 1:1 — Marchand [LW]\n"
+        "35:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)\n"
         "\n"
         "<b>3-й период</b>\n"
-        "04:10 · 2:2 — Pastrnak [RW] (Marchand)\n"
-        "18:03 · 2:3 — PANARIN [LW] (ПШ)"
+        "44:10 · 2:2 — Pastrnak [RW] (Marchand)\n"
+        "58:03 · 2:3 — PANARIN [LW] (ПШ)"
     ) in text, "голы по периодам — отдельные абзацы"
     assert [(m.id, m.media.media) for m in sent.rich_message.media] == [("goal101", "fid-101")]
     assert sent.reply_markup is None, "видео голов — в карточке, не кнопками"
