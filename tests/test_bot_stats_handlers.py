@@ -630,9 +630,9 @@ async def test_send_game_card_tops_up_clips_over_the_request_budget_by_editing(
                          side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, size=sizes[e], thumb=False)) as dl:
         await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    # Отправка: 1 загружен, 2 не влез (дальше не качаем); правка: 2 загружен, 3 не влез;
-    # правка: 3 и 4 (тяжелее бюджета — пропущен).
-    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 2, 3, 3, 4]
+    # Отправка: 1 загружен, 2 не влез (дальше не качаем); правка: 2 (уже скачан) загружен,
+    # 3 не влез; правка: 3 и 4 (тяжелее бюджета — пропущен). Каждый клип скачан один раз.
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3, 4]
     [sent] = api.sent_rich
     assert body(sent) == rich_html("CARD 999 clips=[1, 5] collapsed=False")
     edits = api.edited_texts
@@ -686,11 +686,11 @@ async def test_send_game_card_reuploads_once_when_telegram_rejects_cached_file_i
 
 
 @pytest.mark.asyncio
-async def test_send_game_card_retry_downloads_stale_cached_clips_first(
+async def test_send_game_card_stops_trusting_cache_after_rejected_file_id(
     bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
 ):
-    """Протухший клип из кэша на повторе качается раньше остальных: бюджет загрузки достаётся
-    ему, и кэш обновляется, — иначе гол за границей бюджета ронял бы каждую отправку."""
+    """Telegram отверг ``file_id`` из кэша — до конца карточки кэшу не верим: иначе протухший
+    клип за границей бюджета снова попадал бы в правку и ронял её без конца (ревью)."""
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
     monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 15)
@@ -702,13 +702,66 @@ async def test_send_game_card_retry_downloads_stale_cached_clips_first(
                          side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
         await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    # Первая попытка: 1 загружен, 2 не влез, 3 из кэша; повтор — 3 первым, 1 уже не влезает;
-    # затем правки доливают 1 и 2.
-    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3, 1, 1, 2, 2]
+    # Отказ: 1 загружен, 2 не влез, 3 из кэша. Дальше кэшу не верим: 1 заново (загрузка
+    # отказа не сохранилась), 2 — уже скачанный, 3 заново, правками.
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 1, 3]
     [sent] = api.sent_rich
-    assert body(sent) == rich_html("CARD 999 clips=[3] collapsed=False")
+    assert body(sent) == rich_html("CARD 999 clips=[1] collapsed=False")
     assert body(api.edited_texts[-1]) == rich_html("CARD 999 clips=[1, 2, 3] collapsed=False")
-    assert goal_clip_store[(999, 3)] == ("fid-1", "<b>GOAL 3</b>")
+    assert all("stale" not in str(m.media.media) for e in api.edited_texts for m in e.rich_message.media)
+    assert goal_clip_store[(999, 3)] == ("fid-3", "<b>GOAL 3</b>")
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_with_stale_clip_among_good_cached_ones_terminates(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """Сценарий ревью: в кэше два годных ``file_id`` и протухший за границей бюджета. Кэш не
+    отличает протухший от годного — после отказа все клипы грузятся заново правками, и
+    карточка заканчивается, а не повторяет отказ без конца."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 15)
+    goal_clip_store.update({(999, 1): ("ok-1", "c1"), (999, 2): ("ok-2", "c2"), (999, 3): ("stale", "c3")})
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3]
+    assert [body(m) for m in api.sent_rich + api.edited_texts] == [
+        rich_html(f"CARD 999 clips={clips} collapsed=False") for clips in ([1], [1, 2], [1, 2, 3])
+    ]
+    assert {key: fid for key, (fid, _) in goal_clip_store.items()} == {
+        (999, 1): "fid-1", (999, 2): "fid-2", (999, 3): "fid-3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_waits_out_429_on_edit_without_second_card(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """429 на правке выжидается внутри карточки: повтор всей отправки прислал бы вторую."""
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import EditMessageText
+
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 10)
+    api.fail_next(EditMessageText, TelegramRetryAfter(
+        method=SendMessage(chat_id=1, text="x"), message="Too Many Requests", retry_after=0,
+    ))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)):
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    assert len(api.sent_rich) == 1
+    [edit] = api.edited_texts
+    assert body(edit) == rich_html("CARD 999 clips=[1, 2] collapsed=False")
 
 
 @pytest.mark.asyncio
