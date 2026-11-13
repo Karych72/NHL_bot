@@ -581,7 +581,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         game_id: матч.
         clips: `event_id` голов, клипы которых отправитель кладёт в `media` сообщения
             под `goal_clip_media_id`; у остальных голов видео нет.
-        collapsed: всё, кроме шапки, — в свёрнутом блоке «Карточка матча» (сообщение
+        collapsed: всё, кроме шапки, — в свёрнутом блоке «Голы и статистика» (сообщение
             подписки только на страну: на виду счёт и блоки стран).
     """
     game_stats, game_goals = _fetch_game_score_rows(game_id)
@@ -708,7 +708,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     }
     body = output_text('messages/game_message.txt', to_template)
     if collapsed:
-        body = rich_details("Карточка матча", body)
+        body = rich_details("Голы и статистика", body)
     return f"{_card_heading(header, game_id)}\n{body}"
 
 

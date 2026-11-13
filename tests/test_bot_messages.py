@@ -321,7 +321,7 @@ def test_rich_message_keeps_gap_after_collapsed_block_and_video_is_a_block(bot_m
 
 def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
     """Подписка только на страну: под шапкой со счётом по периодам вся карточка — свёрнутый
-    блок «Карточка матча», видео голов — вложенный свёрнутый блок в нём."""
+    блок «Голы и статистика», видео голов — вложенный свёрнутый блок в нём."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
@@ -329,7 +329,7 @@ def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
     first, periods, rest = text.split("\n", 2)
     assert first.startswith("<b><i>")
     assert periods == "<i>Периоды: 0:2, 0:1, 0:0</i>"
-    assert rest.startswith("<details><summary>Карточка матча</summary><p>Хет-трик: ")
+    assert rest.startswith("<details><summary>Голы и статистика</summary><p>Хет-трик: ")
     assert "\n" not in rest, "свёрнутая карточка — одна строка-блок"
     assert "<details><summary>Видео голов</summary><p>1-й период · " in rest
 
