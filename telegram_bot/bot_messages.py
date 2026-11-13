@@ -551,6 +551,21 @@ def _period_name(period: int, shootout: bool) -> str:
     return f"{overtime}-й овертайм"
 
 
+def game_clock(period: int, time_in_period: str) -> str:
+    """Время гола от начала матча: «2-й период, 09:37» → «29:37».
+
+    Зачем: во всех сообщениях время гола — общее игровое, не внутри периода (решение
+    человека 2026-11-13). Каждый период и овертайм плей-офф — 20 минут, поэтому период N
+    начинается с (N−1)·20:00; овертайм регулярки (период 4) тоже начинается с 60:00.
+
+    Аргументы:
+        period: номер периода (1–3, 4+ — овертаймы).
+        time_in_period: «ММ:СС» с начала периода, как в `all_goals.time` и `timeInPeriod`.
+    """
+    minutes, seconds = time_in_period.split(":")
+    return f"{(period - 1) * 20 + int(minutes):02d}:{seconds}"
+
+
 def goal_clip_media_id(event_id: int) -> str:
     """`id` клипа гола в поле `media` rich-сообщения — на него ссылается строка гола
     карточки (`tg://video?id=…`, `game_message`) и по нему отправитель кладёт сам клип."""
@@ -599,7 +614,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     )
 
     # Голы обычным текстом по периодам: заголовок периода, строка гола со временем
-    # внутри периода и ассистентами в скобках. Не `<pre>`: моноширинные колонки
+    # от начала матча (`game_clock`) и ассистентами в скобках. Не `<pre>`: моноширинные колонки
     # на телефоне разъезжались от длинной фамилии или крупного шрифта.
     goal_lines: List[str] = []
     scorer_counts: Dict[str, int] = defaultdict(int)
@@ -623,8 +638,8 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
             game_goals['winner_goal'][i],
         )
 
-        # Время внутри периода; у буллита (всегда 00:00) его нет.
-        time_str = "" if shootout and p == 5 else game_goals['goal_time'][i]
+        # Время от начала матча; у буллита (всегда 00:00) его нет.
+        time_str = "" if shootout and p == 5 else game_clock(p, game_goals['goal_time'][i])
         assist_names = [
             _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
             for key in ("assist_1", "assist_2")

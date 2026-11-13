@@ -402,7 +402,7 @@ def test_game_message_groups_goals_by_period_and_skips_period_without_goals(
         f"10:15 · 0:2 — {scorer} [C] (ББ)\n"
         "\n"
         "<b>2-й период</b>\n"
-        f"<details><summary>▶ 02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</summary>"
+        f"<details><summary>▶ 22:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</summary>"
         '<video src="tg://video?id=goal12"></video></details>\n'
     ) in text
     assert "3-й период" not in text
@@ -443,7 +443,7 @@ def _overtime_fetch_all(shootout: bool):
 @pytest.mark.parametrize(
     "shootout, expected_block, expected_mark",
     [
-        (False, "<b>Овертайм</b>\n03:12 · 1:2 — Boldy [C] (ПШ)", "<i>OT</i>"),
+        (False, "<b>Овертайм</b>\n63:12 · 1:2 — Boldy [C] (ПШ)", "<i>OT</i>"),
         # Время буллита (всегда 00:00) не выводится.
         (True, "<b>Буллиты</b>\n1:2 — Boldy [C] (ПШ)", "<i>Б</i>"),
     ],
@@ -457,7 +457,7 @@ def test_game_message_titles_overtime_and_shootout_goal(
             patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
         text = bot_messages.game_message(555)
 
-    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
+    assert "<b>3-й период</b>\n59:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
     assert "2-й период" not in text
     assert text.split("\n")[1] == expected_mark
 
@@ -469,6 +469,16 @@ def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):
     assert bot_messages._period_name(5, False) == "2-й овертайм"
     assert bot_messages._period_name(6, False) == "3-й овертайм"
     assert bot_messages._period_name(5, True) == "Буллиты"
+
+
+@pytest.mark.parametrize(
+    "period, time_in_period, expected",
+    [(1, "05:12", "05:12"), (2, "09:37", "29:37"), (3, "19:59", "59:59"),
+     (4, "03:12", "63:12"), (6, "00:41", "100:41")],
+)
+def test_game_clock_counts_from_game_start(bot_module, period, time_in_period, expected):
+    """Время гола — от начала матча; овертаймы плей-офф по 20 минут (6-й период — 3-й ОТ)."""
+    assert bot_module("bot_messages").game_clock(period, time_in_period) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple
 
 import requests
 
-from bot_messages import team_name_for_abbrev
+from bot_messages import game_clock, team_name_for_abbrev
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,8 @@ def goal_caption(replay: dict) -> str:
     ]
     lines.append("Передачи: " + ", ".join(assists) if assists else "Без передач")
     details = [
-        f"{_period_ru(goal['periodDescriptor'])}, {goal['timeInPeriod']}",
+        f"{_period_ru(goal['periodDescriptor'])}, "
+        f"{game_clock(goal['periodDescriptor']['number'], goal['timeInPeriod'])}",
         f"{away} {goal['awayScore']}:{goal['homeScore']} {home}",
     ]
     for mark in (_STRENGTH_RU.get(goal["strength"]), _MODIFIER_RU.get(goal["goalModifier"])):
