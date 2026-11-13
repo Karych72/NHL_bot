@@ -993,11 +993,17 @@ class TestCountryNightSql(unittest.TestCase):
         loader.season_id = self.SEASON + 1
         self.assertEqual(loader.missing_skater_game_ids(), [])
 
-    def test_score_line_is_the_first_line_of_the_card(self):
-        """Короткое сообщение подписки начинается той же строкой счёта, что и карточка."""
-        line = self.messages.game_score_line(self.GAME)
-        self.assertEqual(line, "<h4>🏒 Home Club 3:2 Away Club</h4>")
-        self.assertEqual(self.messages.game_message(self.GAME)[0].split("\n")[0], line)
+    def test_card_starts_with_scoreboard_of_guests_and_hosts(self):
+        """Первая строка карточки — табло (Задача 119): гости слева, `get_game_stats` отдаёт
+        аббревиатуру команды; команды без маскота — шайба."""
+        self.assertEqual(
+            self.messages.game_message(self.GAME).split("\n")[0],
+            '<table compact><tr><td>🏒 Away Club</td><td align="center"><b>2 : 3</b></td>'
+            '<td align="right">Home Club 🏒</td></tr></table>',
+        )
+
+    def test_game_goal_events_in_game_order(self):
+        self.assertEqual(self.messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(

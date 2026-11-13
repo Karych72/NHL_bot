@@ -51,6 +51,13 @@ def _no_trial(bot_module, monkeypatch) -> None:
     monkeypatch.setattr(bot_module("premium"), "grant_trial", lambda chat_id: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_clip_downloads(bot_module, monkeypatch) -> None:
+    """NHL клипов не отдаёт: гол без клипа в кэше — строкой без видео (скачивание и загрузка
+    клипа в карточку — в tests/test_bot_stats_handlers.py)."""
+    monkeypatch.setattr(bot_module("stats_handlers"), "download_goal_video", lambda game_id, event_id: None)
+
+
 def _start_command(args: str) -> CommandObject:
     """`/start <args>` так, как его разбирает aiogram для хендлера `cmd_start`."""
     return CommandObject(prefix="/", command="start", args=args)
@@ -225,8 +232,8 @@ GAME_TWO = 2026020002
 _GAMES = {
     GAME_ONE: {
         "stats": [
-            (3, 8, 12, 20, 31, False, True, "home", "NYR"),
-            (2, 6, 10, 18, 27, False, True, "away", "BOS"),
+            (3, 8, 12, 20, 31, False, True, "home", "NYR", "NYR"),
+            (2, 6, 10, 18, 27, False, True, "away", "BOS", "BOS"),
         ],
         "goals": [
             ("Panarin", "LW", "RUS", "Fox", None, None, None, 1, "05:12", 1, 0, True, False, False, False, GAME_ONE, 101),
@@ -247,8 +254,8 @@ _GAMES = {
     },
     GAME_TWO: {
         "stats": [
-            (1, 4, 9, 15, 24, False, True, "home", "TOR"),
-            (0, 2, 11, 19, 30, False, True, "away", "MTL"),
+            (1, 4, 9, 15, 24, False, True, "home", "TOR", "TOR"),
+            (0, 2, 11, 19, 30, False, True, "away", "MTL", "MTL"),
         ],
         "goals": [
             ("Matthews", "C", None, "Nylander", None, None, None, 1, "12:00", 1, 0, False, False, False, True, GAME_TWO, 201),
@@ -266,7 +273,7 @@ _GAMES = {
 }
 
 def _game_card_routes(games_by_id):
-    """Шесть общих маршрутов карточки матча (`/start game_<id>`, дайджест дня) по словарю
+    """Общие маршруты карточки матча (`/start game_<id>`, дайджест дня) по словарю
     игр `games_by_id` (`game_id` → ответы формы `_GAMES`) — общий строитель для
     любого сценария (не копировать построчно под каждый)."""
     def by_game(key):
@@ -278,6 +285,11 @@ def _game_card_routes(games_by_id):
     return [
         ("SELECT 1 AS o FROM games", [(1,)]),
         ("SELECT * FROM get_game_stats", by_game("stats")),
+        ("SELECT goal_event_id FROM get_goals_game", lambda params: [
+            (goal[-1],) for goal in games_by_id[params[0]]["goals"]
+        ]),
+        # Кэш клипов: загружен только клип первого гола GAME_ONE (Задача 87).
+        ("FROM bot_goal_clips", lambda params: [("fid-101", "<b>GOAL</b>")] if params[1] == 101 else []),
         ("SELECT * FROM get_goals_game", by_game("goals")),
         ("SELECT * FROM get_goalies_game", by_game("goalies")),
         ("SELECT * FROM get_three_stars_game", by_game("three_stars")),
@@ -339,40 +351,45 @@ async def test_game_card_renders_full_card(
     assert api.sent_messages == [], "карточка уходит rich-сообщением, не parse_mode=HTML"
     (sent,) = api.sent_rich
     text = body(sent)
-    # Шесть разных запросов, по разу; подписки чата — ради блока страны (Задача 76).
-    assert len(cursor.executed) == 6
-    # Формы до матча в итоге матча нет (Задача 84) — голы сразу под периодами.
-    assert (
-        "<h4>🏒 NYR 3:2 BOS</h4><p><i>Периоды: 1:0, 1:1, 1:1</i></p><p>&nbsp;</p>"
-        "<p><b>1-й период</b><br>"
-    ) in text
-    assert "Форма" not in text
+    # Запросы карточки по разу, кэш клипов — по голу; подписки чата — ради блока страны
+    # (Задача 76).
+    assert len(cursor.executed) == 7 + 5
+    # Табло — гости слева (Задача 119); формы до матча в итоге матча нет (Задача 84) —
+    # голы сразу под периодами.
+    assert text.startswith(
+        '<table compact><tr><td>🐻 BOS</td><td align="center"><b>2 : 3</b></td>'
+        '<td align="right">NYR 🗽</td></tr></table>'
+        "<p><i>Периоды: 0:1, 1:1, 1:1</i></p><p>&nbsp;</p><p><b>1-й период</b></p>"
+    )
+    assert "<h4" not in text and "Форма" not in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
-    # Голы — обычным текстом по периодам, без <pre>: время внутри периода, счёт
-    # после гола, автор; ассистенты — строкой ниже. Российский игрок (в том числе
-    # в передачах) капсом; победная шайба — «ПШ», а не «★».
+    # Голы — обычным текстом по периодам, без <pre>: время внутри периода, счёт после
+    # гола «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
+    # передачах) капсом; победная шайба — «ПШ», а не «★». Гол с клипом в кэше — свёрнутый
+    # блок с видео, остальные — строкой.
     assert "<pre>" not in text
     assert rich_html(
         "<b>1-й период</b>\n"
-        "05:12 · 1:0 — PANARIN [LW] (ББ)\n"
-        "Fox\n"
+        "<details><summary>▶ 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</summary>"
+        '<video src="tg://video?id=goal101"></video></details>\n'
         "\n"
         "<b>2-й период</b>\n"
         "11:40 · 1:1 — Marchand [LW]\n"
-        "15:20 · 2:1 — Zibanejad [C] (МБ)\n"
-        "PANARIN, Fox\n"
+        "15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)\n"
         "\n"
         "<b>3-й период</b>\n"
-        "04:10 · 2:2 — Pastrnak [RW]\n"
-        "Marchand\n"
-        "18:03 · 3:2 — PANARIN [LW] (ПШ)"
+        "04:10 · 2:2 — Pastrnak [RW] (Marchand)\n"
+        "18:03 · 2:3 — PANARIN [LW] (ПШ)"
     ) in text, "голы по периодам — отдельные абзацы"
-    # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари.
+    assert [(m.id, m.media.media) for m in sent.rich_message.media] == [("goal101", "fid-101")]
+    assert sent.reply_markup is None, "видео голов — в карточке, не кнопками"
+    # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари —
+    # гости первыми, как на табло.
     assert rich_html(
-        "Броски: 31 - 27 · штрафное время: 8 - 6\n"
+        "Броски: 27 - 31 · штрафное время: 6 - 8\n"
         "Вратари:\n"
-        "Shesterkin — 25/27, 92.59%, 60:00\n"
-        "Swayman — 28/31, 90.32%, 60:00"
+        "Swayman — 28/31, 90.32%, 60:00\n"
+        "Shesterkin — 25/27, 92.59%, 60:00"
     ) in text
     assert "<b>Броски" not in text and "<b>Штрафное" not in text and "<b>Вратари" not in text
     assert text.index("<b>3-й период</b>") < text.index("Броски:") < text.index("<b>Звёзды матча</b>")
@@ -411,28 +428,6 @@ async def test_game_card_of_country_subscriber_ends_with_country_block(
     assert "🇷🇺" not in text, "заголовок страны без флага"
     block_queries = [p for q, p in cursor.executed if "r.nationality" in q]
     assert block_queries == [(GAME_ONE, "RUS")] * 2, "блок — по этому матчу и этой стране"
-
-
-@pytest.mark.asyncio
-async def test_game_card_attaches_one_video_button_per_goal(
-    bot_module, fake_db_router, make_message, fake_bot, api
-):
-    bot = bot_module("bot")
-    fake_db_router(_GAME_CARD_ROUTES)
-    message = make_message(f"/start game_{GAME_ONE}")
-
-    await bot.cmd_start(message, fake_bot, _start_command(f"game_{GAME_ONE}"))
-
-    (sent,) = api.sent_rich
-    buttons = _flat_buttons(sent.reply_markup)
-    assert _callback_data(sent.reply_markup) == [
-        f"gv:{GAME_ONE}:{event_id}" for event_id in (101, 102, 103, 104, 105)
-    ]
-    # Время кнопки — как в строке гола: внутри периода, с периодом коротко.
-    assert buttons[0].text == "▶ 1:0 PANARIN 1п 05:12"
-    assert buttons[4].text == "▶ 3:2 PANARIN 3п 18:03"
-    # Два столбца: столбик на всю ширину сливался со следующей карточкой.
-    assert [len(row) for row in sent.reply_markup.inline_keyboard] == [2, 2, 1]
 
 
 @pytest.mark.asyncio
@@ -508,11 +503,9 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     )
 
     card = api.sent_rich[-1]
-    assert "<h4>🏒 TOR 1:0 MTL</h4>" in body(card)
-    assert rich_html(
-        "<b>1-й период</b>\n12:00 · 1:0 — Matthews [C] (ПШ)\nNylander\n"
-    ) in body(card)
-    assert _callback_data(card.reply_markup) == [f"gv:{GAME_TWO}:201"]
+    assert body(card).startswith('<table compact><tr><td>🔴 MTL</td><td align="center"><b>0 : 1</b></td>')
+    assert rich_html("<b>1-й период</b>\n12:00 · 0:1 — Matthews [C] (ПШ) (Nylander)\n") in body(card)
+    assert card.reply_markup is None
 
 
 # ---------------------------------------------------------------------------
@@ -748,8 +741,8 @@ PARTIAL_GAME_B = 2026020102  # TOR (home) 1 : 3 NYR (away) — 2026-10-03
 
 _PARTIAL_GAME_B_DATA = {
     "stats": [
-        (1, 4, 8, 15, 22, False, False, "home", "TOR"),
-        (3, 6, 9, 24, 30, False, False, "away", "NYR"),
+        (1, 4, 8, 15, 22, False, False, "home", "TOR", "TOR"),
+        (3, 6, 9, 24, 30, False, False, "away", "NYR", "NYR"),
     ],
     "goals": [
         ("Matthews", "C", None, "Marner", None, None, None, 1, "05:00", 1, 0, False, False, False, False, PARTIAL_GAME_B, 301),
@@ -787,7 +780,7 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     (sent,) = api.sent_rich
     assert api.sent_messages == []
     text = body(sent)
-    assert "<h4>🏒 TOR 1:3 NYR</h4>" in text
+    assert text.startswith('<table compact><tr><td>🗽 NYR</td><td align="center"><b>3 : 1</b></td>')
     assert text.endswith("</footer>") and "/stats" in text.rsplit("<footer>", 1)[1]
 
 

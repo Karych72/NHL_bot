@@ -4,7 +4,7 @@ NHL Goal Video Replay service.
 Chain: game_id + event_id → NHL Replay API → Brightcove → MP4 file.
 Подпись к видео (автор, передачи, номер гола в сезоне, время) — из того же ответа Replay API.
 Кэш загруженных клипов (Задача 87): ``file_id`` Telegram и подпись по голу в ``bot_goal_clips`` —
-клип скачивается и грузится один раз, дальше рассылка и кнопка видео шлют его по ``file_id``.
+клип скачивается и грузится один раз, дальше карточки матча кладут его по ``file_id``.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def goal_clip_published(game_id: int, event_id: int) -> bool:
 def cached_goal_clip(game_id: int, event_id: int) -> Optional[Tuple[str, str]]:
     """Загруженный ранее клип гола: (``file_id`` Telegram, HTML-подпись) или ``None``.
 
-    Зачем: рассылка и кнопка видео шлют клип по ``file_id`` — без скачивания с NHL,
+    Зачем: карточка матча кладёт клип по ``file_id`` — без скачивания с NHL,
     ffmpeg и повторной загрузки (Задача 87).
 
     Аргументы: ``game_id``, ``event_id`` — гол.

@@ -182,8 +182,11 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "is_shootouts": [False, False],
             "field": [None, None],
             "team_name": ["BOS", "TOR<script>alert(1)</script>"],
+            "abbreviation": ["BOS", "TOR"],
             "count_rows": 2,
         }
+    if "goal_event_id FROM get_goals_game" in q:
+        return {"goal_event_id": [10, None, 12], "count_rows": 3}
     if "get_goals_game" in q:
         return {
             "scorer": [_EVIL_SCORER, _EVIL_SCORER, _EVIL_SCORER],
@@ -207,13 +210,13 @@ def _game_message_fetch_all(query, params=None, columns=None):
         }
     if "get_goalies_game" in q:
         return {
-            "shots": [30],
-            "saves": [27],
-            "timeonice": ["60:00"],
-            "lastname": ["O'Neill<b>"],
-            "save_percentage": [90.0],
-            "is_home": [True],
-            "count_rows": 1,
+            "shots": [30, 20],
+            "saves": [27, 20],
+            "timeonice": ["60:00", "60:00"],
+            "lastname": ["O'Neill<b>", "Woll"],
+            "save_percentage": [90.0, 100.0],
+            "is_home": [True, False],
+            "count_rows": 2,
         }
     if "get_three_stars_game" in q:
         return _THREE_STARS_ROWS
@@ -242,12 +245,11 @@ def game_message_text(bot_module):
     """game_message() calls only fetch_all; cached_fetch_all is patched to the
     same stub too, so a query that sneaks in through the cache fails loudly
     (the stub's terminal AssertionError) instead of silently escaping to the
-    real database.get_connection()."""
+    real database.get_connection(). Клипы — у первого и третьего голов."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
-        text, goals_meta = bot_messages.game_message(555)
-    return text, goals_meta
+        return bot_messages.game_message(555, clips={10, 12})
 
 
 def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
@@ -259,40 +261,93 @@ def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
 
 
 def test_game_message_marks_playoff_round_under_score_line(bot_module):
-    """Карточка матча плей-офф (Задача 106): счёт — первой строкой (её видно в уведомлении),
-    пометка раунда — курсивом строкой ниже; та же шапка — у сообщения подписки на страну."""
+    """Карточка матча плей-офф (Задача 106): табло — первой строкой (его видно в уведомлении),
+    пометка раунда — курсивом строкой ниже."""
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
-        text, _ = bot_messages.game_message(2025030123)
-        score_line = bot_messages.game_score_line(2025030123)
+        text = bot_messages.game_message(2025030123)
     first, second, _rest = text.split("\n", 2)
-    assert first.startswith("<h4>🏒 ")
+    assert first.startswith("<table compact><tr><td>")
     assert second == "<i>Плей-офф, раунд 1, игра 3</i>"
-    assert score_line == f"{first}\n{second}"
 
 
-def test_rich_message_keeps_gap_after_score_heading(bot_module):
-    """Шапка `<h4>` и блок страны под ней разделены тем же зазором, что и абзацы."""
-    rich_message = bot_module("bot_messages").rich_message
+def test_game_message_scoreboard_puts_guests_left_with_mascots(game_message_text):
+    """Табло (проба 7a, Задача 119): гости и их маскот слева, счёт «гости : хозяева» по
+    центру, хозяева с маскотом справа; ни `<h4>`, ни пометки ОТ/Б в матче без овертайма."""
+    first, second, _rest = game_message_text.split("\n", 2)
+    assert first == (
+        '<table compact><tr><td>🍁 TOR&lt;script&gt;alert(1)&lt;/script&gt;</td>'
+        '<td align="center"><b>0 : 3</b></td><td align="right">BOS 🐻</td></tr></table>'
+    )
+    assert second == "<i>Периоды: 0:2, 0:1, 0:0</i>"
+    assert "<h4" not in game_message_text
 
-    assert rich_message("<h4>Счёт</h4>\n\nРоссия").html == "<h4>Счёт</h4><p>&nbsp;</p><p>Россия</p>"
-    assert rich_message("<h4>Счёт</h4>\nПериоды").html == "<h4>Счёт</h4><p>Периоды</p>"
+
+def test_score_line_marks_unknown_team_with_puck(bot_module):
+    """Команда без маскота в словаре — шайба 🏒, а не пустая ячейка."""
+    bot_messages = bot_module("bot_messages")
+    header = {"away": "A", "home": "H", "away_abbr": "XXX", "home_abbr": "PIT",
+              "away_score": "1", "home_score": "2"}
+    assert bot_messages._score_line(header).startswith("<table compact><tr><td>🏒 A</td>")
+
+
+def test_card_heading_puts_overtime_and_playoff_marks_under_scoreboard(bot_module):
+    """Пометка ОТ/Б — строкой ниже табло, вместе с раундом плей-офф."""
+    bot_messages = bot_module("bot_messages")
+    header = {"away": "A", "home": "H", "away_abbr": "", "home_abbr": "",
+              "away_score": "1", "home_score": "2", "extra": " (Б)"}
+    heading = bot_messages._card_heading(header, 2025030123)
+    assert heading.split("\n")[1] == "<i>Б · Плей-офф, раунд 1, игра 3</i>"
+    assert "\n" not in bot_messages._card_heading({**header, "extra": ""}, 2025020123)
+
+
+def test_rich_message_keeps_gap_after_collapsed_block(bot_module):
+    """Свёрнутый блок (строка гола с клипом, свёрнутая карточка) отделён от следующего
+    абзаца тем же зазором, что и абзацы; после таблицы (и табло) зазора нет, видео —
+    отдельный блок, не абзац."""
+    bm = bot_module("bot_messages")
+    clip = bm.rich_details("▶ 1:0 — X", '<video src="tg://video?id=goal1"></video>')
+    table = "<table compact><tr><td>A</td></tr></table>"
+
+    assert bm.rich_message(f"{table}\nПериоды").html == f"{table}<p>Периоды</p>"
+    assert bm.rich_message(f"{clip}\n\nДалее").html == f"{clip}<p>&nbsp;</p><p>Далее</p>"
+    assert bm.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
+    assert clip.endswith('</summary><video src="tg://video?id=goal1"></video></details>')
+
+
+def test_game_message_collapsed_keeps_only_scoreboard_in_sight(bot_module):
+    """Подписка только на страну: под табло вся карточка — свёрнутый блок «Карточка матча»."""
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
+        text = bot_messages.game_message(555, clips={10}, collapsed=True)
+    first, rest = text.split("\n", 1)
+    assert first.startswith("<table compact><tr><td>")
+    assert rest.startswith("<details><summary>Карточка матча</summary><p><i>Периоды:")
+    assert "\n" not in rest, "свёрнутая карточка — одна строка-блок"
+    assert '<details><summary>▶ 05:30 · 0:1' in rest
+
+
+def test_game_goal_events_skips_goals_without_event(bot_module):
+    bot_messages = bot_module("bot_messages")
+    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all):
+        assert bot_messages.game_goal_events(555) == [10, 12]
 
 
 def test_game_message_has_no_playoff_mark_for_regular_game(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "Плей-офф" not in text
 
 
 def test_game_message_escapes_script_tag_in_team_name(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "TOR&lt;script&gt;alert(1)&lt;/script&gt;" in text
     assert "<script>" not in text
 
 
 def test_game_message_escapes_apostrophe_ampersand_angle_brackets_in_scorer(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*" in text
     assert _EVIL_SCORER not in text
 
@@ -300,32 +355,32 @@ def test_game_message_escapes_apostrophe_ampersand_angle_brackets_in_scorer(game
 def test_game_message_preserves_hyphen_underscore_asterisk_unescaped(game_message_text):
     """html.escape only touches &, <, >, and quotes — punctuation used in real
     player names (hyphenated surnames, nicknames) must survive unchanged."""
-    text, _ = game_message_text
+    text = game_message_text
     assert "Co_junior-star*" in text
 
 
 def test_game_message_escapes_assist_name_with_apostrophe(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "Sm&#x27;th" in text
     assert "Sm'th" not in text
 
 
 def test_game_message_renders_hat_trick_line_with_escaped_name(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "\nХет-трик: O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* (×3)\n" in text
     assert "<b>Хет-трик" not in text, "хет-трик — обычный текст, не жирный (стиль §9)"
 
 
 def test_game_message_escapes_goalie_lastname(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "O&#x27;Neill&lt;b&gt;" in text
     assert "O'Neill<b>" not in text
 
 
-def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
-    _, goals_meta = game_message_text
-    assert [g["event_id"] for g in goals_meta] == [10, 11, 12]
-    assert all(g["game_id"] == 555 for g in goals_meta)
+def test_game_message_lists_guest_goalie_first(game_message_text):
+    """Вратари, броски и штраф — гостями первыми, как на табло."""
+    assert "Вратари:\nWoll — " in game_message_text
+    assert "Броски: 20 - 30 · штрафное время: 6 - 4" in game_message_text
 
 
 # ---------------------------------------------------------------------------
@@ -335,17 +390,20 @@ def test_game_message_returns_goals_meta_for_video_buttons(game_message_text):
 def test_game_message_groups_goals_by_period_and_skips_period_without_goals(
     game_message_text,
 ):
-    """Голы фикстуры — в 1-м и 2-м периодах: заголовка 3-го нет, время внутри периода."""
-    text, _ = game_message_text
+    """Голы фикстуры — в 1-м и 2-м периодах: заголовка 3-го нет, время внутри периода,
+    ассистенты — в скобках. Гол с клипом — свёрнутый блок с видео внутри (Задача 119), без
+    клипа — обычная строка; счёт — «гости:хозяева»."""
+    text = game_message_text
     scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
     assert (
         "<b>1-й период</b>\n"
-        f"05:30 · 1:0 — {scorer} [C]\n"
-        "Sm&#x27;th\n"
-        f"10:15 · 2:0 — {scorer} [C] (ББ)\n"
+        f"<details><summary>▶ 05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)</summary>"
+        '<video src="tg://video?id=goal10"></video></details>\n'
+        f"10:15 · 0:2 — {scorer} [C] (ББ)\n"
         "\n"
         "<b>2-й период</b>\n"
-        f"02:00 · 3:0 — {scorer} [C] (ПВ, ПШ)\n"
+        f"<details><summary>▶ 02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</summary>"
+        '<video src="tg://video?id=goal12"></video></details>\n'
     ) in text
     assert "3-й период" not in text
     assert "<pre>" not in text and "Форма" not in text
@@ -383,36 +441,34 @@ def _overtime_fetch_all(shootout: bool):
 
 
 @pytest.mark.parametrize(
-    "shootout, expected_block, expected_label",
+    "shootout, expected_block, expected_mark",
     [
-        (False, "<b>Овертайм</b>\n03:12 · 2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy ОТ 03:12"),
-        # Время буллита (всегда 00:00) не выводится — ни в строке, ни в кнопке.
-        (True, "<b>Буллиты</b>\n2:1 — Boldy [C] (ПШ)", "▶ 2:1 Boldy Б"),
+        (False, "<b>Овертайм</b>\n03:12 · 1:2 — Boldy [C] (ПШ)", "<i>OT</i>"),
+        # Время буллита (всегда 00:00) не выводится.
+        (True, "<b>Буллиты</b>\n1:2 — Boldy [C] (ПШ)", "<i>Б</i>"),
     ],
 )
 def test_game_message_titles_overtime_and_shootout_goal(
-    bot_module, shootout, expected_block, expected_label
+    bot_module, shootout, expected_block, expected_mark
 ):
     bot_messages = bot_module("bot_messages")
     stub = _overtime_fetch_all(shootout)
     with patch.object(bot_messages, "fetch_all", side_effect=stub), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
-        text, goals_meta = bot_messages.game_message(555)
+        text = bot_messages.game_message(555)
 
     assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n\n" + expected_block in text
     assert "2-й период" not in text
-    assert [g["label"] for g in goals_meta] == [
-        "▶ 1:0 Kaprizov 1п 06:09", "▶ 1:1 Hughes 3п 19:39", expected_label,
-    ]
+    assert text.split("\n")[1] == expected_mark
 
 
-def test_period_names_count_playoff_overtimes_from_period_number(bot_module):
+def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):
     """Плей-офф (Задача 37C): период 5 без буллитов — второй овертайм, а не «Буллиты»."""
     bot_messages = bot_module("bot_messages")
-    assert bot_messages._period_names(4, False) == ("Овертайм", "ОТ")
-    assert bot_messages._period_names(5, False) == ("2-й овертайм", "2ОТ")
-    assert bot_messages._period_names(6, False) == ("3-й овертайм", "3ОТ")
-    assert bot_messages._period_names(5, True) == ("Буллиты", "Б")
+    assert bot_messages._period_name(4, False) == "Овертайм"
+    assert bot_messages._period_name(5, False) == "2-й овертайм"
+    assert bot_messages._period_name(6, False) == "3-й овертайм"
+    assert bot_messages._period_name(5, True) == "Буллиты"
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +476,7 @@ def test_period_names_count_playoff_overtimes_from_period_number(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_game_message_renders_three_stars_heading_and_three_lines(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "<b>Звёзды матча</b>" in text
     # Звёзды — нумерованные строки «1. …», без «★» (символов в теле сообщения нет).
     block = text.split("<b>Звёзды матча</b>", 1)[1]
@@ -429,21 +485,21 @@ def test_game_message_renders_three_stars_heading_and_three_lines(game_message_t
 
 
 def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
-    text, _ = game_message_text
+    text = game_message_text
     assert "\n1. Kaprizov (MIN) — 1+0\n" in text
 
 
 def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
     game_message_text,
 ):
-    text, _ = game_message_text
+    text = game_message_text
     assert "\n2. Thompson (VGK) — 33/34, 97.1%\n" in text
 
 
 def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
     game_message_text,
 ):
-    text, _ = game_message_text
+    text = game_message_text
     assert (
         "3. O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
         "(TOR&lt;script&gt;alert(1)&lt;/script&gt;)"
@@ -454,7 +510,7 @@ def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
 def test_game_message_omits_tail_when_three_star_stats_are_null(game_message_text):
     """Третья звезда фикстуры без статистики: строка обрывается перед «—»
     вместо `— None+None`."""
-    text, _ = game_message_text
+    text = game_message_text
     assert "TOR&lt;script&gt;alert(1)&lt;/script&gt;) —" not in text
 
 
@@ -468,7 +524,7 @@ def test_game_message_omits_three_stars_block_when_no_rows(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "fetch_all", side_effect=fetch_all_no_stars), \
             patch.object(bot_messages, "cached_fetch_all", side_effect=fetch_all_no_stars):
-        text, _ = bot_messages.game_message(555)
+        text = bot_messages.game_message(555)
 
     assert "Звёзды матча" not in text
     assert "Kaprizov" not in text and "Thompson" not in text
@@ -1492,10 +1548,10 @@ def test_day_digest_summary_body_plain_matchup_and_italic_indented_periods(bot_m
     периоды и OT — вторая строка курсивом с отступом figure space."""
     bot_messages = bot_module("bot_messages")
     stats = {
-        1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers"),
-            (2, 0, 0, 0, 0, False, False, "away", "Penguins")],
-        2: [(2, 0, 0, 0, 0, True, False, "home", "Maple Leafs"),
-            (1, 0, 0, 0, 0, True, False, "away", "Kings")],
+        1: [(0, 0, 0, 0, 0, False, False, "home", "Flyers", "Flyers"),
+            (2, 0, 0, 0, 0, False, False, "away", "Penguins", "Penguins")],
+        2: [(2, 0, 0, 0, 0, True, False, "home", "Maple Leafs", "Maple Leafs"),
+            (1, 0, 0, 0, 0, True, False, "away", "Kings", "Kings")],
     }
     goals = {
         1: [_goal_row(1, 0, 1), _goal_row(3, 0, 2)],
@@ -1518,7 +1574,7 @@ def test_day_digest_summary_body_marks_playoff_game_after_periods(bot_module, fa
     """Матч плей-офф в сводке дня: пометка раунда — в курсивной строке после периодов,
     у матча регулярки той же ночи её нет (Задача 106)."""
     bot_messages = bot_module("bot_messages")
-    stats = [(1, 0, 0, 0, 0, False, False, "home", "A"), (0, 0, 0, 0, 0, False, False, "away", "B")]
+    stats = [(1, 0, 0, 0, 0, False, False, "home", "A", "A"), (0, 0, 0, 0, 0, False, False, "away", "B", "B")]
     fake_db_router([
         ("get_game_stats", stats),
         ("get_goals_game", [_goal_row(2, 1, 0)]),
@@ -1539,8 +1595,8 @@ def test_day_digest_summary_body_keeps_scores_unpadded_and_escapes_names(
     добивки; имена команд из БД экранируются."""
     bot_messages = bot_module("bot_messages")
     stats = {
-        1: [(10, 0, 0, 0, 0, False, False, "home", "A"), (2, 0, 0, 0, 0, False, False, "away", "B")],
-        2: [(3, 0, 0, 0, 0, False, False, "home", "C&C"), (2, 0, 0, 0, 0, False, False, "away", "D")],
+        1: [(10, 0, 0, 0, 0, False, False, "home", "A", "A"), (2, 0, 0, 0, 0, False, False, "away", "B", "B")],
+        2: [(3, 0, 0, 0, 0, False, False, "home", "C&C", "C&C"), (2, 0, 0, 0, 0, False, False, "away", "D", "D")],
     }
     fake_db_router([
         ("get_game_stats", lambda params: stats[params[0]]),
@@ -1606,56 +1662,29 @@ def test_last_night_day_is_moscow_date_minus_one_night(
 
 
 # ---------------------------------------------------------------------------
-# day_digest() — branch coverage around fetch_all + game_message collaboration
+# day_digest() — набор матчей дня
 # ---------------------------------------------------------------------------
 
-def test_day_digest_reports_no_completed_games_when_day_omitted(bot_module):
+def test_day_digest_without_day_and_games_in_season_returns_no_day(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(
         bot_messages, "fetch_all", return_value={"day": [None], "count_rows": 1}
     ):
-        day_label, games = bot_messages.day_digest(None)
-    assert day_label is None
-    assert games == [(0, "В базе пока нет завершенных матчей.", [])]
+        assert bot_messages.day_digest(None) == (None, [])
 
 
-def test_day_digest_reports_none_found_for_given_day_with_no_games(bot_module):
+def test_day_digest_given_day_without_games_returns_empty_list(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(
         bot_messages, "fetch_all", return_value={"game_id": [], "count_rows": 0}
     ):
-        day_label, games = bot_messages.day_digest("2025-01-01")
-    assert day_label == "2025-01-01"
-    assert games == [(0, "За 2025-01-01 завершенных матчей не найдено.", [])]
+        assert bot_messages.day_digest("2025-01-01") == ("2025-01-01", [])
 
 
-def test_day_digest_builds_one_result_per_game_id(bot_module):
+def test_day_digest_returns_game_ids_of_the_day(bot_module):
     bot_messages = bot_module("bot_messages")
-    game_ids_row = {"game_id": [10, 20], "count_rows": 2}
-
-    def fake_game_message(game_id):
-        return f"text-{game_id}", [{"game_id": game_id, "event_id": 1, "label": "x"}]
-
-    with patch.object(bot_messages, "fetch_all", return_value=game_ids_row), \
-            patch.object(bot_messages, "game_message", side_effect=fake_game_message):
-        day_label, games = bot_messages.day_digest("2025-01-01")
-
-    assert day_label == "2025-01-01"
-    assert games == [
-        (10, "text-10", [{"game_id": 10, "event_id": 1, "label": "x"}]),
-        (20, "text-20", [{"game_id": 20, "event_id": 1, "label": "x"}]),
-    ]
-
-
-def test_day_digest_falls_back_to_not_found_when_all_game_texts_empty(bot_module):
-    bot_messages = bot_module("bot_messages")
-    game_ids_row = {"game_id": [10], "count_rows": 1}
-
-    with patch.object(bot_messages, "fetch_all", return_value=game_ids_row), \
-            patch.object(bot_messages, "game_message", return_value=("", [])):
-        day_label, games = bot_messages.day_digest("2025-01-01")
-
-    assert games == [(0, "За 2025-01-01 завершенных матчей не найдено.", [])]
+    with patch.object(bot_messages, "fetch_all", return_value={"game_id": [10, 20], "count_rows": 2}):
+        assert bot_messages.day_digest("2025-01-01") == ("2025-01-01", [10, 20])
 
 
 # ---------------------------------------------------------------------------

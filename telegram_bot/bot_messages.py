@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple, Union
 
-from aiogram.types import InputRichMessage
+from aiogram.types import InputRichMessage, InputRichMessageMedia
 from psycopg2 import sql
 
 import config
@@ -229,9 +229,14 @@ _STRIPED_MIN_ROWS = 10
 _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
 
-# Строки-блоки, которые `rich_message()` не вкладывает в абзац: заголовок карточки, таблица,
-# свёрнутый блок, список, подвал — каждый собран своим хелпером в одну строку.
-_BLOCK_TAGS = ("<h4", "<table", "<details", "<ul", "<footer")
+# Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица (и табло матча),
+# свёрнутый блок, список, подвал, видео гола — каждый собран своим хелпером в одну строку.
+_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<video")
+
+# После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
+# (строка гола с клипом перед следующим периодом, свёрнутая карточка перед блоком страны).
+# После таблиц зазора нет.
+_GAP_AFTER = ("<p>", "<details")
 
 
 def _rich_html(text: str) -> str:
@@ -244,7 +249,7 @@ def _rich_html(text: str) -> str:
         nonlocal gap
         if not paragraph:
             return
-        if gap and blocks and blocks[-1].startswith(("<p>", "<h4")):
+        if gap and blocks and blocks[-1].startswith(_GAP_AFTER):
             blocks.append(_PARAGRAPH_GAP)
         blocks.append("<p>" + "<br>".join(paragraph) + "</p>")
         paragraph.clear()
@@ -263,7 +268,9 @@ def _rich_html(text: str) -> str:
     return "".join(blocks)
 
 
-def rich_message(text: str) -> InputRichMessage:
+def rich_message(
+    text: str, media: Optional[List[InputRichMessageMedia]] = None
+) -> InputRichMessage:
     """Текст бота → rich-сообщение (Bot API 10.1): блок строк — абзац `<p>` с переносами
     `<br>`, пустая строка — граница абзацев с видимым зазором, строка-блок (`_table`,
     `rich_details`, `rich_list`, `rich_footer`) — свой блок.
@@ -273,9 +280,12 @@ def rich_message(text: str) -> InputRichMessage:
     зазором. Тег не должен пересекать пустую строку: блоки — законченные фрагменты
     разметки, иначе Telegram отвергнет сообщение.
 
-    Аргументы: `text` — построчный HTML, как его собирают функции этого модуля.
+    Аргументы:
+        text: построчный HTML, как его собирают функции этого модуля.
+        media: клипы голов карточки матча — по `id` из `goal_clip_media_id`, на которые
+            ссылаются её строки голов (`game_message`).
     """
-    return InputRichMessage(html=_rich_html(text))
+    return InputRichMessage(html=_rich_html(text), media=media or None)
 
 
 def rich_footer(text: str) -> str:
@@ -368,7 +378,7 @@ def _format_three_star_line(
 
 _GAME_STATS_COLUMNS = [
     'goals', 'pim', 'blocks', 'hits', 'shots', 'is_overtime',
-    'is_shootouts', 'field', 'team_name',
+    'is_shootouts', 'field', 'team_name', 'abbreviation',
 ]
 _GOALS_GAME_COLUMNS = [
     "scorer",
@@ -418,13 +428,18 @@ def _running_scores(game_goals: Dict) -> List[Tuple[int, int]]:
     return scores
 
 
-def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
+def _game_score_header(game_stats: Dict, game_goals: Dict, away_first: bool = False) -> Dict[str, str]:
     """Счёт матча по частям, сырыми строками (без HTML): `home`, `away`,
-    `home_score`, `away_score`, `extra` (« (OT)»/« (Б)»/пусто),
+    `home_abbr`, `away_abbr`, `home_score`, `away_score`, `extra` (« (OT)»/« (Б)»/пусто),
     `period_scores` («2:1, 4:2, 2:1»).
 
     Единственная точка расчёта шапки карточки матча и строки сводки /today —
     иначе две копии счёта по периодам разойдутся.
+
+    Аргументы:
+        game_stats, game_goals: ответ `_fetch_game_score_rows`.
+        away_first: счёт по периодам «гости:хозяева» — как на табло карточки (`_score_line`);
+            сводка /today пишет хозяев первыми.
     """
     is_overtime = game_stats['is_overtime'][0]
     is_shootouts = game_stats['is_shootouts'][0]
@@ -445,10 +460,15 @@ def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
             period_away[p] += a - prev_a
         prev_h, prev_a = h, a
     num_periods = 4 if is_overtime and not is_shootouts else 3
-    parts = [f"{period_home[p]}:{period_away[p]}" for p in range(1, num_periods + 1)]
+    parts = [
+        f"{period_away[p]}:{period_home[p]}" if away_first else f"{period_home[p]}:{period_away[p]}"
+        for p in range(1, num_periods + 1)
+    ]
     return {
         'home': str(game_stats['team_name'][0] or ""),
         'away': str(game_stats['team_name'][1] or ""),
+        'home_abbr': str(game_stats['abbreviation'][0] or ""),
+        'away_abbr': str(game_stats['abbreviation'][1] or ""),
         'home_score': str(game_stats['goals'][0]),
         'away_score': str(game_stats['goals'][1]),
         'extra': extra,
@@ -456,15 +476,33 @@ def _game_score_header(game_stats: Dict, game_goals: Dict) -> Dict[str, str]:
     }
 
 
+# Маскоты команд на табло карточки (`_score_line`) по `teams.abbreviation`. Эмодзи, а не
+# логотипы: кастомные эмодзи требуют username с Fragment, логотипы — товарные знаки NHL.
+_TEAM_MASCOTS = {
+    "ANA": "🦆", "BOS": "🐻", "BUF": "⚔️", "CGY": "🔥", "CAR": "🌀", "CHI": "🪶", "COL": "🏔️",
+    "CBJ": "💣", "DAL": "⭐", "DET": "🐙", "EDM": "🛢️", "FLA": "🐆", "LAK": "👑", "MIN": "🌲",
+    "MTL": "🔴", "NSH": "🐯", "NJD": "😈", "NYI": "🏝️", "NYR": "🗽", "OTT": "🏛️", "PHI": "🟠",
+    "PIT": "🐧", "SJS": "🦈", "SEA": "🦑", "STL": "🎵", "TBL": "⚡", "TOR": "🍁", "UTA": "🦣",
+    "VAN": "🐋", "VGK": "🛡️", "WSH": "🦅", "WPG": "✈️",
+}
+_NO_MASCOT = "🏒"
+
+
 def _score_line(header: Dict[str, str]) -> str:
-    """HTML-строка счёта «<h4>🏒 Хозяева 4:2 Гости (OT)</h4>» из `_game_score_header`:
-    первая строка карточки матча и шапка сообщения подписки на страну. Заголовок, а не
-    `<b>`: среди сообщений рассылки шапка матча должна выделяться (исключение из правила 1
-    стиля, `docs/telegram_bot.md`)."""
+    """Табло матча из `_game_score_header` — таблица в одну строку «🦈 Гости | 2 : 3 |
+    Хозяева 🐧»: первая строка карточки матча, видная в уведомлении.
+
+    Зачем таблица: заголовок `<h4>` клиенты рисуют разным кеглем (на Desktop крупно, на iOS
+    мелко), а табло выглядит одинаково и выделяется среди сообщений рассылки (решение
+    человека 2026-11-13, проба 7a; правило 1 стиля, `docs/telegram_bot.md`). Пометка ОТ/Б —
+    у `_card_heading` строкой ниже.
+    """
+    away = f"{_TEAM_MASCOTS.get(header['away_abbr'], _NO_MASCOT)} {html.escape(header['away'])}"
+    home = f"{html.escape(header['home'])} {_TEAM_MASCOTS.get(header['home_abbr'], _NO_MASCOT)}"
+    score = f"{html.escape(header['away_score'])} : {html.escape(header['home_score'])}"
     return (
-        f"<h4>🏒 {html.escape(header['home'])} {html.escape(header['home_score'])}:"
-        f"{html.escape(header['away_score'])} {html.escape(header['away'])}"
-        f"{html.escape(header['extra'])}</h4>"
+        f'<table compact><tr><td>{away}</td><td align="center"><b>{score}</b></td>'
+        f'<td align="right">{home}</td></tr></table>'
     )
 
 
@@ -485,19 +523,17 @@ def playoff_label(game_id: int) -> Optional[str]:
 
 
 def _card_heading(header: Dict[str, str], game_id: int) -> str:
-    """Шапка карточки матча: строка счёта (`_score_line`) и, у плей-офф, курсивная
-    пометка раунда (`playoff_label`) строкой ниже — счёт остаётся первой строкой,
-    видной в уведомлении."""
-    label = playoff_label(game_id)
-    if label is None:
+    """Шапка карточки матча: табло (`_score_line`) и курсивом строкой ниже — пометка ОТ/Б
+    и раунд плей-офф (`playoff_label`), если есть; табло остаётся первой строкой."""
+    marks = [mark for mark in (header['extra'].strip(" ()"), playoff_label(game_id)) if mark]
+    if not marks:
         return _score_line(header)
-    return f"{_score_line(header)}\n<i>{label}</i>"
+    return f"{_score_line(header)}\n<i>{html.escape(' · '.join(marks))}</i>"
 
 
-def _period_names(period: int, shootout: bool) -> Tuple[str, str]:
-    """Название периода гола в карточке матча: (заголовок блока голов, коротко
-    для кнопки видео) — «2-й период»/«2п», «Овертайм»/«ОТ», «2-й овертайм»/«2ОТ»,
-    «Буллиты»/«Б».
+def _period_name(period: int, shootout: bool) -> str:
+    """Заголовок блока голов периода в карточке матча: «2-й период», «Овертайм»,
+    «2-й овертайм», «Буллиты».
 
     Аргументы:
         period: номер периода из `get_goals_game`; в регулярке 4 — овертайм,
@@ -506,19 +542,49 @@ def _period_names(period: int, shootout: bool) -> Tuple[str, str]:
             (плей-офф).
     """
     if shootout and period == 5:
-        return "Буллиты", "Б"
+        return "Буллиты"
     if period <= 3:
-        return f"{period}-й период", f"{period}п"
+        return f"{period}-й период"
     overtime = period - 3
     if overtime == 1:
-        return "Овертайм", "ОТ"
-    return f"{overtime}-й овертайм", f"{overtime}ОТ"
+        return "Овертайм"
+    return f"{overtime}-й овертайм"
 
 
-def game_message(game_id: int) -> Tuple[str, List[Dict]]:
-    """Return (rendered_text, goal_video_metadata)."""
+def goal_clip_media_id(event_id: int) -> str:
+    """`id` клипа гола в поле `media` rich-сообщения — на него ссылается строка гола
+    карточки (`tg://video?id=…`, `game_message`) и по нему отправитель кладёт сам клип."""
+    return f"goal{event_id}"
+
+
+def game_goal_events(game_id: int) -> List[int]:
+    """`event_id` голов матча по порядку игры (голы без события пропущены).
+
+    Зачем: клипы карточки готовятся до её сборки — `game_message` рисует видео только
+    у голов, клип которых отправитель положит в сообщение.
+
+    Аргументы: `game_id` — матч.
+    """
+    goals = fetch_all("SELECT goal_event_id FROM get_goals_game(%s)", (game_id,), ["goal_event_id"])
+    return [int(evt) for evt in goals["goal_event_id"] if evt is not None]
+
+
+def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = False) -> str:
+    """Карточка матча: табло, счёт по периодам, голы по периодам, броски, вратари, звёзды.
+
+    Зачем: одна карточка для меню, `/today` и рассылки. Гол, клип которого лежит в
+    сообщении, — свёрнутый блок: строка гола — его заголовок, внутри видео (Задача 119);
+    кнопок видео под сообщением нет. Счёт везде «гости:хозяева», как на табло.
+
+    Аргументы:
+        game_id: матч.
+        clips: `event_id` голов, клипы которых отправитель кладёт в `media` сообщения
+            под `goal_clip_media_id`; остальные голы — обычной строкой.
+        collapsed: всё, кроме табло, — в свёрнутом блоке «Карточка матча» (сообщение
+            подписки только на страну: на виду счёт и блоки стран).
+    """
     game_stats, game_goals = _fetch_game_score_rows(game_id)
-    header = _game_score_header(game_stats, game_goals)
+    header = _game_score_header(game_stats, game_goals, away_first=True)
     # is_shootouts читается только при is_overtime — как в `_game_score_header`.
     shootout = bool(game_stats['is_overtime'][0] and game_stats['is_shootouts'][0])
     game_goalies = fetch_all(
@@ -533,15 +599,14 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
 
     # Голы обычным текстом по периодам: заголовок периода, строка гола со временем
-    # внутри периода, ассистенты строкой ниже. Не `<pre>`: моноширинные колонки
+    # внутри периода и ассистентами в скобках. Не `<pre>`: моноширинные колонки
     # на телефоне разъезжались от длинной фамилии или крупного шрифта.
     goal_lines: List[str] = []
-    goals_meta = []
     scorer_counts: Dict[str, int] = defaultdict(int)
     prev_period = None
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
-        title, short = _period_names(p, shootout)
+        title = _period_name(p, shootout)
         if p != prev_period:
             if goal_lines:
                 goal_lines.append("")
@@ -565,22 +630,18 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
             for key in ("assist_1", "assist_2")
             if game_goals[key][i] is not None
         ]
-        score = f"{h}:{a}"
         time_prefix = f"{time_str} · " if time_str else ""
-        goal_lines.append(
-            f"{time_prefix}{score} — "
-            f"{html.escape(scorer + (f' [{pos}]' if pos else '') + situation)}"
+        assists = f" ({', '.join(assist_names)})" if assist_names else ""
+        line = f"{time_prefix}{a}:{h} — " + html.escape(
+            scorer + (f' [{pos}]' if pos else '') + situation + assists
         )
-        if assist_names:
-            goal_lines.append(html.escape(", ".join(assist_names)))
-
         evt = game_goals['goal_event_id'][i]
-        if evt is not None:
-            goals_meta.append({
-                'game_id': game_goals['goal_game_id'][i],
-                'event_id': evt,
-                'label': f"▶ {score} {scorer} {short} {time_str}".rstrip(),
-            })
+        if evt is not None and int(evt) in clips:
+            goal_lines.append(
+                rich_details(f"▶ {line}", f'<video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>')
+            )
+        else:
+            goal_lines.append(line)
     goals_block = "\n".join(goal_lines)
 
     hat_lines = [
@@ -590,10 +651,10 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     ]
     hat_tricks = "\n".join(hat_lines) if hat_lines else ""
 
-    # Вратарь — своей строкой (хозяева первыми): в одну строку двое не влезают
+    # Вратарь — своей строкой (гости первыми, как на табло): в одну строку двое не влезают
     # в ширину телефона.
     goalie_lines: List[str] = []
-    for i in range(game_goalies['count_rows']):
+    for i in sorted(range(game_goalies['count_rows']), key=lambda i: bool(game_goalies['is_home'][i])):
         toi = game_goalies['timeonice'][i]
         # Both NULL and the legacy "00:00" sentinel mean "this goalie did not
         # play in this game" — skip rendering.
@@ -630,7 +691,6 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
     )
 
     to_template = {
-        'score_line': _card_heading(header, game_id),
         'home_shots': html.escape(str(game_stats['shots'][0])),
         'away_shots': html.escape(str(game_stats['shots'][1])),
         'home_penalties': html.escape(str(game_stats['pim'][0])),
@@ -641,7 +701,10 @@ def game_message(game_id: int) -> Tuple[str, List[Dict]]:
         'hat_tricks': hat_tricks,
         'three_stars': three_stars,
     }
-    return output_text('messages/game_message.txt', to_template), goals_meta
+    body = output_text('messages/game_message.txt', to_template)
+    if collapsed:
+        body = rich_details("Карточка матча", body)
+    return f"{_card_heading(header, game_id)}\n{body}"
 
 
 def game_exists(game_id: int) -> bool:
@@ -2318,12 +2381,6 @@ def country_game_block(code: str, game_id: int) -> Optional[str]:
     return _country_blocks(code, "g.game_id", game_id).get(game_id)
 
 
-def game_score_line(game_id: int) -> str:
-    """Шапка карточки матча `game_id` — счёт и пометка плей-офф (`_card_heading`).
-    Нужна короткому сообщению подписки на страну (Задача 76), где полной карточки нет."""
-    return _card_heading(_game_score_header(*_fetch_game_score_rows(game_id)), game_id)
-
-
 def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
     """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
     порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
@@ -2459,12 +2516,15 @@ def last_night_day(nights_back: int = 0) -> str:
     return (datetime.now(MSK).date() - timedelta(days=1 + nights_back)).isoformat()
 
 
-def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]]]]:
-    """Return (day_label, list of (game_id, game_text, goals_meta)).
+def day_digest(day=None) -> Tuple[Optional[str], List[int]]:
+    """Матчи игрового дня для дайджеста: (день, `game_id` по порядку).
 
-    game_id is 0 only for synthetic error/info rows (single tuple in the list).
+    Зачем: `/today`, дайджест рассылки и AI-запрос за дату показывают один и тот же
+    набор матчей; карточку или сводку собирает `dispatch_day_digest_messages`.
+
+    Аргументы: `day` — игровой день; `None` — последний день сезона с матчами в базе
+    (день `None` в ответе — в базе сезона матчей нет вовсе).
     """
-    day_label: Optional[str] = None
     if day is None:
         latest_day = fetch_all(
             "SELECT max(day) AS day FROM games WHERE season_id = %s",
@@ -2473,29 +2533,14 @@ def day_digest(day=None) -> Tuple[Optional[str], List[Tuple[int, str, List[Dict]
         )
         day = latest_day["day"][0]
         if day is None:
-            return (None, [(0, "В базе пока нет завершенных матчей.", [])])
-        day = str(day)
-    else:
-        day = str(day)
-    day_label = day
-
+            return None, []
+    day = str(day)
     game_ids = fetch_all(
         "SELECT DISTINCT game_id FROM games WHERE day = %s AND season_id = %s ORDER BY game_id",
         (day, config.SEASON_ID),
         ['game_id'],
     )
-    if game_ids['count_rows'] == 0:
-        return (day_label, [(0, f'За {day} завершенных матчей не найдено.', [])])
-
-    results: List[Tuple[int, str, List[Dict]]] = []
-    for game_id in game_ids['game_id']:
-        text, goals_meta = game_message(game_id)
-        if text:
-            results.append((game_id, text, goals_meta))
-
-    if not results:
-        return (day_label, [(0, f'За {day} завершенных матчей не найдено.', [])])
-    return (day_label, results)
+    return day, [int(game_id) for game_id in game_ids['game_id']]
 
 
 # Пробел шириной в цифру: им сдвинут счёт по периодам под строкой матча —
