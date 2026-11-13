@@ -287,7 +287,7 @@ def test_score_line_marks_overtime_and_unknown_team(bot_module):
     """ОТ/Б — после счёта в шапке (кириллицей); команда без маскота — шайба 🏒."""
     bot_messages = bot_module("bot_messages")
     header = {"away": "Buffalo Sabres", "home": "Chicago Blackhawks", "away_abbr": "BUF",
-              "home_abbr": "XXX", "away_score": "2", "home_score": "3", "extra": " (OT)"}
+              "home_abbr": "XXX", "away_score": "2", "home_score": "3", "extra": " (ОТ)"}
     assert bot_messages._score_line(header) == (
         "<b><i>⚔️ BUFFALO SABRES ⚔️ 2 : 3 (ОТ) 🏒 CHICAGO BLACKHAWKS 🏒</i></b>"
     )
@@ -1563,7 +1563,7 @@ def test_day_digest_summary_body_plain_matchup_and_italic_indented_periods(bot_m
 
     assert body == [
         "1. Flyers 0:2 Penguins\n  <i>0:1, 0:0, 0:1</i>",
-        "2. Maple Leafs 2:1 Kings\n  <i>1:0, 0:1, 0:0, 1:0 (OT)</i>",
+        "2. Maple Leafs 2:1 Kings\n  <i>1:0, 0:1, 0:0, 1:0 (ОТ)</i>",
     ]
 
 

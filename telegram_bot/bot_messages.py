@@ -234,8 +234,7 @@ _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 _BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<figure")
 
 # После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
-# (строка гола с клипом перед следующим периодом, свёрнутая карточка перед блоком страны).
-# После таблиц зазора нет.
+# («Видео голов» перед «Броски», свёрнутая карточка перед блоком страны). После таблиц зазора нет.
 _GAP_AFTER = ("<p>", "<details")
 
 
@@ -430,7 +429,7 @@ def _running_scores(game_goals: Dict) -> List[Tuple[int, int]]:
 
 def _game_score_header(game_stats: Dict, game_goals: Dict, away_first: bool = False) -> Dict[str, str]:
     """Счёт матча по частям, сырыми строками (без HTML): `home`, `away`,
-    `home_abbr`, `away_abbr`, `home_score`, `away_score`, `extra` (« (OT)»/« (Б)»/пусто),
+    `home_abbr`, `away_abbr`, `home_score`, `away_score`, `extra` (« (ОТ)»/« (Б)»/пусто),
     `period_scores` («2:1, 4:2, 2:1»).
 
     Единственная точка расчёта шапки карточки матча и строки сводки /today —
@@ -446,7 +445,7 @@ def _game_score_header(game_stats: Dict, game_goals: Dict, away_first: bool = Fa
     if not is_overtime:
         extra = ''
     elif not is_shootouts:
-        extra = ' (OT)'
+        extra = ' (ОТ)'
     else:
         extra = ' (Б)'
 
@@ -493,17 +492,15 @@ def _score_line(header: Dict[str, str]) -> str:
     с обеих сторон названия: «⚔️ BUFFALO SABRES ⚔️ 2 : 3 (ОТ) 🪶 CHICAGO BLACKHAWKS 🪶».
     Первая строка карточки матча — её видно в уведомлении.
 
-    Зачем так: заголовок `<h4>` клиенты рисуют разным кеглем (на Desktop крупно, на iOS
-    мелко), табло-таблица растягивалась на всю ширину Desktop; строка того же кегля, что текст,
-    выделяется капсом, жирным, курсивом и маскотами (решение человека 2026-11-13; правило 1
-    стиля, `docs/telegram_bot.md`). Гости слева.
+    Зачем так: строка того же кегля, что текст, одинакова на iOS и Desktop и выделяется
+    капсом, жирным, курсивом и маскотами (решение человека 2026-11-13; правило 1 стиля,
+    `docs/telegram_bot.md`). Гости слева.
     """
     away = _TEAM_MASCOTS.get(header['away_abbr'], _NO_MASCOT)
     home = _TEAM_MASCOTS.get(header['home_abbr'], _NO_MASCOT)
-    mark = {" (OT)": " (ОТ)", " (Б)": " (Б)"}.get(header['extra'], "")
     return (
         f"<b><i>{away} {html.escape(header['away'].upper())} {away} "
-        f"{html.escape(header['away_score'])} : {html.escape(header['home_score'])}{mark} "
+        f"{html.escape(header['away_score'])} : {html.escape(header['home_score'])}{header['extra']} "
         f"{home} {html.escape(header['home'].upper())} {home}</i></b>"
     )
 
