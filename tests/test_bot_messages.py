@@ -302,16 +302,15 @@ def test_card_heading_puts_overtime_and_playoff_marks_under_scoreboard(bot_modul
     assert "\n" not in bot_messages._card_heading({**header, "extra": ""}, 2025020123)
 
 
-def test_rich_message_keeps_gap_after_scoreboard_and_goal_clip(bot_module):
-    """Табло и строка гола с клипом отделены от следующего абзаца тем же зазором, что и
-    абзацы; после обычной таблицы зазора нет, видео — отдельный блок, не абзац."""
+def test_rich_message_keeps_gap_after_collapsed_block(bot_module):
+    """Свёрнутый блок (строка гола с клипом, свёрнутая карточка) отделён от следующего
+    абзаца тем же зазором, что и абзацы; после таблицы (и табло) зазора нет, видео —
+    отдельный блок, не абзац."""
     bm = bot_module("bot_messages")
-    board = "<table compact><tr><td>A</td></tr></table>"
     clip = bm.rich_details("▶ 1:0 — X", '<video src="tg://video?id=goal1"></video>')
-    table = "<table compact><tr><th>A</th></tr></table>"
+    table = "<table compact><tr><td>A</td></tr></table>"
 
-    assert bm.rich_message(f"{board}\n\nРоссия").html == f"{board}<p>&nbsp;</p><p>Россия</p>"
-    assert bm.rich_message(f"{board}\nПериоды").html == f"{board}<p>Периоды</p>"
+    assert bm.rich_message(f"{table}\nПериоды").html == f"{table}<p>Периоды</p>"
     assert bm.rich_message(f"{clip}\n\nДалее").html == f"{clip}<p>&nbsp;</p><p>Далее</p>"
     assert bm.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
     assert clip.endswith('</summary><video src="tg://video?id=goal1"></video></details>')

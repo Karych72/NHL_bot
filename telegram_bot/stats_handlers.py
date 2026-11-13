@@ -378,9 +378,12 @@ async def _send_card(
         rich_message=rich_message(f"{game_message(game_id, clips, collapsed)}{tail}", media),
     )
     assert message.rich_message is not None  # ответ на sendRichMessage несёт само сообщение
-    for (evt, (video, caption)), sent in zip(clips.items(), _rich_videos(message.rich_message.blocks), strict=True):
+    # Сначала сверка всех пар (видео ответа — в порядке текста, как ``clips``), потом запись:
+    # расхождение числа видео падает до того, как в кэш попал хоть один ``file_id``.
+    sent = list(zip(clips.items(), _rich_videos(message.rich_message.blocks), strict=True))
+    for (evt, (video, caption)), uploaded in sent:
         if not isinstance(video.media, str):
-            save_goal_clip(game_id, evt, sent.file_id, caption)
+            save_goal_clip(game_id, evt, uploaded.file_id, caption)
     return message
 
 
@@ -389,8 +392,9 @@ async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", c
 
     Зачем: одна отправка карточки для меню, ``/today`` и рассылки (Задача 119) — видео
     голов не кнопками под сообщением, а в самой карточке (``_goal_clips``). Протухший
-    ``file_id`` кэша (Telegram отверг сообщение) — ошибка в лог и одна повторная отправка
-    с клипами, скачанными заново.
+    ``file_id`` кэша (Telegram отверг файл) — ошибка в лог и одна повторная отправка с
+    клипами, скачанными заново; клипы из кэша качаются первыми, чтобы бюджет загрузки
+    достался им и кэш обновился. Иной отказ Telegram всплывает без повтора.
 
     Аргументы:
         bot, chat_id: куда слать.
@@ -403,10 +407,14 @@ async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", c
     try:
         return await _send_card(bot, chat_id, game_id, clips, tail, collapsed)
     except TelegramBadRequest as exc:
-        if not any(isinstance(video.media, str) for video, _ in clips.values()):
+        cached = [evt for evt, (video, _) in clips.items() if isinstance(video.media, str)]
+        if not cached or "file" not in exc.message.lower():
             raise
         logger.error("chat_id=%s: Telegram rejected cached clips of game_id=%s, re-uploading: %s", chat_id, game_id, exc)
-    return await _send_card(bot, chat_id, game_id, await _goal_clips(game_id, events, from_cache=False), tail, collapsed)
+    fresh = await _goal_clips(game_id, cached + [evt for evt in events if evt not in cached], from_cache=False)
+    # Порядок клипов — порядок голов в тексте: по нему сверяются видео ответа.
+    clips = {evt: fresh[evt] for evt in events if evt in fresh}
+    return await _send_card(bot, chat_id, game_id, clips, tail, collapsed)
 
 
 async def send_game_card_message(bot: Bot, chat_id: int, game_id: int) -> Message:

@@ -233,16 +233,10 @@ _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 # свёрнутый блок, список, подвал, видео гола — каждый собран своим хелпером в одну строку.
 _BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<video")
 
-# Табло матча (`_score_line`) — таблица из одной строки без шапки: `_table` всегда начинает
-# со строки `<th>`, этим табло и отличается от других таблиц.
-_SCOREBOARD_OPEN = "<table compact><tr><td>"
-
-# Строка гола с клипом (`game_message`): свёрнутый блок, видео — внутри.
-_GOAL_CLIP_OPEN = "<details><summary>▶ "
-
-# После каких блоков пустая строка даёт видимый зазор: абзац, табло и строка гола с клипом
-# (голы соседних периодов). После таблиц и легенд экранов зазора не было — не добавляем.
-_GAP_AFTER = ("<p>", _SCOREBOARD_OPEN, _GOAL_CLIP_OPEN)
+# После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
+# (строка гола с клипом перед следующим периодом, свёрнутая карточка перед блоком страны).
+# После таблиц зазора нет.
+_GAP_AFTER = ("<p>", "<details")
 
 
 def _rich_html(text: str) -> str:
@@ -507,7 +501,7 @@ def _score_line(header: Dict[str, str]) -> str:
     home = f"{html.escape(header['home'])} {_TEAM_MASCOTS.get(header['home_abbr'], _NO_MASCOT)}"
     score = f"{html.escape(header['away_score'])} : {html.escape(header['home_score'])}"
     return (
-        f'{_SCOREBOARD_OPEN}{away}</td><td align="center"><b>{score}</b></td>'
+        f'<table compact><tr><td>{away}</td><td align="center"><b>{score}</b></td>'
         f'<td align="right">{home}</td></tr></table>'
     )
 

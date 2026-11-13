@@ -676,6 +676,46 @@ async def test_send_game_card_reuploads_once_when_telegram_rejects_cached_file_i
 
 
 @pytest.mark.asyncio
+async def test_send_game_card_retry_downloads_stale_cached_clips_first(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """Протухший клип из кэша на повторе качается раньше остальных: бюджет загрузки достаётся
+    ему, и кэш обновляется, — иначе гол за границей бюджета ронял бы каждую отправку."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 15)
+    goal_clip_store[(999, 3)] = ("stale", "<b>GOAL 3</b>")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    # Первая попытка: 1 загружен, 2 не влез, 3 из кэша; повтор — 3 первым, 1 уже не влезает.
+    assert [call.args for call in dl.call_args_list] == [(999, 1), (999, 2), (999, 3), (999, 1)]
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("CARD 999 clips=[3] collapsed=False")
+    assert goal_clip_store[(999, 3)] == ("fid-1", "<b>GOAL 3</b>")
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_does_not_retry_rejection_unrelated_to_files(
+    bot_module, fake_bot, api, goal_clip_store
+):
+    """Отказ не из-за файла (разметка, чат) повтором с перезагрузкой клипов не лечится — всплывает."""
+    stats_handlers = bot_module("stats_handlers")
+    goal_clip_store[(999, 1)] = ("fid-1", "<b>GOAL 1</b>")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: chat not found"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video") as dl:
+        with pytest.raises(TelegramBadRequest):
+            await stats_handlers.send_game_card(fake_bot, 42, 999)
+    dl.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_game_card_reraises_rejection_without_cached_clips(bot_module, fake_bot, api, goal_clip_store):
     """Отказ Telegram без клипов из кэша повторять нечем — ошибка всплывает."""
     stats_handlers = bot_module("stats_handlers")

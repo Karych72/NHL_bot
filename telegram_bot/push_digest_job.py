@@ -373,8 +373,8 @@ async def run_game_broadcast(
             except TelegramAPIError as exc:
                 logger.warning("game send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
             finally:
-                # И при сбое не из Telegram (БД, ffmpeg) после ушедшего текста: матч не
-                # повторится и не попадёт ещё и в дайджест; сама ошибка всплывает.
+                # И при сбое не из Telegram (БД, ffmpeg): матч не повторится каждые полчаса
+                # и не попадёт ещё и в дайджест; сама ошибка всплывает.
                 mark_chat_games_sent(chat_id, [game_id])
 
 
