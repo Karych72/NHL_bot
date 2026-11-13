@@ -522,10 +522,12 @@ def playoff_label(game_id: int) -> Optional[str]:
 
 
 def _card_heading(header: Dict[str, str], game_id: int) -> str:
-    """Шапка карточки матча: строка счёта (`_score_line`) и, у плей-офф, курсивом строкой
-    ниже — раунд (`playoff_label`); счёт остаётся первой строкой."""
+    """Шапка карточки матча: строка счёта (`_score_line`), курсивом под ней — раунд плей-офф
+    (`playoff_label`), если это плей-офф, и счёт по периодам. Счёт остаётся первой строкой;
+    шапка видна и над свёрнутой карточкой (`game_message(collapsed=True)`)."""
     label = playoff_label(game_id)
-    return _score_line(header) if label is None else f"{_score_line(header)}\n<i>{label}</i>"
+    lines = [_score_line(header)] + ([f"<i>{label}</i>"] if label else [])
+    return "\n".join(lines + [f"<i>Периоды: {html.escape(header['period_scores'])}</i>"])
 
 
 def _period_name(period: int, shootout: bool) -> str:
@@ -600,16 +602,11 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     # Голы одним абзацем по периодам: заголовок периода, строка гола со временем внутри
     # периода и ассистентами в скобках. Не `<pre>`: моноширинные колонки на телефоне
     # разъезжались от длинной фамилии или крупного шрифта.
-    goal_lines: List[str] = []
+    goals_by_period: Dict[int, List[str]] = defaultdict(list)
     clip_lines: List[str] = []
     scorer_counts: Dict[str, int] = defaultdict(int)
-    prev_period = None
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
-        title = _period_name(p, shootout)
-        if p != prev_period:
-            goal_lines.append(f"<b>{title}</b>")
-            prev_period = p
         scorer = _goal_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
         pos_raw = game_goals['scorer_position'][i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
@@ -633,13 +630,22 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         line = f"{time_prefix}{a}:{h} — " + html.escape(
             scorer + (f' [{pos}]' if pos else '') + situation + assists
         )
-        goal_lines.append(line)
+        goals_by_period[p].append(line)
         evt = game_goals['goal_event_id'][i]
         if evt is not None and int(evt) in clips:
             clip_lines += [
-                f"{title} · {line}",
+                f"{_period_name(p, shootout)} · {line}",
                 f'<video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>',
             ]
+    # Каждый сыгранный период — и без голов: три основных, овертайм, если был (в матче с
+    # буллитами он безголевой), дальше — до последнего периода с голом. Между периодами —
+    # пустая строка внутри абзаца: граница абзацев дала бы зазор больше строки.
+    played = max(4 if game_stats['is_overtime'][0] else 3, *goals_by_period)
+    goal_lines: List[str] = []
+    for p in range(1, played + 1):
+        if goal_lines:
+            goal_lines.append("&nbsp;")
+        goal_lines += [f"<b>{_period_name(p, shootout)}</b>", *(goals_by_period[p] or ["Голов нет"])]
     goals_block = "\n".join(goal_lines)
     if clip_lines:
         goals_block += "\n" + rich_details("Видео голов", "\n".join(clip_lines))
@@ -697,7 +703,6 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         'away_penalties': html.escape(str(game_stats['pim'][1])),
         'goals_block': goals_block,
         'goalkeepers': "\n".join(goalie_lines),
-        'period_scores': html.escape(header['period_scores']),
         'hat_tricks': hat_tricks,
         'three_stars': three_stars,
     }

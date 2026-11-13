@@ -368,8 +368,8 @@ async def test_game_card_renders_full_card(
     # свёрнутом блоке «Видео голов», над клипом — строка гола.
     assert "<pre>" not in text
     assert (
-        "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>"
-        "<b>2-й период</b><br>11:40 · 1:1 — Marchand [LW]<br>15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>"
+        "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>&nbsp;<br>"
+        "<b>2-й период</b><br>11:40 · 1:1 — Marchand [LW]<br>15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>&nbsp;<br>"
         "<b>3-й период</b><br>04:10 · 2:2 — Pastrnak [RW] (Marchand)<br>18:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
         "<details><summary>Видео голов</summary>"
         "<p>1-й период · 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</p>"
@@ -498,7 +498,10 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
 
     card = api.sent_rich[-1]
     assert body(card).startswith("<p><b><i>🔴 MTL 🔴 0 : 1 🍁 TOR 🍁</i></b>")
-    assert "<b>1-й период</b><br>12:00 · 0:1 — Matthews [C] (ПШ) (Nylander)</p>" in body(card)
+    assert (
+        "<b>1-й период</b><br>12:00 · 0:1 — Matthews [C] (ПШ) (Nylander)<br>&nbsp;<br>"
+        "<b>2-й период</b><br>Голов нет<br>&nbsp;<br><b>3-й период</b><br>Голов нет</p>"
+    ) in body(card)
     assert "Видео голов" not in body(card), "клипа нет — блока видео нет"
     assert card.reply_markup is None
 
