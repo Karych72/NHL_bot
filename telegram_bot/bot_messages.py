@@ -230,8 +230,8 @@ _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
 
 # Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица, свёрнутый блок,
-# список, подвал, видео гола с подписью — каждый собран своим хелпером в одну строку.
-_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<figure")
+# список, подвал, видео гола — каждый собран своим хелпером в одну строку.
+_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<video")
 
 # После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
 # («Видео голов» перед «Броски», свёрнутая карточка перед блоком страны). После таблиц зазора нет.
@@ -570,10 +570,10 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     """Карточка матча: шапка со счётом, счёт по периодам, голы по периодам, броски, вратари, звёзды.
 
     Зачем: одна карточка для меню, `/today` и рассылки. Голы — плотным списком, как звёзды;
-    клипы — под ним одним свёрнутым блоком «Видео голов», у клипа подпись — строка его гола
-    (Задача 119; каждый свёрнутый блок клиент отделяет отступом, и десяток голов-блоков
-    растягивал карточку). Кнопок видео под сообщением нет. Счёт везде «гости:хозяева», как в
-    шапке.
+    клипы — под ним одним свёрнутым блоком «Видео голов», над клипом — строка его гола
+    обычным текстом (Задача 119; каждый свёрнутый блок клиент отделяет отступом, и десяток
+    голов-блоков растягивал карточку; `<figcaption>` клиент рисует мелким серым). Кнопок
+    видео под сообщением нет. Счёт везде «гости:хозяева», как в шапке.
 
     Аргументы:
         game_id: матч.
@@ -636,13 +636,13 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         goal_lines.append(line)
         evt = game_goals['goal_event_id'][i]
         if evt is not None and int(evt) in clips:
-            clip_lines.append(
-                f'<figure><video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>'
-                f"<figcaption>{title} · {line}</figcaption></figure>"
-            )
+            clip_lines += [
+                f"{title} · {line}",
+                f'<video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>',
+            ]
     goals_block = "\n".join(goal_lines)
     if clip_lines:
-        goals_block += "\n" + rich_details(f"Видео голов ({len(clip_lines)})", "\n".join(clip_lines))
+        goals_block += "\n" + rich_details("Видео голов", "\n".join(clip_lines))
 
     hat_lines = [
         f"Хет-трик: {html.escape(name)} (×{n})"
