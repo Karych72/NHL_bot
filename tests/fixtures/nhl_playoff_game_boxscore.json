@@ -157,7 +157,7 @@
       ]
     },
     "homeTeam": {
-      "forwards": [],
+      "forwards": [{"playerId": 8000001}],
       "defense": [],
       "goalies": [
         {

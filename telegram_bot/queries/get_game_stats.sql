@@ -8,12 +8,14 @@ CREATE OR REPLACE FUNCTION get_game_stats (now_game_id int)
                   is_overtime       boolean,
                   is_shootouts      boolean,
                   field             varchar(20),
-                  team_name         varchar(30)
+                  team_name         varchar(30),
+                  abbreviation      varchar(10)
        )
 AS $$
 BEGIN
     RETURN QUERY SELECT distinct gs.goals, gs.pim, gs.blocked, gs.hits, gs.shots, g.is_overtime,
-                                 g.is_shootouts, gs.field, t.name as team_name
+                                 g.is_shootouts, gs.field, t.name as team_name,
+                                 t.abbreviation
                  from game_team_stats gs
                  left join games g
                  on gs.game_id = g.game_id

@@ -11,6 +11,8 @@ it omits is ``None``), as are the PBP-derived non-NULL defaults of §3.
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
 import shutil
 import unittest
@@ -127,6 +129,17 @@ class GameRowsTest(LoaderApiTestCase):
                     payload = dict(load_fixture(fixture))
                     payload["gameState"] = state
                     self.assertEqual(self._build(**{payload_name: payload}), ([],) * 7)
+
+    def test_boxscore_without_skaters_of_one_side_produces_no_rows(self):
+        """Both sides or none: a game written without the skaters of one team has no
+        country block for its players, so the next run must load the whole game."""
+        box = load_fixture("nhl_game_boxscore.json")
+        for side in ("homeTeam", "awayTeam"):
+            with self.subTest(side=side):
+                shutil.rmtree(loader.RAW_CACHE_DIR / str(SEASON_ID), ignore_errors=True)
+                stats = dict(box["playerByGameStats"])
+                stats[side] = {**stats[side], "forwards": [], "defense": []}
+                self.assertEqual(self._build(box={**box, "playerByGameStats": stats}), ([],) * 7)
 
     def test_is_shootouts_true_for_a_game_actually_decided_in_the_shootout(self):
         pbp = dict(load_fixture("nhl_game_play_by_play.json"))
@@ -630,6 +643,40 @@ class GameJsonCacheTest(LoaderApiTestCase):
                 self.assertEqual(len(calls), 2)  # not cached: network hit both times
                 self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
 
+    def test_boxscore_without_skaters_is_not_cached(self):
+        """Game 2026020244: OFF boxscore with goalies but no skaters is not kept."""
+        box = load_fixture("nhl_game_boxscore.json")
+        empty = {
+            **box,
+            "playerByGameStats": {
+                side: {**stats, "forwards": [], "defense": []}
+                for side, stats in box["playerByGameStats"].items()
+            },
+        }
+        instance = make_loader()
+        instance.get_json = lambda url: empty
+
+        instance.fetch_game_json(GAME_ID, "boxscore")
+
+        self.assertFalse((loader.RAW_CACHE_DIR / str(SEASON_ID)).exists())
+        self.assertFalse(loader.payload_complete("boxscore", empty))
+        self.assertTrue(loader.payload_complete("boxscore", box))
+
+    def test_cached_boxscore_without_skaters_is_fetched_again_and_replaced(self):
+        """A bad boxscore cached before the check must not stay forever."""
+        box = load_fixture("nhl_game_boxscore.json")
+        cache_path = loader.RAW_CACHE_DIR / str(SEASON_ID) / f"{GAME_ID}.box.json.gz"
+        cache_path.parent.mkdir(parents=True)
+        with gzip.open(cache_path, "wt", encoding="utf-8") as fh:
+            json.dump({**box, "playerByGameStats": {}}, fh)
+        instance = make_loader()
+        instance.get_json = lambda url: box
+
+        self.assertEqual(instance.fetch_game_json(GAME_ID, "boxscore"), box)
+
+        with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), box)
+
     def test_season_reports_are_not_routed_through_the_cache(self):
         """Season-wide reports (team reference + standings) are untouched by
         the per-game cache: ``load_team_reference`` hits the network on every
@@ -688,6 +735,42 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
 
 class FinalGamesTest(LoaderApiTestCase):
+    def test_games_without_skaters_are_added_to_the_window_by_id(self):
+        """Game outside the date window, left without skaters: its id goes to the
+        Stats API, and it joins the games to load; a game in the window is not asked twice."""
+        instance = make_loader()
+        instance.start_date, instance.end_date = "2026-11-05", "2026-11-06"
+        urls = []
+
+        def fetch_paginated(url, sort_key, page_size=500):
+            urls.append(url)
+            return [{"id": 111}] if "id in" not in url else [{"id": 222}]
+
+        instance.fetch_paginated = fetch_paginated
+        instance.missing_skater_game_ids = lambda: [111, 222]
+
+        with self.assertLogs(loader.logger, "WARNING") as logs:
+            games = instance.games_to_load()
+
+        self.assertEqual([g["id"] for g in games], [111, 222])
+        self.assertIn(f"season={SEASON_ID} and gameStateId=7 and id in (222)", urls[1])
+        self.assertIn("[222]", logs.output[0])
+
+    def test_games_to_load_is_the_window_when_nothing_is_missing(self):
+        instance = make_loader()
+        instance.start_date, instance.end_date = "2026-11-05", "2026-11-06"
+        urls = []
+
+        def fetch_paginated(url, sort_key, page_size=500):
+            urls.append(url)
+            return [{"id": 111}]
+
+        instance.fetch_paginated = fetch_paginated
+        instance.missing_skater_game_ids = lambda: []
+
+        self.assertEqual(instance.games_to_load(), [{"id": 111}])
+        self.assertEqual(len(urls), 1)
+
     def test_fetch_asks_for_finished_regular_season_and_playoff_games(self):
         """Task 104: ``games`` gets both game types (the forecast schedule stays regular-only)."""
         instance = make_loader()

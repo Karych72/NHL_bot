@@ -25,7 +25,7 @@ from aiogram.methods import (
     SendVideo,
     TelegramMethod,
 )
-from aiogram.types import Chat, Message, MessageId, User, Video
+from aiogram.types import Chat, Message, MessageId, RichBlockVideo, RichMessage, User, Video
 
 # Handlers under test get a real `aiogram.Bot` and real `Message`/`CallbackQuery`
 # objects bound to it; only the network layer is replaced. Every Bot API call a
@@ -47,7 +47,8 @@ class FakeSession(BaseSession):
     makes the next request of that type raise *error* (Telegram errors like «Message to
     be replied not found»); a failed request is not recorded. Message-producing methods
     answer with a ``Message`` whose ``message_id`` counts 1, 2, 3… across the session;
-    an uploaded video gets ``file_id`` ``fid-<n>``, a video sent by ``file_id`` keeps it.
+    an uploaded video gets ``file_id`` ``fid-<n>``, a video sent by ``file_id`` keeps it —
+    and so does every video in ``media`` of a rich message or its edit (answered as video blocks).
     """
 
     def __init__(self) -> None:
@@ -92,23 +93,33 @@ class FakeSession(BaseSession):
     def edited_markups(self) -> List[EditMessageReplyMarkup]:
         return self.sent(EditMessageReplyMarkup)
 
-    def _message(self, chat_id: Any, **fields: Any) -> Message:
-        self._message_ids += 1
+    def _message(self, chat_id: Any, message_id: Optional[int] = None, **fields: Any) -> Message:
+        """Сообщение ответа; новое — со следующим ``message_id``, правка — со своим."""
+        if message_id is None:
+            self._message_ids += 1
+            message_id = self._message_ids
         return Message(
-            message_id=self._message_ids,
+            message_id=message_id,
             date=datetime.now(timezone.utc),
             chat=Chat(id=chat_id, type="private"),
             **fields,
         )
 
-    def _video_message(self, chat_id: Any, media: Any) -> Message:
+    def _video(self, media: Any) -> Video:
         if isinstance(media, str):
             file_id = media
         else:
             self._uploads += 1
             file_id = f"fid-{self._uploads}"
-        video = Video(file_id=file_id, file_unique_id=file_id, width=1, height=1, duration=1)
-        return self._message(chat_id, video=video)
+        return Video(file_id=file_id, file_unique_id=file_id, width=1, height=1, duration=1)
+
+    def _video_message(self, chat_id: Any, media: Any) -> Message:
+        return self._message(chat_id, video=self._video(media))
+
+    def _rich_message(self, chat_id: Any, rich: Any, message_id: Optional[int] = None) -> Message:
+        """Ответ на rich-сообщение (отправку или правку): видео из ``media`` — блоками."""
+        blocks = [RichBlockVideo(video=self._video(m.media.media)) for m in rich.media or []]
+        return self._message(chat_id, message_id, rich_message=RichMessage(blocks=blocks))
 
     async def make_request(self, bot: Bot, method: TelegramMethod[Any], timeout: Optional[int] = None) -> Any:
         for i, (method_type, error) in enumerate(self._errors):
@@ -121,7 +132,7 @@ class FakeSession(BaseSession):
         if isinstance(method, SendMessage):
             return self._message(method.chat_id, text=method.text)
         if isinstance(method, SendRichMessage):
-            return self._message(method.chat_id)
+            return self._rich_message(method.chat_id, method.rich_message)
         if isinstance(method, CreateInvoiceLink):
             return "https://t.me/$fake-invoice"
         if isinstance(method, CopyMessage):
@@ -132,7 +143,9 @@ class FakeSession(BaseSession):
         if isinstance(method, SendMediaGroup):
             return [self._video_message(method.chat_id, m.media) for m in method.media]
         if isinstance(method, EditMessageText):
-            return self._message(method.chat_id, text=method.text)
+            if method.rich_message is not None:
+                return self._rich_message(method.chat_id, method.rich_message, method.message_id)
+            return self._message(method.chat_id, method.message_id, text=method.text)
         return True
 
     async def stream_content(self, *args: Any, **kwargs: Any) -> AsyncGenerator[bytes, None]:

@@ -4,7 +4,7 @@ NHL Goal Video Replay service.
 Chain: game_id + event_id → NHL Replay API → Brightcove → MP4 file.
 Подпись к видео (автор, передачи, номер гола в сезоне, время) — из того же ответа Replay API.
 Кэш загруженных клипов (Задача 87): ``file_id`` Telegram и подпись по голу в ``bot_goal_clips`` —
-клип скачивается и грузится один раз, дальше рассылка и кнопка видео шлют его по ``file_id``.
+клип скачивается и грузится один раз, дальше карточки матча кладут его по ``file_id``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple
 
 import requests
 
-from bot_messages import team_name_for_abbrev
+from bot_messages import game_clock, team_name_for_abbrev
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,8 @@ def goal_caption(replay: dict) -> str:
     ]
     lines.append("Передачи: " + ", ".join(assists) if assists else "Без передач")
     details = [
-        f"{_period_ru(goal['periodDescriptor'])}, {goal['timeInPeriod']}",
+        f"{_period_ru(goal['periodDescriptor'])}, "
+        f"{game_clock(goal['periodDescriptor']['number'], goal['timeInPeriod'])}",
         f"{away} {goal['awayScore']}:{goal['homeScore']} {home}",
     ]
     for mark in (_STRENGTH_RU.get(goal["strength"]), _MODIFIER_RU.get(goal["goalModifier"])):
@@ -134,7 +135,7 @@ def goal_clip_published(game_id: int, event_id: int) -> bool:
 def cached_goal_clip(game_id: int, event_id: int) -> Optional[Tuple[str, str]]:
     """Загруженный ранее клип гола: (``file_id`` Telegram, HTML-подпись) или ``None``.
 
-    Зачем: рассылка и кнопка видео шлют клип по ``file_id`` — без скачивания с NHL,
+    Зачем: карточка матча кладёт клип по ``file_id`` — без скачивания с NHL,
     ffmpeg и повторной загрузки (Задача 87).
 
     Аргументы: ``game_id``, ``event_id`` — гол.

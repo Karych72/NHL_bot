@@ -7,7 +7,7 @@
 по `chat_id`), `telegram_bot/subscription_repo.py` (`deactivate_chat`), тесты
 `tests/test_bot_schedules.py`, `tests/test_db_nhl.py`, `docs/architecture.md`, `docs/telegram_bot.md`.
 **Зависит от:** ни от чего. Создание расписаний из текста — Задача 108 (после этой).
-**Источник:** обсуждение с человеком 2026-11-01; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** обсуждение с человеком 2026-11-01; реестр — [`../open_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

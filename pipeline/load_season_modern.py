@@ -170,6 +170,25 @@ def optional_age_from_birthdate(birth_date) -> Optional[int]:
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
 
+def payload_complete(endpoint: str, payload: dict) -> bool:
+    """Whether a gamecenter *payload* is final and safe to load and cache.
+
+    Why: game 2026020244 reached the DB with goalies but no skaters, and without
+    skater rows the bot has no country block and sends no goal clips for the game.
+
+    Args:
+        endpoint: ``"play-by-play"``, ``"boxscore"`` or ``"landing"``.
+        payload: the endpoint's response.
+    """
+    if payload.get("gameState") != FINAL_GAME_STATE:
+        return False
+    if endpoint != "boxscore":
+        return True
+    stats = payload.get("playerByGameStats") or {}
+    sides = [stats.get(side) or {} for side in ("homeTeam", "awayTeam")]
+    return all(side.get("forwards") or side.get("defense") for side in sides)
+
+
 def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
     """Return rounded percentage or ``None`` when inputs are missing/zero.
 
@@ -885,6 +904,60 @@ class ModernNhlLoader:
         url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
         return self.fetch_paginated(url, "id", page_size=1000)
 
+    def fetch_games_by_id(self, game_ids: List[int]) -> List[dict]:
+        """Finished games *game_ids* of the season, whatever their date.
+
+        Args:
+            game_ids: NHL game ids, non-empty.
+        """
+        ids = ",".join(str(game_id) for game_id in game_ids)
+        cayenne = f"season={self.season_id} and gameStateId=7 and id in ({ids})"
+        url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp={cayenne}"
+        return self.fetch_paginated(url, "id", page_size=1000)
+
+    def connect(self):
+        """New PostgreSQL connection with the loader's settings."""
+        return psycopg2.connect(
+            host=self.pg_host,
+            port=self.pg_port,
+            user=self.pg_user,
+            database=self.pg_database,
+        )
+
+    def missing_skater_game_ids(self) -> List[int]:
+        """Games of the season in ``games`` without ``game_player_stats`` of both teams.
+
+        Why: such a game has no country block and no goal clips, and it falls out
+        of the sync date window, so without this nothing ever reloads it.
+        """
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT g.game_id FROM games g WHERE g.season_id = %s AND "
+                    "(SELECT count(DISTINCT s.team_id) FROM game_player_stats s "
+                    "WHERE s.game_id = g.game_id) < 2 ORDER BY g.game_id",
+                    (self.season_id,),
+                )
+                return [row[0] for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def games_to_load(self) -> List[dict]:
+        """Finished games of the date window plus earlier games left without skaters.
+
+        Why: a bad NHL response must heal on the next sync run, not wait for someone
+        to notice. Each reloaded game is logged; until NHL returns its skaters,
+        ``build_game_rows`` skips it and the next run tries again.
+        """
+        games = self.fetch_final_games()
+        window = {int(game["id"]) for game in games}
+        missing = [g for g in self.missing_skater_game_ids() if g not in window]
+        if not missing:
+            return games
+        logger.warning("Reloading %d game(s) without skater rows: %s", len(missing), missing)
+        return games + self.fetch_games_by_id(missing)
+
     def fetch_scheduled_games(self) -> List[dict]:
         """Fetch not-yet-played regular-season games for the next ``SCHEDULE_WINDOW_DAYS`` UTC days.
 
@@ -980,7 +1053,9 @@ class ModernNhlLoader:
         every later call reads it straight from disk instead of hitting the
         network — no TTL, no invalidation. "Finished" is judged from the
         payload's own ``gameState`` field (``FINAL_GAME_STATE``), not from
-        the caller. Season-wide report endpoints (standings, summaries, ...)
+        the caller; a boxscore without skaters is not finished yet
+        (``payload_complete``), and one cached earlier is fetched again.
+        Season-wide report endpoints (standings, summaries, ...)
         never go through this method and are always fetched live via
         ``get_json``.
 
@@ -993,10 +1068,12 @@ class ModernNhlLoader:
         cache_path = RAW_CACHE_DIR / str(self.season_id) / f"{game_id}.{suffix}.json.gz"
         if cache_path.exists():
             with gzip.open(cache_path, "rt", encoding="utf-8") as fh:
-                return json.load(fh)
+                cached = json.load(fh)
+            if payload_complete(endpoint, cached):
+                return cached
 
         payload = self.get_json(f"https://api-web.nhle.com/v1/gamecenter/{game_id}/{endpoint}")
-        if payload.get("gameState") == FINAL_GAME_STATE:
+        if payload_complete(endpoint, payload):
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             # Write to a sibling temp file and rename into place: a write
             # truncated by Ctrl-C / a full disk must never leave a
@@ -1030,10 +1107,11 @@ class ModernNhlLoader:
         (every shot attempt of play-by-play, shootout excluded) — in that order.
 
         A game whose gamecenter payloads are not all ``FINAL_GAME_STATE`` yet
-        (the Stats REST list can flip to "finished" before gamecenter does) is
-        skipped with a warning: it produces no rows at all, so ``run()``
+        (the Stats REST list can flip to "finished" before gamecenter does) or
+        whose boxscore has no skaters (``payload_complete``) is skipped with a warning: it produces no rows at all, so ``run()``
         neither writes a half-final game nor deletes an earlier version of it,
-        and the next sync run picks it up.
+        and the next sync run picks it up while the game is in its date window; a
+        game never written is not in ``games``, so ``games_to_load`` cannot return it.
 
         Args:
             games_meta: finished-game summaries as returned by
@@ -1067,6 +1145,9 @@ class ModernNhlLoader:
                     sorted(map(str, states)),
                     FINAL_GAME_STATE,
                 )
+                continue
+            if not payload_complete("boxscore", box):
+                logger.warning("Game %s: boxscore without skaters; skipped until next run", game_id)
                 continue
 
             period_desc = pbp.get("periodDescriptor") or {}
@@ -1629,7 +1710,7 @@ class ModernNhlLoader:
             self.current_season_label,
         )
         logger.info("Fetching finished games...")
-        games_meta = self.fetch_final_games()
+        games_meta = self.games_to_load()
         logger.info("Finished games to load: %d", len(games_meta))
         scheduled_meta = self.fetch_scheduled_games()
         (
@@ -1643,12 +1724,7 @@ class ModernNhlLoader:
         ) = self.build_game_rows(games_meta)
 
         logger.info("Writing to PostgreSQL...")
-        conn = psycopg2.connect(
-            host=self.pg_host,
-            port=self.pg_port,
-            user=self.pg_user,
-            database=self.pg_database,
-        )
+        conn = self.connect()
         try:
             conn.autocommit = False
             with conn.cursor() as cur:

@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import (
-    CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendRichMessage, SendVideo,
+    CopyMessage, DeleteMessage, EditMessageText, SendMessage, SendRichMessage,
 )
 
 from tests._telegram_fakes import MENU_MESSAGE_ID, body, rich_html
@@ -403,7 +403,8 @@ async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
     копились (отзыв 2026-10-03)."""
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
@@ -424,7 +425,8 @@ async def test_tonight_game_repeat_tap_points_to_sent_card_instead_of_copy(
 async def test_tonight_game_resends_card_when_original_was_deleted(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         api.fail_next(SendRichMessage, _bad_request("Bad Request: message to be replied not found"))
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
@@ -444,7 +446,8 @@ async def test_tonight_game_resend_removes_pointer_to_deleted_card(bot_module, m
     карточки ссылка на удалённую тоже удаляется."""
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         api.fail_next(SendRichMessage, _bad_request("Bad Request: message to be replied not found"))
@@ -464,7 +467,8 @@ async def test_tonight_game_pointer_delete_tolerates_only_gone_messages(
     удаления всплывает."""
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         api.fail_next(DeleteMessage, _bad_request("Bad Request: message to delete not found"))
@@ -480,7 +484,8 @@ async def test_tonight_game_pointer_delete_tolerates_only_gone_messages(
 async def test_tonight_game_pointer_reraises_unrelated_bad_request(bot_module, make_callback, fake_bot, api):
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
         api.fail_next(SendRichMessage, _bad_request("Bad Request: chat not found"))
         with pytest.raises(TelegramBadRequest, match="chat not found"):
@@ -494,7 +499,8 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")), \
             patch.object(stats_handlers.premium, "is_premium", return_value=False), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         with patch.object(stats_handlers, "game_exists", return_value=False):
             await _tap_tonight(stats_handlers, make_callback, fake_bot)
         with patch.object(stats_handlers, "game_exists", return_value=True):
@@ -516,7 +522,8 @@ async def test_tonight_answers_are_kept_per_chat(bot_module, make_callback, fake
     data = "tn:555:DET:NYR"
     match = _match(stats_handlers, "TONIGHT_GAME_CALLBACK_PATTERN", data)
     with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("CARD", [])):
+            patch.object(stats_handlers, "game_message", return_value="CARD"), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
         await stats_handlers.callback_tonight_game(make_callback(data, chat_id=100), fake_bot, match)
         await stats_handlers.callback_tonight_game(make_callback(data, chat_id=101), fake_bot, match)
 
@@ -558,134 +565,231 @@ async def test_send_game_card_message_reports_missing_game(bot_module, fake_bot,
     assert [body(m) for m in api.outgoing] == [rich_html("Такого матча нет в базе бота.")]
 
 
-@pytest.mark.asyncio
-async def test_send_game_card_message_builds_goal_video_buttons(bot_module, fake_bot, api):
-    stats_handlers = bot_module("stats_handlers")
-    goals_meta = [
-        {"label": "1:0 Ovechkin 5:30", "game_id": 999, "event_id": 1},
-        {"label": "2:0 Ovechkin 10:00", "game_id": 999, "event_id": 2},
-    ]
-    with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", goals_meta)):
-        await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
-
-    [sent] = api.sent_rich
-    assert body(sent) == rich_html("GAME TEXT")
-    assert sent.chat_id == 42
-    buttons = [b for row in sent.reply_markup.inline_keyboard for b in row]
-    assert [b.callback_data for b in buttons] == ["gv:999:1", "gv:999:2"]
-    assert all(re.match(stats_handlers.GOAL_VIDEO_CALLBACK_PATTERN, b.callback_data) for b in buttons)
+def _card_with_clips(game_id, clips, collapsed=False):
+    """Заглушка ``game_message``: в тексте — какие голы получили клип и свёрнута ли карточка."""
+    return f"CARD {game_id} clips={sorted(clips)} collapsed={collapsed}"
 
 
-@pytest.mark.asyncio
-async def test_send_game_card_message_uses_no_markup_when_no_goals(bot_module, fake_bot, api):
-    stats_handlers = bot_module("stats_handlers")
-    with patch.object(stats_handlers, "game_exists", return_value=True), \
-            patch.object(stats_handlers, "game_message", return_value=("GAME TEXT", [])):
-        await stats_handlers.send_game_card_message(fake_bot, chat_id=42, game_id=999)
-
-    [sent] = api.sent_rich
-    assert sent.reply_markup is None
-
-
-# ---------------------------------------------------------------------------
-# handle_goal_video
-# ---------------------------------------------------------------------------
-
-async def _tap_goal(stats_handlers, make_callback, fake_bot, data="gv:100:200"):
-    match = _match(stats_handlers, "GOAL_VIDEO_CALLBACK_PATTERN", data)
-    await stats_handlers.handle_goal_video(make_callback(data), fake_bot, match)
-
-
-@pytest.mark.asyncio
-async def test_goal_video_reports_unavailable_when_download_fails(
-    bot_module, make_callback, fake_bot, api, goal_clip_store
-):
-    stats_handlers = bot_module("stats_handlers")
-
-    with patch.object(stats_handlers, "download_goal_video", return_value=None) as mock_download:
-        await _tap_goal(stats_handlers, make_callback, fake_bot)
-
-    mock_download.assert_called_once_with(100, 200)
-    assert [body(m) for m in api.outgoing] == [rich_html("Видео пока недоступно.")]
-    assert api.answers == ["Загружаю видео гола..."]
-
-
-@pytest.mark.asyncio
-async def test_goal_video_sends_video_with_hints_and_deletes_local_files(
-    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
-):
-    from aiogram.types import FSInputFile
-
-    stats_handlers = bot_module("stats_handlers")
-    video_replay = bot_module("video_replay")
-    video_path = tmp_path / "clip.mp4"
-    video_path.write_bytes(b"fake-mp4")
-    thumb_path = tmp_path / "thumb.jpg"
-    thumb_path.write_bytes(b"fake-jpg")
-    delivery = video_replay.GoalVideoDelivery(
-        path=str(video_path), caption="🚨 <b>W. Borgen</b>",
-        width=640, height=360, duration=5, thumb_path=str(thumb_path),
+def _delivery(video_replay, tmp_path, event_id, size=8, thumb=True):
+    """Скачанный клип гола: mp4 (и превью) во временных файлах, как их отдаёт ``download_goal_video``."""
+    video_path = tmp_path / f"{event_id}.mp4"
+    video_path.write_bytes(b"v" * size)
+    thumb_path = tmp_path / f"{event_id}.jpg"
+    if thumb:
+        thumb_path.write_bytes(b"jpg")
+    return video_replay.GoalVideoDelivery(
+        path=str(video_path), caption=f"<b>GOAL {event_id}</b>", width=640, height=360, duration=5,
+        thumb_path=str(thumb_path) if thumb else None,
     )
 
-    with patch.object(stats_handlers, "download_goal_video", return_value=delivery):
-        await _tap_goal(stats_handlers, make_callback, fake_bot)
 
-    [sent] = api.sent(SendVideo)
-    assert sent.chat_id == 100
-    assert sent.supports_streaming is True
-    assert (sent.width, sent.height, sent.duration) == (640, 360, 5)
-    assert isinstance(sent.video, FSInputFile) and sent.video.path == str(video_path)
-    assert isinstance(sent.thumbnail, FSInputFile) and sent.thumbnail.path == str(thumb_path)
-    assert sent.caption == "🚨 <b>W. Borgen</b>"
-    assert sent.parse_mode == "HTML"
-    assert not video_path.exists(), "clip must be deleted after sending"
-    assert not thumb_path.exists(), "thumbnail must be deleted after sending"
-    assert goal_clip_store == {(100, 200): ("fid-1", "🚨 <b>W. Borgen</b>")}, "file_id — в кэш"
+@pytest.mark.asyncio
+async def test_send_game_card_puts_cached_and_uploaded_clips_inside_the_card(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store
+):
+    """Задача 119: клипы — в самом сообщении, кнопок нет. Клип из кэша — по ``file_id``,
+    остальные скачиваются, грузятся в сообщении, и их ``file_id`` из ответа — в кэш;
+    локальные файлы удаляются."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    goal_clip_store[(999, 1)] = ("fid-cached", "<b>GOAL 1</b>")
+    deliveries = {2: _delivery(video_replay, tmp_path, 2)}
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video", side_effect=lambda g, e: deliveries[e]):
+        await stats_handlers.send_game_card(fake_bot, 42, 999, "\nTAIL")
+
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("CARD 999 clips=[1, 2] collapsed=False\nTAIL")
+    assert sent.reply_markup is None
+    media = sent.rich_message.media
+    assert [m.id for m in media] == ["goal1", "goal2"]
+    assert media[0].media.media == "fid-cached"
+    assert media[1].media.media.data == b"v" * 8 and media[1].media.thumbnail.data == b"jpg"
+    assert (media[1].media.width, media[1].media.height, media[1].media.duration) == (640, 360, 5)
+    assert goal_clip_store[(999, 2)] == ("fid-1", "<b>GOAL 2</b>")
+    assert goal_clip_store[(999, 1)] == ("fid-cached", "<b>GOAL 1</b>"), "кэш не перезаписан"
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
-async def test_goal_video_reports_error_and_still_cleans_up_on_send_failure(
-    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store
+async def test_send_game_card_tops_up_clips_over_the_request_budget_by_editing(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
 ):
+    """Bot API — до 50 МБ файлов на запрос: клипы сверх бюджета доливаются правками того же
+    сообщения, пока не загружено всё; загруженные раньше идут в правке по ``file_id``.
+    Клип тяжелее всего бюджета не влезет никогда — его гол остаётся строкой без видео."""
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
-    video_path = tmp_path / "clip.mp4"
-    video_path.write_bytes(b"fake-mp4")
-    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="")
-    api.fail_next(SendVideo, RuntimeError("network down"))
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 20)
+    goal_clip_store[(999, 5)] = ("fid-5", "<b>GOAL 5</b>")
+    sizes = {1: 10, 2: 15, 3: 8, 4: 25}
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3, 4, 5]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, size=sizes[e], thumb=False)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    with patch.object(stats_handlers, "download_goal_video", return_value=delivery):
-        await _tap_goal(stats_handlers, make_callback, fake_bot)
-
-    assert api.sent(SendVideo) == []
-    assert body(api.outgoing[-1]) == rich_html("Ошибка при отправке видео.")
-    assert not video_path.exists(), "clip must be deleted even when send_video() raises"
-    assert goal_clip_store == {}
+    # Отправка: 1 загружен, 2 не влез (дальше не качаем); правка: 2 (уже скачан) загружен,
+    # 3 не влез; правка: 3 и 4 (тяжелее бюджета — пропущен). Каждый клип скачан один раз.
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3, 4]
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("CARD 999 clips=[1, 5] collapsed=False")
+    edits = api.edited_texts
+    assert [(e.chat_id, e.message_id) for e in edits] == [(42, sent_id := 1), (42, sent_id)]
+    assert [body(e) for e in edits] == [
+        rich_html("CARD 999 clips=[1, 2, 5] collapsed=False"),
+        rich_html("CARD 999 clips=[1, 2, 3, 5] collapsed=False"),
+    ]
+    assert [m.media.media for m in edits[0].rich_message.media][::2] == ["fid-1", "fid-5"]
+    assert {key: fid for key, (fid, _) in goal_clip_store.items()} == {
+        (999, 1): "fid-1", (999, 2): "fid-2", (999, 3): "fid-3", (999, 5): "fid-5",
+    }
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
-async def test_goal_video_reuploads_once_when_telegram_rejects_cached_file_id(
-    bot_module, make_callback, fake_bot, api, tmp_path, goal_clip_store, caplog
+async def test_send_game_card_without_clips_sends_no_media(bot_module, fake_bot, api, goal_clip_store):
+    """Гол без клипа у NHL — строка без видео; сообщение без ``media``."""
+    stats_handlers = bot_module("stats_handlers")
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video", return_value=None):
+        await stats_handlers.send_game_card(fake_bot, 42, 999, collapsed=True)
+
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("CARD 999 clips=[] collapsed=True")
+    assert sent.rich_message.media is None
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_reuploads_once_when_telegram_rejects_cached_file_id(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, caplog
 ):
-    """Задача 87: протухший ``file_id`` из кэша — ошибка в логе, клип скачивается и
-    загружается заново, кэш получает новый ``file_id``."""
+    """Задача 87: протухший ``file_id`` кэша — ошибка в логе и одна повторная отправка с
+    клипами, скачанными заново; кэш получает новый ``file_id``."""
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
-    video_path = tmp_path / "clip.mp4"
-    video_path.write_bytes(b"fake-mp4")
-    delivery = video_replay.GoalVideoDelivery(path=str(video_path), caption="<b>GOAL</b>")
-    goal_clip_store[(100, 200)] = ("stale", "<b>GOAL</b>")
-    api.fail_next(SendVideo, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    goal_clip_store[(999, 1)] = ("stale", "<b>GOAL 1</b>")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    with patch.object(stats_handlers, "download_goal_video", return_value=delivery) as mock_download:
-        await _tap_goal(stats_handlers, make_callback, fake_bot)
+    dl.assert_called_once_with(999, 1)
+    [sent] = api.sent_rich
+    assert sent.rich_message.media[0].media.media.data == b"v" * 8
+    assert goal_clip_store[(999, 1)] == ("fid-1", "<b>GOAL 1</b>")
+    assert [r.levelname for r in caplog.records if "rejected cached clips" in r.getMessage()] == ["ERROR"]
 
-    mock_download.assert_called_once_with(100, 200)
-    [sent] = api.sent(SendVideo)
-    assert sent.video.path == str(video_path)
-    assert goal_clip_store == {(100, 200): ("fid-1", "<b>GOAL</b>")}
-    assert [r.levelname for r in caplog.records if "rejected cached clip" in r.getMessage()] == ["ERROR"]
+
+@pytest.mark.asyncio
+async def test_send_game_card_stops_trusting_cache_after_rejected_file_id(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """Telegram отверг ``file_id`` из кэша — до конца карточки кэшу не верим: иначе протухший
+    клип за границей бюджета снова попадал бы в правку и ронял её без конца (ревью)."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 15)
+    goal_clip_store[(999, 3)] = ("stale", "<b>GOAL 3</b>")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    # Отказ: 1 загружен, 2 не влез, 3 из кэша. Дальше кэшу не верим: 1 заново (загрузка
+    # отказа не сохранилась), 2 — уже скачанный, 3 заново, правками.
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 1, 3]
+    [sent] = api.sent_rich
+    assert body(sent) == rich_html("CARD 999 clips=[1] collapsed=False")
+    assert body(api.edited_texts[-1]) == rich_html("CARD 999 clips=[1, 2, 3] collapsed=False")
+    assert all("stale" not in str(m.media.media) for e in api.edited_texts for m in e.rich_message.media)
+    assert goal_clip_store[(999, 3)] == ("fid-3", "<b>GOAL 3</b>")
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_with_stale_clip_among_good_cached_ones_terminates(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """Сценарий ревью: в кэше два годных ``file_id`` и протухший за границей бюджета. Кэш не
+    отличает протухший от годного — после отказа все клипы грузятся заново правками, и
+    карточка заканчивается, а не повторяет отказ без конца."""
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 15)
+    goal_clip_store.update({(999, 1): ("ok-1", "c1"), (999, 2): ("ok-2", "c2"), (999, 3): ("stale", "c3")})
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: wrong file identifier/HTTP URL specified"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3]
+    assert [body(m) for m in api.sent_rich + api.edited_texts] == [
+        rich_html(f"CARD 999 clips={clips} collapsed=False") for clips in ([1], [1, 2], [1, 2, 3])
+    ]
+    assert {key: fid for key, (fid, _) in goal_clip_store.items()} == {
+        (999, 1): "fid-1", (999, 2): "fid-2", (999, 3): "fid-3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_waits_out_429_on_edit_without_second_card(
+    bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
+):
+    """429 на правке выжидается внутри карточки: повтор всей отправки прислал бы вторую."""
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import EditMessageText
+
+    stats_handlers = bot_module("stats_handlers")
+    video_replay = bot_module("video_replay")
+    monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 10)
+    api.fail_next(EditMessageText, TelegramRetryAfter(
+        method=SendMessage(chat_id=1, text="x"), message="Too Many Requests", retry_after=0,
+    ))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)):
+        await stats_handlers.send_game_card(fake_bot, 42, 999)
+
+    assert len(api.sent_rich) == 1
+    [edit] = api.edited_texts
+    assert body(edit) == rich_html("CARD 999 clips=[1, 2] collapsed=False")
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_does_not_retry_rejection_unrelated_to_files(
+    bot_module, fake_bot, api, goal_clip_store
+):
+    """Отказ не из-за файла (разметка, чат) повтором с перезагрузкой клипов не лечится — всплывает."""
+    stats_handlers = bot_module("stats_handlers")
+    goal_clip_store[(999, 1)] = ("fid-1", "<b>GOAL 1</b>")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: chat not found"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "download_goal_video") as dl:
+        with pytest.raises(TelegramBadRequest):
+            await stats_handlers.send_game_card(fake_bot, 42, 999)
+    dl.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_game_card_reraises_rejection_without_cached_clips(bot_module, fake_bot, api, goal_clip_store):
+    """Отказ Telegram без клипов из кэша повторять нечем — ошибка всплывает."""
+    stats_handlers = bot_module("stats_handlers")
+    api.fail_next(SendRichMessage, _bad_request("Bad Request: can't parse rich message"))
+    with patch.object(stats_handlers, "game_goal_events", return_value=[]), \
+            patch.object(stats_handlers, "game_message", side_effect=_card_with_clips):
+        with pytest.raises(TelegramBadRequest):
+            await stats_handlers.send_game_card(fake_bot, 42, 999)
+    assert api.sent_rich == []
 
 
 def _replay(**goal):
@@ -726,7 +830,7 @@ def test_goal_caption_scorer_season_goal_time_score_and_empty_net(video_replay):
     assert video_replay.goal_caption(_replay()) == (
         "🚨 <b>W. Borgen</b> (Boston Bruins) — 1-й гол в сезоне\n"
         "Без передач\n"
-        "3-й период, 18:18 · Boston Bruins 6:3 San Jose Sharks · в пустые ворота"
+        "3-й период, 58:18 · Boston Bruins 6:3 San Jose Sharks · в пустые ворота"
     )
 
 
@@ -736,6 +840,7 @@ def test_goal_caption_assists_with_season_totals_overtime_power_play(video_repla
         strength="pp",
         goalModifier="none",
         goalsToDate=3,
+        timeInPeriod="03:12",
         assists=[
             {"name": {"default": "C. Mittelstadt"}, "assistsToDate": 1},
             {"name": {"default": "N. Zadorov"}, "assistsToDate": 3},
@@ -745,7 +850,7 @@ def test_goal_caption_assists_with_season_totals_overtime_power_play(video_repla
     assert video_replay.goal_caption(replay) == (
         "🚨 <b>W. Borgen</b> (Boston Bruins) — 3-й гол в сезоне\n"
         "Передачи: C. Mittelstadt (1), N. Zadorov (3)\n"
-        "овертайм, 18:18 · Boston Bruins 6:3 San Jose Sharks · в большинстве"
+        "овертайм, 63:12 · Boston Bruins 6:3 San Jose Sharks · в большинстве"
     )
 
 
@@ -794,8 +899,8 @@ def _digest_db_routes(home, away):
     return [
         ("JOIN teams th", lambda params: [(gid, "AAA", "BBB") for gid in params[0]]),
         ("get_game_stats", lambda params: [
-            (1, 0, 0, 0, 0, False, False, "home", home(params[0])),
-            (0, 0, 0, 0, 0, False, False, "away", away(params[0])),
+            (1, 0, 0, 0, 0, False, False, "home", home(params[0]), "HHH"),
+            (0, 0, 0, 0, 0, False, False, "away", away(params[0]), "AAA"),
         ]),
         ("get_goals_game", [
             ("X", "C", None, None, None, None, None, 1, "01:00", 1, 0,
@@ -814,23 +919,22 @@ def digest_labels_db(fake_db_router):
 @pytest.mark.parametrize(
     "games",
     [
-        pytest.param([(0, "Матчей не найдено", [])], id="no_real_games"),
-        pytest.param(
-            [(1, "Матч 1 текст", [{"label": "▶ 1:0", "game_id": 1, "event_id": 5}])], id="single_game"
-        ),
-        pytest.param(
-            [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])], id="multi_game"
-        ),
+        pytest.param([], id="no_real_games"),
+        pytest.param([1], id="single_game"),
+        pytest.param([1, 2], id="multi_game"),
     ],
 )
 async def test_dispatch_day_digest_ends_with_hint_and_carries_only_match_buttons(
     bot_module, fake_bot, api, digest_labels_db, games
 ):
     """Дайджест (`/today`, ИИ, рассылка): подсказка «Ещё: …» — подвал последнего (единственного)
-    сообщения, отдельного сообщения нет; кнопки — только карточки матчей (`dg:`) и видео голов (`gv:`)."""
+    сообщения, отдельного сообщения нет; кнопки — только карточки матчей (`dg:`); у карточки
+    единственного матча кнопок нет — видео голов внутри неё (Задача 119)."""
     stats_handlers = bot_module("stats_handlers")
 
-    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
+    with patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
+            patch.object(stats_handlers, "game_goal_events", return_value=[]):
+        await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
     [digest] = api.sent_rich
     assert api.sent_messages == [], "подсказка — подвал, а не отдельное сообщение"
@@ -842,8 +946,40 @@ async def test_dispatch_day_digest_ends_with_hint_and_carries_only_match_buttons
     assert footer.endswith("Настроить подписки: /subscriptions</footer>")
     rows = digest.reply_markup.inline_keyboard if digest.reply_markup else []
     data = [b.callback_data for row in rows for b in row]
-    assert all(d.startswith(("dg:", "gv:")) for d in data)
-    assert bool(data) is (games[0][0] != 0), "у «матчей не найдено» кнопок нет"
+    assert all(d.startswith("dg:") for d in data)
+    assert bool(data) is (len(games) > 1), "у «матчей не найдено» и у карточки кнопок нет"
+    if not games:
+        assert "За 2025-12-01 завершенных матчей не найдено." in text
+    if len(games) == 1:
+        assert text.startswith(rich_html("CARD 1 clips=[] collapsed=False"))
+
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_without_day_reports_empty_database(bot_module, fake_bot, api):
+    """День ``None`` (``day_digest`` не нашёл ни одного матча сезона) — «В базе пока нет…»."""
+    stats_handlers = bot_module("stats_handlers")
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, None, [])
+    assert body(api.sent_rich[0]).startswith("<p>В базе пока нет завершенных матчей.</p>")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_day_digest_summary_only_keeps_single_game_short(
+    bot_module, fake_bot, api, digest_labels_db
+):
+    """Рассылка: единственный оставшийся матч — сводка с кнопкой карточки, а не сама
+    карточка: подписки на него нет, и длинный текст чат не запрашивал."""
+    stats_handlers = bot_module("stats_handlers")
+
+    await stats_handlers.dispatch_day_digest_messages(
+        fake_bot, 100, "2025-12-01", [1],
+        heading="Остальные матчи ночи", summary_only=True,
+    )
+
+    [digest] = api.sent_rich
+    text = body(digest)
+    assert text.startswith("<p><b>Остальные матчи ночи</b></p>")
+    assert "1. H1 1:0 A1" in text
+    assert [b.callback_data for row in digest.reply_markup.inline_keyboard for b in row] == ["dg:1"]
 
 
 @pytest.mark.asyncio
@@ -851,9 +987,7 @@ async def test_dispatch_day_digest_multi_game_numbers_summary_and_labels_buttons
     bot_module, fake_bot, api, digest_labels_db
 ):
     stats_handlers = bot_module("stats_handlers")
-    games = [(i, f"<b>H{i} 1:0 A{i}</b>\nдетали", []) for i in range(1, 5)]
-
-    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", [1, 2, 3, 4])
 
     summary = api.sent_rich[0]
     text = body(summary)
@@ -889,9 +1023,7 @@ async def test_dispatch_day_digest_short_summary_has_no_truncation_marker(
     bot_module, fake_bot, api, digest_labels_db
 ):
     stats_handlers = bot_module("stats_handlers")
-    games = [(1, "Матч 1 текст", []), (2, "Матч 2 текст", [])]
-
-    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
+    await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", [1, 2])
 
     sent_text = body(api.sent_rich[0])
     assert "Показаны" not in sent_text
@@ -911,14 +1043,7 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     # лимита в 500 блоков (абзацев), который она не охраняет.
     fake_db_router(_digest_db_routes(lambda gid: "Х" * 120, lambda gid: "Y" * 120))
     total_games = 200
-    games = [
-        (
-            i + 1,
-            f"Матч {i + 1}: команда А против команды Б, финальный счёт " + "X" * 40,
-            [],
-        )
-        for i in range(total_games)
-    ]
+    games = list(range(1, total_games + 1))
 
     await stats_handlers.dispatch_day_digest_messages(fake_bot, 100, "2025-12-01", games)
 
@@ -995,9 +1120,6 @@ def test_stat_screen_callback_pattern_matches_only_well_formed_data(bot_module, 
     [
         ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:777", True),
         ("DIGEST_EXPAND_CALLBACK_PATTERN", "dg:not-an-int", False),
-        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001:55", True),
-        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:2026020001", False),  # без события
-        ("GOAL_VIDEO_CALLBACK_PATTERN", "gv:x:55", False),
     ],
 )
 def test_other_button_patterns_match_only_well_formed_data(bot_module, pattern_name, data, expected):
