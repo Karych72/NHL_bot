@@ -830,7 +830,7 @@ def test_goal_caption_scorer_season_goal_time_score_and_empty_net(video_replay):
     assert video_replay.goal_caption(_replay()) == (
         "🚨 <b>W. Borgen</b> (Boston Bruins) — 1-й гол в сезоне\n"
         "Без передач\n"
-        "3-й период, 18:18 · Boston Bruins 6:3 San Jose Sharks · в пустые ворота"
+        "3-й период, 58:18 · Boston Bruins 6:3 San Jose Sharks · в пустые ворота"
     )
 
 
@@ -840,6 +840,7 @@ def test_goal_caption_assists_with_season_totals_overtime_power_play(video_repla
         strength="pp",
         goalModifier="none",
         goalsToDate=3,
+        timeInPeriod="03:12",
         assists=[
             {"name": {"default": "C. Mittelstadt"}, "assistsToDate": 1},
             {"name": {"default": "N. Zadorov"}, "assistsToDate": 3},
@@ -849,7 +850,7 @@ def test_goal_caption_assists_with_season_totals_overtime_power_play(video_repla
     assert video_replay.goal_caption(replay) == (
         "🚨 <b>W. Borgen</b> (Boston Bruins) — 3-й гол в сезоне\n"
         "Передачи: C. Mittelstadt (1), N. Zadorov (3)\n"
-        "овертайм, 18:18 · Boston Bruins 6:3 San Jose Sharks · в большинстве"
+        "овертайм, 63:12 · Boston Bruins 6:3 San Jose Sharks · в большинстве"
     )
 
 

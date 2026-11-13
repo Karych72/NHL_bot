@@ -395,7 +395,7 @@ def test_game_message_lists_guest_goalie_first(game_message_text):
 def test_game_message_groups_goals_by_period_and_marks_period_without_goals(
     game_message_text,
 ):
-    """Голы фикстуры — в 1-м и 2-м периодах, 3-й — «Голов нет»; время внутри периода,
+    """Голы фикстуры — в 1-м и 2-м периодах, 3-й — «Голов нет»; время от начала матча,
     ассистенты — в скобках; голы — одним плотным абзацем, как звёзды, между периодами —
     одна пустая строка. Клипы — под ним одним свёрнутым блоком «Видео голов», над клипом —
     период и строка гола обычным текстом (Задача 119); гол без клипа — только в списке.
@@ -408,14 +408,14 @@ def test_game_message_groups_goals_by_period_and_marks_period_without_goals(
         f"10:15 · 0:2 — {scorer} [C] (ББ)\n"
         "&nbsp;\n"
         "<b>2-й период</b>\n"
-        f"02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)\n"
+        f"22:00 · 0:3 — {scorer} [C] (ПВ, ПШ)\n"
         "&nbsp;\n"
         "<b>3-й период</b>\n"
         "Голов нет\n"
         "<details><summary>Видео голов</summary>"
         f"<p>1-й период · 05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)</p>"
         '<video src="tg://video?id=goal10"></video>'
-        f"<p>2-й период · 02:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</p>"
+        f"<p>2-й период · 22:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</p>"
         '<video src="tg://video?id=goal12"></video>'
         "</details>\n\n"
     ) in text
@@ -457,7 +457,7 @@ def _overtime_fetch_all(shootout: bool):
 @pytest.mark.parametrize(
     "shootout, expected_block, expected_mark",
     [
-        (False, "<b>Овертайм</b>\n03:12 · 1:2 — Boldy [C] (ПШ)", " (ОТ) "),
+        (False, "<b>Овертайм</b>\n63:12 · 1:2 — Boldy [C] (ПШ)", " (ОТ) "),
         # Время буллита (всегда 00:00) не выводится.
         (True, "<b>Буллиты</b>\n1:2 — Boldy [C] (ПШ)", " (Б) "),
     ],
@@ -472,7 +472,7 @@ def test_game_message_titles_overtime_and_shootout_goal(
         text = bot_messages.game_message(555)
 
     assert "<b>2-й период</b>\nГолов нет\n" in text
-    assert "<b>3-й период</b>\n19:39 · 1:1 — Hughes [C]\n&nbsp;\n" in text
+    assert "<b>3-й период</b>\n59:39 · 1:1 — Hughes [C]\n&nbsp;\n" in text
     assert expected_mark in text.split("\n")[0], "ОТ/Б — в шапке после счёта"
     if shootout:
         # Овертайм перед буллитами сыгран без голов — и он в списке.
@@ -488,6 +488,16 @@ def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):
     assert bot_messages._period_name(5, False) == "2-й овертайм"
     assert bot_messages._period_name(6, False) == "3-й овертайм"
     assert bot_messages._period_name(5, True) == "Буллиты"
+
+
+@pytest.mark.parametrize(
+    "period, time_in_period, expected",
+    [(1, "05:12", "05:12"), (2, "09:37", "29:37"), (3, "19:59", "59:59"),
+     (4, "03:12", "63:12"), (6, "00:41", "100:41")],
+)
+def test_game_clock_counts_from_game_start(bot_module, period, time_in_period, expected):
+    """Время гола — от начала матча; овертаймы плей-офф по 20 минут (6-й период — 3-й ОТ)."""
+    assert bot_module("bot_messages").game_clock(period, time_in_period) == expected
 
 
 # ---------------------------------------------------------------------------

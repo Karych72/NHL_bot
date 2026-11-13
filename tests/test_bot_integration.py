@@ -362,15 +362,15 @@ async def test_game_card_renders_full_card(
     )
     assert "<h4" not in text and "Форма" not in text
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
-    # Голы — одним абзацем по периодам, без <pre>: время внутри периода, счёт после гола
+    # Голы — одним абзацем по периодам, без <pre>: время от начала матча, счёт после гола
     # «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
     # передачах) капсом; победная шайба — «ПШ», а не «★». Клип из кэша — под голами в
     # свёрнутом блоке «Видео голов», над клипом — строка гола.
     assert "<pre>" not in text
     assert (
         "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>&nbsp;<br>"
-        "<b>2-й период</b><br>11:40 · 1:1 — Marchand [LW]<br>15:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>&nbsp;<br>"
-        "<b>3-й период</b><br>04:10 · 2:2 — Pastrnak [RW] (Marchand)<br>18:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
+        "<b>2-й период</b><br>31:40 · 1:1 — Marchand [LW]<br>35:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>&nbsp;<br>"
+        "<b>3-й период</b><br>44:10 · 2:2 — Pastrnak [RW] (Marchand)<br>58:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
         "<details><summary>Видео голов</summary>"
         "<p>1-й период · 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</p>"
         '<video src="tg://video?id=goal101"></video></details>'
