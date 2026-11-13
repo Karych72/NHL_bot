@@ -28,7 +28,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
-from aiogram.methods import SendMessage, SendRichMessage
+from aiogram.methods import EditMessageText, SendMediaGroup, SendMessage, SendRichMessage, SendVideo
 
 from tests._telegram_fakes import FAKE_TOKEN, body, rich_html
 
@@ -509,9 +509,12 @@ def test_night_of_only_playoff_games_waits_for_them(push_job):
 # внутри него, кэш file_id
 # ---------------------------------------------------------------------------
 
+_SEND_KIND = {SendRichMessage: "message", SendMediaGroup: "album", SendVideo: "video", EditMessageText: "edit"}
+
+
 def _order(api):
-    """Чаты сообщений рассылки по порядку."""
-    return [r.chat_id for r in api.outgoing]
+    """Порядок запросов рассылки: ("message" | "edit" | "album" | "video", chat_id)."""
+    return [(_SEND_KIND[type(r)], r.chat_id) for r in api.requests if type(r) in _SEND_KIND]
 
 
 def _media(message):
@@ -547,12 +550,13 @@ def push_env(push_job, bot_module, monkeypatch, tmp_path, fake_bot, api, goal_cl
     ``api``), журнал скачиваний и проверок клипов, кэш клипов ``clips``
     (``goal_clip_store``), отметки (чат, матч) — ``sent`` (как в БД) и ``marked`` (по
     порядку), погашенные чаты ``deactivated``. Состояние ночи: ``goals`` — (game_id,
-    event_id) голов ночи (карточка — ``_card``), ``subscribed`` — ответ ``subscribed_games``,
+    event_id, страна автора) голов ночи (карточка — ``_card``), ``subscribed`` — ответ ``subscribed_games``,
     ``digest_chats`` и ``last_sent`` — подписчики дайджеста и их ``last_sent_night``,
     ``loaded`` — загружена ли ночь; ``unpublished`` — голы, клипа которых NHL ещё не
     выложила, ``missing`` — голы, клип которых не скачался. ``subs(teams, countries)`` —
     подписки чата на матч; ``run(chats, games, goals, final)`` — ``run_game_broadcast`` по
-    странам: ``chats`` — (chat_id, страна), ``games`` — (game_id, блок страны)."""
+    странам: ``chats`` — (chat_id, страна), ``games`` — (game_id, блок страны), ``goals`` —
+    (game_id, event_id) голов россиян или тройки с другой страной."""
     stats_handlers = bot_module("stats_handlers")
     env = SimpleNamespace(
         job=push_job, bot=fake_bot, api=api, downloads=[], clip_checks=[], marked=[],
@@ -596,13 +600,13 @@ def push_env(push_job, bot_module, monkeypatch, tmp_path, fake_bot, api, goal_cl
         monkeypatch.setattr(push_job, name, fake)
     for name, fake in (
         ("game_message", _card),
-        ("game_goal_events", lambda game_id: [e for g, e in env.goals if g == game_id]),
+        ("game_goal_events", lambda game_id: [e for g, e, _ in env.goals if g == game_id]),
         ("download_goal_video", download),
     ):
         monkeypatch.setattr(stats_handlers, name, fake)
 
     def run(chats, games, goals, final=False):
-        env.goals = goals
+        env.goals = [goal if len(goal) == 3 else (*goal, "RUS") for goal in goals]
         subscribed = {}
         for chat_id, country in chats:
             for game_id, block in games:
@@ -629,10 +633,11 @@ def _attached_parts(fake_bot, request):
 
 
 @pytest.mark.asyncio
-async def test_country_game_is_one_message_with_collapsed_card_and_clips_inside(push_env, fake_bot):
-    """Задачи 76, 119: подписка на страну — одно сообщение: табло, свёрнутая карточка с
-    клипами в строках голов и блок страны; ни кнопки «Карточка матча», ни альбома. Гол без
-    клипа — строкой без видео. Второму чату клипы — по ``file_id``, без повторной загрузки."""
+async def test_country_game_is_collapsed_card_with_clips_then_goal_album(push_env, fake_bot):
+    """Задачи 76, 119: подписка на страну — табло, свёрнутая карточка с клипами в строках
+    голов и блок страны, без кнопки «Карточка матча»; за ним голы страны альбомом с общей
+    подписью — по ``file_id``, которые загрузила карточка. Гол без клипа — строкой без видео
+    и не в альбоме. Второму чату клипы — по ``file_id``, без повторной загрузки."""
     push_env.missing = {(GAME_A, 101)}
     await push_env.run(
         [(111, "RUS"), (222, "RUS")],
@@ -641,8 +646,10 @@ async def test_country_game_is_one_message_with_collapsed_card_and_clips_inside(
     )
     api = push_env.api
 
-    assert _order(api) == [111, 111, 222, 222]
-    assert api.requests == api.sent_rich, "только rich-сообщения: ни альбомов, ни видео отдельно"
+    assert _order(api) == [
+        ("message", 111), ("album", 111), ("message", 111),
+        ("message", 222), ("album", 222), ("message", 222),
+    ]
     first_a, first_b, second_a, _ = api.sent_rich
     assert first_a.rich_message.html == rich_html(
         f"CARD {GAME_A} clips=[100, 102] collapsed\n\nBLOCK A"
@@ -663,6 +670,13 @@ async def test_country_game_is_one_message_with_collapsed_card_and_clips_inside(
     assert push_env.clips == {
         (GAME_A, 100): ("fid-1", "<b>GOAL</b> 100"), (GAME_A, 102): ("fid-2", "<b>GOAL</b> 102"),
     }
+    # Альбом: Telegram показывает одну подпись — описания обоих голов у первого видео.
+    first_album, second_album = (r.media for r in api.sent(SendMediaGroup))
+    assert [(m.media, m.caption) for m in first_album] == [
+        ("fid-1", "<b>GOAL</b> 100\n\n<b>GOAL</b> 102"), ("fid-2", None),
+    ]
+    assert first_album[0].parse_mode == "HTML"
+    assert [(m.media, m.caption) for m in second_album] == [(m.media, m.caption) for m in first_album]
     assert list(push_env.tmp_path.iterdir()) == [], "временные файлы удалены"
     assert push_env.marked == [(111, GAME_A), (111, GAME_B), (222, GAME_A), (222, GAME_B)]
 
@@ -679,7 +693,7 @@ async def test_country_game_waits_for_clips_until_the_deadline(push_env):
 
     assert push_env.marked == [(111, GAME_B), (222, GAME_B)]
     assert push_env.clip_checks == _goals(GAME_A, 2)
-    assert _order(push_env.api) == [111, 222]
+    assert _order(push_env.api) == [("message", 111), ("message", 222)]
 
     # Следующий прогон: клип выложен — матч уходит с клипами всех голов; ушедший GAME_B
     # не повторяется.
@@ -697,21 +711,25 @@ async def test_country_game_waits_for_clips_until_the_deadline(push_env):
 
 
 @pytest.mark.asyncio
-async def test_clips_over_upload_budget_reach_the_next_subscriber(push_env, bot_module, monkeypatch):
-    """Задача 75: Bot API принимает до 50 МБ файлов на запрос. Первому чату уходят клипы,
-    влезшие в бюджет, остальные голы — строкой без видео; следующему чату загруженные идут
-    по ``file_id`` (бюджет не тратят), и бюджет достаётся следующим клипам."""
+async def test_clips_over_upload_budget_are_topped_up_for_the_first_subscriber(
+    push_env, bot_module, monkeypatch
+):
+    """Задачи 75, 119: Bot API принимает до 50 МБ файлов на запрос. Первому чату карточка
+    уходит с клипами, влезшими в бюджет, и доливается правками до всех голов; альбом и
+    следующие чаты — уже по ``file_id``, без загрузки."""
     monkeypatch.setattr(bot_module("stats_handlers"), "_UPLOAD_BUDGET_BYTES", 25)  # клип с превью — 10 байт
-    await push_env.run(
-        [(111, "RUS"), (222, "RUS"), (333, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 5), final=True
-    )
+    await push_env.run([(111, "RUS"), (222, "RUS")], [(GAME_A, "BLOCK")], _goals(GAME_A, 5), final=True)
+    api = push_env.api
 
-    assert [_media(m) for m in push_env.api.sent_rich] == [
-        [("goal100", "100.mp4"), ("goal101", "101.mp4")],
-        [("goal100", "fid-1"), ("goal101", "fid-2"), ("goal102", "102.mp4"), ("goal103", "103.mp4")],
-        [("goal100", "fid-1"), ("goal101", "fid-2"), ("goal102", "fid-3"), ("goal103", "fid-4"),
-         ("goal104", "104.mp4")],
+    assert _order(api) == [
+        ("message", 111), ("edit", 111), ("edit", 111), ("album", 111),
+        ("message", 222), ("album", 222),
     ]
+    assert [len(_media(m)) for m in api.sent_rich + api.edited_texts] == [2, 5, 4, 5]
+    assert _media(api.edited_texts[-1]) == [(f"goal{e}", f"fid-{e - 99}") for e in range(100, 104)] + [
+        ("goal104", "104.mp4")
+    ]
+    assert _media(api.sent_rich[1]) == [(f"goal{e}", f"fid-{e - 99}") for e in range(100, 105)]
 
 
 @pytest.mark.asyncio
@@ -815,7 +833,7 @@ async def test_game_broadcast_deactivates_only_the_blocked_chat(push_env):
     )
 
     assert push_env.deactivated == [111]
-    assert _order(push_env.api) == [222, 222]
+    assert _order(push_env.api) == [("message", 222), ("message", 222)]
     assert push_env.marked == [(111, GAME_A), (222, GAME_A), (222, GAME_B)]
 
 
@@ -823,9 +841,10 @@ async def test_game_broadcast_deactivates_only_the_blocked_chat(push_env):
 async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(push_env):
     """Задача 85, правило человека 2026-10-25: подписчик RUS, BLR, обеих команд встречи и
     «Матчей» получает о матче одно сообщение — открытую карточку с клипами всех голов,
-    блоками обеих стран и строкой подписок; дайджест этого матча не содержит. Повторный
+    блоками обеих стран и строкой подписок, за ней альбомом голы игроков подписанных стран
+    (гол чужой страны — только в карточке); дайджест этого матча не содержит. Повторный
     прогон ничего не дублирует."""
-    push_env.goals = _goals(GAME_A, 3)
+    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "BLR"), (GAME_A, 102, "CAN")]
     push_env.subscribed = {
         111: {GAME_A: push_env.subs(["TOR", "BOS"], [("BLR", "BLR BLOCK"), ("RUS", "RUS BLOCK")])}
     }
@@ -838,6 +857,9 @@ async def test_subscriber_of_both_countries_and_both_teams_gets_the_game_once(pu
         f"CARD {GAME_A} clips=[100, 101, 102]\n\nBLR BLOCK\n\nRUS BLOCK"
     ) + "<footer>По подписке: TOR · BOS · Беларусь · Россия<br>Настроить подписки: /subscriptions</footer>"
     assert card.reply_markup is None, "видео голов — в карточке, не кнопками"
+    assert _order(push_env.api) == [("message", 111), ("album", 111)]
+    [album] = push_env.api.sent(SendMediaGroup)
+    assert [m.media for m in album.media] == ["fid-1", "fid-2"]
     assert push_env.downloads == _goals(GAME_A, 3)
     assert push_env.marked == [(111, GAME_A)]
     assert push_env.last_sent == {111: NIGHT}, "дайджест отмечен, но пуст — не ушёл"
@@ -877,15 +899,54 @@ async def test_country_subscribed_after_the_digest_does_not_resend_its_games(pus
 @pytest.mark.asyncio
 async def test_subscriber_of_two_countries_gets_one_message_with_both_blocks(push_env):
     """Задача 85: только страны — одно сообщение со свёрнутой карточкой, блоками обеих
-    стран и строкой подписок; первая строка — табло (здесь — заглушка карточки)."""
-    push_env.goals = _goals(GAME_A, 2)
+    стран и строкой подписок (первая строка — табло, здесь — заглушка карточки), за ним
+    одним альбомом голы игроков этих стран; гол чужой страны в альбом не берётся."""
+    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN"), (GAME_A, 102, "BLR")]
     subs = push_env.subs([], [("BLR", "BLR BLOCK"), ("RUS", "RUS BLOCK")])
     await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {111: {GAME_A: subs}})
 
     [message] = push_env.api.outgoing
     assert message.rich_message.html == rich_html(
-        f"CARD {GAME_A} clips=[100, 101] collapsed\n\nBLR BLOCK\n\nRUS BLOCK"
+        f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\nBLR BLOCK\n\nRUS BLOCK"
     ) + "<footer>По подписке: Беларусь · Россия<br>Настроить подписки: /subscriptions</footer>"
+    [album] = push_env.api.sent(SendMediaGroup)
+    assert [m.media for m in album.media] == ["fid-1", "fid-3"]
+
+
+def test_owner_gets_every_game_of_the_night_first(push_job, monkeypatch):
+    """Задача 119: владелец — первым и со всеми матчами ночи (без подписки — с пустыми
+    подписками): его карточка грузит клипы в кэш, остальным они уходят по ``file_id``."""
+    owner = 168669418
+    monkeypatch.setattr(push_job.config, "OWNER_CHAT_ID", owner)
+    monkeypatch.setattr(push_job, "list_active_game_rows", lambda: [(222, 10, None), (owner, 20, None)])
+    monkeypatch.setattr(push_job, "fetch_all", lambda query, params, columns: {
+        "game_id": [GAME_A, GAME_B], "home_id": [10, 30], "home": ["Boston", "New York"],
+        "away_id": [40, 20], "away": ["Toronto", "Montréal"], "count_rows": 2,
+    })
+
+    result = push_job.subscribed_games(NIGHT)
+
+    assert list(result) == [owner, 222]
+    assert result[owner] == {GAME_A: push_job._GameSubscriptions([], []), GAME_B: push_job._GameSubscriptions(["Montréal"], [])}
+    assert result[222] == {GAME_A: push_job._GameSubscriptions(["Boston"], [])}
+
+
+def test_without_owner_and_subscriptions_nothing_is_read(push_job, monkeypatch):
+    monkeypatch.setattr(push_job.config, "OWNER_CHAT_ID", None)
+    monkeypatch.setattr(push_job, "list_active_game_rows", lambda: [])
+    monkeypatch.setattr(push_job, "fetch_all", lambda *a: pytest.fail("без подписок матчи ночи не нужны"))
+    assert push_job.subscribed_games(NIGHT) == {}
+
+
+@pytest.mark.asyncio
+async def test_owner_game_without_subscription_is_open_card_without_reason(push_env):
+    """Матч владельца без подписки — открытая карточка, в подвале только ссылка на подписки."""
+    push_env.goals = [(GAME_A, 100, "CAN")]
+    await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {1: {GAME_A: push_env.subs([], [])}})
+
+    [card] = push_env.api.outgoing
+    assert card.rich_message.html == rich_html(f"CARD {GAME_A} clips=[100]") + FOOTER
+    assert push_env.api.sent(SendMediaGroup) == [] and push_env.api.sent(SendVideo) == []
 
 
 @pytest.mark.asyncio

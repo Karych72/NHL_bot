@@ -2381,23 +2381,27 @@ def country_game_block(code: str, game_id: int) -> Optional[str]:
     return _country_blocks(code, "g.game_id", game_id).get(game_id)
 
 
-def night_goals(night: date) -> List[Tuple[int, int]]:
-    """Голы ночи `night` с видео: (game_id, event_id) по порядку игры. Голы без `event_id`
-    и буллиты (`period >= 5` в матче с `is_shootouts`; в плей-офф 5+ — овертаймы)
-    пропускаются.
+def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
+    """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
+    порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
+    в плей-офф 5+ — овертаймы) пропускаются.
     Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) ждёт клипов всех голов
-    матча — они уходят внутри карточки."""
+    матча, а в альбом подписчику страны берёт голы её игроков."""
     goals = fetch_all(
-        "SELECT a.game_id, a.event_id "
+        "SELECT a.game_id, a.event_id, r.nationality "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
+        "LEFT JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
         "WHERE g.day = %s AND a.event_id IS NOT NULL "
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
         (night,),
-        columns=["game_id", "event_id"],
+        columns=["game_id", "event_id", "nationality"],
     )
-    return [(int(goals["game_id"][i]), int(goals["event_id"][i])) for i in range(goals["count_rows"])]
+    return [
+        (int(goals["game_id"][i]), int(goals["event_id"][i]), goals["nationality"][i])
+        for i in range(goals["count_rows"])
+    ]
 
 
 def team_stats_with_count(

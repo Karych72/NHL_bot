@@ -30,14 +30,22 @@ import asyncio
 import html
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
-from typing import Awaitable, Callable, Dict, List, NamedTuple, Set, Tuple, TypeVar
+from typing import Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import (
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaLivePhoto,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramForbiddenError,
@@ -86,7 +94,7 @@ from subscription_repo import (  # noqa: E402
     sent_games,
 )
 from database import fetch_all  # noqa: E402
-from video_replay import goal_clip_published  # noqa: E402
+from video_replay import cached_goal_clip, goal_clip_published  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -115,7 +123,18 @@ _NIGHT_SHIFT = timedelta(hours=12)
 _LOADED_GAME_TYPES = (2, 3)
 _SCHEDULED_AS_PLANNED = "OK"
 
+# Telegram принимает в одном альбоме (sendMediaGroup) от 2 до 10 медиа.
+_ALBUM_SIZE = 10
+
+# Подпись к видео и альбому — до 1024 символов видимого текста (UTF-16, без HTML-разметки).
+_CAPTION_LIMIT = 1024
+
+_HTML_TAG = re.compile(r"<[^>]+>")
+
 _T = TypeVar("_T")
+
+# Элемент альбома, как его типизирует ``Bot.send_media_group``; в альбоме рассылки — только видео.
+_AlbumMedia = Union[InputMediaAudio, InputMediaDocument, InputMediaLivePhoto, InputMediaPhoto, InputMediaVideo]
 
 def night_of(now: datetime) -> date:
     """Игровая дата ночи, которой принадлежит момент *now*.
@@ -178,13 +197,16 @@ def subscribed_games(night: date) -> _SubscribedGames:
 
     Зачем: такой матч приходит чату одним сообщением под его подписки
     (``run_game_broadcast``), а в дайджест не попадает (``run_morning_digest_broadcast``).
-    Чата без таких матчей в ответе нет.
+    Чата без таких матчей в ответе нет. Владелец (``config.OWNER_CHAT_ID``) — первым и со
+    всеми матчами ночи (без подписки — с пустыми подписками): его карточка грузит клипы
+    голов в кэш, остальным они уходят по ``file_id`` (Задача 119).
 
     Аргументы:
         night: игровая дата ночи (``night_of``).
     """
     rows = list_active_game_rows()
-    if not rows:
+    owner = config.OWNER_CHAT_ID
+    if not rows and owner is None:
         return {}
     games = fetch_all(
         "SELECT g.game_id, g.home_team_id, h.name, g.away_team_id, a.name "
@@ -219,7 +241,13 @@ def subscribed_games(night: date) -> _SubscribedGames:
             )
             if subs.teams or subs.countries:
                 result.setdefault(chat_id, {})[game_id] = subs
-    return result
+    if owner is None:
+        return result
+    own = result.pop(owner, {})
+    every_game = {
+        int(game_id): own.get(int(game_id), _GameSubscriptions([], [])) for game_id in games["game_id"]
+    }
+    return {owner: every_game, **result} if every_game else result
 
 
 async def throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
@@ -306,6 +334,57 @@ async def run_morning_digest_broadcast(
         await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
 
 
+def _caption_length(text: str) -> int:
+    """Длина подписи из HTML-текста — видимые символы в UTF-16, как считает Telegram."""
+    return len(html.unescape(_HTML_TAG.sub("", text)).encode("utf-16-le")) // 2
+
+
+def _albums(clips: List[Tuple[str, str]]) -> List[List[Tuple[str, str]]]:
+    """Клипы (``file_id``, подпись) по альбомам в исходном порядке: в каждом не больше
+    ``_ALBUM_SIZE`` клипов и ``_CAPTION_LIMIT`` символов общей подписи — описаний голов
+    через пустую строку (Telegram показывает у альбома одну подпись)."""
+    albums: List[List[Tuple[str, str]]] = []
+    for clip in clips:
+        if (
+            not albums
+            or len(albums[-1]) == _ALBUM_SIZE
+            or _caption_length("\n\n".join(c for _, c in albums[-1] + [clip])) > _CAPTION_LIMIT
+        ):
+            albums.append([])
+        albums[-1].append(clip)
+    return albums
+
+
+async def _send_goal_album(bot: Bot, chat_id: int, goals: List[Tuple[int, int]]) -> None:
+    """Голы игроков подписанных стран после карточки — альбомом с общей подписью (кто
+    забил, с чьих передач, когда; решение человека 2026-11-13, Задача 119).
+
+    Клипы — по ``file_id`` из кэша: карточка перед альбомом их уже загрузила
+    (``send_game_card``), гол без клипа пропускается. Клип один — ``send_video``.
+
+    Аргументы: ``bot``; ``chat_id`` — получатель; ``goals`` — (game_id, event_id) голов стран.
+    """
+    clips = [clip for goal in goals if (clip := cached_goal_clip(*goal)) is not None]
+    for album in _albums(clips):
+        caption = "\n\n".join(c for _, c in album)
+        if len(album) == 1:
+            await throttled(
+                partial(
+                    bot.send_video, chat_id=chat_id, video=album[0][0], caption=caption,
+                    parse_mode="HTML", supports_streaming=True,
+                ),
+                chat_id,
+            )
+            continue
+        media: List[_AlbumMedia] = [
+            InputMediaVideo(
+                media=file_id, caption=caption if n == 0 else None, parse_mode="HTML", supports_streaming=True,
+            )
+            for n, (file_id, _) in enumerate(album)
+        ]
+        await throttled(partial(bot.send_media_group, chat_id=chat_id, media=media), chat_id)
+
+
 async def _clips_published(
     goals: List[Tuple[int, int]], published: Dict[Tuple[int, int], bool]
 ) -> bool:
@@ -341,30 +420,36 @@ async def run_game_broadcast(
     if not subscribed:
         return
     sent = chat_games_sent(sorted({game_id for games in subscribed.values() for game_id in games}))
-    goals: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
-    for game_id, event_id in night_goals(night):
-        goals[game_id].append((game_id, event_id))
+    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
+    for game_id, event_id, nationality in night_goals(night):
+        goals[game_id].append(((game_id, event_id), nationality))
     published: Dict[Tuple[int, int], bool] = {}
     for chat_id, games in subscribed.items():
         for game_id, subs in games.items():
             if (chat_id, game_id) in sent:
                 continue
-            if not final and not await _clips_published(goals[game_id], published):
+            if not final and not await _clips_published([goal for goal, _ in goals[game_id]], published):
                 logger.info("game_id=%s: клипы ещё не выложены, ждём", game_id)
                 continue
             labels = [html.escape(team) for team in subs.teams] + [
                 html.escape(country_name(country)) for country, _ in subs.countries
             ]
             # Причина и ссылка на подписки — подвал: первой строкой, видной в
-            # уведомлении, идёт счёт матча.
-            footer = rich_footer(f"По подписке: {' · '.join(labels)}\n{SUBSCRIPTIONS_FOOTER}")
+            # уведомлении, идёт табло. Матч владельца без подписки — без «По подписке».
+            reason = f"По подписке: {' · '.join(labels)}\n" if labels else ""
+            footer = rich_footer(f"{reason}{SUBSCRIPTIONS_FOOTER}")
             blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
+            countries = {country for country, _ in subs.countries}
             try:
                 await throttled(
                     partial(
-                        send_game_card, bot, chat_id, game_id, f"{blocks}\n{footer}", collapsed=not subs.teams
+                        send_game_card, bot, chat_id, game_id, f"{blocks}\n{footer}",
+                        collapsed=bool(subs.countries) and not subs.teams,
                     ),
                     chat_id,
+                )
+                await _send_goal_album(
+                    bot, chat_id, [goal for goal, nationality in goals[game_id] if nationality in countries]
                 )
             except TelegramForbiddenError:
                 logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)

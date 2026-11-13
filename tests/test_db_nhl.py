@@ -1005,10 +1005,10 @@ class TestCountryNightSql(unittest.TestCase):
     def test_game_goal_events_in_game_order(self):
         self.assertEqual(self.messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
 
-    def test_night_goals_skip_shootout_in_game_order(self):
+    def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(
             self.messages.night_goals(self.NIGHT),
-            [(self.GAME, 5), (self.GAME, 10), (self.GAME, 20), (self.GAME, 30)],
+            [(self.GAME, 5, "ZZZ"), (self.GAME, 10, "ZZZ"), (self.GAME, 20, "YYY"), (self.GAME, 30, "ZZZ")],
         )
 
     def test_subscribed_games_match_teams_and_countries_of_each_chat(self):

@@ -613,29 +613,39 @@ async def test_send_game_card_puts_cached_and_uploaded_clips_inside_the_card(
 
 
 @pytest.mark.asyncio
-async def test_send_game_card_stops_uploading_at_the_request_budget(
+async def test_send_game_card_tops_up_clips_over_the_request_budget_by_editing(
     bot_module, fake_bot, api, tmp_path, goal_clip_store, monkeypatch
 ):
-    """Bot API — до 50 МБ файлов на запрос: клип сверх бюджета и следующие некэшированные
-    голы остаются строкой без видео (их больше не качаем), клип из кэша — в карточке."""
+    """Bot API — до 50 МБ файлов на запрос: клипы сверх бюджета доливаются правками того же
+    сообщения, пока не загружено всё; загруженные раньше идут в правке по ``file_id``.
+    Клип тяжелее всего бюджета не влезет никогда — его гол остаётся строкой без видео."""
     stats_handlers = bot_module("stats_handlers")
     video_replay = bot_module("video_replay")
     monkeypatch.setattr(stats_handlers, "_UPLOAD_BUDGET_BYTES", 20)
-    goal_clip_store[(999, 4)] = ("fid-4", "<b>GOAL 4</b>")
-    deliveries = {
-        1: _delivery(video_replay, tmp_path, 1, size=10, thumb=False),
-        2: _delivery(video_replay, tmp_path, 2, size=15, thumb=False),
-    }
-    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3, 4]), \
+    goal_clip_store[(999, 5)] = ("fid-5", "<b>GOAL 5</b>")
+    sizes = {1: 10, 2: 15, 3: 8, 4: 25}
+    with patch.object(stats_handlers, "game_goal_events", return_value=[1, 2, 3, 4, 5]), \
             patch.object(stats_handlers, "game_message", side_effect=_card_with_clips), \
-            patch.object(stats_handlers, "download_goal_video", side_effect=lambda g, e: deliveries[e]) as dl:
+            patch.object(stats_handlers, "download_goal_video",
+                         side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, size=sizes[e], thumb=False)) as dl:
         await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    assert [call.args for call in dl.call_args_list] == [(999, 1), (999, 2)]
+    # Отправка: 1 загружен, 2 не влез (дальше не качаем); правка: 2 загружен, 3 не влез;
+    # правка: 3 и 4 (тяжелее бюджета — пропущен).
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 2, 3, 3, 4]
     [sent] = api.sent_rich
-    assert body(sent) == rich_html("CARD 999 clips=[1, 4] collapsed=False")
-    assert [m.id for m in sent.rich_message.media] == ["goal1", "goal4"]
-    assert list(tmp_path.iterdir()) == [], "и не влезший клип удалён"
+    assert body(sent) == rich_html("CARD 999 clips=[1, 5] collapsed=False")
+    edits = api.edited_texts
+    assert [(e.chat_id, e.message_id) for e in edits] == [(42, sent_id := 1), (42, sent_id)]
+    assert [body(e) for e in edits] == [
+        rich_html("CARD 999 clips=[1, 2, 5] collapsed=False"),
+        rich_html("CARD 999 clips=[1, 2, 3, 5] collapsed=False"),
+    ]
+    assert [m.media.media for m in edits[0].rich_message.media][::2] == ["fid-1", "fid-5"]
+    assert {key: fid for key, (fid, _) in goal_clip_store.items()} == {
+        (999, 1): "fid-1", (999, 2): "fid-2", (999, 3): "fid-3", (999, 5): "fid-5",
+    }
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -692,10 +702,12 @@ async def test_send_game_card_retry_downloads_stale_cached_clips_first(
                          side_effect=lambda g, e: _delivery(video_replay, tmp_path, e, thumb=False)) as dl:
         await stats_handlers.send_game_card(fake_bot, 42, 999)
 
-    # Первая попытка: 1 загружен, 2 не влез, 3 из кэша; повтор — 3 первым, 1 уже не влезает.
-    assert [call.args for call in dl.call_args_list] == [(999, 1), (999, 2), (999, 3), (999, 1)]
+    # Первая попытка: 1 загружен, 2 не влез, 3 из кэша; повтор — 3 первым, 1 уже не влезает;
+    # затем правки доливают 1 и 2.
+    assert [call.args[1] for call in dl.call_args_list] == [1, 2, 3, 1, 1, 2, 2]
     [sent] = api.sent_rich
     assert body(sent) == rich_html("CARD 999 clips=[3] collapsed=False")
+    assert body(api.edited_texts[-1]) == rich_html("CARD 999 clips=[1, 2, 3] collapsed=False")
     assert goal_clip_store[(999, 3)] == ("fid-1", "<b>GOAL 3</b>")
 
 

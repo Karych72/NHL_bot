@@ -156,3 +156,6 @@ AI_PG_USER = _env("AI_PG_USER", "nhl_ai_reader")
 
 ENABLE_PUSH_DIGEST = _env_bool("ENABLE_PUSH_DIGEST", False)
 PUSH_SEND_INTERVAL_SEC = _env_float("PUSH_SEND_INTERVAL_SEC", 0.05)
+# Чат владельца бота (Задача 119): рассылка шлёт ему каждый матч ночи и первым — его карточка
+# грузит клипы голов в кэш, остальным подписчикам они уходят по `file_id`. Пусто — никому.
+OWNER_CHAT_ID: Optional[int] = int(os.environ["OWNER_CHAT_ID"]) if os.getenv("OWNER_CHAT_ID", "").strip() else None

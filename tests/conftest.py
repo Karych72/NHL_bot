@@ -252,17 +252,20 @@ def fake_db_router(
 def goal_clip_store(
     bot_module: Callable[[str], Any], monkeypatch: pytest.MonkeyPatch
 ) -> Dict[Tuple[int, int], Tuple[str, str]]:
-    """Кэш клипов голов ``bot_goal_clips`` (Задача 87) в памяти — его читает и пополняет
-    отправка карточки (``stats_handlers.send_game_card``) и в меню, и в рассылке:
-    (game_id, event_id) → (``file_id``, подпись). SQL кэша — в tests/test_db_nhl.py."""
+    """Кэш клипов голов ``bot_goal_clips`` (Задача 87) в памяти — один на карточку
+    (``stats_handlers.send_game_card``, читает и пополняет) и альбом голов страны
+    (``push_digest_job``, читает), как общая таблица в БД: (game_id, event_id) →
+    (``file_id``, подпись). SQL кэша — в tests/test_db_nhl.py."""
     store: Dict[Tuple[int, int], Tuple[str, str]] = {}
 
     def save(game_id: int, event_id: int, file_id: str, caption: str) -> None:
         store[(game_id, event_id)] = (file_id, caption)
 
-    module = bot_module("stats_handlers")
-    monkeypatch.setattr(module, "cached_goal_clip", lambda game_id, event_id: store.get((game_id, event_id)))
-    monkeypatch.setattr(module, "save_goal_clip", save)
+    for name in ("push_digest_job", "stats_handlers"):
+        monkeypatch.setattr(
+            bot_module(name), "cached_goal_clip", lambda game_id, event_id: store.get((game_id, event_id))
+        )
+    monkeypatch.setattr(bot_module("stats_handlers"), "save_goal_clip", save)
     return store
 
 
