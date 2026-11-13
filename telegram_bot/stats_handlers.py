@@ -319,7 +319,7 @@ _Carried = Tuple[int, _Clip, int]
 _Publish = Callable[[InputRichMessage], Awaitable[Message | bool]]
 
 # Отказ Telegram из-за ``file_id`` клипа (протух, выдан другим ботом).
-_FILE_ID_ERRORS = ("wrong file identifier", "wrong remote file", "file reference")
+_FILE_ID_ERRORS = ("wrong file identifier", "wrong remote file", "file reference", "file_reference")
 
 
 async def _download_clip(game_id: int, event_id: int) -> Optional[Tuple[_Clip, int]]:
