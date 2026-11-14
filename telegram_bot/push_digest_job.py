@@ -557,15 +557,16 @@ async def _channel_footer(bot: Bot) -> str:
 
 
 async def run_channel_previews(bot: Bot, now: datetime) -> None:
-    """Превью каждого ещё не начавшегося матча дня — отдельным постом в канал, один раз.
+    """Превью всех ещё не начавшихся матчей дня — одним постом в канал, каждый матч один раз.
 
     Зачем: канал (Задача 118) — витрина бота для всех читателей. С 15:30 МСК
-    (``upcoming_games``) все неопубликованные превью идут сразу, по времени начала. Пост —
-    то же превью, что у подписки (сравнение команд свёрнуто), но без прогноза модели
-    (премиум, Задача 96) и без ссылки на подписки — с ссылкой на бота. Пост — одна отправка,
-    поэтому отметка ``bot_channel_posts`` — после удачной: отказ Telegram (бот не админ
-    канала) логируется, матч не отмечается и повторится следующим прогоном, остальные
-    матчи уходят, а после всех ошибка пробрасывается — прогон красный. Без ``CHANNEL_ID`` — ничего.
+    (``upcoming_games``) все неопубликованные превью уходят одним сообщением, по времени
+    начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Превью матча —
+    то же, что у подписки (сравнение команд свёрнуто), но без прогноза модели (премиум,
+    Задача 96) и без ссылки на подписки; подвал один на пост — сезон и ссылка на бота.
+    Отметка ``bot_channel_posts`` — после удачной отправки: отказ Telegram (бот не админ
+    канала) пробрасывается, матчи не отмечаются и повторятся следующим прогоном.
+    Без ``CHANNEL_ID`` — ничего.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
     """
@@ -576,25 +577,19 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
     if not games:
         return
     posted = channel_posted([game[0] for game in games], "preview")
-    bot_line = await _channel_footer(bot)
-    errors: List[TelegramAPIError] = []
-    for game_id, start, away, home in games:
-        if game_id in posted:
-            continue
-        body, footer = matchup_season_preview(game_id, away, home, collapsed=True)
-        text = f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n" + rich_footer(f"{footer}\n{bot_line}")
-        try:
-            await throttled(
-                partial(bot.send_rich_message, chat_id=channel, rich_message=rich_message(text)), channel
-            )
-        except TelegramAPIError as exc:
-            logger.warning("channel preview failed game_id=%s: %s", game_id, exc)
-            errors.append(exc)
-            continue
+    fresh = [game for game in games if game[0] not in posted]
+    if not fresh:
+        return
+    sections: List[str] = []
+    footer = ""
+    for game_id, start, away, home in fresh:
+        body, game_footer = matchup_season_preview(game_id, away, home, collapsed=True)
+        sections.append(f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}")
+        footer = footer or game_footer
+    text = "\n\n".join(sections) + "\n" + rich_footer(f"{footer}\n{await _channel_footer(bot)}")
+    await throttled(partial(bot.send_rich_message, chat_id=channel, rich_message=rich_message(text)), channel)
+    for game_id, *_ in fresh:
         mark_channel_posted(game_id, "preview")
-        await asyncio.sleep(_CHANNEL_POST_INTERVAL_SEC)
-    if errors:
-        raise errors[0]
 
 
 async def run_channel_results(bot: Bot, night: date, final: bool) -> None:
