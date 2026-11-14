@@ -365,16 +365,15 @@ async def test_game_card_renders_full_card(
     # Голы — одним абзацем по периодам, без <pre>: время от начала матча, счёт после гола
     # «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
     # передачах) капсом; победная шайба — «ПШ», а не «★». Клип из кэша — под голами в
-    # свёрнутом блоке «Видео голов», над клипом — строка гола.
+    # свёрнутом блоке «Видео голов» — лентой без подписей.
     assert "<pre>" not in text
     assert (
         "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>&nbsp;<br>"
         "<b>2-й период</b><br>31:40 · 1:1 — Marchand [LW]<br>35:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>&nbsp;<br>"
         "<b>3-й период</b><br>44:10 · 2:2 — Pastrnak [RW] (Marchand)<br>58:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
-        "<details><summary>Видео голов</summary>"
-        "<p>1-й период · 05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)</p>"
-        '<video src="tg://video?id=goal101"></video></details>'
-    ) in text, "голы — плотный абзац, клипы — одним свёрнутым блоком"
+        "<details><summary>Видео голов</summary><tg-slideshow>"
+        '<video src="tg://video?id=goal101"></video></tg-slideshow></details>'
+    ) in text, "голы — плотный абзац, клипы — лентой в свёрнутом блоке"
     assert [(m.id, m.media.media) for m in sent.rich_message.media] == [("goal101", "fid-101")]
     assert sent.reply_markup is None, "видео голов — в карточке, не кнопками"
     # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари —

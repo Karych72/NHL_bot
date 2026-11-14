@@ -1291,42 +1291,41 @@ def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
 
 @pytest.mark.asyncio
 async def test_channel_previews_every_upcoming_game_once_without_prediction(push_job, channel_env, fake_bot, api):
-    """С 15:30 МСК все предстоящие матчи дня — сразу, по посту на матч по времени начала:
+    """С 15:30 МСК все предстоящие матчи дня — одним постом по времени начала: у каждого
     время, команды, сравнение свёрнуто; ни прогноза, ни тизера премиума, ни подписок, ни
-    кнопок — в подвале ссылка на бота. Повторный прогон ничего не дублирует."""
+    кнопок — подвал один, в нём ссылка на бота. Повторный прогон ничего не дублирует."""
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
 
-    posts = api.sent_rich
-    assert [p.chat_id for p in posts] == [CHANNEL] * 3
-    assert [p.rich_message.html.split("</b>")[0] for p in posts] == [
-        "<p>⏰ Начало в 02:00 МСК<br><b>BOS Club @ TOR Club",
-        "<p>⏰ Начало в 02:30 МСК<br><b>NYR Club @ MTL Club",
-        "<p>⏰ Начало в 05:00 МСК<br><b>VAN Club @ SEA Club",
+    [post] = api.sent_rich
+    assert post.chat_id == CHANNEL and post.reply_markup is None
+    html_ = post.rich_message.html
+    assert re.findall(r"⏰ Начало в (\d\d:\d\d) МСК<br><b>(\w+) Club @ (\w+) Club", html_) == [
+        ("02:00", "BOS", "TOR"), ("02:30", "NYR", "MTL"), ("05:00", "VAN", "SEA"),
     ]
-    for post in posts:
-        html_ = post.rich_message.html
-        assert "<details>" in html_ and "Сравнение команд" in html_
-        assert "<footer>Сезон " in html_ and html_.endswith(f"<br>{CHANNEL_FOOTER_LINE}</footer>")
-        assert not re.search("модел|премиум|🔒|/subscriptions", html_)
-        assert post.reply_markup is None
+    assert html_.count("<summary>Сравнение команд</summary>") == 3
+    assert html_.count("<footer>") == 1
+    assert "<footer>Сезон " in html_ and html_.endswith(f"<br>{CHANNEL_FOOTER_LINE}</footer>")
+    assert not re.search("модел|премиум|🔒|/subscriptions", html_)
     assert channel_env.posted == {(GAME_A, "preview"), (GAME_B, "preview"), (2026020004, "preview")}
 
 
 @pytest.mark.asyncio
-async def test_channel_preview_failure_is_retried_and_does_not_block_other_games(
-    push_job, channel_env, fake_bot, api
-):
-    """Отказ Telegram на превью (бот не админ канала) не срывает остальные матчи, но прогон
-    красный; неудачное превью не отмечено — следующий прогон публикует только его."""
+async def test_channel_preview_failure_is_retried_next_run(push_job, channel_env, fake_bot, api):
+    """Отказ Telegram на пост превью (бот не админ канала) — прогон красный, матчи не
+    отмечены; следующий прогон публикует пост целиком. Уже опубликованный матч в него не
+    попадает."""
+    channel_env.posted.add((GAME_A, "preview"))
     api.fail_next(SendRichMessage, TelegramBadRequest(method=_method(), message="need administrator rights"))
     with pytest.raises(TelegramBadRequest):
         await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-    assert channel_env.posted == {(GAME_B, "preview"), (2026020004, "preview")}
-    assert len(api.sent_rich) == 2
+    assert channel_env.posted == {(GAME_A, "preview")} and api.sent_rich == []
 
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
-    assert len(api.sent_rich) == 3 and "BOS Club @ TOR Club" in api.sent_rich[2].rich_message.html
+    [post] = api.sent_rich
+    assert "BOS Club" not in post.rich_message.html
+    assert "NYR Club @ MTL Club" in post.rich_message.html and "VAN Club @ SEA Club" in post.rich_message.html
+    assert channel_env.posted == {(GAME_A, "preview"), (GAME_B, "preview"), (2026020004, "preview")}
 
 
 @pytest.mark.asyncio
