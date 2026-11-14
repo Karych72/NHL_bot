@@ -16,7 +16,10 @@
 не начавшийся матч дня, которого подписчик не получал; каждый матч — один раз. Дневные
 слоты sync (с 12:30 UTC) зовут скрипт с ``--upcoming-only``: тогда идёт только превью.
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
-заканчивается строкой «Настроить подписки: /subscriptions». Сам выходит с кодом 0 и
+заканчивается строкой «Настроить подписки: /subscriptions».
+Канал ``CHANNEL_ID`` (Задача 118) — отдельный шаг после чатов, со своими отметками
+``bot_channel_posts``: превью матчей дня без прогноза и итоги матчей с игроками России и
+Беларуси; подписки, премиум и лимиты он не читает. Сам выходит с кодом 0 и
 логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
 
     cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
@@ -83,11 +86,13 @@ from stats_handlers import (  # noqa: E402
     send_game_card,
 )
 from subscription_repo import (  # noqa: E402
+    channel_posted,
     chat_games_sent,
     deactivate_chat,
     list_active_game_rows,
     list_active_morning_digest_rows,
     list_active_upcoming_rows,
+    mark_channel_posted,
     mark_chat_games_sent,
     mark_game_sent,
     mark_digest_night_sent,
@@ -130,6 +135,12 @@ _ALBUM_SIZE = 10
 _CAPTION_LIMIT = 1024
 
 _HTML_TAG = re.compile(r"<[^>]+>")
+
+# Канал (Задача 118): итоги — матчи ночи, где играли игроки этих стран.
+CHANNEL_COUNTRIES = ("RUS", "BLR")
+
+# Telegram публикует в один канал ~20 сообщений в минуту: плотная ночь идёт с паузой.
+_CHANNEL_POST_INTERVAL_SEC = 3.0
 
 _T = TypeVar("_T")
 
@@ -250,7 +261,7 @@ def subscribed_games(night: date) -> _SubscribedGames:
     return {owner: every_game, **result} if every_game else result
 
 
-async def throttled(call: Callable[[], Awaitable[_T]], chat_id: int) -> _T:
+async def throttled(call: Callable[[], Awaitable[_T]], chat_id: Union[int, str]) -> _T:
     """Выполняет одну отправку и выдерживает паузу до следующей.
 
     Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
@@ -540,6 +551,122 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         mark_game_sent(subscription_id, game_id)
 
 
+async def _channel_footer(bot: Bot) -> str:
+    """Строка подвала поста в канал — ссылка на бота: канал — витрина, статистика — в боте."""
+    return f"Вся статистика NHL — в боте @{(await bot.me()).username}"
+
+
+async def run_channel_previews(bot: Bot, now: datetime) -> None:
+    """Превью каждого ещё не начавшегося матча дня — отдельным постом в канал, один раз.
+
+    Зачем: канал (Задача 118) — витрина бота для всех читателей. С 15:30 МСК
+    (``upcoming_games``) все неопубликованные превью идут сразу, по времени начала. Пост —
+    то же превью, что у подписки (сравнение команд свёрнуто), но без прогноза модели
+    (премиум, Задача 96) и без ссылки на подписки — с ссылкой на бота. Пост — одна отправка,
+    поэтому отметка ``bot_channel_posts`` — после удачной: отказ Telegram (бот не админ
+    канала) логируется, матч не отмечается и повторится следующим прогоном, остальные
+    матчи уходят, а после всех ошибка пробрасывается — прогон красный. Без ``CHANNEL_ID`` — ничего.
+
+    Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
+    """
+    channel = config.CHANNEL_ID
+    if channel is None:
+        return
+    games = upcoming_games(now)
+    if not games:
+        return
+    posted = channel_posted([game[0] for game in games], "preview")
+    bot_line = await _channel_footer(bot)
+    errors: List[TelegramAPIError] = []
+    for game_id, start, away, home in games:
+        if game_id in posted:
+            continue
+        body, footer = matchup_season_preview(game_id, away, home, collapsed=True)
+        text = f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n" + rich_footer(f"{footer}\n{bot_line}")
+        try:
+            await throttled(
+                partial(bot.send_rich_message, chat_id=channel, rich_message=rich_message(text)), channel
+            )
+        except TelegramAPIError as exc:
+            logger.warning("channel preview failed game_id=%s: %s", game_id, exc)
+            errors.append(exc)
+            continue
+        mark_channel_posted(game_id, "preview")
+        await asyncio.sleep(_CHANNEL_POST_INTERVAL_SEC)
+    if errors:
+        raise errors[0]
+
+
+async def run_channel_results(bot: Bot, night: date, final: bool) -> None:
+    """Итог каждого матча ночи с игроками ``CHANNEL_COUNTRIES`` — постом в канал, один раз.
+
+    Зачем: вторая половина канала (Задача 118) — как подписка на страну: на виду табло и
+    блоки игроков России и Беларуси, карточка с видео всех голов — в свёрнутом блоке
+    (``send_game_card``, Задача 119), кнопок нет. Матч уходит, когда NHL выложила клипы всех
+    его голов, на крайнем сроке (``final``) — с тем, что есть. Карточка — отправка и правки
+    (доливка клипов), и сбой правки — когда пост уже в канале, поэтому отметка — после любой
+    попытки, как у чатов: повтор дал бы дубль. Сбой Telegram логируется, остальные матчи
+    уходят, после всех ошибка пробрасывается — прогон красный; иной сбой (БД, ffmpeg) обрывает
+    шаг сразу. Без ``CHANNEL_ID`` — ничего.
+
+    Аргументы: ``bot`` — бот рассылки; ``night`` — игровая дата ночи (``night_of``);
+    ``final`` — наступил ли крайний срок.
+    """
+    channel = config.CHANNEL_ID
+    if channel is None:
+        return
+    blocks: Dict[int, str] = defaultdict(str)
+    for country in CHANNEL_COUNTRIES:
+        for game_id, block in country_night_blocks(country, night):
+            blocks[game_id] += f"\n\n{block}"
+    if not blocks:
+        return
+    posted = channel_posted(sorted(blocks), "result")
+    goals: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    for game_id, event_id, _ in night_goals(night):
+        goals[game_id].append((game_id, event_id))
+    published: Dict[Tuple[int, int], bool] = {}
+    footer = rich_footer(await _channel_footer(bot))
+    errors: List[TelegramAPIError] = []
+    for game_id in sorted(blocks):
+        if game_id in posted:
+            continue
+        if not final and not await _clips_published(goals[game_id], published):
+            logger.info("channel game_id=%s: клипы ещё не выложены, ждём", game_id)
+            continue
+        tail = f"{blocks[game_id]}\n{footer}"
+        try:
+            await throttled(partial(send_game_card, bot, channel, game_id, tail, collapsed=True), channel)
+        except TelegramAPIError as exc:
+            logger.warning("channel result failed game_id=%s: %s", game_id, exc)
+            errors.append(exc)
+        finally:
+            mark_channel_posted(game_id, "result")
+        await asyncio.sleep(_CHANNEL_POST_INTERVAL_SEC)
+    if errors:
+        raise errors[0]
+
+
+async def _run_independently(steps: List[Tuple[str, Callable[[], Awaitable[None]]]]) -> None:
+    """Выполняет шаги рассылки по очереди: сбой одного логируется и не срывает следующие,
+    а после всех первая ошибка пробрасывается — прогон красный в статусе sync.
+
+    Зачем: у шага на крайнем сроке ночи (дайджест, итоги канала) следующей попытки нет, и
+    сбой соседнего шага не должен его отменять; канал не срывает рассылку чатам и наоборот.
+
+    Аргументы: ``steps`` — (название для лога, шаг без аргументов).
+    """
+    errors: List[Exception] = []
+    for name, step in steps:
+        try:
+            await step()
+        except Exception as exc:  # noqa: BLE001 — изоляция рассылок, ошибка пробрасывается ниже
+            logger.exception("%s broadcast failed", name)
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
 async def broadcast_if_due(bot: Bot, now: datetime) -> None:
     """Прогоняет рассылки за ночь момента *now*.
 
@@ -547,10 +674,11 @@ async def broadcast_if_due(bot: Bot, now: datetime) -> None:
     готовым матчам; затем дайджест — когда ночь загружена целиком (``night_is_loaded``) или
     наступил крайний срок ``NIGHT_DEADLINE_MSK``: на крайнем сроке ждущие матчи уже ушли, и
     дайджест берёт остаток. После крайнего срока NHL API о готовности ночи не спрашивается.
-    Превью предстоящих матчей — последним, с моментом на свой старт (матчи с видео идут
-    минутами). Рассылки независимы: сбой одной (NHL API, ffmpeg) логируется и не срывает
+    Превью предстоящих матчей — последним из чатов, с моментом на свой старт (матчи с видео
+    идут минутами); за чатами — канал (Задача 118): итоги ночи, затем превью. Рассылки
+    независимы (``_run_independently``): сбой одной (NHL API, ffmpeg, канал) не срывает
     следующие — дайджест на крайнем сроке, у которого следующей попытки нет, уйдёт и после
-    сбоя матчей, — а после всех пробрасывается: прогон красный в статусе sync.
+    сбоя матчей, — а прогон всё равно красный в статусе sync.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
     """
@@ -564,25 +692,19 @@ async def broadcast_if_due(bot: Bot, now: datetime) -> None:
         else:
             logger.info("Ночь %s загружена не целиком: дайджест отложен.", night)
 
-    errors: List[Exception] = []
-    for name, broadcast in (
+    await _run_independently([
         ("games", lambda: run_game_broadcast(bot, night, final, subscribed)),
         ("digest", digest),
         ("upcoming", lambda: run_upcoming_broadcast(bot, datetime.now(timezone.utc))),
-    ):
-        try:
-            await broadcast()
-        except Exception as exc:  # noqa: BLE001 — изоляция рассылок, ошибка пробрасывается ниже
-            logger.exception("%s broadcast failed", name)
-            errors.append(exc)
-    if errors:
-        raise errors[0]
+        ("channel results", lambda: run_channel_results(bot, night, final)),
+        ("channel previews", lambda: run_channel_previews(bot, datetime.now(timezone.utc))),
+    ])
 
 
 async def main(upcoming_only: bool) -> None:
     """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и вызывает
     ``broadcast_if_due`` или, в дневном слоте (``upcoming_only``, флаг ``--upcoming-only``),
-    только ``run_upcoming_broadcast`` — днём ночи нет, и NHL API о ней не спрашивается.
+    только превью — подписчикам и в канал: днём ночи нет, и NHL API о ней не спрашивается.
 
     ``async with`` закрывает HTTP-сессию бота после рассылки. Таймаут запроса — 300 с:
     карточка с клипами голов (до 45 МБ загрузки) не уйдёт за 60 с по умолчанию.
@@ -593,7 +715,10 @@ async def main(upcoming_only: bool) -> None:
         return
     async with Bot(config.TOKEN, session=AiohttpSession(timeout=300)) as bot:
         if upcoming_only:
-            await run_upcoming_broadcast(bot, datetime.now(timezone.utc))
+            await _run_independently([
+                ("upcoming", lambda: run_upcoming_broadcast(bot, datetime.now(timezone.utc))),
+                ("channel previews", lambda: run_channel_previews(bot, datetime.now(timezone.utc))),
+            ])
         else:
             await broadcast_if_due(bot, datetime.now(timezone.utc))
     logger.info("Рассылка завершена.")
