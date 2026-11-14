@@ -2,8 +2,8 @@
 
 Шаблон: `scripts/show_game_card.sh` вшивает сюда `telegram_bot/bot_messages.py` рабочей копии
 (в контейнере dev-стека — код `develop`) и прогоняет в контейнере; остальное — модули образа.
-БД — `nhl_dev`, токен — dev-бота, клипы — только из кэша dev-бота (гол без клипа в кэше идёт без
-видео; новые клипы витрина не грузит, кроме сводки ночи из одного матча — там настоящая отправка).
+БД — `nhl_dev`, токен — dev-бота. Карточки уходят настоящей отправкой `send_game_card`, как у
+подписчика: клипы не из кэша dev-бота скачиваются с NHL, и лента «Видео голов» — со всеми голами.
 Аргументы: <chat_id> [<гости> <хозяева>] — главный матч; без них — последний матч с овертаймом.
 """
 import asyncio
@@ -18,14 +18,12 @@ sys.modules["bot_messages"] = bm
 exec(compile(base64.b64decode(_SRC), "bot_messages.py", "exec"), bm.__dict__)
 
 from aiogram import Bot  # noqa: E402
-from aiogram.types import InputMediaVideo, InputRichMessageMedia  # noqa: E402
 
 import config  # noqa: E402
 import push_digest_job  # noqa: E402
 import stats_handlers  # noqa: E402
 from database import fetch_all  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
-from video_replay import cached_goal_clip  # noqa: E402
 
 _GAMES = (
     "FROM games g "
@@ -38,16 +36,6 @@ def one_game(where: str, params: tuple = ()) -> int | None:
     rows = fetch_all(f"SELECT g.game_id {_GAMES} WHERE {where} ORDER BY g.day DESC, g.game_id DESC LIMIT 1",
                      params, ["game_id"])
     return int(rows["game_id"][0]) if rows["count_rows"] else None
-
-
-def clips_media(game_id: int) -> tuple[dict, list]:
-    """Клипы матча из кэша dev-бота: {event_id: (file_id, подпись)} и поле media."""
-    cached = {e: c for e in bm.game_goal_events(game_id) if (c := cached_goal_clip(game_id, e)) is not None}
-    media = [
-        InputRichMessageMedia(id=bm.goal_clip_media_id(e), media=InputMediaVideo(media=c[0], supports_streaming=True))
-        for e, c in cached.items()
-    ]
-    return cached, media
 
 
 def team_names(game_id: int) -> tuple[str, str]:
@@ -70,20 +58,18 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
     bot = Bot(config.TOKEN)
     sent = 0
 
-    async def show(label: str, game_id: int | None, build) -> None:
+    async def show(label: str, game_id: int | None, tail, collapsed: bool = False) -> None:
+        """Карточка `send_game_card` — как у подписчика; `tail(game_id)` — HTML после неё."""
         nonlocal sent
         if game_id is None:
             print(f"{label}: подходящего матча в nhl_dev нет — пропуск")
             return
-        cached, media = clips_media(game_id)
-        text = build(game_id, cached)
         try:
-            await bot.send_rich_message(
-                chat_id=chat_id,
-                rich_message=bm.rich_message(f"{text}\n{bm.rich_footer('Витрина: ' + label)}", media),
+            await stats_handlers.send_game_card(
+                bot, chat_id, game_id, f"{tail(game_id)}\n{bm.rich_footer('Витрина: ' + label)}", collapsed,
             )
             sent += 1
-            print(f"{label}: OK (game_id={game_id}, клипов из кэша {len(cached)})")
+            print(f"{label}: OK (game_id={game_id})")
         except Exception as exc:  # витрина: печатаем отказ и идём дальше
             print(f"{label}: ОТКАЗ {exc}")
         await asyncio.sleep(1)
@@ -99,27 +85,26 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
     try:
         # Рассылка итогов матча.
         await show("1. рассылка: подписка на команду — карточка открыта", main_game,
-                   lambda g, c: f"{bm.game_message(g, c)}\n{footer(team_names(g)[0])}")
+                   lambda g: f"\n{footer(team_names(g)[0])}")
         await show("2. рассылка: только страна — карточка свёрнута, под ней блок страны", russian,
-                   lambda g, c: f"{bm.game_message(g, c, collapsed=True)}{country_block(g)}\n{footer('Россия')}")
+                   lambda g: f"{country_block(g)}\n{footer('Россия')}", collapsed=True)
         if russian is not None:
             goals = [(g, e) for g, e, nat in bm.night_goals(_night(russian)) if g == russian and nat == "RUS"]
             await push_digest_job._send_goal_album(bot, chat_id, goals)
-            print(f"2a. альбом голов россиян: {len(goals)} гол(ов), клипы из кэша")
+            print(f"2a. альбом голов россиян: {len(goals)} гол(ов)")
         await show("3. рассылка: команда и страна — карточка открыта, блок страны под ней", russian,
-                   lambda g, c: f"{bm.game_message(g, c)}{country_block(g)}\n{footer(team_names(g)[0], 'Россия')}")
+                   lambda g: f"{country_block(g)}\n{footer(team_names(g)[0], 'Россия')}")
         await show("4. рассылка владельцу: матч без подписки — без «По подписке»", main_game,
-                   lambda g, c: f"{bm.game_message(g, c)}\n{footer()}")
+                   lambda g: f"\n{footer()}")
         # Меню и /today.
         await show("5. меню / /tonight / кнопка дайджеста: карточка + блок страны подписчика", russian,
-                   lambda g, c: f"{bm.game_message(g, c)}{country_block(g)}")
+                   country_block)
         await show("6. /today, один матч за ночь: карточка + подсказка «Ещё: …»", main_game,
-                   lambda g, c: f"{bm.game_message(g, c)}\n{bm.rich_footer(stats_handlers._DIGEST_MORE_HINT)}")
+                   lambda g: f"\n{bm.rich_footer(stats_handlers._DIGEST_MORE_HINT)}")
         # Особые матчи.
         await show("7. матч с буллитами: «Овертайм — Голов нет», «Буллиты» без времени", shootout,
-                   lambda g, c: bm.game_message(g, c))
-        await show("8. плей-офф: раунд и игра под строкой счёта", playoff,
-                   lambda g, c: bm.game_message(g, c))
+                   lambda g: "")
+        await show("8. плей-офф: раунд и игра под строкой счёта", playoff, lambda g: "")
         # Сводка ночи (/today при нескольких матчах, утренний дайджест) — «(ОТ)» кириллицей.
         if main_game is not None:
             day, ids = bm.day_digest(_night(main_game))

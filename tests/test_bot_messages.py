@@ -306,15 +306,15 @@ def test_card_heading_puts_playoff_round_and_period_scores_under_the_score(bot_m
     assert bot_messages._card_heading(header, 2025020123).split("\n")[1:] == ["<i>Периоды: 1:0, 0:1, 0:1</i>"]
 
 
-def test_rich_message_keeps_gap_after_collapsed_block_and_video_is_a_block(bot_module):
+def test_rich_message_keeps_gap_after_collapsed_block_and_slideshow_is_a_block(bot_module):
     """Свёрнутый блок отделён от следующего абзаца тем же зазором, что и абзацы; после
-    таблицы зазора нет; видео — отдельный блок, не абзац."""
+    таблицы зазора нет; лента видео — отдельный блок, не абзац."""
     bm = bot_module("bot_messages")
-    clip = '<video src="tg://video?id=goal1"></video>'
-    block = bm.rich_details("Видео голов", f"1:0 — X\n{clip}")
+    feed = '<tg-slideshow><video src="tg://video?id=goal1"></video></tg-slideshow>'
+    block = bm.rich_details("Видео голов", f"1:0 — X\n{feed}")
     table = "<table compact><tr><td>A</td></tr></table>"
 
-    assert block == f"<details><summary>Видео голов</summary><p>1:0 — X</p>{clip}</details>"
+    assert block == f"<details><summary>Видео голов</summary><p>1:0 — X</p>{feed}</details>"
     assert bm.rich_message(f"{block}\n\nДалее").html == f"{block}<p>&nbsp;</p><p>Далее</p>"
     assert bm.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
 
@@ -331,7 +331,7 @@ def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
     assert periods == "<i>Периоды: 0:2, 0:1, 0:0</i>"
     assert rest.startswith("<details><summary>Голы и статистика</summary><p>Хет-трик: ")
     assert "\n" not in rest, "свёрнутая карточка — одна строка-блок"
-    assert "<details><summary>Видео голов</summary><p>1-й период · " in rest
+    assert '<details><summary>Видео голов</summary><tg-slideshow><video src="tg://video?id=goal10">' in rest
 
 
 def test_game_goal_events_skips_goals_without_event(bot_module):
@@ -397,8 +397,8 @@ def test_game_message_groups_goals_by_period_and_marks_period_without_goals(
 ):
     """Голы фикстуры — в 1-м и 2-м периодах, 3-й — «Голов нет»; время от начала матча,
     ассистенты — в скобках; голы — одним плотным абзацем, как звёзды, между периодами —
-    одна пустая строка. Клипы — под ним одним свёрнутым блоком «Видео голов», над клипом —
-    период и строка гола обычным текстом (Задача 119); гол без клипа — только в списке.
+    одна пустая строка. Клипы — под ним свёрнутым блоком «Видео голов», лентой без подписей;
+    гол без клипа — только в списке.
     Счёт — «гости:хозяева»."""
     text = game_message_text
     scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
@@ -412,12 +412,10 @@ def test_game_message_groups_goals_by_period_and_marks_period_without_goals(
         "&nbsp;\n"
         "<b>3-й период</b>\n"
         "Голов нет\n"
-        "<details><summary>Видео голов</summary>"
-        f"<p>1-й период · 05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)</p>"
+        "<details><summary>Видео голов</summary><tg-slideshow>"
         '<video src="tg://video?id=goal10"></video>'
-        f"<p>2-й период · 22:00 · 0:3 — {scorer} [C] (ПВ, ПШ)</p>"
         '<video src="tg://video?id=goal12"></video>'
-        "</details>\n\n"
+        "</tg-slideshow></details>\n\n"
     ) in text
     assert "Овертайм" not in text
     assert "<pre>" not in text and "Форма" not in text

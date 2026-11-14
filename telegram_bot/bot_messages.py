@@ -230,8 +230,8 @@ _PARAGRAPH_GAP = "<p>&nbsp;</p>"
 
 
 # Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица, свёрнутый блок,
-# список, подвал, видео гола — каждый собран своим хелпером в одну строку.
-_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<video")
+# список, подвал, лента видео голов — каждый собран своим хелпером в одну строку.
+_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<tg-slideshow")
 
 # После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
 # («Видео голов» перед «Броски», свёрнутая карточка перед блоком страны). После таблиц зазора нет.
@@ -587,10 +587,10 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     """Карточка матча: шапка со счётом, счёт по периодам, голы по периодам, броски, вратари, звёзды.
 
     Зачем: одна карточка для меню, `/today` и рассылки. Голы — плотным списком, как звёзды;
-    клипы — под ним одним свёрнутым блоком «Видео голов», над клипом — строка его гола
-    обычным текстом (Задача 119; каждый свёрнутый блок клиент отделяет отступом, и десяток
-    голов-блоков растягивал карточку; `<figcaption>` клиент рисует мелким серым). Кнопок
-    видео под сообщением нет. Счёт везде «гости:хозяева», как в шапке.
+    клипы — под ним свёрнутым блоком «Видео голов»: лента `<tg-slideshow>`, листается
+    свайпом, без подписей — гол виден в списке выше (решение человека 2026-11-14; столбик
+    «строка гола + видео» растягивал карточку на экраны). Кнопок видео под сообщением нет.
+    Счёт везде «гости:хозяева», как в шапке.
 
     Аргументы:
         game_id: матч.
@@ -618,7 +618,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     # матча (`game_clock`) и ассистентами в скобках. Не `<pre>`: моноширинные колонки на
     # телефоне разъезжались от длинной фамилии или крупного шрифта.
     goals_by_period: Dict[int, List[str]] = defaultdict(list)
-    clip_lines: List[str] = []
+    clip_videos: List[str] = []
     scorer_counts: Dict[str, int] = defaultdict(int)
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
@@ -648,10 +648,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         goals_by_period[p].append(line)
         evt = game_goals['goal_event_id'][i]
         if evt is not None and int(evt) in clips:
-            clip_lines += [
-                f"{_period_name(p, shootout)} · {line}",
-                f'<video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>',
-            ]
+            clip_videos.append(f'<video src="tg://video?id={goal_clip_media_id(int(evt))}"></video>')
     # Каждый сыгранный период — и без голов: три основных, овертайм, если был (в матче с
     # буллитами он безголевой), дальше — до последнего периода с голом. Между периодами —
     # пустая строка внутри абзаца: граница абзацев дала бы зазор больше строки.
@@ -662,8 +659,8 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
             goal_lines.append("&nbsp;")
         goal_lines += [f"<b>{_period_name(p, shootout)}</b>", *(goals_by_period[p] or ["Голов нет"])]
     goals_block = "\n".join(goal_lines)
-    if clip_lines:
-        goals_block += "\n" + rich_details("Видео голов", "\n".join(clip_lines))
+    if clip_videos:
+        goals_block += "\n" + rich_details("Видео голов", f"<tg-slideshow>{''.join(clip_videos)}</tg-slideshow>")
 
     hat_lines = [
         f"Хет-трик: {html.escape(name)} (×{n})"
@@ -2391,7 +2388,8 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
 def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
     """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
     (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
-    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`)."""
+    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`) и итогам
+    канала (`run_channel_results`, Задача 118)."""
     return sorted(_country_blocks(code, "g.day", night).items())
 
 
@@ -2405,8 +2403,9 @@ def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
     """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
     порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
     в плей-офф 5+ — овертаймы) пропускаются.
-    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) ждёт клипов всех голов
-    матча, а в альбом подписчику страны берёт голы её игроков."""
+    Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) и итоги канала
+    (`run_channel_results`) ждут клипов всех голов матча, а в альбом подписчику страны
+    рассылка берёт голы её игроков."""
     goals = fetch_all(
         "SELECT a.game_id, a.event_id, r.nationality "
         "FROM all_goals a "

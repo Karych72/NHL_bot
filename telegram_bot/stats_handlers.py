@@ -423,7 +423,9 @@ async def _publish_card(
     return message
 
 
-async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", collapsed: bool = False) -> Message:
+async def send_game_card(
+    bot: Bot, chat_id: int | str, game_id: int, tail: str = "", collapsed: bool = False
+) -> Message:
     """Шлёт карточку матча одним rich-сообщением, клипы голов — внутри строк голов.
 
     Зачем: одна отправка карточки для меню, ``/today`` и рассылки (Задача 119) — видео
@@ -435,7 +437,7 @@ async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", c
     выжидается здесь же: повтор всей отправки прислал бы вторую карточку.
 
     Аргументы:
-        bot, chat_id: куда слать.
+        bot, chat_id: куда слать (канал — и по @username).
         game_id: матч.
         tail: построчный HTML после карточки — блоки стран, подвал.
         collapsed: карточка под шапкой свёрнута (``game_message``).
@@ -470,7 +472,7 @@ async def send_game_card(bot: Bot, chat_id: int, game_id: int, tail: str = "", c
     raise RuntimeError(f"game_id={game_id}: клипы карточки не долились за {len(events) + 2} отправок")
 
 
-async def _edit_rich(bot: Bot, chat_id: int, message_id: int, rich_message: InputRichMessage) -> Message | bool:
+async def _edit_rich(bot: Bot, chat_id: int | str, message_id: int, rich_message: InputRichMessage) -> Message | bool:
     """Правка rich-сообщения; 429 — пауза и один повтор."""
     try:
         return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, rich_message=rich_message)

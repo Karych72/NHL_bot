@@ -3,8 +3,8 @@
 Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
 включение и отключение подписок (дайджест, предстоящие матчи, команда, страна) и отметки
 об отправке, защищающие от дублей при получасовых прогонах sync: ночи дайджеста
-(`last_sent_night`), итога матча чату (`bot_chat_game_sent`, Задача 85) и превью матча
-подписке (`bot_game_sent`).
+(`last_sent_night`), итога матча чату (`bot_chat_game_sent`, Задача 85), превью матча
+подписке (`bot_game_sent`) и поста о матче в канал (`bot_channel_posts`, Задача 118).
 """
 
 from __future__ import annotations
@@ -221,6 +221,32 @@ def mark_chat_games_sent(chat_id: int, game_ids: List[int]) -> None:
                 "INSERT INTO bot_chat_game_sent (chat_id, game_id) "
                 "SELECT %s, unnest(%s::bigint[]) ON CONFLICT DO NOTHING",
                 (chat_id, game_ids),
+            )
+        conn.commit()
+
+
+def channel_posted(game_ids: List[int], kind: str) -> Set[int]:
+    """Какие из матчей `game_ids` уже опубликованы в канал постом вида `kind` (`preview` —
+    превью, `result` — итог) — из `bot_channel_posts`.
+
+    Зачем: канал (Задача 118) публикуется после каждого получасового прогона sync — без
+    отметки матч уходил бы в канал каждые полчаса."""
+    row = fetch_all(
+        "SELECT game_id FROM bot_channel_posts WHERE kind = %s AND game_id = ANY(%s)",
+        (kind, game_ids),
+        columns=["game_id"],
+    )
+    return {int(game_id) for game_id in row["game_id"]}
+
+
+def mark_channel_posted(game_id: int, kind: str) -> None:
+    """Отмечает, что пост вида `kind` о матче `game_id` ушёл в канал (см. `channel_posted`);
+    повторная отметка — no-op."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_channel_posts (game_id, kind) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (game_id, kind),
             )
         conn.commit()
 
