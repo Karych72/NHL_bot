@@ -366,14 +366,15 @@ def _albums(clips: List[Tuple[str, str]]) -> List[List[Tuple[str, str]]]:
     return albums
 
 
-async def _send_goal_album(bot: Bot, chat_id: int, goals: List[Tuple[int, int]]) -> None:
+async def _send_goal_album(bot: Bot, chat_id: Union[int, str], goals: List[Tuple[int, int]]) -> None:
     """Голы игроков подписанных стран после карточки — альбомом с общей подписью (кто
-    забил, с чьих передач, когда; решение человека 2026-11-13, Задача 119).
+    забил, с чьих передач, когда; решение человека 2026-11-13, Задача 119). Канал — так же,
+    по голам ``CHANNEL_COUNTRIES`` (решение человека 2026-11-14).
 
     Клипы — по ``file_id`` из кэша: карточка перед альбомом их уже загрузила
     (``send_game_card``), гол без клипа пропускается. Клип один — ``send_video``.
 
-    Аргументы: ``bot``; ``chat_id`` — получатель; ``goals`` — (game_id, event_id) голов стран.
+    Аргументы: ``bot``; ``chat_id`` — получатель (канал — и по @username); ``goals`` — (game_id, event_id) голов стран.
     """
     clips = [clip for goal in goals if (clip := cached_goal_clip(*goal)) is not None]
     for album in _albums(clips):
@@ -596,8 +597,9 @@ async def run_channel_results(bot: Bot, night: date, final: bool) -> None:
     """Итог каждого матча ночи с игроками ``CHANNEL_COUNTRIES`` — постом в канал, один раз.
 
     Зачем: вторая половина канала (Задача 118) — как подписка на страну: на виду табло и
-    блоки игроков России и Беларуси, карточка с видео всех голов — в свёрнутом блоке
-    (``send_game_card``, Задача 119), кнопок нет. Матч уходит, когда NHL выложила клипы всех
+    блоки игроков России и Беларуси, карточка с лентой видео всех голов — в свёрнутом блоке
+    (``send_game_card``, Задача 119), за ней — альбом голов игроков этих стран
+    (``_send_goal_album``), кнопок нет. Матч уходит, когда NHL выложила клипы всех
     его голов, на крайнем сроке (``final``) — с тем, что есть. Карточка — отправка и правки
     (доливка клипов), и сбой правки — когда пост уже в канале, поэтому отметка — после любой
     попытки, как у чатов: повтор дал бы дубль. Сбой Telegram логируется, остальные матчи
@@ -617,21 +619,24 @@ async def run_channel_results(bot: Bot, night: date, final: bool) -> None:
     if not blocks:
         return
     posted = channel_posted(sorted(blocks), "result")
-    goals: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
-    for game_id, event_id, _ in night_goals(night):
-        goals[game_id].append((game_id, event_id))
+    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
+    for game_id, event_id, nationality in night_goals(night):
+        goals[game_id].append(((game_id, event_id), nationality))
     published: Dict[Tuple[int, int], bool] = {}
     footer = rich_footer(await _channel_footer(bot))
     errors: List[TelegramAPIError] = []
     for game_id in sorted(blocks):
         if game_id in posted:
             continue
-        if not final and not await _clips_published(goals[game_id], published):
+        if not final and not await _clips_published([goal for goal, _ in goals[game_id]], published):
             logger.info("channel game_id=%s: клипы ещё не выложены, ждём", game_id)
             continue
         tail = f"{blocks[game_id]}\n{footer}"
         try:
             await throttled(partial(send_game_card, bot, channel, game_id, tail, collapsed=True), channel)
+            await _send_goal_album(
+                bot, channel, [goal for goal, nationality in goals[game_id] if nationality in CHANNEL_COUNTRIES]
+            )
         except TelegramAPIError as exc:
             logger.warning("channel result failed game_id=%s: %s", game_id, exc)
             errors.append(exc)
