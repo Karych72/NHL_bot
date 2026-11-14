@@ -1345,13 +1345,14 @@ def _skater(game_id, lastname, team):
 @pytest.mark.asyncio
 async def test_channel_results_are_games_with_russians_or_belarusians_once(push_job, push_env, channel_env, fake_bot):
     """Итог — только матч, где играли россияне или белорусы: свёрнутая карточка с клипами,
-    на виду блоки обеих стран и ссылка на бота, кнопок нет. Матч ждёт клипов всех голов, на
+    на виду блоки обеих стран и ссылка на бота, кнопок нет; за ней альбом голов россиян и
+    белорусов, гол чужой страны в альбом не берётся. Матч ждёт клипов всех голов, на
     крайнем сроке уходит с тем, что есть; повторный прогон ничего не дублирует."""
     channel_env.players = {
         "RUS": [_skater(GAME_A, "Овечкин", "WSH")],
         "BLR": [_skater(GAME_A, "Протас", "WSH")],
     }
-    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN"), (GAME_B, 200, "CAN")]
+    push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN"), (GAME_A, 102, "BLR"), (GAME_B, 200, "CAN")]
     push_env.unpublished = {(GAME_A, 101)}
     await push_job.run_channel_results(fake_bot, NIGHT, False)
     assert push_env.api.sent_rich == []
@@ -1362,10 +1363,15 @@ async def test_channel_results_are_games_with_russians_or_belarusians_once(push_
     [post] = push_env.api.sent_rich
     assert post.chat_id == CHANNEL and post.reply_markup is None
     assert post.rich_message.html == rich_html(
-        f"CARD {GAME_A} clips=[100, 101] collapsed\n\n"
+        f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\n"
         "<b>Россия</b>\n\nОвечкин (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05\n\n"
         "<b>Беларусь</b>\n\nПротас (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05"
     ) + f"<footer>{CHANNEL_FOOTER_LINE}</footer>"
+    [album] = push_env.api.sent(SendMediaGroup)
+    assert album.chat_id == CHANNEL
+    assert [(m.media, m.caption) for m in album.media] == [
+        ("fid-1", "<b>GOAL</b> 100\n\n<b>GOAL</b> 102"), ("fid-3", None),
+    ]
     assert channel_env.posted == {(GAME_A, "result")}
 
 
