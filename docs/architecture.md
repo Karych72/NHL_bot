@@ -930,11 +930,11 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 
 #### `get_goals_game(game_id)` → all_goals + rosters (JOIN по scorer, assist1, assist2)
 
-Возвращает: `scorer`, `scorer_position`, `assist_1`, `assist_2` (фамилии), `*_nationality` для каждого из троих (`rosters.nationality` — карточка пишет российских игроков капсом), `period`, `goal_time`, `home_score`, `away_score`, `is_ppg`, `is_shg`, `empty_net`, `winner_goal`, `goal_game_id`, `goal_event_id`. Сортировка: `period, time`.
+Возвращает: `scorer`, `scorer_position`, `assist_1`, `assist_2` (фамилии), `*_nationality` для каждого из троих (`rosters.nationality` — карточка пишет игроков из России и Беларуси жирным капсом, `_card_player_name`), `period`, `goal_time`, `home_score`, `away_score`, `is_ppg`, `is_shg`, `empty_net`, `winner_goal`, `goal_game_id`, `goal_event_id`. Сортировка: `period, time`.
 
 #### `get_goalies_game(game_id)` → game_goalie_stats + rosters + games
 
-Возвращает: `shots`, `saves`, `timeonice`, `lastname`, `save_percentage`, `is_home`. Сортировка: `is_home DESC` (домашний вратарь первым).
+Возвращает: `shots`, `saves`, `timeonice`, `lastname`, `save_percentage`, `is_home`, `nationality` (`rosters.nationality` — вратарь из России или Беларуси жирным капсом). Сортировка: `is_home DESC` (домашний вратарь первым).
 
 #### `get_three_stars_game(game_id)` → game_three_stars + rosters + teams + game_player_stats + game_goalie_stats + games
 
@@ -954,8 +954,8 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 Периоды: 1:1, 0:0, 1:1, 0:1             ← курсивом, в шапке (видно и над свёрнутой карточкой); гости:хозяева
 
 1-й период                              ← голы одним абзацем, не <pre>
-05:23 · 0:1 — PANARIN [L] (Fox, Zibanejad)  ← время от начала матча (`game_clock`) · счёт после гола — автор (ассистенты)
-12:45 · 1:1 — KUCHEROV [R] (ББ) (Point) ← ББ/МБ/ПВ + ПШ; россияне капсом
+05:23 · 0:1 — **PANARIN** [L] (Fox, Zibanejad)  ← время от начала матча (`game_clock`) · счёт после гола — автор (ассистенты)
+12:45 · 1:1 — **KUCHEROV** [R] (ББ) (Point) ← ББ/МБ/ПВ + ПШ; Россия и Беларусь — жирным капсом
                                         ← между периодами — одна пустая строка
 2-й период
 Голов нет                               ← сыгранный период без голов (и овертайм перед буллитами)
@@ -963,15 +963,16 @@ UNIQUE(`game_id`, `star`). `star` — 1, 2 или 3 (первая/вторая/�
 Овертайм                                ← «2-й овертайм»… по номеру периода; «Буллиты» — без времени
 ▸ Видео голов                           ← один свёрнутый блок: над клипом — «период · строка гола»
 
-Броски: 28 - 32 · штрафное время: 8 - 6 ← броски, штрафы, вратари — один блок без жирного
+Броски: 28 - 32 · штрафное время: 8 - 6 ← броски и штрафы одной строкой
+                                        ← вратари — своим абзацем
 Вратари:                                ← по строке на вратаря, гости первыми
-Vasilevskiy — 29/32, 90.63%, 65:00
-Shesterkin — 26/28, 92.86%, 65:00
+**VASILEVSKIY** — 29/32, 90.63%, 65:00  ← вратарь из России/Беларуси — жирным капсом
+**SHESTERKIN** — 26/28, 92.86%, 65:00
 
 Звёзды матча
-1. Panarin (NYR) — 2+1                  ← звёзды и таблицы лидеров — с кодом клуба (Задача 98)
-2. Kucherov (TBL) — 1+2
-3. Shesterkin (NYR) — 26/28, 92.86%
+⭐ Panarin (NYR) — 2+1                   ← номер звезды — число ⭐; с кодом клуба (Задача 98)
+⭐⭐ Kucherov (TBL) — 1+2
+⭐⭐⭐ Shesterkin (NYR) — 26/28, 92.86%
 ```
 
 Шаблон рендерит всё под шапкой: шапку (`_card_heading`) `game_message()` ставит сам, а с

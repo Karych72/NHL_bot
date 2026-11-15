@@ -194,8 +194,8 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "scorer_nationality": ["CAN", "CAN", "CAN"],
             "assist_1": ["Sm'th", None, None],
             "assist_1_nationality": [None, None, None],
-            "assist_2": [None, None, None],
-            "assist_2_nationality": [None, None, None],
+            "assist_2": ["Gr<shkov", None, None],
+            "assist_2_nationality": ["BLR", None, None],
             "period": [1, 1, 2],
             "goal_time": ["05:30", "10:15", "02:00"],
             "home_score": [1, 2, 3],
@@ -216,6 +216,7 @@ def _game_message_fetch_all(query, params=None, columns=None):
             "lastname": ["O'Neill<b>", "Woll"],
             "save_percentage": [90.0, 100.0],
             "is_home": [True, False],
+            "nationality": ["CAN", "RUS"],
             "count_rows": 2,
         }
     if "get_three_stars_game" in q:
@@ -383,8 +384,9 @@ def test_game_message_escapes_goalie_lastname(game_message_text):
 
 
 def test_game_message_lists_guest_goalie_first(game_message_text):
-    """Вратари, броски и штраф — гостями первыми, как на табло."""
-    assert "Вратари:\nWoll — " in game_message_text
+    """Вратари, броски и штраф — гостями первыми, как на табло; вратари — отдельным
+    абзацем после бросков, российский вратарь — жирным капсом."""
+    assert "штрафное время: 6 - 4\n\nВратари:\n<b>WOLL</b> — " in game_message_text
     assert "Броски: 20 - 30 · штрафное время: 6 - 4" in game_message_text
 
 
@@ -398,13 +400,13 @@ def test_game_message_groups_goals_by_period_and_marks_period_without_goals(
     """Голы фикстуры — в 1-м и 2-м периодах, 3-й — «Голов нет»; время от начала матча,
     ассистенты — в скобках; голы — одним плотным абзацем, как звёзды, между периодами —
     одна пустая строка. Клипы — под ним свёрнутым блоком «Видео голов», лентой без подписей;
-    гол без клипа — только в списке.
+    гол без клипа — только в списке. Игрок из России или Беларуси — жирным капсом.
     Счёт — «гости:хозяева»."""
     text = game_message_text
     scorer = "O&#x27;Brien &lt;3&gt; &amp; Co_junior-star*"
     assert (
         "\n\n<b>1-й период</b>\n"
-        f"05:30 · 0:1 — {scorer} [C] (Sm&#x27;th)\n"
+        f"05:30 · 0:1 — {scorer} [C] (Sm&#x27;th, <b>GR&lt;SHKOV</b>)\n"
         f"10:15 · 0:2 — {scorer} [C] (ББ)\n"
         "&nbsp;\n"
         "<b>2-й период</b>\n"
@@ -505,22 +507,21 @@ def test_game_clock_counts_from_game_start(bot_module, period, time_in_period, e
 def test_game_message_renders_three_stars_heading_and_three_lines(game_message_text):
     text = game_message_text
     assert "<b>Звёзды матча</b>" in text
-    # Звёзды — нумерованные строки «1. …», без «★» (символов в теле сообщения нет).
+    # Номер звезды — число ⭐ (решение человека 2026-11-15).
     block = text.split("<b>Звёзды матча</b>", 1)[1]
-    assert [line[:3] for line in block.strip().splitlines()] == ["1. ", "2. ", "3. "]
-    assert "★" not in block
+    assert [line.split(" ", 1)[0] for line in block.strip().splitlines()] == ["⭐", "⭐⭐", "⭐⭐⭐"]
 
 
 def test_game_message_formats_field_player_star_as_goals_plus_assists(game_message_text):
     text = game_message_text
-    assert "\n1. Kaprizov (MIN) — 1+0\n" in text
+    assert "\n⭐ Kaprizov (MIN) — 1+0\n" in text
 
 
 def test_game_message_formats_goalie_star_as_saves_over_shots_and_percentage(
     game_message_text,
 ):
     text = game_message_text
-    assert "\n2. Thompson (VGK) — 33/34, 97.1%\n" in text
+    assert "\n⭐⭐ Thompson (VGK) — 33/34, 97.1%\n" in text
 
 
 def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
@@ -528,7 +529,7 @@ def test_game_message_escapes_html_in_three_star_lastname_and_abbreviation(
 ):
     text = game_message_text
     assert (
-        "3. O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
+        "⭐⭐⭐ O&#x27;Brien &lt;3&gt; &amp; Co_junior-star* "
         "(TOR&lt;script&gt;alert(1)&lt;/script&gt;)"
     ) in text
     assert "<script>alert(1)</script>" not in text

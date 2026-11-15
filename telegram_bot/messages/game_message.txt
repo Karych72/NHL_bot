@@ -7,6 +7,7 @@
 {%- endif %}
 
 Броски: {{ away_shots }} - {{ home_shots }} · штрафное время: {{ away_penalties }} - {{ home_penalties }}
+
 Вратари:
 {{ goalkeepers }}
 {%- if three_stars %}
