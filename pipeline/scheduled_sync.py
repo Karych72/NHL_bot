@@ -96,6 +96,15 @@ def loads_data(slot: datetime) -> bool:
     return _from(slot, (NIGHT_START_HOUR_UTC, 0))
 
 
+def previews_slot(slot: datetime) -> bool:
+    """Шлёт ли слот *slot* превью подписчикам: точка сетки ``PREVIEW_STEP`` (:00 и :30).
+
+    Зачем: дневные слоты стоят только на ней, а ночные вне её идут с ``--no-upcoming`` —
+    подписчик получает не больше одного превью в полчаса (Задача 120).
+    """
+    return slot.minute % int(PREVIEW_STEP.total_seconds() // 60) == 0
+
+
 def seconds_until_next_run(now: datetime) -> float:
     """Секунд до ближайшего слота прогона строго после *now*.
 
@@ -110,8 +119,7 @@ def seconds_until_next_run(now: datetime) -> float:
     step_minutes = int(SYNC_STEP.total_seconds() // 60)
     slot = now.replace(minute=now.minute - now.minute % step_minutes, second=0, microsecond=0)
     slot += SYNC_STEP
-    preview_minutes = int(PREVIEW_STEP.total_seconds() // 60)
-    while not (loads_data(slot) or (_from(slot, PREVIEW_START_UTC) and slot.minute % preview_minutes == 0)):
+    while not (loads_data(slot) or (_from(slot, PREVIEW_START_UTC) and previews_slot(slot))):
         slot += SYNC_STEP
     return (slot - now).total_seconds()
 
@@ -273,6 +281,10 @@ def missed_deadline(last: datetime, now: datetime) -> Optional[datetime]:
     перешагнул бы до ``PREVIEW_START_UTC``, и ночь не ушла бы вовсе; с шагом 10 минут
     (Задача 120) такой прогон вероятен. Пропущенный крайний срок цикл запускает сразу.
 
+    После долгого простоя (хост приостановлен через 08:00) вернёт сегодняшний крайний срок
+    сразу за запоздалым прогоном прошлого слота — лишний прогон безвреден: рассылку от
+    повторов держат отметки в БД.
+
     Аргументы: ``last`` — момент слота последнего прогона; ``now`` — текущий момент (UTC).
     Возвращает: момент пропущенного слота или ``None``.
     """
@@ -354,10 +366,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return check(STATUS_FILE, datetime.now(timezone.utc))
 
     # loop
-    catch_up_window = sync_window(datetime.now(timezone.utc).date())
-    run_once(build_commands(catch_up_window), STATUS_FILE, catch_up_window)
+    # Момент — до прогона: догоняющий прогон через 08:00 не должен скрыть крайний срок.
     target = datetime.now(timezone.utc)
-    preview_minutes = int(PREVIEW_STEP.total_seconds() // 60)
+    catch_up_window = sync_window(target.date())
+    run_once(build_commands(catch_up_window), STATUS_FILE, catch_up_window)
     while True:
         now = datetime.now(timezone.utc)
         deadline = missed_deadline(target, now)
@@ -370,7 +382,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             time.sleep(sleep_seconds)
         if loads_data(target):
             window = sync_window(datetime.now(timezone.utc).date())
-            run_once(build_commands(window, target.minute % preview_minutes == 0), STATUS_FILE, window)
+            run_once(build_commands(window, previews_slot(target)), STATUS_FILE, window)
         else:
             run_once(build_commands(None), None)
 

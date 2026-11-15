@@ -30,6 +30,7 @@ from scheduled_sync import (  # noqa: E402
     check,
     loads_data,
     missed_deadline,
+    previews_slot,
     run_once,
     seconds_until_next_run,
     sync_window,
@@ -287,9 +288,6 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(check(self.status_file, self.now), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class MissedDeadlineTest(unittest.TestCase):
     """Задача 120: крайний срок 08:00 UTC, перешагнутый долгим прогоном, запускается сразу."""
@@ -303,3 +301,16 @@ class MissedDeadlineTest(unittest.TestCase):
     def test_deadline_slot_itself_is_not_repeated(self) -> None:
         self.assertIsNone(missed_deadline(_utc(8, 0), _utc(8, 5)))
         self.assertIsNone(missed_deadline(_utc(8, 0), _utc(12, 30)))
+
+
+class PreviewsSlotTest(unittest.TestCase):
+    def test_previews_only_on_half_hour_grid(self) -> None:
+        """Задача 120: ночной слот 02:10 — без превью подписчикам, 02:30 и 03:00 — с ними."""
+        self.assertFalse(previews_slot(_utc(2, 10)))
+        self.assertTrue(previews_slot(_utc(2, 30)))
+        self.assertTrue(previews_slot(_utc(3, 0)))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
