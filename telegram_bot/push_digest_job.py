@@ -65,6 +65,7 @@ import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MODEL_PREDICTION_TEASER,
     MSK,
+    _plural_word,
     country_name,
     country_night_blocks,
     country_profile,
@@ -572,14 +573,14 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
 # Подстановки: {night} — «с 15 на 16 ноября», {games} — «5 матчей», {window} — «с 03:30
 # до 05:00 МСК» или «в 03:30 МСК».
 _CHANNEL_PREVIEW_INTROS = (
-    "🌙 Ночь {night} — {games} NHL\n\nНачало матчей {window}.\n"
+    "🌙 Ночь {night} — {games} NHL\n\nНачало {window}.\n"
     "К каждой игре — статистика команд в этом сезоне.",
     "🏒 NHL в ночь {night}: {games}\n\nШайбу вбросят {window}.\n"
     "Ниже — как соперники проводят сезон: очки, голы, большинство и меньшинство.",
     "🌃 Что посмотреть ночью {night}\n\n{games} NHL, начало {window}.\n"
     "Перед каждой игрой — сравнение команд по цифрам сезона.",
     "⏰ Ночь {night}: {games} NHL\n\nИгры начнутся {window}.\n"
-    "Сравниваем соперников по статистике сезона — кто подходит к матчу сильнее.",
+    "Сравниваем соперников по статистике сезона: результаты, атака, оборона, спецбригады.",
     "🥅 Хоккейная ночь {night}\n\nВ программе {games} NHL, начало {window}.\n"
     "К каждому — статистика команд в текущем сезоне.",
 )
@@ -587,15 +588,6 @@ _MONTHS_GENITIVE = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
-
-
-def _games_word(count: int) -> str:
-    """«1 матч», «3 матча», «5 матчей» — число матчей с согласованным словом."""
-    if count % 10 == 1 and count % 100 != 11:
-        return f"{count} матч"
-    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        return f"{count} матча"
-    return f"{count} матчей"
 
 
 def channel_preview_intro(day: date, starts: List[datetime]) -> str:
@@ -615,7 +607,7 @@ def channel_preview_intro(day: date, starts: List[datetime]) -> str:
     first, last = (f"{start.astimezone(MSK):%H:%M}" for start in (starts[0], starts[-1]))
     window = f"в {first} МСК" if first == last else f"с {first} до {last} МСК"
     template = _CHANNEL_PREVIEW_INTROS[day.toordinal() % len(_CHANNEL_PREVIEW_INTROS)]
-    return template.format(night=night, games=_games_word(len(starts)), window=window)
+    return template.format(night=night, games=f"{len(starts)} {_plural_word(len(starts), ('матч', 'матча', 'матчей'))}", window=window)
 
 
 async def _channel_footer(bot: Bot) -> str:
@@ -628,9 +620,10 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
 
     Зачем: канал (Задача 118) — витрина бота для всех читателей. С 15:30 МСК
     (``upcoming_games``) все неопубликованные превью уходят одним сообщением, по времени
-    начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Пост открывает
-    вступление ``channel_preview_intro``. Превью матча — то же, что у подписки (сравнение команд свёрнуто), но без прогноза модели (премиум,
-    Задача 96) и без ссылки на подписки; подвал один на пост — сезон и ссылка на бота.
+    начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Первый пост
+    дня открывает вступление ``channel_preview_intro``. Превью матча — то же, что у
+    подписки (сравнение команд свёрнуто), но без прогноза модели (премиум, Задача 96) и без
+    ссылки на подписки; подвал один на пост — сезон и ссылка на бота.
     Отметка ``bot_channel_posts`` — после удачной отправки: отказ Telegram (бот не админ
     канала) пробрасывается, матчи не отмечаются и повторятся следующим прогоном.
     Без ``CHANNEL_ID`` — ничего.
@@ -647,7 +640,8 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
     fresh = [game for game in games if game[0] not in posted]
     if not fresh:
         return
-    sections = [channel_preview_intro(league_today(now), [start for _, start, _, _ in fresh])]
+    # Вступление — только у первого поста дня: догоняющий пост с одним матчем спорил бы с ним.
+    sections = [] if posted else [channel_preview_intro(league_today(now), [start for _, start, _, _ in fresh])]
     footer = ""
     for game_id, start, away, home in fresh:
         body, game_footer = matchup_season_preview(game_id, away, home, collapsed=True)

@@ -1355,13 +1355,14 @@ def test_channel_preview_intro_night_window_and_daily_variant(push_job):
 
     intro = push_job.channel_preview_intro
     assert intro(date(2026, 10, 31), [at(3, 30)]) == (
-        "🌙 Ночь с 31 октября на 1 ноября — 1 матч NHL\n\nНачало матчей в 03:30 МСК.\n"
+        "🌙 Ночь с 31 октября на 1 ноября — 1 матч NHL\n\nНачало в 03:30 МСК.\n"
         "К каждой игре — статистика команд в этом сезоне."
     )
     assert intro(date(2026, 11, 1), [at(3, 0)] * 2 + [at(5, 0)] * 9).startswith(
         "🏒 NHL в ночь с 1 на 2 ноября: 11 матчей\n\nШайбу вбросят с 03:00 до 05:00 МСК."
     )
     assert "22 матча" in intro(date(2026, 11, 2), [at(3, 0)] * 22)
+    assert "с 31 декабря на 1 января: 12 матчей" in intro(date(2026, 12, 31), [at(3, 0)] * 12)
     heads = [intro(date(2026, 11, 1) + timedelta(days=i), [at(3, 0)]).split("\n")[0] for i in range(6)]
     assert len({head[:2] for head in heads[:5]}) == 5 and heads[5][:2] == heads[0][:2]
 
@@ -1380,6 +1381,7 @@ async def test_channel_preview_failure_is_retried_next_run(push_job, channel_env
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
     [post] = api.sent_rich
     assert "BOS Club" not in post.rich_message.html
+    assert post.rich_message.html.startswith("<p>⏰ Начало в 02:30 МСК<br>")  # вступление — у первого поста дня
     assert "NYR Club @ MTL Club" in post.rich_message.html and "VAN Club @ SEA Club" in post.rich_message.html
     assert channel_env.posted == {(GAME_A, "preview"), (GAME_B, "preview"), (2026020004, "preview")}
 
