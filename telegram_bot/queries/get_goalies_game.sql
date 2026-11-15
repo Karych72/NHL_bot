@@ -1,15 +1,17 @@
+DROP FUNCTION IF EXISTS get_goalies_game(int);
 CREATE OR REPLACE FUNCTION get_goalies_game (now_game_id int)
     RETURNS TABLE(shots             int, --total_score int,
                   saves             int, --total_assist_1 int,
                   timeonice         varchar(20),
                   lastname          varchar(50),
                   save_percentage   DOUBLE PRECISION,
-                  is_home           boolean)
+                  is_home           boolean,
+                  nationality       varchar(10))
 AS $$
 BEGIN
     RETURN QUERY select distinct ggs.shots, ggs.saves, ggs.timeonice,
                  player_display_name(r.name, r.lastname, r.season_id), ggs.save_percentage,
-                 g.home_team_id = ggs.team_id as is_home
+                 g.home_team_id = ggs.team_id as is_home, r.nationality
                  from game_goalie_stats ggs
                  left join games g
                  on g.game_id = ggs.game_id

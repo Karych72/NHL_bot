@@ -166,14 +166,18 @@ def _goal_situation_suffix(
     return " (" + ", ".join(parts) + ")"
 
 
-_RUSSIAN_NATIONALITY = "RUS"
+# Россия и Беларусь — игроки, ради которых бота читают: в карточке матча их видно сразу.
+_HIGHLIGHT_NATIONALITIES = frozenset({"RUS", "BLR"})
 
 
-def _goal_player_name(lastname: Optional[str], nationality: Optional[str]) -> str:
-    """Фамилия игрока в строке гола; русский игрок (`rosters.nationality`)
-    пишется капсом — так его видно в списке голов."""
+def _card_player_name(lastname: Optional[str], nationality: Optional[str]) -> str:
+    """Фамилия игрока в карточке матча (голы, ассистенты, вратари) — экранированный HTML;
+    игрок из России или Беларуси (`rosters.nationality`) — жирным капсом, чтобы его было
+    видно в списке. Отсутствующая фамилия → `Unknown`."""
     name = lastname or "Unknown"
-    return name.upper() if nationality == _RUSSIAN_NATIONALITY else name
+    if nationality in _HIGHLIGHT_NATIONALITIES:
+        return f"<b>{html.escape(name.upper())}</b>"
+    return html.escape(name)
 
 
 def _table(
@@ -350,16 +354,15 @@ def _format_three_star_line(
     shots: Optional[int],
     save_percentage: Optional[float],
 ) -> str:
-    """Одна строка блока «Звёзды матча»: `1. Kaprizov (MIN) — 1+0` для полевого
-    игрока, `1. Thompson (VGK) — 33/34, 97.1%` для вратаря (номер звезды — без «★»:
-    символы в теле сообщения не ставим, `docs/telegram_bot.md` §«Стиль сообщений»). Различение — по
+    """Одна строка блока «Звёзды матча»: `⭐ Kaprizov (MIN) — 1+0` для полевого
+    игрока, `⭐⭐ Thompson (VGK) — 33/34, 97.1%` для вратаря — номер звезды числом ⭐
+    (`docs/telegram_bot.md` §«Стиль сообщений», правило 5). Различение — по
     позиции из `rosters` (`G` → вратарь). Отсутствующая фамилия → `Unknown`
-    (как для голов, `bot_messages.py:187`); отсутствующая статистика (NULL) —
+    (как для голов, `_card_player_name`); отсутствующая статистика (NULL) —
     строка без хвоста после «—». Каждое поле из БД проходит `html.escape()`.
     """
     name = html.escape(str(lastname or "Unknown"))
     abbr = html.escape(str(abbreviation or ""))
-    star_str = html.escape(str(star))
     is_goalie = position == "G"
     tail = ""
     if is_goalie:
@@ -371,7 +374,7 @@ def _format_three_star_line(
     elif goals is not None and assists is not None:
         tail = f"{html.escape(str(goals))}+{html.escape(str(assists))}"
 
-    line = f"{star_str}. {name} ({abbr})"
+    line = f"{'⭐' * star} {name} ({abbr})"
     return f"{line} — {tail}" if tail else line
 
 
@@ -606,7 +609,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     game_goalies = fetch_all(
         "SELECT * FROM get_goalies_game(%s)", (game_id,),
         ['shots', 'saves', 'timeonice', 'lastname',
-         'save_percentage', 'is_home'],
+         'save_percentage', 'is_home', 'nationality'],
     )
     game_three_stars = fetch_all(
         "SELECT * FROM get_three_stars_game(%s)", (game_id,),
@@ -622,7 +625,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
     scorer_counts: Dict[str, int] = defaultdict(int)
     for i, (h, a) in enumerate(_running_scores(game_goals)):
         p = game_goals['period'][i]
-        scorer = _goal_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
+        scorer = _card_player_name(game_goals['scorer'][i], game_goals['scorer_nationality'][i])
         pos_raw = game_goals['scorer_position'][i]
         pos = (str(pos_raw).strip() if pos_raw else "") or ""
         scorer_counts[scorer] += 1
@@ -636,14 +639,16 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         # Время от начала матча; у буллита (всегда 00:00) его нет.
         time_str = "" if shootout and p == 5 else game_clock(p, game_goals['goal_time'][i])
         assist_names = [
-            _goal_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
+            _card_player_name(game_goals[key][i], game_goals[f"{key}_nationality"][i])
             for key in ("assist_1", "assist_2")
             if game_goals[key][i] is not None
         ]
         time_prefix = f"{time_str} · " if time_str else ""
         assists = f" ({', '.join(assist_names)})" if assist_names else ""
-        line = f"{time_prefix}{a}:{h} — " + html.escape(
-            scorer + (f' [{pos}]' if pos else '') + situation + assists
+        line = (
+            f"{time_prefix}{a}:{h} — {scorer}"
+            + html.escape((f' [{pos}]' if pos else '') + situation)
+            + assists
         )
         goals_by_period[p].append(line)
         evt = game_goals['goal_event_id'][i]
@@ -663,7 +668,7 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         goals_block += "\n" + rich_details("Видео голов", f"<tg-slideshow>{''.join(clip_videos)}</tg-slideshow>")
 
     hat_lines = [
-        f"Хет-трик: {html.escape(name)} (×{n})"
+        f"Хет-трик: {name} (×{n})"
         for name, n in scorer_counts.items()
         if n >= 3
     ]
@@ -684,10 +689,9 @@ def game_message(game_id: int, clips: Collection[int] = (), collapsed: bool = Fa
         shots = game_goalies['shots'][i]
         saves_str = saves if saves is not None else "—"
         shots_str = shots if shots is not None else "—"
-        raw_last = game_goalies["lastname"][i]
-        ln_esc = html.escape(str(raw_last or ""))
+        name = _card_player_name(game_goalies["lastname"][i], game_goalies["nationality"][i])
         goalie_lines.append(
-            f"{ln_esc} — "
+            f"{name} — "
             f"{html.escape(str(saves_str))}/{html.escape(str(shots_str))}, "
             f"{html.escape(str(sv_pct_str))}, "
             f"{html.escape(str(toi))}"
@@ -2345,7 +2349,7 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
 
 def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int, str]:
     """Блок страны `code` по матчам выборки `scope = value` (`g.day` или `g.game_id`):
-    game_id → HTML. Заголовок — страна (жирным, без флага), у игрока две строки — имя и
+    game_id → HTML. Заголовок — страна жирным, с флагом, у игрока две строки — имя и
     статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
     затем вратари. Матча, где никто из страны не играл, в словаре нет."""
     skaters = fetch_all(
@@ -2381,7 +2385,7 @@ def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int,
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
         ]
-    heading = f"<b>{html.escape(country_name(code))}</b>"
+    heading = f"<b>{country_label(code)}</b>"
     return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
 
 

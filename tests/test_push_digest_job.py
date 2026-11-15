@@ -1364,8 +1364,8 @@ async def test_channel_results_are_games_with_russians_or_belarusians_once(push_
     assert post.chat_id == CHANNEL and post.reply_markup is None
     assert post.rich_message.html == rich_html(
         f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\n"
-        "<b>Россия</b>\n\nОвечкин (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05\n\n"
-        "<b>Беларусь</b>\n\nПротас (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05"
+        "<b>🇷🇺 Россия</b>\n\nОвечкин (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05\n\n"
+        "<b>🇧🇾 Беларусь</b>\n\nПротас (WSH)\n1+0 · +1 · 3 бр. · 2 хита · 17:05"
     ) + f"<footer>{CHANNEL_FOOTER_LINE}</footer>"
     [album] = push_env.api.sent(SendMediaGroup)
     assert album.chat_id == CHANNEL
