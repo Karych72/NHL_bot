@@ -2014,3 +2014,49 @@ def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
     text, _, _ = bot_messages.country_page("CAN", "G", 0)
     assert "Нет данных в этом диапазоне." in text
+
+
+def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fake_db_router):
+    """`/CAN`: топ-10 нападающих, топ-8 защитников, топ-5 вратарей — лимит уходит в SQL;
+    группа без игроков пропускается в перечне, таблицах и обозначениях."""
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([
+        _COUNTRY_RANKING,
+        ("FROM goalies_season_stats", []),
+        ("r.position = 'D'", [_country_skater_row("Makar", 5, 20, 20, 13, 40, 32)]),
+        ("OVER ()", [_country_skater_row("McDavid", 4, 8, 7, 5, 20, 2)]),
+    ])
+
+    text = bot_messages.country_profile("CAN")
+
+    season = bot_module("config").SEASON_ID
+    assert [params for _q, params in cursor.executed[1:]] == [
+        (season, "CAN", 10, 0), (season, "CAN", 8, 0), (season, "CAN", 5, 0),
+    ]
+    # Шапка: место в рейтинге стран, полевые и очки страны; перечень — размер и лидер групп.
+    assert text.startswith(
+        "<b>🇨🇦 КАНАДА В NHL</b>\n\n"
+        "1-е место из 2 в рейтинге стран · 4 полевых · 100 очков\n"
+        "<ul><li>Нападающие: 25, лучший — <b>McDavid</b> (EDM), 8 очков</li>"
+        "<li>Защитники: 25, лучший — <b>Makar</b> (EDM), 20 очков</li></ul>\n\n"
+        "<b>Нападающие</b> · топ-1 из 25\n<table"
+    )
+    assert "<b>Защитники</b> · топ-1 из 25" in text and "Вратари" not in text.split("<details>")[0]
+    assert _tables(text) == [
+        [["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
+         ["1.", "McDavid", "EDM", "4", "8", "7", "21:30", "5", "20"]],
+        [["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бл"],
+         ["1.", "Makar", "EDM", "5", "20", "20", "21:30", "13", "32"]],
+    ]
+    assert "Защитники: Г — голы" in text and "Вратари: В — победы" not in text
+    assert "все игроки: /CAN_FULL · все страны: /countries" in text
+
+
+def test_country_profile_rejects_code_outside_ranking_without_touching_sql(
+    bot_module, fake_db_router
+):
+    bot_messages = bot_module("bot_messages")
+    cursor = fake_db_router([_COUNTRY_RANKING])
+
+    assert bot_messages.country_profile("RUS") == "Страна не найдена в рейтинге этого сезона."
+    assert len(cursor.executed) == 1

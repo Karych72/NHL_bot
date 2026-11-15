@@ -424,6 +424,25 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         self.assertEqual(repo.channel_posted([game, other_game], "result"), {other_game})
         self.assertEqual(repo.chat_games_sent([game, other_game]), set())
 
+    def test_channel_weekly_post_marks(self):
+        """Задача 120: отметка еженедельного поста — по паре (день, вид), повторная — no-op;
+        таблица субботы не считается постом страны того же дня."""
+        repo = self.repo
+        day, other_day = date(2099, 1, 3), date(2099, 1, 4)
+
+        def delete_marks():
+            with closing(_connect()) as conn, conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM bot_channel_weekly_posts WHERE day IN (%s, %s)", (day, other_day))
+
+        delete_marks()
+        self.addCleanup(delete_marks)
+        self.assertFalse(repo.channel_weekly_posted(day, "standings"))
+        repo.mark_channel_weekly_posted(day, "standings")
+        repo.mark_channel_weekly_posted(day, "standings")
+        self.assertTrue(repo.channel_weekly_posted(day, "standings"))
+        self.assertFalse(repo.channel_weekly_posted(day, "country"))
+        self.assertFalse(repo.channel_weekly_posted(other_day, "standings"))
+
     def _events(self, chat_id=CHAT):
         """История подписок чата (Задача 99) по порядку: (kind, team_id, country, active)."""
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
@@ -1510,7 +1529,7 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
             self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
         for group in ("F", "G"):
             with self.subTest(group=group):
-                table, _n, total = self.messages._player_group_table(
+                table, _n, total, _first = self.messages._player_group_table(
                     self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
                 )
                 self.assertEqual(total, 1)
@@ -2193,7 +2212,8 @@ class TestAiReaderRole(unittest.TestCase):
     def test_bot_tables_are_invisible(self):
         for table in ("bot_subscriptions", "bot_chat_game_sent", "ai_questions", "ai_stats_log",
                       "premium_access", "premium_payments", "prediction_log", "game_predictions", "schema_migrations",
-                      "bot_actions", "bot_subscription_events", "bot_schedules", "bot_channel_posts"):
+                      "bot_actions", "bot_subscription_events", "bot_schedules", "bot_channel_posts",
+                      "bot_channel_weekly_posts"):
             self.assertEqual(self._error_code(f"SELECT 1 FROM {table}"), "42501", table)
 
     def test_cannot_write_or_create_even_with_read_only_switched_off(self):
