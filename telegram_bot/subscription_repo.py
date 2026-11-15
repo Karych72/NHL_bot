@@ -2,9 +2,10 @@
 
 Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
 включение и отключение подписок (дайджест, предстоящие матчи, команда, страна) и отметки
-об отправке, защищающие от дублей при получасовых прогонах sync: ночи дайджеста
+об отправке, защищающие от дублей при повторных прогонах sync: ночи дайджеста
 (`last_sent_night`), итога матча чату (`bot_chat_game_sent`, Задача 85), превью матча
-подписке (`bot_game_sent`) и поста о матче в канал (`bot_channel_posts`, Задача 118).
+подписке (`bot_game_sent`), поста о матче в канал (`bot_channel_posts`, Задача 118) и
+еженедельного поста в канал (`bot_channel_weekly_posts`, Задача 120).
 """
 
 from __future__ import annotations
@@ -172,8 +173,8 @@ def sent_games(game_ids: List[int]) -> Set[Tuple[int, int]]:
     """Превью каких из матчей `game_ids` уже ушли подпискам на предстоящие матчи: пары
     (id подписки, game_id) из `bot_game_sent`.
 
-    Зачем: превью идёт по матчу (Задача 78) и запускается после каждого получасового
-    прогона sync — без отметки матч уходил бы каждые полчаса."""
+    Зачем: превью идёт по матчу (Задача 78) и запускается после каждого прогона sync —
+    без отметки матч уходил бы на каждом."""
     row = fetch_all(
         "SELECT subscription_id, game_id FROM bot_game_sent WHERE game_id = ANY(%s)",
         (game_ids,),
@@ -229,8 +230,8 @@ def channel_posted(game_ids: List[int], kind: str) -> Set[int]:
     """Какие из матчей `game_ids` уже опубликованы в канал постом вида `kind` (`preview` —
     превью, `result` — итог) — из `bot_channel_posts`.
 
-    Зачем: канал (Задача 118) публикуется после каждого получасового прогона sync — без
-    отметки матч уходил бы в канал каждые полчаса."""
+    Зачем: канал (Задача 118) публикуется после каждого прогона sync — без отметки матч
+    уходил бы в канал на каждом."""
     row = fetch_all(
         "SELECT game_id FROM bot_channel_posts WHERE kind = %s AND game_id = ANY(%s)",
         (kind, game_ids),
@@ -251,11 +252,37 @@ def mark_channel_posted(game_id: int, kind: str) -> None:
         conn.commit()
 
 
+def channel_weekly_posted(day: date, kind: str) -> bool:
+    """Ушёл ли в канал еженедельный пост вида `kind` (`standings` — турнирная таблица,
+    `country` — лучшие игроки страны) за день `day` — из `bot_channel_weekly_posts`.
+
+    Зачем: пост дня догоняется любым прогоном sync после 18:00 МСК (Задача 120) — без
+    отметки он уходил бы на каждом."""
+    row = fetch_all(
+        "SELECT 1 FROM bot_channel_weekly_posts WHERE day = %s AND kind = %s",
+        (day, kind),
+        columns=["one"],
+    )
+    return row["count_rows"] > 0
+
+
+def mark_channel_weekly_posted(day: date, kind: str) -> None:
+    """Отмечает, что еженедельный пост вида `kind` за день `day` ушёл в канал (см.
+    `channel_weekly_posted`); повторная отметка — no-op."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_channel_weekly_posts (day, kind) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (day, kind),
+            )
+        conn.commit()
+
+
 def mark_digest_night_sent(chat_id: int, night: date) -> None:
     """Отмечает, что дайджест за ночь `night` чату уже ушёл (`last_sent_night`).
 
-    Зачем: `push_digest_job.py` запускается после каждого получасового
-    прогона sync — без отметки дайджест уходил бы каждые полчаса.
+    Зачем: `push_digest_job.py` запускается после каждого прогона sync — без
+    отметки дайджест уходил бы на каждом.
 
     Args:
         night: игровая дата ночи (`push_digest_job.night_of`).

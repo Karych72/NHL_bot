@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1061,7 +1061,7 @@ def test_upcoming_games_wait_for_preview_start_of_the_league_day(push_job, upcom
 
 @pytest.mark.asyncio
 async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_bot, api):
-    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне (раз в полчаса)
+    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне с превью (раз в полчаса)
     подписчику одно превью — следующий по началу матч дня, каждый матч один раз; когда
     матчи кончились, прогон ничего не шлёт. Первая строка — время начала по МСК; превью
     собирается раз на матч, а не на подписчика."""
@@ -1192,6 +1192,9 @@ async def test_game_failure_does_not_stop_digest_and_upcoming_and_still_fails_th
     async def channel_previews(bot, now):
         calls.append(("channel previews", now))
 
+    async def channel_weekly(bot, now):
+        calls.append(("channel weekly", now))
+
     started = _msk(11, 0)
     with patch.object(push_job, "subscribed_games", return_value={}), patch.object(
         push_job, "run_game_broadcast", games
@@ -1199,7 +1202,7 @@ async def test_game_failure_does_not_stop_digest_and_upcoming_and_still_fails_th
         push_job, "run_upcoming_broadcast", upcoming
     ), patch.object(push_job, "run_channel_results", channel_results), patch.object(
         push_job, "run_channel_previews", channel_previews
-    ):
+    ), patch.object(push_job, "run_channel_weekly", channel_weekly):
         with pytest.raises(RuntimeError, match="ffmpeg"):
             await push_job.broadcast_if_due(fake_bot, started)
 
@@ -1209,6 +1212,32 @@ async def test_game_failure_does_not_stop_digest_and_upcoming_and_still_fails_th
     # не срывает превью канала.
     assert calls[3] == ("channel results", NIGHT, True)
     assert calls[4][0] == "channel previews" and calls[4][1] > started
+    assert calls[5][0] == "channel weekly" and calls[5][1] > started
+
+
+@pytest.mark.asyncio
+async def test_night_run_without_previews_skips_only_subscriber_previews(push_job, fake_bot):
+    """Ночной слот вне сетки получаса (``--no-upcoming``, Задача 120): итоги, дайджест и канал
+    идут, превью подписчикам — нет: не чаще одного в полчаса."""
+    calls = []
+
+    def step(name):
+        async def run(*args):
+            calls.append(name)
+        return run
+
+    with patch.object(push_job, "subscribed_games", return_value={}), patch.object(
+        push_job, "night_is_loaded", return_value=True
+    ), patch.object(push_job, "run_game_broadcast", step("games")), patch.object(
+        push_job, "run_morning_digest_broadcast", step("digest")
+    ), patch.object(push_job, "run_upcoming_broadcast", step("upcoming")), patch.object(
+        push_job, "run_channel_results", step("channel results")
+    ), patch.object(push_job, "run_channel_previews", step("channel previews")), patch.object(
+        push_job, "run_channel_weekly", step("channel weekly")
+    ):
+        await push_job.broadcast_if_due(fake_bot, _msk(2, 10), previews=False)
+
+    assert calls == ["games", "digest", "channel results", "channel previews", "channel weekly"]
 
 
 @pytest.mark.asyncio
@@ -1233,21 +1262,25 @@ async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypa
     async def channel_previews(bot, now):
         calls.append(("channel previews", bot.token))
 
+    async def channel_weekly(bot, now):
+        calls.append(("channel weekly", bot.token))
+
     async def night(*args):
         raise AssertionError("ночь днём не рассылается")
 
     monkeypatch.setattr(push_job, "run_upcoming_broadcast", upcoming)
     monkeypatch.setattr(push_job, "run_channel_previews", channel_previews)
+    monkeypatch.setattr(push_job, "run_channel_weekly", channel_weekly)
     monkeypatch.setattr(push_job, "broadcast_if_due", night)
 
     with pytest.raises(RuntimeError, match="NHL API"):
         await push_job.main(True)
 
-    assert calls == [("upcoming", FAKE_TOKEN), ("channel previews", FAKE_TOKEN)]
+    assert calls == [("upcoming", FAKE_TOKEN), ("channel previews", FAKE_TOKEN), ("channel weekly", FAKE_TOKEN)]
 
 
 # ---------------------------------------------------------------------------
-# Канал (Задача 118): превью без прогноза и итоги матчей с игроками России и Беларуси
+# Канал (Задачи 118, 120): превью без прогноза, итоги всех матчей ночи, посты выходных
 # ---------------------------------------------------------------------------
 
 # Id канала строкой, как его читает `config` из `.env` (@username Telegram принимает так же).
@@ -1263,13 +1296,13 @@ def _team_stats(abbr, name, wins):
 @pytest.fixture
 def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
     """Канал ``CHANNEL`` без паузы между постами: отметки (game_id, вид) — в ``posted``;
-    NHL ``score`` — ``SLATE``; БД превью и блоков стран — ``fake_db_router``: у любой пары
+    NHL ``score`` — ``SLATE``; загруженные матчи ночи — ``games``; БД превью и блоков стран — ``fake_db_router``: у любой пары
     команд есть сезон, ``players`` — {страна: строки ``game_player_stats``}. Превью и блоки
     стран собираются настоящими сборщиками; запрос прогноза упал бы — маршрута у него нет."""
     config = bot_module("config")
     monkeypatch.setattr(config, "CHANNEL_ID", CHANNEL)
     monkeypatch.setattr(push_job, "_CHANNEL_POST_INTERVAL_SEC", 0)
-    env = SimpleNamespace(posted=set(), players={}, scores=0)
+    env = SimpleNamespace(posted=set(), players={}, scores=0, games=[])
 
     def fetch(day):
         env.scores += 1
@@ -1281,6 +1314,7 @@ def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
     )
     monkeypatch.setattr(push_job, "mark_channel_posted", lambda game_id, kind: env.posted.add((game_id, kind)))
     fake_db_router([
+        ("SELECT game_id FROM games WHERE season_id", lambda params: [(game_id,) for game_id in env.games]),
         ("teams_stats ts", lambda params: [_team_stats(abbr, f"{abbr} Club", 6) for abbr in params[1]]),
         ("team_id FROM teams", []),
         ("game_player_stats", lambda params: env.players.get(params[1], [])),
@@ -1334,6 +1368,7 @@ async def test_channel_without_channel_id_is_not_touched(push_job, channel_env, 
     monkeypatch.setattr(bot_module("config"), "CHANNEL_ID", None)
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     await push_job.run_channel_results(fake_bot, NIGHT, True)
+    await push_job.run_channel_weekly(fake_bot, datetime(2026, 11, 21, 15, 0, tzinfo=UTC))
     assert api.requests == [] and channel_env.scores == 0
 
 
@@ -1343,11 +1378,13 @@ def _skater(game_id, lastname, team):
 
 
 @pytest.mark.asyncio
-async def test_channel_results_are_games_with_russians_or_belarusians_once(push_job, push_env, channel_env, fake_bot):
-    """Итог — только матч, где играли россияне или белорусы: свёрнутая карточка с клипами,
-    на виду блоки обеих стран и ссылка на бота, кнопок нет; за ней альбом голов россиян и
-    белорусов, гол чужой страны в альбом не берётся. Матч ждёт клипов всех голов, на
-    крайнем сроке уходит с тем, что есть; повторный прогон ничего не дублирует."""
+async def test_channel_results_are_every_game_of_the_night_once(push_job, push_env, channel_env, fake_bot):
+    """Итог — каждый загруженный матч ночи (Задача 120): свёрнутая карточка с клипами и
+    ссылкой на бота, кнопок нет. Где играли россияне или белорусы — на виду блоки обеих
+    стран, за карточкой альбом их голов, гол чужой страны в альбом не берётся; матч без
+    них — карточка без блоков и без альбома. Матч ждёт клипов всех голов, на крайнем сроке
+    уходит с тем, что есть; повторный прогон ничего не дублирует."""
+    channel_env.games = [GAME_A, GAME_B]
     channel_env.players = {
         "RUS": [_skater(GAME_A, "Овечкин", "WSH")],
         "BLR": [_skater(GAME_A, "Протас", "WSH")],
@@ -1355,12 +1392,17 @@ async def test_channel_results_are_games_with_russians_or_belarusians_once(push_
     push_env.goals = [(GAME_A, 100, "RUS"), (GAME_A, 101, "CAN"), (GAME_A, 102, "BLR"), (GAME_B, 200, "CAN")]
     push_env.unpublished = {(GAME_A, 101)}
     await push_job.run_channel_results(fake_bot, NIGHT, False)
-    assert push_env.api.sent_rich == []
+    [other] = push_env.api.sent_rich
+    assert other.chat_id == CHANNEL and other.reply_markup is None
+    assert other.rich_message.html == rich_html(f"CARD {GAME_B} clips=[200] collapsed") + (
+        f"<footer>{CHANNEL_FOOTER_LINE}</footer>"
+    )
+    assert push_env.api.sent(SendMediaGroup) == [] and push_env.api.sent(SendVideo) == []
 
     await push_job.run_channel_results(fake_bot, NIGHT, True)
     await push_job.run_channel_results(fake_bot, NIGHT, True)
 
-    [post] = push_env.api.sent_rich
+    [_other, post] = push_env.api.sent_rich
     assert post.chat_id == CHANNEL and post.reply_markup is None
     assert post.rich_message.html == rich_html(
         f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\n"
@@ -1370,9 +1412,10 @@ async def test_channel_results_are_games_with_russians_or_belarusians_once(push_
     [album] = push_env.api.sent(SendMediaGroup)
     assert album.chat_id == CHANNEL
     assert [(m.media, m.caption) for m in album.media] == [
-        ("fid-1", "<b>GOAL</b> 100\n\n<b>GOAL</b> 102"), ("fid-3", None),
+        # fid-1 — клип матча B: его карточка ушла первой.
+        ("fid-2", "<b>GOAL</b> 100\n\n<b>GOAL</b> 102"), ("fid-4", None),
     ]
-    assert channel_env.posted == {(GAME_A, "result")}
+    assert channel_env.posted == {(GAME_A, "result"), (GAME_B, "result")}
 
 
 @pytest.mark.asyncio
@@ -1382,6 +1425,7 @@ async def test_channel_result_failure_is_marked_and_does_not_block_other_games(
     """Карточка — отправка и правки: сбой может случиться, когда пост уже в канале, поэтому
     итог отмечается после любой попытки и не повторяется (дубль хуже пропуска). Следующий
     матч уходит, прогон красный."""
+    channel_env.games = [GAME_A, GAME_B]
     channel_env.players = {"RUS": [_skater(GAME_A, "Овечкин", "WSH"), _skater(GAME_B, "Кучеров", "TBL")]}
     push_env.api.fail_next(SendRichMessage, TelegramBadRequest(method=_method(), message="message is too long"))
     with pytest.raises(TelegramBadRequest):
@@ -1391,3 +1435,74 @@ async def test_channel_result_failure_is_marked_and_does_not_block_other_games(
     [post] = push_env.api.sent_rich
     assert post.rich_message.html.startswith(rich_html(f"CARD {GAME_B} clips=[] collapsed"))
     assert channel_env.posted == {(GAME_A, "result"), (GAME_B, "result")}
+
+
+# Посты выходных (Задача 120): суббота 21.11.2026 и воскресенье 22.11.2026, 18:00 МСК = 15:00 UTC.
+SATURDAY, SUNDAY = date(2026, 11, 21), date(2026, 11, 22)
+
+
+def _utc_on(day, hour, minute=0):
+    """Момент дня ``day`` в UTC."""
+    return datetime.combine(day, time(hour, minute), tzinfo=UTC)
+
+
+@pytest.fixture
+def weekly_env(push_job, bot_module, monkeypatch, fake_db_router):
+    """Канал ``CHANNEL``: отметки (день, вид) — в ``posted``; БД турнирной таблицы и рейтинга
+    России — ``fake_db_router``, тексты собирают настоящие ``team_table`` и ``country_profile``."""
+    monkeypatch.setattr(bot_module("config"), "CHANNEL_ID", CHANNEL)
+    env = SimpleNamespace(posted=set())
+    monkeypatch.setattr(push_job, "channel_weekly_posted", lambda day, kind: (day, kind) in env.posted)
+    monkeypatch.setattr(push_job, "mark_channel_weekly_posted", lambda day, kind: env.posted.add((day, kind)))
+    fake_db_router([
+        ("FROM teams_stats ts", [("Washington Capitals", 20, 30, 75.0, 15, 5, 0, "Metropolitan", "Eastern")]),
+        ("SELECT max(day)::text AS d", [("2026-11-20",)]),
+        ("GROUP BY r.nationality", [("RUS", 4, 100, 40)]),
+        ("FROM goalies_season_stats", []),
+        ("r.position = 'D'", []),
+        ("OVER ()", [("Ovechkin", "WSH", 10, 20, 18, "19:00", 30, 60, 5, 25)]),
+    ])
+    return env
+
+
+@pytest.mark.asyncio
+async def test_channel_weekly_standings_on_saturday_and_russia_on_sunday_once(push_job, weekly_env, fake_bot, api):
+    """В субботу с 18:00 МСК — турнирная таблица, в воскресенье — лучшие игроки России, тем же
+    текстом, что ``/standings`` и ``/RUS``, со ссылкой на бота в конце; по одному разу за день,
+    до 18:00 и в будни — ничего."""
+    for moment in (
+        _utc_on(SATURDAY, 14, 59), _utc_on(SATURDAY, 15, 0), _utc_on(SATURDAY, 15, 30),
+        _utc_on(SUNDAY, 15, 0), _utc_on(SUNDAY, 20, 0), _utc_on(SUNDAY + timedelta(days=1), 15, 0),
+    ):
+        await push_job.run_channel_weekly(fake_bot, moment)
+
+    standings, russia = api.sent_rich
+    assert {standings.chat_id, russia.chat_id} == {CHANNEL}
+    assert standings.reply_markup is None and russia.reply_markup is None
+    assert standings.rich_message.html.startswith("<p><b>Турнирная таблица NHL</b></p>")
+    assert "Washington Capitals" in standings.rich_message.html
+    assert "РОССИЯ В NHL" in russia.rich_message.html and "Ovechkin" in russia.rich_message.html
+    # Подвал один: сезон и ссылка на бота, без команд бота — в канале они не работают.
+    season = push_job.config.CURRENT_SEASON
+    assert standings.rich_message.html.endswith(
+        f"<footer>Сезон {season} · данные на 2026-11-20<br>{CHANNEL_FOOTER_LINE}</footer>"
+    )
+    assert russia.rich_message.html.endswith(f"<footer>Сезон {season}<br>{CHANNEL_FOOTER_LINE}</footer>")
+    for post in (standings, russia):
+        assert post.rich_message.html.count("<footer>") == 1 and "/countries" not in post.rich_message.html
+    assert weekly_env.posted == {(SATURDAY, "standings"), (SUNDAY, "country")}
+
+
+@pytest.mark.asyncio
+async def test_channel_weekly_failure_is_retried_the_same_day(push_job, weekly_env, fake_bot, api):
+    """Отказ Telegram в слот 18:00 — прогон красный, пост не отмечен; следующий прогон того же
+    дня публикует его."""
+    api.fail_next(SendRichMessage, TelegramBadRequest(method=_method(), message="need administrator rights"))
+    with pytest.raises(TelegramBadRequest):
+        await push_job.run_channel_weekly(fake_bot, _utc_on(SATURDAY, 15, 0))
+    assert weekly_env.posted == set() and api.sent_rich == []
+
+    await push_job.run_channel_weekly(fake_bot, _utc_on(SATURDAY, 15, 30))
+    [post] = api.sent_rich
+    assert "Турнирная таблица NHL" in post.rich_message.html
+    assert weekly_env.posted == {(SATURDAY, "standings")}

@@ -1557,7 +1557,7 @@ def _build_standings_table_body(teams: List[Dict[str, Union[int, str, float, Non
     return "\n\n".join(chunks)
 
 
-def team_table() -> str:
+def team_table(channel_footer: Optional[str] = None) -> str:
     """Турнирная таблица всех команд текущего сезона (`config.SEASON_ID`):
     секции по конференциям/дивизионам, отсортированные по очкам, плюс секции
     Wild Card — HTML-текст с шапкой сезона и даты (шаблон
@@ -1566,7 +1566,12 @@ def team_table() -> str:
     Пустой `teams_stats` (сезон ещё не начался — загрузчик не пишет туда
     строк, пока в сезоне нет ни одной завершённой игры, см. Задача 36)
     отдаёт текст с причиной вместо таблицы с одними заголовками секций и
-    без единой строки команды."""
+    без единой строки команды.
+
+    Аргументы: `channel_footer` — строка подвала поста в канал (ссылка на бота, Задача 120),
+    дописывается под сезоном; `None` — экран бота."""
+    season = f"Сезон {html.escape(str(config.CURRENT_SEASON))}"
+    channel_line = "" if channel_footer is None else f"\n{channel_footer}"
     stats = cached_fetch_all(
         "SELECT t.name, games_played, points, procent_points, wins, "
         "       losses, ot, t.division_name, t.conference_name "
@@ -1583,7 +1588,7 @@ def team_table() -> str:
         return (
             "<b>Турнирная таблица NHL</b>\n"
             "Сезон ещё не начался: в базе нет статистики команд.\n"
-            + _season_footer()
+            + rich_footer(season + channel_line)
         )
 
     teams: List[Dict[str, Union[int, str, float, None]]] = []
@@ -1603,8 +1608,7 @@ def team_table() -> str:
     to_template = {
         'table_body': table_body,
         'footer': rich_footer(
-            f"Сезон {html.escape(str(config.CURRENT_SEASON))} · "
-            f"данные на {html.escape(str(_standings_as_of_day()))}"
+            f"{season} · данные на {html.escape(str(_standings_as_of_day()))}{channel_line}"
         ),
     }
     return output_text('messages/league_table.txt', to_template)
@@ -2328,7 +2332,7 @@ _COUNTRY_LEADER_UNIT = {
 }
 
 
-def country_profile(code: str) -> str:
+def country_profile(code: str, channel_footer: Optional[str] = None) -> str:
     """Ответ `/RUS`, `/CAN`… — страна в сезоне одним сообщением.
 
     Зачем: быстрый взгляд на страну без листания `/countries`. Шапка — место страны
@@ -2341,6 +2345,8 @@ def country_profile(code: str) -> str:
     Аргументы:
         code: код страны из команды `/CODE` в верхнем регистре; вне рейтинга сезона
             (`country_rankings()`) — текст «Страна не найдена…», в SQL он не попадает.
+        channel_footer: строка подвала поста в канал (ссылка на бота, Задача 120) — вместо
+            команд `/RUS_FULL` и `/countries`, которые в канале не работают; `None` — экран бота.
     """
     ranking = _country_ranking()
     place = next((i for i, row in enumerate(ranking, start=1) if row[0] == code), None)
@@ -2366,7 +2372,11 @@ def country_profile(code: str) -> str:
         legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
     legends.append("Полевые — по очкам, вратари — по победам.")
     season_esc = html.escape(str(config.CURRENT_SEASON))
-    footer = f"Сезон {season_esc} · все игроки: /{code}_FULL · все страны: /countries"
+    footer = (
+        f"Сезон {season_esc} · все игроки: /{code}_FULL · все страны: /countries"
+        if channel_footer is None
+        else f"Сезон {season_esc}\n{channel_footer}"
+    )
     return "\n".join([
         # Крупнее — капсом, как шапка карточки матча (`<h1>`–`<h6>` не используем, стиль §1);
         # пустая строка — зазор до сводки.

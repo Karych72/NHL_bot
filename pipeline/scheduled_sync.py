@@ -26,12 +26,13 @@ from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 # Ночное окно прогонов: каждые SYNC_STEP с 18:00 UTC (21:00 МСК) до 08:00 UTC (11:00 МСК)
-# включительно — сутки игр NHL от дневных матчей выходных до поздних западных. МСК без
+# включительно — сутки игр NHL от дневных матчей выходных до поздних западных. Шаг 10 минут
+# (Задача 120): итог матча уходит подписчикам и в канал вскоре после того, как NHL выложила клипы. МСК без
 # перехода на летнее время, смещение UTC+3 постоянно. Слот NIGHT_END_HOUR_UTC — последний
 # в ночи и крайний срок дайджеста (push_digest_job.NIGHT_DEADLINE_MSK — тот же момент по МСК).
 NIGHT_START_HOUR_UTC = 18
 NIGHT_END_HOUR_UTC = 8
-SYNC_STEP = timedelta(minutes=30)
+SYNC_STEP = timedelta(minutes=10)
 
 # Дневные слоты без загрузчика (Задача 78): с 12:30 UTC (15:30 МСК) до ночного окна только
 # рассылка — на каждом слоте подписчику одно превью предстоящего матча дня
@@ -39,7 +40,10 @@ SYNC_STEP = timedelta(minutes=30)
 # нечего, и в 12:00 UTC по окну, разнесённому с sync, работают retrain и publish
 # (scheduled_retrain.RETRAIN_HOUR_UTC) — их не трогаем. Первый слот — через полчаса после
 # них, чтобы в первом превью дня уже была строка прогноза (решение человека 2026-10-25).
+# Шаг дневных слотов — PREVIEW_STEP, а не ночной SYNC_STEP: подписчик получает одно превью
+# за слот, и чаще раза в полчаса они засыпали бы чат (решение человека 2026-11-15, Задача 120).
 PREVIEW_START_UTC = (12, 30)
+PREVIEW_STEP = timedelta(minutes=30)
 
 # Окно загрузки [сегодня − WINDOW_DAYS_BACK, сегодня] (UTC-дата): захватывает
 # поздние финалы вчерашнего дня, которые NHL API мог доотдать после полуночи.
@@ -78,7 +82,7 @@ def sync_window(today: date) -> Tuple[str, str]:
 
 
 def _from(slot: datetime, start: Tuple[int, int]) -> bool:
-    """Лежит ли точка сетки ``SYNC_STEP`` в окне *start* (час, минута) – ``NIGHT_END_HOUR_UTC``:00."""
+    """Лежит ли момент *slot* в окне *start* (час, минута) – ``NIGHT_END_HOUR_UTC``:00."""
     return (slot.hour, slot.minute) >= start or (slot.hour, slot.minute) <= (NIGHT_END_HOUR_UTC, 0)
 
 
@@ -92,13 +96,22 @@ def loads_data(slot: datetime) -> bool:
     return _from(slot, (NIGHT_START_HOUR_UTC, 0))
 
 
+def previews_slot(slot: datetime) -> bool:
+    """Шлёт ли слот *slot* превью подписчикам: точка сетки ``PREVIEW_STEP`` (:00 и :30).
+
+    Зачем: дневные слоты стоят только на ней, а ночные вне её идут с ``--no-upcoming`` —
+    подписчик получает не больше одного превью в полчаса (Задача 120).
+    """
+    return slot.minute % int(PREVIEW_STEP.total_seconds() // 60) == 0
+
+
 def seconds_until_next_run(now: datetime) -> float:
     """Секунд до ближайшего слота прогона строго после *now*.
 
-    Слоты — точки сетки ``SYNC_STEP`` (:00 и :30) с ``PREVIEW_START_UTC`` до
-    ``NIGHT_END_HOUR_UTC``:00; после ``NIGHT_END_HOUR_UTC``:00 следующий слот —
-    ``PREVIEW_START_UTC``. Если *now* ровно на слоте — возвращает время до
-    следующего, а не 0.
+    Слоты — точки сетки ``SYNC_STEP`` в ночном окне (``loads_data``) и точки сетки
+    ``PREVIEW_STEP`` (:00 и :30) с ``PREVIEW_START_UTC`` до него; после
+    ``NIGHT_END_HOUR_UTC``:00 следующий слот — ``PREVIEW_START_UTC``. Если *now* ровно
+    на слоте — возвращает время до следующего, а не 0.
 
     Аргументы:
         now: текущий момент (ожидается UTC; tzinfo сохраняется в сравнении).
@@ -106,7 +119,7 @@ def seconds_until_next_run(now: datetime) -> float:
     step_minutes = int(SYNC_STEP.total_seconds() // 60)
     slot = now.replace(minute=now.minute - now.minute % step_minutes, second=0, microsecond=0)
     slot += SYNC_STEP
-    while not _from(slot, PREVIEW_START_UTC):
+    while not (loads_data(slot) or (_from(slot, PREVIEW_START_UTC) and previews_slot(slot))):
         slot += SYNC_STEP
     return (slot - now).total_seconds()
 
@@ -226,7 +239,7 @@ def _push_command(*args: str) -> SyncCommand:
     return SyncCommand(argv=[sys.executable, "-u", "push_digest_job.py", *args], cwd=_TELEGRAM_BOT_DIR)
 
 
-def build_commands(window: Optional[Tuple[str, str]]) -> List[SyncCommand]:
+def build_commands(window: Optional[Tuple[str, str]], previews: bool = True) -> List[SyncCommand]:
     """Строит команды одного прогона: загрузчик, затем рассылка.
 
     Рассылка идёт после каждого прогона: ``push_digest_job.py`` сам решает, кому
@@ -237,6 +250,8 @@ def build_commands(window: Optional[Tuple[str, str]]) -> List[SyncCommand]:
         window: ``(date_from, date_to)`` для ``--date-from``/``--date-to`` загрузчика;
             ``None`` — дневной слот (``loads_data``): только превью предстоящих матчей
             (``--upcoming-only``).
+        previews: слать ли подписчикам превью (``False`` — ``--no-upcoming``): ночной слот
+            не на сетке ``PREVIEW_STEP`` — превью идут раз в полчаса и ночью (Задача 120).
     """
     if window is None:
         return [_push_command("--upcoming-only")]
@@ -254,8 +269,29 @@ def build_commands(window: Optional[Tuple[str, str]]) -> List[SyncCommand]:
             ],
             cwd=_PIPELINE_DIR,
         ),
-        _push_command(),
+        _push_command() if previews else _push_command("--no-upcoming"),
     ]
+
+
+def missed_deadline(last: datetime, now: datetime) -> Optional[datetime]:
+    """Слот ``NIGHT_END_HOUR_UTC``:00, пропущенный между прогоном слота *last* и моментом *now*.
+
+    Зачем: это последний слот ночи и крайний срок рассылки — дайджест и ждущие клипов матчи
+    уходят только в нём. Прогон дольше ``SYNC_STEP`` (07:50 → 08:02) ``_next_target``
+    перешагнул бы до ``PREVIEW_START_UTC``, и ночь не ушла бы вовсе; с шагом 10 минут
+    (Задача 120) такой прогон вероятен. Пропущенный крайний срок цикл запускает сразу.
+
+    После долгого простоя (хост приостановлен через 08:00) вернёт сегодняшний крайний срок
+    сразу за запоздалым прогоном прошлого слота — лишний прогон безвреден: рассылку от
+    повторов держат отметки в БД.
+
+    Аргументы: ``last`` — момент слота последнего прогона; ``now`` — текущий момент (UTC).
+    Возвращает: момент пропущенного слота или ``None``.
+    """
+    deadline = now.replace(hour=NIGHT_END_HOUR_UTC, minute=0, second=0, microsecond=0)
+    if deadline > now:
+        deadline -= timedelta(days=1)
+    return deadline if deadline > last else None
 
 
 def check(
@@ -300,8 +336,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     - ``loop``: сразу при старте — прогон (догнать данные после перезапуска;
       повторной рассылки нет — ночь отмечается отправленной в БД), затем
-      бесконечно спит до следующего слота и прогоняет: ночью — загрузчик и рассылку,
-      днём (``loads_data``) — только рассылку. Неуспешный прогон не
+      бесконечно спит до следующего слота и прогоняет: ночью — загрузчик и рассылку
+      (превью подписчикам — только в слотах ``PREVIEW_STEP``), днём (``loads_data``) —
+      только рассылку; пропущенный крайний срок (``missed_deadline``) — сразу. Неуспешный прогон не
       роняет цикл (отказ виден через статус-файл и ``check``), но исключения
       самого цикла (не команд) не глушатся.
     - ``once``: один прогон, код выхода 0/1.
@@ -329,16 +366,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         return check(STATUS_FILE, datetime.now(timezone.utc))
 
     # loop
-    catch_up_window = sync_window(datetime.now(timezone.utc).date())
-    run_once(build_commands(catch_up_window), STATUS_FILE, catch_up_window)
+    # Момент — до прогона: догоняющий прогон через 08:00 не должен скрыть крайний срок.
     target = datetime.now(timezone.utc)
+    catch_up_window = sync_window(target.date())
+    run_once(build_commands(catch_up_window), STATUS_FILE, catch_up_window)
     while True:
-        target, sleep_seconds = _next_target(datetime.now(timezone.utc), target)
-        logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
-        time.sleep(sleep_seconds)
+        now = datetime.now(timezone.utc)
+        deadline = missed_deadline(target, now)
+        if deadline is not None:
+            logger.warning("Night deadline slot %s missed by a long run: running it now", deadline)
+            target = deadline
+        else:
+            target, sleep_seconds = _next_target(now, target)
+            logger.info("Sleeping %.0f seconds until next sync run", sleep_seconds)
+            time.sleep(sleep_seconds)
         if loads_data(target):
             window = sync_window(datetime.now(timezone.utc).date())
-            run_once(build_commands(window), STATUS_FILE, window)
+            run_once(build_commands(window, previews_slot(target)), STATUS_FILE, window)
         else:
             run_once(build_commands(None), None)
 
