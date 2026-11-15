@@ -2055,7 +2055,9 @@ def team_full_stats(abbrev: str) -> str:
     player_groups = []
     legends = []
     for group, (label, _cond) in PLAYER_GROUPS.items():
-        table, n, _total = _player_group_table(_BY_TEAM, team_id, group, None, 0, ranked=False)
+        table, n, _total, _first = _player_group_table(
+            _BY_TEAM, team_id, group, None, 0, ranked=False
+        )
         if n:
             player_groups.append((label, table))
             legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
@@ -2231,9 +2233,9 @@ def _player_group_table(
     offset: int,
     *,
     ranked: bool,
-) -> Tuple[str, int, int]:
-    """Таблица игроков одной группы (`_table`) — общая для экрана страны
-    и `/BOS_FULL`.
+) -> Tuple[str, int, int, Optional[Tuple[str, str, int]]]:
+    """Таблица игроков одной группы (`_table`) — общая для экрана страны,
+    `/RUS` и `/BOS_FULL`.
 
     Зачем: у каждой группы свои главные показатели — нападающие: голы, очки,
     игры, время, силовые, броски; защитники — то же с блоками вместо бросков;
@@ -2246,7 +2248,8 @@ def _player_group_table(
         limit, offset: страница выборки; `limit=None` — все строки.
         ranked: колонки места и команды (экран страны); без них — `/BOS_FULL`.
 
-    Возвращает: (таблица — пусто при 0 строк, строк в таблице, полный размер выборки).
+    Возвращает: (таблица — пусто при 0 строк, строк в таблице, полный размер выборки,
+    первая строка — (фамилия, команда, очки полевого / победы вратаря), None при 0 строк).
     """
     params = (config.SEASON_ID, owner_value, limit, offset)
     fmt = _format_leader_value
@@ -2272,7 +2275,7 @@ def _player_group_table(
         ]
     n = stats["count_rows"]
     if not n:
-        return "", 0, 0
+        return "", 0, 0, None
 
     def prefix(i: int) -> List[str]:
         name = stats["lastname"][i] or "Unknown"
@@ -2282,7 +2285,12 @@ def _player_group_table(
     rows = [lead + header] + [prefix(i) + cells[i] for i in range(n)]
     align = ("rll" if ranked else "l") + "r" * len(header)
     table = _table(rows, align)
-    return table, n, int(stats["total"][0])
+    first = (
+        stats["lastname"][0] or "Unknown",
+        stats["team"][0] or "—",
+        int(stats["wins" if group == "G" else "points"][0] or 0),
+    )
+    return table, n, int(stats["total"][0]), first
 
 
 def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
@@ -2302,13 +2310,76 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     if code not in [row[0] for row in _country_ranking()]:
         return COUNTRY_NOT_FOUND, False, False
     offset = max(offset, 0)
-    table, n, total = _player_group_table(
+    table, n, total, _first = _player_group_table(
         _BY_COUNTRY, code, group, LEADERBOARD_PAGE_SIZE, offset, ranked=True
     )
     body = f"{table}\n" + rich_details("Обозначения", f"{_GROUP_LEGEND[group]}.")
     # Флаг — в начале заголовка: эмодзи только как метка в начале сообщения (правило 5).
     heading = f"{country_label(code)}: {PLAYER_GROUPS[group][0].lower()}"
     return _leaderboard_page_text(heading, body, n, total, offset)
+
+
+# Сколько лучших игроков каждой группы показывает `/RUS`: нападающих, защитников, вратарей.
+_COUNTRY_PROFILE_TOP = {"F": 10, "D": 8, "G": 5}
+# Чем меряется лидер группы в сводке `/RUS` — формы слова для `_plural_word`.
+_COUNTRY_LEADER_UNIT = {
+    "F": ("очко", "очка", "очков"), "D": ("очко", "очка", "очков"),
+    "G": ("победа", "победы", "побед"),
+}
+
+
+def country_profile(code: str) -> str:
+    """Ответ `/RUS`, `/CAN`… — страна в сезоне одним сообщением.
+
+    Зачем: быстрый взгляд на страну без листания `/countries`. Шапка — место страны
+    в рейтинге `/countries`, число полевых и их очки; затем перечень групп: сколько
+    игроков и лидер каждой. Ниже — таблицы с колонками экрана страны
+    (`_player_group_table`): топ-10 нападающих, топ-8 защитников, топ-5 вратарей
+    (`_COUNTRY_PROFILE_TOP`); у страны игроков меньше — таблица короче, пустая группа
+    пропускается. В подвале — `/RUS_FULL`, экран страны из `/countries`.
+
+    Аргументы:
+        code: код страны из команды `/CODE` в верхнем регистре; вне рейтинга сезона
+            (`country_rankings()`) — текст «Страна не найдена…», в SQL он не попадает.
+    """
+    ranking = _country_ranking()
+    place = next((i for i, row in enumerate(ranking, start=1) if row[0] == code), None)
+    if place is None:
+        return COUNTRY_NOT_FOUND
+    _code, players, points, _goals = ranking[place - 1]
+    summary = []
+    tables = []
+    legends = []
+    for group, (label, _cond) in PLAYER_GROUPS.items():
+        table, n, total, first = _player_group_table(
+            _BY_COUNTRY, code, group, _COUNTRY_PROFILE_TOP[group], 0, ranked=True
+        )
+        if first is None:
+            continue
+        name, team, value = first
+        summary.append(
+            f"{label}: {total}, лучший — <b>{html.escape(name)}</b> ({html.escape(team)}), "
+            f"{value} {_plural_word(value, _COUNTRY_LEADER_UNIT[group])}"
+        )
+        shown = f" · топ-{n} из {total}" if n < total else ""
+        tables.append(f"<b>{label}</b>{shown}\n{table}")
+        legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
+    legends.append("Полевые — по очкам, вратари — по победам.")
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    footer = f"Сезон {season_esc} · все игроки: /{code}_FULL · все страны: /countries"
+    return "\n".join([
+        # Крупнее — капсом, как шапка карточки матча (`<h1>`–`<h6>` не используем, стиль §1);
+        # пустая строка — зазор до сводки.
+        f"<b>{country_label(code).upper()} В NHL</b>",
+        "",
+        f"{place}-е место из {len(ranking)} в рейтинге стран · {players} полевых · "
+        f"{points} {_plural_word(points, _COUNTRY_LEADER_UNIT['F'])}",
+        rich_list(summary),
+        "",
+        *tables,
+        rich_details("Обозначения", "\n".join(legends)),
+        rich_footer(footer),
+    ])
 
 
 # Задачи 61, 76: игроки страны в матчах игрового дня (`g.day`) или в одном матче

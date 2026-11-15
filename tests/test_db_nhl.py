@@ -1510,7 +1510,7 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
             self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
         for group in ("F", "G"):
             with self.subTest(group=group):
-                table, _n, total = self.messages._player_group_table(
+                table, _n, total, _first = self.messages._player_group_table(
                     self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
                 )
                 self.assertEqual(total, 1)

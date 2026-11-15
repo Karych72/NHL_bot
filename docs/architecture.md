@@ -576,7 +576,9 @@ ai-stats-eval` (контрольный набор против настояще�
 (`nationalityCode` из bios, Задача 62),
 порог `COUNTRY_MIN_PLAYERS`, игроки без страны — только сноской. Таблица группы —
 `_player_group_table()` (общая с `/BOS_FULL`, группы `PLAYER_GROUPS`; вратари — только с хотя бы
-одной игрой); все колонки — в rich-таблице `_table()`.
+одной игрой); все колонки — в rich-таблице `_table()`. Команда `/RUS` — `country_profile()`: те же таблицы
+с лимитом `_COUNTRY_PROFILE_TOP` (10 / 8 / 5) одним сообщением; `/RUS_FULL` — страница страны
+`country_page_reply()`. Обе разбирает `cmd_team_profile` (`TEAM_COMMAND_PATTERN`, код из `COUNTRY_LABELS`).
 
 ### Модульная структура бота
 
