@@ -176,7 +176,7 @@ async def show_help(bot: Bot, chat_id: int) -> None:
 
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
-    "прогноз модели в превью матчей."
+    "прогноз модели в превью матчей, свои рассылки без ограничений — заводятся одной фразой боту."
 )
 _TRIAL_GIFT = (
     f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: прогноз модели и ИИ "
@@ -351,8 +351,17 @@ _DELIVERY_NOTE = (
 )
 # Пример фразы, создающей расписание (Задача 108): в подсказках главного экрана и `sub:s`.
 _SCHEDULE_EXAMPLE = "присылай лидеров по голам по пятницам в 10"
-# Подсказка главного экрана, пока расписаний нет (Задача 116): иначе о них не узнать.
-_MAIN_SCHEDULE_HINT = f"⏰ Свои расписания — любой экран в своё время: напишите боту «{_SCHEDULE_EXAMPLE}»."
+# Подсказки главного экрана о своих рассылках (Задача 116): без них о расписаниях не узнать,
+# а о том, что без премиума их одно (Задача 107), — только по отказу на втором.
+_MAIN_SCHEDULE_HINT_FIRST = (
+    "⏰ Свои рассылки — любой экран в нужное время. Просто напишите боту: "
+    f"«{_SCHEDULE_EXAMPLE}». Одна такая рассылка бесплатно, с премиумом — сколько угодно: /premium"
+)
+_MAIN_SCHEDULE_HINT_MORE = (
+    "⏰ Хотите больше своих рассылок? С /premium их можно завести сколько угодно — "
+    "просто напишите боту, что и когда присылать."
+)
+_MAIN_SCHEDULE_HINT_PREMIUM = "⏰ Новую рассылку можно завести одной фразой — напишите боту, что и когда присылать."
 _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполните make db-migrate на вашей БД PostgreSQL."
 
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
@@ -378,13 +387,20 @@ def _sub_button(
 
 
 def _subscriptions_main_screen(
-    digest: bool, upcoming: bool, team_names: List[str], countries: List[str], schedules: int
+    digest: bool,
+    upcoming: bool,
+    team_names: List[str],
+    countries: List[str],
+    schedules: int,
+    is_premium: bool,
 ) -> _Screen:
     """Главный экран: сводка подписок, переключатели дайджеста и предстоящих матчей
     (каждый в своём ряду — вдвоём в ряд на телефоне не влезают), переходы в подменю, в том
     числе к `schedules` расписаниям чата.
     Текст — построчный HTML для `rich_message()`: подписки — список, расписание рассылок —
-    подвал; пока расписаний 0, в подвале и подсказка, как их завести (Задача 116)."""
+    подвал. В подвале и подсказка о своих рассылках (Задача 116): пока их нет — как завести
+    и что больше одной — в премиуме; без премиума при уже заведённой — что больше даёт
+    премиум (`is_premium`); премиуму — что новая заводится одной фразой."""
     items = []
     if digest:
         items.append("Утренний дайджест")
@@ -395,7 +411,13 @@ def _subscriptions_main_screen(
     if countries:
         items.append("Страны: " + ", ".join(countries))
     lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
-    lines.append(rich_footer(_DELIVERY_NOTE + ("" if schedules else "\n" + _MAIN_SCHEDULE_HINT)))
+    if not schedules:
+        hint = _MAIN_SCHEDULE_HINT_FIRST
+    elif is_premium:
+        hint = _MAIN_SCHEDULE_HINT_PREMIUM
+    else:
+        hint = _MAIN_SCHEDULE_HINT_MORE
+    lines.append(rich_footer(_DELIVERY_NOTE + "\n" + hint))
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [_sub_button("Дайджест", digest, "sub:d", "➕ ")],
         [_sub_button("Предстоящие матчи", upcoming, "sub:u", "➕ ")],
@@ -522,7 +544,9 @@ def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
         if team_id in subs.team_ids
     )
     schedules = len(schedule_repo.list_for_chat(chat_id))
-    return _subscriptions_main_screen(subs.digest, subs.upcoming, names, subs.countries, schedules)
+    return _subscriptions_main_screen(
+        subs.digest, subs.upcoming, names, subs.countries, schedules, premium.is_premium(chat_id)
+    )
 
 
 async def show_subscriptions(bot: Bot, chat_id: int) -> None:
