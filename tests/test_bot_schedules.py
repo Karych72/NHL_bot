@@ -103,17 +103,28 @@ def test_schedule_label(bot_module, screen, params, freq, weekday, month_day, tz
     assert bot._schedule_label(schedule) == expected.format(title)
 
 
-def test_main_screen_hints_schedules_only_while_there_are_none(bot_module):
+def test_main_screen_schedule_hint_depends_on_schedules_and_premium(bot_module):
     """Задача 116: без расписаний главный экран `/subscriptions` подсказывает, как их завести,
-    тем же примером фразы, что экран `sub:s`; у кого расписание есть — подсказки нет."""
+    тем же примером фразы, что экран `sub:s`, и что больше одного — в премиуме; без премиума
+    с расписанием — что больше даёт /premium; премиуму — что новое заводится фразой."""
     bot = bot_module("bot")
     example = "присылай лидеров по голам по пятницам в 10"
-    empty, _ = bot._subscriptions_main_screen(False, False, [], [], 0)
-    assert empty.endswith(f"<br>⏰ Свои расписания — любой экран в своё время: напишите боту «{example}».</footer>")
     assert bot._SCHEDULE_HINT == f"Создать — напишите боту, например: {example}."
-    one, _ = bot._subscriptions_main_screen(False, False, [], [], 1)
-    assert "Свои расписания" not in one
-    assert one.endswith("<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>")
+    for is_premium in (False, True):
+        empty, _ = bot._subscriptions_main_screen(False, False, [], [], 0, is_premium)
+        assert empty.endswith(
+            "<br>⏰ Свои рассылки — любой экран в нужное время. Просто напишите боту: "
+            f"«{example}». Одна такая рассылка бесплатно, с премиумом — сколько угодно: /premium</footer>"
+        )
+    free, _ = bot._subscriptions_main_screen(False, False, [], [], 1, False)
+    assert free.endswith(
+        "<br>⏰ Хотите больше своих рассылок? С /premium их можно завести сколько угодно — "
+        "просто напишите боту, что и когда присылать.</footer>"
+    )
+    paid, _ = bot._subscriptions_main_screen(False, False, [], [], 3, True)
+    assert paid.endswith(
+        "<br>⏰ Новую рассылку можно завести одной фразой — напишите боту, что и когда присылать.</footer>"
+    )
 
 
 # ---------------------------------------------------------------------------
