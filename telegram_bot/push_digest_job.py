@@ -144,13 +144,14 @@ _HTML_TAG = re.compile(r"<[^>]+>")
 # Канал (Задача 118): в итогах матчей ночи — блоки и альбом голов игроков этих стран.
 CHANNEL_COUNTRIES = ("RUS", "BLR")
 
-# Еженедельные посты канала (Задача 120): ISO-день недели → (вид отметки, текст поста) — то же,
-# что команды `/standings` и `/RUS`. Уходят с ``CHANNEL_WEEKLY_AT_MSK`` — это дневной слот sync
-# 15:00 UTC, — а сорвавшийся слот догоняет следующий прогон того же дня.
+# Еженедельные посты канала (Задача 120): ISO-день недели → (вид отметки, текст поста по строке
+# подвала) — то же, что команды `/standings` и `/RUS`, но в подвале вместо команд бота ссылка на
+# него. Уходят с ``CHANNEL_WEEKLY_AT_MSK`` — это дневной слот sync 15:00 UTC, — а сорвавшийся
+# слот догоняет следующий прогон того же дня.
 CHANNEL_WEEKLY_AT_MSK = time(18, 0)
-_CHANNEL_WEEKLY: Dict[int, Tuple[str, Callable[[], str]]] = {
-    6: ("standings", team_table),
-    7: ("country", lambda: country_profile("RUS")),
+_CHANNEL_WEEKLY: Dict[int, Tuple[str, Callable[[str], str]]] = {
+    6: ("standings", lambda footer: team_table(channel_footer=footer)),
+    7: ("country", lambda footer: country_profile("RUS", channel_footer=footer)),
 }
 
 # Telegram публикует в один канал ~20 сообщений в минуту: плотная ночь идёт с паузой.
@@ -484,7 +485,7 @@ async def run_game_broadcast(
             except TelegramAPIError as exc:
                 logger.warning("game send failed chat_id=%s game_id=%s: %s", chat_id, game_id, exc)
             finally:
-                # И при сбое не из Telegram (БД, ffmpeg): матч не повторится каждые полчаса
+                # И при сбое не из Telegram (БД, ffmpeg): матч не повторится каждым прогоном
                 # и не попадёт ещё и в дайджест; сама ошибка всплывает.
                 mark_chat_games_sent(chat_id, [game_id])
 
@@ -516,8 +517,8 @@ def upcoming_games(now: datetime) -> List[Tuple[int, datetime, str, str]]:
 async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
-    Зачем: бот на виду у подписчика весь день — с 15:30 МСК на каждом прогоне (раз в
-    30 минут) каждому приходит одно превью из ``/tonight`` (сравнение команд, премиум-чату —
+    Зачем: бот на виду у подписчика весь день — с 15:30 МСК раз в 30 минут (ночные слоты
+    sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight`` (сравнение команд, премиум-чату —
     и строка оценки модели, если прогноз опубликован, Задача 96): ближайший по началу ещё не
     начавшийся матч дня, которого он не получал (решение человека 2026-10-25). Превью
     собирается раз на матч, а не на подписчика, и без прогноза — его строка добавляется при
@@ -675,8 +676,8 @@ async def run_channel_weekly(bot: Bot, now: datetime) -> None:
     России (``_CHANNEL_WEEKLY``) — с ``CHANNEL_WEEKLY_AT_MSK``, один раз за день.
 
     Зачем: канал (Задача 118) — витрина бота, и раз в неделю в нём сводка лиги и сборной, а
-    не только матчи (Задача 120). Текст — тот же, что у команды в боте, под ним ссылка на
-    бота. Отметка ``bot_channel_weekly_posts`` — после удачной отправки: отказ Telegram
+    не только матчи (Задача 120). Текст — тот же, что у команды в боте, но в подвале вместо
+    команд бота (в канале они не работают) — ссылка на него. Отметка ``bot_channel_weekly_posts`` — после удачной отправки: отказ Telegram
     пробрасывается, и пост повторит следующий прогон того же дня. Без ``CHANNEL_ID`` — ничего.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
@@ -691,7 +692,7 @@ async def run_channel_weekly(bot: Bot, now: datetime) -> None:
     kind, build = post
     if channel_weekly_posted(local.date(), kind):
         return
-    text = build() + "\n" + rich_footer(await _channel_footer(bot))
+    text = build(await _channel_footer(bot))
     await throttled(partial(bot.send_rich_message, chat_id=channel, rich_message=rich_message(text)), channel)
     mark_channel_weekly_posted(local.date(), kind)
 
@@ -716,7 +717,7 @@ async def _run_independently(steps: List[Tuple[str, Callable[[], Awaitable[None]
         raise errors[0]
 
 
-async def broadcast_if_due(bot: Bot, now: datetime) -> None:
+async def broadcast_if_due(bot: Bot, now: datetime, previews: bool = True) -> None:
     """Прогоняет рассылки за ночь момента *now*.
 
     Сначала итоги по матчам подписок (``run_game_broadcast``) — на каждом прогоне, по
@@ -729,7 +730,9 @@ async def broadcast_if_due(bot: Bot, now: datetime) -> None:
     следующие — дайджест на крайнем сроке, у которого следующей попытки нет, уйдёт и после
     сбоя матчей, — а прогон всё равно красный в статусе sync.
 
-    Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
+    Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware); ``previews`` — слать
+    ли превью подписчикам: ночные слоты sync вне сетки получаса их пропускают (``--no-upcoming``,
+    Задача 120) — подписчик получает не больше одного превью в полчаса.
     """
     night = night_of(now)
     final = now >= _msk_moment(night, NIGHT_DEADLINE_MSK)
@@ -741,19 +744,24 @@ async def broadcast_if_due(bot: Bot, now: datetime) -> None:
         else:
             logger.info("Ночь %s загружена не целиком: дайджест отложен.", night)
 
+    async def upcoming() -> None:
+        if previews:
+            await run_upcoming_broadcast(bot, datetime.now(timezone.utc))
+
     await _run_independently([
         ("games", lambda: run_game_broadcast(bot, night, final, subscribed)),
         ("digest", digest),
-        ("upcoming", lambda: run_upcoming_broadcast(bot, datetime.now(timezone.utc))),
+        ("upcoming", upcoming),
         ("channel results", lambda: run_channel_results(bot, night, final)),
         ("channel previews", lambda: run_channel_previews(bot, datetime.now(timezone.utc))),
         ("channel weekly", lambda: run_channel_weekly(bot, datetime.now(timezone.utc))),
     ])
 
 
-async def main(upcoming_only: bool) -> None:
+async def main(upcoming_only: bool, previews: bool = True) -> None:
     """Точка входа скрипта (запускается сервисом `sync`): проверяет флаги и вызывает
-    ``broadcast_if_due`` или, в дневном слоте (``upcoming_only``, флаг ``--upcoming-only``),
+    ``broadcast_if_due`` (без превью подписчикам при ``--no-upcoming``, ``previews``) или, в
+    дневном слоте (``upcoming_only``, флаг ``--upcoming-only``),
     только превью — подписчикам и в канал — и еженедельный пост канала: днём ночи нет, и NHL
     API о ней не спрашивается.
 
@@ -772,10 +780,10 @@ async def main(upcoming_only: bool) -> None:
                 ("channel weekly", lambda: run_channel_weekly(bot, datetime.now(timezone.utc))),
             ])
         else:
-            await broadcast_if_due(bot, datetime.now(timezone.utc))
+            await broadcast_if_due(bot, datetime.now(timezone.utc), previews)
     logger.info("Рассылка завершена.")
 
 
 if __name__ == "__main__":
-    assert sys.argv[1:] in ([], ["--upcoming-only"]), f"неизвестные аргументы: {sys.argv[1:]}"
-    asyncio.run(main(sys.argv[1:] == ["--upcoming-only"]))
+    assert sys.argv[1:] in ([], ["--upcoming-only"], ["--no-upcoming"]), f"неизвестные аргументы: {sys.argv[1:]}"
+    asyncio.run(main(sys.argv[1:] == ["--upcoming-only"], sys.argv[1:] != ["--no-upcoming"]))

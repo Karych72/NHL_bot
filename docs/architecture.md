@@ -85,7 +85,11 @@ NHL_bot/
 │       ├── 0022_aggregates_game_type.up.sql  # game_type в PK пяти сезонных агрегатов, бэкфилл 2 (Задача 103)
 │       ├── 0022_aggregates_game_type.down.sql
 │       ├── 0023_playoff_series.up.sql        # Представление playoff_series и его GRANT роли nhl_ai_reader (Задача 105)
-│       └── 0023_playoff_series.down.sql
+│       ├── 0023_playoff_series.down.sql
+│       ├── 0024_channel_posts.up.sql         # Отметки постов о матчах в канал bot_channel_posts (Задача 118)
+│       ├── 0024_channel_posts.down.sql
+│       ├── 0025_channel_weekly_posts.up.sql  # Отметки еженедельных постов канала bot_channel_weekly_posts (Задача 120)
+│       └── 0025_channel_weekly_posts.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -359,7 +363,8 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 
 Планировщик, который вызывает `load_season_modern.py` без участия человека — сервис `sync`
 в `docker-compose.yml`, тот же образ, что у бота. Только stdlib, новых зависимостей нет.
-Прогоны — ночью каждые 10 минут, 18:00–08:00 UTC (21:00–11:00 МСК, Задачи 56, 120): завершённые
+Прогоны — ночью каждые 10 минут, 18:00–08:00 UTC (21:00–11:00 МСК, Задачи 56, 120; превью
+подписчикам — только в слотах :00/:30, пропущенный долгим прогоном слот 08:00 запускается сразу): завершённые
 матчи попадают в БД по ходу ночи; `push_digest_job.py` идёт после каждого прогона и сам
 решает, пора ли (Задачи 60, 63, 85; за чатами — отдельным шагом канал `CHANNEL_ID`, Задачи 118, 120,
 отметки `bot_channel_posts` и `bot_channel_weekly_posts`): итог матча подписок чата — одним сообщением после конца

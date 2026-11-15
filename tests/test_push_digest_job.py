@@ -1061,7 +1061,7 @@ def test_upcoming_games_wait_for_preview_start_of_the_league_day(push_job, upcom
 
 @pytest.mark.asyncio
 async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_env, fake_bot, api):
-    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне (раз в полчаса)
+    """Решение человека (2026-10-25): с 15:30 МСК на каждом прогоне с превью (раз в полчаса)
     подписчику одно превью — следующий по началу матч дня, каждый матч один раз; когда
     матчи кончились, прогон ничего не шлёт. Первая строка — время начала по МСК; превью
     собирается раз на матч, а не на подписчика."""
@@ -1213,6 +1213,31 @@ async def test_game_failure_does_not_stop_digest_and_upcoming_and_still_fails_th
     assert calls[3] == ("channel results", NIGHT, True)
     assert calls[4][0] == "channel previews" and calls[4][1] > started
     assert calls[5][0] == "channel weekly" and calls[5][1] > started
+
+
+@pytest.mark.asyncio
+async def test_night_run_without_previews_skips_only_subscriber_previews(push_job, fake_bot):
+    """Ночной слот вне сетки получаса (``--no-upcoming``, Задача 120): итоги, дайджест и канал
+    идут, превью подписчикам — нет: не чаще одного в полчаса."""
+    calls = []
+
+    def step(name):
+        async def run(*args):
+            calls.append(name)
+        return run
+
+    with patch.object(push_job, "subscribed_games", return_value={}), patch.object(
+        push_job, "night_is_loaded", return_value=True
+    ), patch.object(push_job, "run_game_broadcast", step("games")), patch.object(
+        push_job, "run_morning_digest_broadcast", step("digest")
+    ), patch.object(push_job, "run_upcoming_broadcast", step("upcoming")), patch.object(
+        push_job, "run_channel_results", step("channel results")
+    ), patch.object(push_job, "run_channel_previews", step("channel previews")), patch.object(
+        push_job, "run_channel_weekly", step("channel weekly")
+    ):
+        await push_job.broadcast_if_due(fake_bot, _msk(2, 10), previews=False)
+
+    assert calls == ["games", "digest", "channel results", "channel previews", "channel weekly"]
 
 
 @pytest.mark.asyncio
@@ -1457,8 +1482,14 @@ async def test_channel_weekly_standings_on_saturday_and_russia_on_sunday_once(pu
     assert standings.rich_message.html.startswith("<p><b>Турнирная таблица NHL</b></p>")
     assert "Washington Capitals" in standings.rich_message.html
     assert "РОССИЯ В NHL" in russia.rich_message.html and "Ovechkin" in russia.rich_message.html
+    # Подвал один: сезон и ссылка на бота, без команд бота — в канале они не работают.
+    season = push_job.config.CURRENT_SEASON
+    assert standings.rich_message.html.endswith(
+        f"<footer>Сезон {season} · данные на 2026-11-20<br>{CHANNEL_FOOTER_LINE}</footer>"
+    )
+    assert russia.rich_message.html.endswith(f"<footer>Сезон {season}<br>{CHANNEL_FOOTER_LINE}</footer>")
     for post in (standings, russia):
-        assert post.rich_message.html.endswith(f"<footer>{CHANNEL_FOOTER_LINE}</footer>")
+        assert post.rich_message.html.count("<footer>") == 1 and "/countries" not in post.rich_message.html
     assert weekly_env.posted == {(SATURDAY, "standings"), (SUNDAY, "country")}
 
 

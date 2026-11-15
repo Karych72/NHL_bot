@@ -29,6 +29,7 @@ from scheduled_sync import (  # noqa: E402
     build_commands,
     check,
     loads_data,
+    missed_deadline,
     run_once,
     seconds_until_next_run,
     sync_window,
@@ -233,6 +234,12 @@ class BuildCommandsTest(unittest.TestCase):
         self.assertEqual(digest_cmd.argv, [sys.executable, "-u", "push_digest_job.py"])
         self.assertEqual(digest_cmd.cwd.name, "telegram_bot")
 
+    def test_night_slot_off_preview_grid_skips_previews(self) -> None:
+        """Задача 120: ночной слот вне сетки получаса — рассылка без превью подписчикам."""
+        _loader_cmd, digest_cmd = build_commands(self.window, previews=False)
+
+        self.assertEqual(digest_cmd.argv, [sys.executable, "-u", "push_digest_job.py", "--no-upcoming"])
+
     def test_daytime_slot_is_digest_job_only(self) -> None:
         """Дневной слот (Задача 78): без загрузчика, только рассылка превью."""
         (digest_cmd,) = build_commands(None)
@@ -282,3 +289,17 @@ class CheckTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MissedDeadlineTest(unittest.TestCase):
+    """Задача 120: крайний срок 08:00 UTC, перешагнутый долгим прогоном, запускается сразу."""
+
+    def test_run_from_0750_ending_after_0800_returns_the_deadline(self) -> None:
+        self.assertEqual(missed_deadline(_utc(7, 50), _utc(8, 2)), _utc(8, 0))
+
+    def test_run_ending_before_deadline_misses_nothing(self) -> None:
+        self.assertIsNone(missed_deadline(_utc(7, 50), _utc(7, 58)))
+
+    def test_deadline_slot_itself_is_not_repeated(self) -> None:
+        self.assertIsNone(missed_deadline(_utc(8, 0), _utc(8, 5)))
+        self.assertIsNone(missed_deadline(_utc(8, 0), _utc(12, 30)))
