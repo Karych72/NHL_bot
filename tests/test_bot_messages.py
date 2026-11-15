@@ -2018,7 +2018,7 @@ def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db
 
 def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fake_db_router):
     """`/CAN`: топ-10 нападающих, топ-8 защитников, топ-5 вратарей — лимит уходит в SQL;
-    группа без игроков пропускается вместе с её строкой обозначений."""
+    группа без игроков пропускается в перечне, таблицах и обозначениях."""
     bot_messages = bot_module("bot_messages")
     cursor = fake_db_router([
         _COUNTRY_RANKING,
@@ -2033,8 +2033,15 @@ def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fak
     assert [params for _q, params in cursor.executed[1:]] == [
         (season, "CAN", 10, 0), (season, "CAN", 8, 0), (season, "CAN", 5, 0),
     ]
-    assert text.startswith("<b>🇨🇦 Канада</b>\n<b>Нападающие</b>\n<table")
-    assert "<b>Защитники</b>" in text and "<b>Вратари</b>" not in text
+    # Шапка: место в рейтинге стран, полевые и очки страны; перечень — размер и лидер групп.
+    assert text.startswith(
+        "<b>🇨🇦 КАНАДА В NHL</b>\n\n"
+        "1-е место из 2 в рейтинге стран · 4 полевых · 100 очков\n"
+        "<ul><li>Нападающие: 25, лучший — <b>McDavid</b> (EDM), 8 очков</li>"
+        "<li>Защитники: 25, лучший — <b>Makar</b> (EDM), 20 очков</li></ul>\n\n"
+        "<b>Нападающие</b> · топ-1 из 25\n<table"
+    )
+    assert "<b>Защитники</b> · топ-1 из 25" in text and "Вратари" not in text.split("<details>")[0]
     assert _tables(text) == [
         [["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
          ["1.", "McDavid", "EDM", "4", "8", "7", "21:30", "5", "20"]],

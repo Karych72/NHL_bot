@@ -1268,7 +1268,14 @@ async def test_country_command_shows_top_players_and_full_opens_country_screen(
 
     short, full = api.sent_rich
     text = body(short)
-    assert text.startswith("<p><b>🇨🇦 Канада</b><br><b>Нападающие</b></p><table")
+    assert text.startswith(
+        "<p><b>🇨🇦 КАНАДА В NHL</b></p><p>&nbsp;</p><p>1-е место из 2 в рейтинге стран · 5 полевых · 100 очков</p>"
+        "<ul><li>Нападающие: 25, лучший — <b>McDavid</b> (EDM), 90 очков</li>"
+        "<li>Защитники: 25, лучший — <b>McDavid</b> (EDM), 90 очков</li>"
+        "<li>Вратари: 1, лучший — <b>Hellebuyck</b> (WPG), 35 побед</li></ul>"
+        "<p><b>Нападающие</b> · топ-1 из 25</p><table"
+    )
+    assert "<p><b>Вратари</b></p><table" in text
     assert _tr("rllrrrrrr", "1.", "McDavid", "EDM", "30", "90", "70", "21:30", "40", "200") in text
     assert _tr("rllrrrrr", "1.", "Hellebuyck", "WPG", "35", "92.1%", "2.4", "60", "5") in text
     assert "все игроки: /CAN_FULL" in text
