@@ -567,6 +567,57 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         mark_game_sent(subscription_id, game_id)
 
 
+# Вступления поста превью в канал (решение человека 2026-11-15): вариант выбирается по дню
+# лиги — по кругу, без повтора два дня подряд, а повторный пост того же дня берёт тот же.
+# Подстановки: {night} — «с 15 на 16 ноября», {games} — «5 матчей», {window} — «с 03:30
+# до 05:00 МСК» или «в 03:30 МСК».
+_CHANNEL_PREVIEW_INTROS = (
+    "🌙 Ночь {night} — {games} NHL\n\nНачало матчей {window}.\n"
+    "К каждой игре — статистика команд в этом сезоне.",
+    "🏒 NHL в ночь {night}: {games}\n\nШайбу вбросят {window}.\n"
+    "Ниже — как соперники проводят сезон: очки, голы, большинство и меньшинство.",
+    "🌃 Что посмотреть ночью {night}\n\n{games} NHL, начало {window}.\n"
+    "Перед каждой игрой — сравнение команд по цифрам сезона.",
+    "⏰ Ночь {night}: {games} NHL\n\nИгры начнутся {window}.\n"
+    "Сравниваем соперников по статистике сезона — кто подходит к матчу сильнее.",
+    "🥅 Хоккейная ночь {night}\n\nВ программе {games} NHL, начало {window}.\n"
+    "К каждому — статистика команд в текущем сезоне.",
+)
+_MONTHS_GENITIVE = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _games_word(count: int) -> str:
+    """«1 матч», «3 матча», «5 матчей» — число матчей с согласованным словом."""
+    if count % 10 == 1 and count % 100 != 11:
+        return f"{count} матч"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return f"{count} матча"
+    return f"{count} матчей"
+
+
+def channel_preview_intro(day: date, starts: List[datetime]) -> str:
+    """Вступление поста превью в канал: какая ночь, сколько матчей и когда начало.
+
+    Зачем: пост из одних превью начинается с первого матча без объяснения, что это за
+    подборка. Ночь матчей дня лиги *day* по Москве — с *day* на следующий день. Вариант
+    текста — ``_CHANNEL_PREVIEW_INTROS`` по дню: лента канала не повторяет одну фразу.
+
+    Аргументы:
+        day: день лиги матчей поста.
+        starts: времена начала матчей поста (aware), по возрастанию.
+    """
+    nxt = day + timedelta(days=1)
+    first_day = f"{day.day}" if day.month == nxt.month else f"{day.day} {_MONTHS_GENITIVE[day.month - 1]}"
+    night = f"с {first_day} на {nxt.day} {_MONTHS_GENITIVE[nxt.month - 1]}"
+    first, last = (f"{start.astimezone(MSK):%H:%M}" for start in (starts[0], starts[-1]))
+    window = f"в {first} МСК" if first == last else f"с {first} до {last} МСК"
+    template = _CHANNEL_PREVIEW_INTROS[day.toordinal() % len(_CHANNEL_PREVIEW_INTROS)]
+    return template.format(night=night, games=_games_word(len(starts)), window=window)
+
+
 async def _channel_footer(bot: Bot) -> str:
     """Строка подвала поста в канал — ссылка на бота: канал — витрина, статистика — в боте."""
     return f"Вся статистика NHL — в боте @{(await bot.me()).username}"
@@ -577,8 +628,8 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
 
     Зачем: канал (Задача 118) — витрина бота для всех читателей. С 15:30 МСК
     (``upcoming_games``) все неопубликованные превью уходят одним сообщением, по времени
-    начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Превью матча —
-    то же, что у подписки (сравнение команд свёрнуто), но без прогноза модели (премиум,
+    начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Пост открывает
+    вступление ``channel_preview_intro``. Превью матча — то же, что у подписки (сравнение команд свёрнуто), но без прогноза модели (премиум,
     Задача 96) и без ссылки на подписки; подвал один на пост — сезон и ссылка на бота.
     Отметка ``bot_channel_posts`` — после удачной отправки: отказ Telegram (бот не админ
     канала) пробрасывается, матчи не отмечаются и повторятся следующим прогоном.
@@ -596,7 +647,7 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
     fresh = [game for game in games if game[0] not in posted]
     if not fresh:
         return
-    sections: List[str] = []
+    sections = [channel_preview_intro(league_today(now), [start for _, start, _, _ in fresh])]
     footer = ""
     for game_id, start, away, home in fresh:
         body, game_footer = matchup_season_preview(game_id, away, home, collapsed=True)

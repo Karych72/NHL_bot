@@ -1334,6 +1334,9 @@ async def test_channel_previews_every_upcoming_game_once_without_prediction(push
     [post] = api.sent_rich
     assert post.chat_id == CHANNEL and post.reply_markup is None
     html_ = post.rich_message.html
+    assert html_.startswith(
+        "<p>⏰ Ночь с 24 на 25 октября: 3 матча NHL</p><p>&nbsp;</p><p>Игры начнутся с 02:00 до 05:00 МСК.<br>"
+    )
     assert re.findall(r"⏰ Начало в (\d\d:\d\d) МСК<br><b>(\w+) Club @ (\w+) Club", html_) == [
         ("02:00", "BOS", "TOR"), ("02:30", "NYR", "MTL"), ("05:00", "VAN", "SEA"),
     ]
@@ -1342,6 +1345,25 @@ async def test_channel_previews_every_upcoming_game_once_without_prediction(push
     assert "<footer>Сезон " in html_ and html_.endswith(f"<br>{CHANNEL_FOOTER_LINE}</footer>")
     assert not re.search("модел|премиум|🔒|/subscriptions", html_)
     assert channel_env.posted == {(GAME_A, "preview"), (GAME_B, "preview"), (2026020004, "preview")}
+
+
+def test_channel_preview_intro_night_window_and_daily_variant(push_job):
+    """Вступление: ночь через границу месяца, один слот начала — «в», склонение числа
+    матчей; вариант меняется день ото дня и повторяется через полный круг."""
+    def at(hour: int, minute: int) -> datetime:
+        return datetime(2026, 11, 1, hour, minute, tzinfo=push_job.MSK)
+
+    intro = push_job.channel_preview_intro
+    assert intro(date(2026, 10, 31), [at(3, 30)]) == (
+        "🌙 Ночь с 31 октября на 1 ноября — 1 матч NHL\n\nНачало матчей в 03:30 МСК.\n"
+        "К каждой игре — статистика команд в этом сезоне."
+    )
+    assert intro(date(2026, 11, 1), [at(3, 0)] * 2 + [at(5, 0)] * 9).startswith(
+        "🏒 NHL в ночь с 1 на 2 ноября: 11 матчей\n\nШайбу вбросят с 03:00 до 05:00 МСК."
+    )
+    assert "22 матча" in intro(date(2026, 11, 2), [at(3, 0)] * 22)
+    heads = [intro(date(2026, 11, 1) + timedelta(days=i), [at(3, 0)]).split("\n")[0] for i in range(6)]
+    assert len({head[:2] for head in heads[:5]}) == 5 and heads[5][:2] == heads[0][:2]
 
 
 @pytest.mark.asyncio
