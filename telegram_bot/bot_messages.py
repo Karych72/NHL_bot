@@ -972,7 +972,7 @@ def _h2h_season_wins(tid_a: int, tid_b: int) -> Optional[Tuple[int, int]]:
     return winners.count(tid_a), winners.count(tid_b)
 
 
-def _plural_word(value: Union[int, float, Decimal, None], forms: Tuple[str, str, str]) -> str:
+def plural_word(value: Union[int, float, Decimal, None], forms: Tuple[str, str, str]) -> str:
     """Слово, согласованное с числом (1 очко, 2 очка, 5 очков): `forms` — формы
     для 1, 2 и 5; `None` считается нулём."""
     n = int(value or 0)
@@ -998,7 +998,7 @@ def _team_record_line(
     """
     rec = _record_str(wins, losses, ot)
     ppct = _fmt_pct_points(procent_points)
-    word = _plural_word(points, ("очко", "очка", "очков"))
+    word = plural_word(points, ("очко", "очка", "очков"))
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
 
 
@@ -2325,7 +2325,7 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
 
 # Сколько лучших игроков каждой группы показывает `/RUS`: нападающих, защитников, вратарей.
 _COUNTRY_PROFILE_TOP = {"F": 10, "D": 8, "G": 5}
-# Чем меряется лидер группы в сводке `/RUS` — формы слова для `_plural_word`.
+# Чем меряется лидер группы в сводке `/RUS` — формы слова для `plural_word`.
 _COUNTRY_LEADER_UNIT = {
     "F": ("очко", "очка", "очков"), "D": ("очко", "очка", "очков"),
     "G": ("победа", "победы", "побед"),
@@ -2365,7 +2365,7 @@ def country_profile(code: str, channel_footer: Optional[str] = None) -> str:
         name, team, value = first
         summary.append(
             f"{label}: {total}, лучший — <b>{html.escape(name)}</b> ({html.escape(team)}), "
-            f"{value} {_plural_word(value, _COUNTRY_LEADER_UNIT[group])}"
+            f"{value} {plural_word(value, _COUNTRY_LEADER_UNIT[group])}"
         )
         shown = f" · топ-{n} из {total}" if n < total else ""
         tables.append(f"<b>{label}</b>{shown}\n{table}")
@@ -2383,7 +2383,7 @@ def country_profile(code: str, channel_footer: Optional[str] = None) -> str:
         f"<b>{country_label(code).upper()} В NHL</b>",
         "",
         f"{place}-е место из {len(ranking)} в рейтинге стран · {players} полевых · "
-        f"{points} {_plural_word(points, _COUNTRY_LEADER_UNIT['F'])}",
+        f"{points} {plural_word(points, _COUNTRY_LEADER_UNIT['F'])}",
         rich_list(summary),
         "",
         *tables,
@@ -2418,10 +2418,10 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
     ]
     if position == "D":
         blocked = s["blocked"][i] or 0
-        parts.append(f"{blocked} {_plural_word(blocked, ('блок', 'блока', 'блоков'))}")
+        parts.append(f"{blocked} {plural_word(blocked, ('блок', 'блока', 'блоков'))}")
     else:
         hits = s["hits"][i] or 0
-        parts.append(f"{hits} {_plural_word(hits, ('хит', 'хита', 'хитов'))}")
+        parts.append(f"{hits} {plural_word(hits, ('хит', 'хита', 'хитов'))}")
     if position == "C":
         parts.append(f"вбр. {s['fo_wins'][i] or 0}/{s['fo_taken'][i] or 0}")
     parts.append(s["toi"][i])

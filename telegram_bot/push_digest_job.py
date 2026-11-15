@@ -65,13 +65,13 @@ import config  # noqa: E402
 from bot_messages import (  # noqa: E402
     MODEL_PREDICTION_TEASER,
     MSK,
-    _plural_word,
     country_name,
     country_night_blocks,
     country_profile,
     day_digest,
     matchup_season_preview,
     night_goals,
+    plural_word,
     rich_footer,
     rich_message,
     team_table,
@@ -607,7 +607,8 @@ def channel_preview_intro(day: date, starts: List[datetime]) -> str:
     first, last = (f"{start.astimezone(MSK):%H:%M}" for start in (starts[0], starts[-1]))
     window = f"в {first} МСК" if first == last else f"с {first} до {last} МСК"
     template = _CHANNEL_PREVIEW_INTROS[day.toordinal() % len(_CHANNEL_PREVIEW_INTROS)]
-    return template.format(night=night, games=f"{len(starts)} {_plural_word(len(starts), ('матч', 'матча', 'матчей'))}", window=window)
+    games = f"{len(starts)} {plural_word(len(starts), ('матч', 'матча', 'матчей'))}"
+    return template.format(night=night, games=games, window=window)
 
 
 async def _channel_footer(bot: Bot) -> str:
