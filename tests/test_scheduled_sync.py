@@ -57,15 +57,16 @@ def _utc(hour: int, minute: int = 0, day: int = 15) -> datetime:
 
 
 class SecondsUntilNextRunTest(unittest.TestCase):
-    def test_night_steps_every_half_hour(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(2, 10)), 20 * 60.0)
-        self.assertEqual(seconds_until_next_run(_utc(2, 30)), 30 * 60.0)
+    def test_night_steps_every_ten_minutes(self) -> None:
+        """Задача 120: ночью итог матча уходит в пределах 10 минут после клипов."""
+        self.assertEqual(seconds_until_next_run(_utc(2, 5)), 5 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(2, 30)), 10 * 60.0)
 
     def test_evening_slot_before_midnight_steps_into_next_day(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(23, 45)), 15 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(23, 55)), 5 * 60.0)
 
     def test_last_night_slot_is_night_end_hour(self) -> None:
-        self.assertEqual(seconds_until_next_run(_utc(7, 30)), 30 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(7, 50)), 10 * 60.0)
 
     def test_exactly_at_last_slot_skips_the_morning_to_preview_start(self) -> None:
         self.assertEqual(seconds_until_next_run(_utc(8, 0)), 4.5 * 3600.0)
@@ -76,21 +77,24 @@ class SecondsUntilNextRunTest(unittest.TestCase):
         self.assertEqual(seconds_until_next_run(_utc(12, 0)), 30 * 60.0)
 
     def test_afternoon_steps_every_half_hour(self) -> None:
-        """Задача 78: превью дневных матчей выходных (с 16:00 UTC) — слоты и днём."""
+        """Задача 78: превью дневных матчей выходных (с 16:00 UTC) — слоты и днём; шаг
+        дневных слотов остаётся 30 минут и при ночном 10-минутном (Задача 120)."""
         self.assertEqual(seconds_until_next_run(_utc(15, 10)), 20 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(17, 30)), 30 * 60.0)
+        self.assertEqual(seconds_until_next_run(_utc(18, 0)), 10 * 60.0)
 
-    def test_day_has_40_slots_and_29_of_them_load_data(self) -> None:
-        """Сутки по сетке: 12:30…23:30 (23) + 00:00…08:00 (17) = 40 слотов; загрузчик —
-        в ночных 18:00…08:00 (12 + 17 = 29), как до Задачи 78."""
+    def test_day_has_96_slots_and_85_of_them_load_data(self) -> None:
+        """Сутки по сетке: дневные 12:30…17:30 раз в полчаса (11) + ночные 18:00…08:00 раз
+        в 10 минут (14 × 6 + 1 = 85) = 96 слотов; загрузчик — во всех ночных (Задача 120)."""
         moment, slots = _utc(8, 0), []
         while moment < _utc(8, 0, day=16):
             moment += timedelta(seconds=seconds_until_next_run(moment))
             slots.append(moment)
-        self.assertEqual(len(slots), 40)
+        self.assertEqual(len(slots), 96)
         self.assertEqual(slots[0], _utc(12, 30))
         self.assertEqual(slots[-1], _utc(8, 0, day=16))
         loading = [slot for slot in slots if loads_data(slot)]
-        self.assertEqual(len(loading), 29)
+        self.assertEqual(len(loading), 85)
         self.assertEqual(loading[0], _utc(18, 0))
 
 
@@ -109,8 +113,8 @@ class NextTargetTest(unittest.TestCase):
         now = _utc(7, 0)
         next_target, sleep_seconds = _next_target(now, target=now)
 
-        self.assertEqual(sleep_seconds, 30 * 60.0)
-        self.assertEqual(next_target, _utc(7, 30))
+        self.assertEqual(sleep_seconds, 10 * 60.0)
+        self.assertEqual(next_target, _utc(7, 10))
 
     def test_early_wake_just_before_target_does_not_double_fire(self) -> None:
         """``now`` reads a hair before ``target`` (the last slot that just ran) —
@@ -128,8 +132,8 @@ class NextTargetTest(unittest.TestCase):
 
         next_target, sleep_seconds = _next_target(now=target, target=target)
 
-        self.assertEqual(sleep_seconds, 30 * 60.0)
-        self.assertEqual(next_target, _utc(3, 0))
+        self.assertEqual(sleep_seconds, 10 * 60.0)
+        self.assertEqual(next_target, _utc(2, 40))
 
     def test_long_pause_catches_up_from_now_not_stale_target(self) -> None:
         """Container paused for days: ``now`` is far past ``target`` — the next
