@@ -226,7 +226,7 @@ GAME_TWO = 2026020002
 # get_goals_game: scorer, scorer_position, scorer_nationality, assist_1,
 # assist_1_nationality, assist_2, assist_2_nationality, period, goal_time,
 # home_score, away_score, is_ppg, is_shg, empty_net, winner_goal, game_id, event_id.
-# get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home.
+# get_goalies_game: shots, saves, timeonice, lastname, save_percentage, is_home, nationality.
 # get_three_stars_game: star, lastname, player_position, abbreviation, goals,
 # assists, saves, shots, save_percentage.
 _GAMES = {
@@ -243,8 +243,8 @@ _GAMES = {
             ("Panarin", "LW", "RUS", None, None, None, None, 3, "18:03", 3, 2, False, False, False, True, GAME_ONE, 105),
         ],
         "goalies": [
-            (27, 25, "60:00", "Shesterkin", 92.59, True),
-            (31, 28, "60:00", "Swayman", 90.32, False),
+            (27, 25, "60:00", "Shesterkin", 92.59, True, "RUS"),
+            (31, 28, "60:00", "Swayman", 90.32, False, "USA"),
         ],
         "three_stars": [
             (1, "Panarin", "LW", "NYR", 2, 1, None, None, None),
@@ -261,8 +261,8 @@ _GAMES = {
             ("Matthews", "C", None, "Nylander", None, None, None, 1, "12:00", 1, 0, False, False, False, True, GAME_TWO, 201),
         ],
         "goalies": [
-            (30, 30, "60:00", "Woll", 100.0, True),
-            (24, 23, "60:00", "Montembeault", 95.83, False),
+            (30, 30, "60:00", "Woll", 100.0, True, "CAN"),
+            (24, 23, "60:00", "Montembeault", 95.83, False, "CAN"),
         ],
         "three_stars": [
             (1, "Matthews", "C", "TOR", 1, 1, None, None, None),
@@ -364,31 +364,33 @@ async def test_game_card_renders_full_card(
     assert "<b>Хет-трик</b>: Panarin" not in text, "у Panarin два гола — хет-трика нет"
     # Голы — одним абзацем по периодам, без <pre>: время от начала матча, счёт после гола
     # «гости:хозяева», автор, ассистенты в скобках. Российский игрок (в том числе в
-    # передачах) капсом; победная шайба — «ПШ», а не «★». Клип из кэша — под голами в
+    # передачах) жирным капсом; победная шайба — «ПШ», а не «★». Клип из кэша — под голами в
     # свёрнутом блоке «Видео голов» — лентой без подписей.
     assert "<pre>" not in text
     assert (
-        "<p><b>1-й период</b><br>05:12 · 0:1 — PANARIN [LW] (ББ) (Fox)<br>&nbsp;<br>"
-        "<b>2-й период</b><br>31:40 · 1:1 — Marchand [LW]<br>35:20 · 1:2 — Zibanejad [C] (МБ) (PANARIN, Fox)<br>&nbsp;<br>"
-        "<b>3-й период</b><br>44:10 · 2:2 — Pastrnak [RW] (Marchand)<br>58:03 · 2:3 — PANARIN [LW] (ПШ)</p>"
+        "<p><b>1-й период</b><br>05:12 · 0:1 — <b>PANARIN</b> [LW] (ББ) (Fox)<br>&nbsp;<br>"
+        "<b>2-й период</b><br>31:40 · 1:1 — Marchand [LW]<br>"
+        "35:20 · 1:2 — Zibanejad [C] (МБ) (<b>PANARIN</b>, Fox)<br>&nbsp;<br>"
+        "<b>3-й период</b><br>44:10 · 2:2 — Pastrnak [RW] (Marchand)<br>58:03 · 2:3 — <b>PANARIN</b> [LW] (ПШ)</p>"
         "<details><summary>Видео голов</summary><tg-slideshow>"
         '<video src="tg://video?id=goal101"></video></tg-slideshow></details>'
     ) in text, "голы — плотный абзац, клипы — лентой в свёрнутом блоке"
     assert [(m.id, m.media.media) for m in sent.rich_message.media] == [("goal101", "fid-101")]
     assert sent.reply_markup is None, "видео голов — в карточке, не кнопками"
-    # Итоги матча — один абзац: броски и штрафное время одной строкой, затем вратари —
-    # гости первыми, как на табло.
+    # Итоги матча: броски и штрафное время одной строкой, вратари — своим абзацем, гости
+    # первыми, как на табло; российский вратарь — жирным капсом.
     assert rich_html(
         "Броски: 27 - 31 · штрафное время: 6 - 8\n"
+        "\n"
         "Вратари:\n"
         "Swayman — 28/31, 90.32%, 60:00\n"
-        "Shesterkin — 25/27, 92.59%, 60:00"
+        "<b>SHESTERKIN</b> — 25/27, 92.59%, 60:00"
     ) in text
     assert "<b>Броски" not in text and "<b>Штрафное" not in text and "<b>Вратари" not in text
     assert text.index("<b>3-й период</b>") < text.index("Броски:") < text.index("<b>Звёзды матча</b>")
     assert text.endswith(
-        "<p><b>Звёзды матча</b><br>1. Panarin (NYR) — 2+1<br>"
-        "2. Shesterkin (NYR) — 25/27, 92.59%<br>3. Marchand (BOS) — 1+0</p>"
+        "<p><b>Звёзды матча</b><br>⭐ Panarin (NYR) — 2+1<br>"
+        "⭐⭐ Shesterkin (NYR) — 25/27, 92.59%<br>⭐⭐⭐ Marchand (BOS) — 1+0</p>"
     ), "без подписки на страну блока страны нет"
 
 
@@ -413,12 +415,11 @@ async def test_game_card_of_country_subscriber_ends_with_country_block(
     (sent,) = api.sent_rich
     text = body(sent)
     assert text.endswith("<br>" + rich_html(
-        "3. Marchand (BOS) — 1+0\n\n"
-        "<b>Россия</b>\n\n"
+        "⭐⭐⭐ Marchand (BOS) — 1+0\n\n"
+        "<b>🇷🇺 Россия</b>\n\n"
         "Panarin (NYR)\n"
         "2+1 · +2 · 5 бр. · 0 хитов · 20:15"
     ).removeprefix("<p>")), "блок страны — после звёзд матча, отдельным разделом"
-    assert "🇷🇺" not in text, "заголовок страны без флага"
     block_queries = [p for q, p in cursor.executed if "r.nationality" in q]
     assert block_queries == [(GAME_ONE, "RUS")] * 2, "блок — по этому матчу и этой стране"
 
@@ -748,8 +749,8 @@ _PARTIAL_GAME_B_DATA = {
         ("Panarin", "LW", "RUS", None, None, None, None, 3, "18:00", 1, 3, False, False, False, False, PARTIAL_GAME_B, 304),
     ],
     "goalies": [
-        (22, 21, "60:00", "Woll", 95.45, True),
-        (15, 14, "60:00", "Shesterkin", 93.33, False),
+        (22, 21, "60:00", "Woll", 95.45, True, "CAN"),
+        (15, 14, "60:00", "Shesterkin", 93.33, False, "RUS"),
     ],
     "three_stars": [
         (1, "Panarin", "LW", "NYR", 2, 1, None, None, None),
