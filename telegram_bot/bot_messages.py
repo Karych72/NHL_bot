@@ -2311,6 +2311,40 @@ def country_page(code: str, group: str, offset: int) -> Tuple[str, bool, bool]:
     return _leaderboard_page_text(heading, body, n, total, offset)
 
 
+# Сколько лучших игроков каждой группы показывает `/RUS`: нападающих, защитников, вратарей.
+_COUNTRY_PROFILE_TOP = {"F": 10, "D": 8, "G": 5}
+
+
+def country_profile(code: str) -> str:
+    """Ответ `/RUS`, `/CAN`… — лучшие игроки страны сезона одним сообщением.
+
+    Зачем: быстрый взгляд на страну без листания `/countries`. Три таблицы с колонками
+    экрана страны (`_player_group_table`): топ-10 нападающих, топ-8 защитников, топ-5
+    вратарей (`_COUNTRY_PROFILE_TOP`); у страны игроков меньше — таблица короче, пустая
+    группа пропускается. В подвале — `/RUS_FULL`, экран страны из `/countries`.
+
+    Аргументы:
+        code: код страны из команды `/CODE` в верхнем регистре; вне рейтинга сезона
+            (`country_rankings()`) — текст «Страна не найдена…», в SQL он не попадает.
+    """
+    if code not in [row[0] for row in _country_ranking()]:
+        return COUNTRY_NOT_FOUND
+    blocks = [f"<b>{country_label(code)}</b>"]
+    legends = []
+    for group, (label, _cond) in PLAYER_GROUPS.items():
+        table, n, _total = _player_group_table(
+            _BY_COUNTRY, code, group, _COUNTRY_PROFILE_TOP[group], 0, ranked=True
+        )
+        if n:
+            blocks.append(f"<b>{label}</b>\n{table}")
+            legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
+    season_esc = html.escape(str(config.CURRENT_SEASON))
+    footer = f"Сезон {season_esc} · все игроки: /{code}_FULL · все страны: /countries"
+    return "\n".join(
+        [*blocks, rich_details("Обозначения", "\n".join(legends)), rich_footer(footer)]
+    )
+
+
 # Задачи 61, 76: игроки страны в матчах игрового дня (`g.day`) или в одном матче
 # (`g.game_id`); страна — `rosters.nationality`.
 _COUNTRY_PLAYERS_FROM = (

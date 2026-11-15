@@ -1254,6 +1254,32 @@ async def test_countries_command_reports_empty_season_without_buttons(
 
 
 @pytest.mark.asyncio
+async def test_country_command_shows_top_players_and_full_opens_country_screen(
+    bot_module, fake_db_router, make_message, api
+):
+    """`/can` — лучшие игроки страны одним сообщением со ссылкой на `/CAN_FULL`;
+    `/USA_FULL` — экран страны из `/countries` с листанием и группами."""
+    bot = bot_module("bot")
+    fake_db_router(_COUNTRY_ROUTES)
+
+    await bot.cmd_team_profile(make_message("/can"), re.match(bot.TEAM_COMMAND_PATTERN, "/can"))
+    full_match = re.match(bot.TEAM_COMMAND_PATTERN, "/USA_FULL")
+    await bot.cmd_team_profile(make_message("/USA_FULL"), full_match)
+
+    short, full = api.sent_rich
+    text = body(short)
+    assert text.startswith("<p><b>🇨🇦 Канада</b><br><b>Нападающие</b></p><table")
+    assert _tr("rllrrrrrr", "1.", "McDavid", "EDM", "30", "90", "70", "21:30", "40", "200") in text
+    assert _tr("rllrrrrr", "1.", "Hellebuyck", "WPG", "35", "92.1%", "2.4", "60", "5") in text
+    assert "все игроки: /CAN_FULL" in text
+    assert short.reply_markup is None
+    assert body(full).startswith("<p><b>🇺🇸 США: нападающие</b></p><table")
+    assert ("• Нападающие", "cn:USA:F:0") in [
+        (b.text, b.callback_data) for b in _flat_buttons(full.reply_markup)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_country_page_pages_and_switches_groups(
     bot_module, fake_db_router, make_callback, api
 ):

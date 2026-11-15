@@ -46,6 +46,7 @@ from throttle import enforce_callback_rate_limit
 from bot_messages import (
     COUNTRY_LABELS,
     MSK,
+    country_profile,
     country_rankings,
     day_digest,
     rich_footer,
@@ -101,8 +102,9 @@ _TELEGRAM_INLINE_BUTTON_CAP = 100
 # Как у кнопок матчей в /today.
 _TONIGHT_BUTTON_COLUMNS = 3
 
-# `/BOS`, `/WSH`… из списка `/team` и `/BOS_FULL` из конца профиля клуба: три
-# латинские буквы (+ `_FULL`) — ни одна служебная команда бота под этот шаблон
+# `/BOS`, `/WSH`… из списка `/team` и `/BOS_FULL` из конца профиля клуба, а также
+# страны `/RUS`, `/RUS_FULL` (код из `COUNTRY_LABELS`, с кодами клубов не пересекается):
+# три латинские буквы (+ `_FULL`) — ни одна служебная команда бота под этот шаблон
 # не попадает. Вариант `/BOS@bot` не принимается: regex не знает имени бота и
 # отвечал бы на команды, адресованные чужим ботам.
 TEAM_COMMAND_PATTERN = r"^/([A-Za-z]{3})(_[Ff][Uu][Ll][Ll])?$"
@@ -314,11 +316,18 @@ def team_profile_text(abbrev: str, full: bool) -> str:
 
 
 async def cmd_team_profile(message: Message, match: re.Match) -> None:
-    """`/BOS` и т.п.: профиль клуба, `/BOS_FULL` — все его игроки (`team_profile_text`);
-    `match` — совпадение `TEAM_COMMAND_PATTERN`."""
+    """`/BOS` и т.п.: профиль клуба, `/BOS_FULL` — все его игроки (`team_profile_text`).
+    Код страны (`/RUS`) — лучшие игроки страны (`country_profile`), `/RUS_FULL` — экран
+    страны из `/countries` с листанием. `match` — совпадение `TEAM_COMMAND_PATTERN`."""
     abbrev, full = match.group(1), match.group(2)
     assert message.bot is not None
-    await _send(message.bot, message.chat.id, team_profile_text(abbrev, bool(full)))
+    code = abbrev.upper()
+    if code not in COUNTRY_LABELS:
+        await _send(message.bot, message.chat.id, team_profile_text(abbrev, bool(full)))
+    elif full:
+        await _send(message.bot, message.chat.id, *country_page_reply(code, "F", 0))
+    else:
+        await _send(message.bot, message.chat.id, country_profile(code))
 
 
 async def show_stats(bot: Bot, chat_id: int) -> None:
