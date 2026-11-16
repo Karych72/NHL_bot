@@ -17,24 +17,16 @@ No database access.  No ``run_id`` generation — the CLI (stage 10) owns that.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Mapping
 
-import joblib
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
-from modeling.artifacts import _collect_library_versions, _get_git_commit
-
 logger = logging.getLogger(__name__)
 
-_MODEL_RAW_FILENAME = "model_raw.joblib"
-_CALIBRATOR_FILENAME = "calibrator.joblib"
-_METADATA_FILENAME = "metadata.json"
 
 _SUPPORTED_METHODS: frozenset[str] = frozenset({"isotonic", "platt"})
 
@@ -271,79 +263,12 @@ def apply_calibrator(calibrator_fit: CalibratorFit, raw_p: np.ndarray) -> np.nda
     )
 
 
-def save_calibration_artifact(
-    path_dir: Path | str,
-    *,
-    model_raw: Any,
-    calibrator_fit: CalibratorFit,
-    metadata: dict[str, Any],
-) -> None:
-    """Persist raw model, calibrator, and JSON sidecar into *path_dir*.
-
-    Writes ``model_raw.joblib``, ``calibrator.joblib``, and ``metadata.json``.
-    Does **not** validate *metadata* — the stage-10 CLI is responsible for
-    supplying a complete sidecar.  This function only augments missing audit
-    fields (``library_versions``, ``git_commit``) and merges calibration fields
-    from *calibrator_fit* when absent (``method``, ``calibration_skipped``,
-    ``n_calibration``, ``seed``).
-
-    **Caller must set** in *metadata* (UPDATE plan §12.4 / stage-9 §3.5):
-
-    - ``features_hash`` — SHA-256 from ``metadata_train.json`` (passed through
-      unchanged).
-    - ``train_days`` — ``{"min": "<ISO-date>", "max": "<ISO-date>"}`` for the
-      training block.
-    - ``calibration_days`` — same shape for the calibration block.
-    - ``n_rows_train`` — row count of ``train_k`` (or final train for production).
-    - ``n_rows_calibration`` — row count of ``calibration_k`` (should match
-      ``calibrator_fit.n_calibration``).
-    - ``seed`` — YAML ``random_seed`` used for this fold/run.
-
-    Optional but expected from stage-10 orchestration: ``task``, ``model_family``,
-    ``run_id``, ``feature_set_version``, inner-val slice fields when applicable.
-
-    **Filled automatically** when absent: ``library_versions`` (includes
-    scikit-learn), ``git_commit`` (``null`` outside a git repo).
-    """
-    out_dir = Path(path_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    model_path = out_dir / _MODEL_RAW_FILENAME
-    joblib.dump(model_raw, model_path)
-    logger.info("Saved raw model → %s", model_path)
-
-    cal_path = out_dir / _CALIBRATOR_FILENAME
-    joblib.dump(calibrator_fit.calibrator, cal_path)
-    logger.info("Saved calibrator → %s", cal_path)
-
-    full_metadata = dict(metadata)
-    fit_fields = calibrator_fit.to_dict()
-    for key, value in fit_fields.items():
-        full_metadata.setdefault(key, value)
-
-    if "library_versions" not in full_metadata:
-        full_metadata["library_versions"] = _collect_library_versions()
-    if "git_commit" not in full_metadata:
-        full_metadata["git_commit"] = _get_git_commit()
-
-    meta_path = out_dir / _METADATA_FILENAME
-    meta_path.write_text(
-        json.dumps(full_metadata, ensure_ascii=False, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
-    logger.info("Saved calibration metadata → %s", meta_path)
-
-
 def calibrator_fit_from_metadata(metadata: Mapping[str, Any], calibrator: Any) -> CalibratorFit:
     """Rebuild a :class:`CalibratorFit` from a saved ``metadata.json`` sidecar.
 
-    Shared by :func:`load_calibration_artifact` (the per-fold ``model_raw.joblib``
-    triple) and ``modeling.predict_runner`` (the flat ``final/`` bundle
-    ``train_runner.run_training`` writes — same metadata fields, different file
-    layout, so it cannot reuse ``load_calibration_artifact`` itself). Kept here
-    rather than duplicated so both call sites agree on exactly one thing: what
-    ``calibration_skipped`` means for the estimator that ends up in the returned
-    :class:`CalibratorFit`.
+    Used by ``modeling.predict_runner`` for the flat ``final/`` bundle that
+    ``train_runner.run_training`` writes. Defines what ``calibration_skipped``
+    means for the estimator that ends up in the returned :class:`CalibratorFit`.
 
     Args:
         metadata: Parsed ``metadata.json`` with at least ``method`` (must be one
@@ -384,38 +309,10 @@ def calibrator_fit_from_metadata(metadata: Mapping[str, Any], calibrator: Any) -
     )
 
 
-def load_calibration_artifact(
-    path_dir: Path | str,
-) -> tuple[Any, CalibratorFit, dict[str, Any]]:
-    """Load raw model, calibrator fit, and metadata from *path_dir*."""
-    in_dir = Path(path_dir)
-    model_path = in_dir / _MODEL_RAW_FILENAME
-    cal_path = in_dir / _CALIBRATOR_FILENAME
-    meta_path = in_dir / _METADATA_FILENAME
-
-    for path, name in (
-        (model_path, _MODEL_RAW_FILENAME),
-        (cal_path, _CALIBRATOR_FILENAME),
-        (meta_path, _METADATA_FILENAME),
-    ):
-        if not path.exists():
-            raise FileNotFoundError(f"{name} not found in {in_dir}")
-
-    model_raw = joblib.load(model_path)
-    calibrator = joblib.load(cal_path)
-    metadata: dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))
-
-    calibrator_fit = calibrator_fit_from_metadata(metadata, calibrator)
-    logger.info("Loaded calibration artifact from %s", in_dir)
-    return model_raw, calibrator_fit, metadata
-
-
 __all__ = [
     "CalibrationError",
     "CalibratorFit",
     "apply_calibrator",
     "calibrator_fit_from_metadata",
     "fit_calibrator",
-    "load_calibration_artifact",
-    "save_calibration_artifact",
 ]

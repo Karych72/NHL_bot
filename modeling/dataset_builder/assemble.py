@@ -62,7 +62,6 @@ def apply_cold_start_policy(
     data: pd.DataFrame,
     mode: str,
     min_prior_games: int,
-    cold_start_policy_predict: str,
 ) -> ColdStartResult:
     out = data.copy()
     low_hist_mask = (
@@ -70,24 +69,11 @@ def apply_cold_start_policy(
     ) | (
         out["away_prior_games_count"].astype("int64") < min_prior_games
     )
-
-    if mode == "train":
-        dropped = int(low_hist_mask.sum())
-        return ColdStartResult(
-            data=out[~low_hist_mask].copy(),
-            dropped_rows=dropped,
-            reason="cold_start_policy_train_drop",
-        )
-
-    out["low_history_confidence"] = low_hist_mask.astype("int64")
-    out["quality_warnings"] = out["low_history_confidence"].map(
-        lambda v: "LOW_HISTORY" if int(v) == 1 else ""
+    return ColdStartResult(
+        data=out[~low_hist_mask].copy(),
+        dropped_rows=int(low_hist_mask.sum()),
+        reason=f"cold_start_policy_{mode}_drop",
     )
-    if cold_start_policy_predict == "drop":
-        dropped = int(low_hist_mask.sum())
-        out = out[~low_hist_mask].copy()
-        return ColdStartResult(data=out, dropped_rows=dropped, reason="cold_start_policy_predict_drop")
-    return ColdStartResult(data=out, dropped_rows=0, reason="cold_start_policy_predict_allow_with_flag")
 
 
 def attach_train_labels(data: pd.DataFrame) -> pd.DataFrame:
@@ -111,7 +97,6 @@ def assemble_dataset(
     mode: str,
     snapshots: pd.DataFrame,
     min_prior_games: int,
-    cold_start_policy_predict: str,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     report: Dict[str, Any] = {"drops": []}
     data, built_feature_columns = _wide_feature_columns(snapshots)
@@ -119,7 +104,6 @@ def assemble_dataset(
         data=data,
         mode=mode,
         min_prior_games=min_prior_games,
-        cold_start_policy_predict=cold_start_policy_predict,
     )
     data = cold.data
     if cold.dropped_rows > 0:

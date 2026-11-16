@@ -395,9 +395,6 @@ def verify_run_artifacts(
                 issues=issues,
             )
 
-        if not list(model_root.glob("season_*")):
-            _issue(issues, f"no per-season run directories under {model_root}")
-
         summary_path = reports_dir / "summary.md"
         if not summary_path.is_file() or summary_path.stat().st_size == 0:
             _issue(issues, f"missing or empty summary.md: {summary_path}")

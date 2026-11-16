@@ -25,19 +25,12 @@ structures to avoid duplicate identity columns.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
 
-from modeling.config import ConfigError, SplitConfig
-
-METADATA_PARITY_KEYS: tuple[str, ...] = (
-    "feature_set_version",
-    "features_hash",
-    "rolling_windows",
-    "feature_manifest",
-)
+from modeling.config import SplitConfig
 
 
 class SplitError(ValueError):
@@ -107,45 +100,9 @@ class SeasonSplits:
         }
 
 
-def validate_metadata_parity(
-    yaml_reference: Mapping[str, Any] | None,
-    metadata: Mapping[str, Any] | None,
-) -> None:
-    """Fail-fast when YAML reference copies disagree with ``metadata_train.json``."""
-    if yaml_reference is None or metadata is None:
-        return
-    diffs: list[dict[str, Any]] = []
-    for key in METADATA_PARITY_KEYS:
-        yaml_value = yaml_reference.get(key)
-        if yaml_value is None:
-            continue
-        meta_value = metadata.get(key)
-        if meta_value is None:
-            continue
-        if yaml_value != meta_value:
-            diffs.append(
-                {
-                    "field": key,
-                    "value_yaml": yaml_value,
-                    "value_metadata": meta_value,
-                }
-            )
-    if diffs:
-        lines = ["Config metadata conflict (YAML vs metadata_train.json):"]
-        for item in diffs:
-            lines.append(
-                f"  {item['field']}: value_yaml={item['value_yaml']!r} "
-                f"value_metadata={item['value_metadata']!r}"
-            )
-        raise ConfigError("\n".join(lines))
-
-
 def build_season_splits(
     keys: pd.DataFrame,
     config: SplitConfig,
-    *,
-    yaml_reference: Mapping[str, Any] | None = None,
-    metadata: Mapping[str, Any] | None = None,
 ) -> SeasonSplits:
     """Build one window per checked season (``config.test_seasons``).
 
@@ -155,10 +112,6 @@ def build_season_splits(
         DataFrame with required columns ``day`` (datetime64), ``game_id`` and ``season_id``.
     config:
         Split section from ``modeling.config`` (``SplitConfig``).
-    yaml_reference:
-        Optional YAML reference mapping for metadata parity checks.
-    metadata:
-        Optional ``metadata_train.json`` payload for parity checks.
 
     Returns
     -------
@@ -181,8 +134,6 @@ def build_season_splits(
         A checked season is absent from the data, or fewer than
         ``inner_val_games + calibration_games + 1`` rows precede it.
     """
-    validate_metadata_parity(yaml_reference, metadata)
-
     sorted_keys = _prepare_keys(keys)
     seasons = sorted_keys["season_id"].to_numpy()
     windows: list[SeasonWindow] = []
@@ -349,5 +300,4 @@ __all__ = [
     "SeasonWindow",
     "SplitError",
     "build_season_splits",
-    "validate_metadata_parity",
 ]

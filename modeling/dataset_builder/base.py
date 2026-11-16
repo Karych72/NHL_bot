@@ -23,7 +23,7 @@ from .features import (
     compute_pregame_shot_share,
     compute_team_rolling_features,
 )
-from .schema import (
+from modeling.feature_schema import (
     assert_feature_parity,
     build_feature_manifest,
     feature_columns_from_df,
@@ -44,7 +44,6 @@ class DatasetBuildConfig:
     feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
-    cold_start_policy_predict: str = "drop"
     min_rows_threshold: int = 0
     season_ids: Sequence[int] = field(default_factory=list)
     target_day_from: Optional[str] = None
@@ -299,7 +298,7 @@ def _metadata_dict(
         "features_hash": feature_hash,
         "feature_manifest": feature_manifest,
         "rolling_windows": list(config.rolling_windows),
-        "cold_start_policy_predict": config.cold_start_policy_predict,
+        "cold_start_policy_predict": "drop",
         "min_prior_games": config.min_prior_games,
         "dataset_rows": dataset_rows,
         "code_version": _git_commit_hash(),
@@ -462,7 +461,6 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         mode=config.mode,
         snapshots=snapshots,
         min_prior_games=config.min_prior_games,
-        cold_start_policy_predict=config.cold_start_policy_predict,
     )
 
     assembled["dataset_built_at"] = built_at
@@ -500,7 +498,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     feature_hash = features_hash(
         feature_manifest=feature_manifest,
         rolling_windows=config.rolling_windows,
-        cold_start_policy=f"train:drop|predict:{config.cold_start_policy_predict}",
+        cold_start_policy="train:drop|predict:drop",
         feature_set_version=config.feature_set_version,
     )
     if config.mode == "predict" and train_metadata is not None:

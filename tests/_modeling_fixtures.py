@@ -75,7 +75,7 @@ def synthetic_metadata(*, rows: int) -> dict:
     """Mock ``metadata_train.json`` consistent with ``minimal_feature_manifest``."""
     manifest = minimal_feature_manifest()
     rolling = [5, 10]
-    cold_predict = "allow_with_flag"
+    cold_predict = "drop"
     fsv = "v1"
     fh = features_hash(
         feature_manifest=manifest,

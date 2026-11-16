@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from modeling.dataset_builder.schema import LABEL_COLUMNS, features_hash
+from modeling.feature_schema import LABEL_COLUMNS, features_hash
 from modeling.train_input import (
     TrainMetadataError,
     TrainSchemaError,
@@ -25,7 +25,7 @@ def _minimal_manifest() -> list[dict[str, str]]:
 
 def _minimal_metadata_rows(*, manifest: list[dict[str, str]], rows: int = 2) -> dict:
     rolling = [5, 10]
-    cold_predict = "allow_with_flag"
+    cold_predict = "drop"
     fsv = "v1"
     fh = features_hash(
         feature_manifest=manifest,

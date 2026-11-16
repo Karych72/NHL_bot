@@ -52,18 +52,16 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     - `y_over_5_5`
   - Cold-start policy:
     - train: drop
-    - predict: drop by default since Задача 73 (`allow_with_flag` still selectable)
+    - predict: drop (Задача 73)
   - Since rolling windows and as-of snapshots reset at each season boundary
     (`features.py`, Task 30), the first game of every season has
     `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Both modes drop
     games where either team has fewer than `--min-prior-games` (5) games this season — the
-    bot shows a forecast only for such games (Задача 73). `allow_with_flag` keeps them and
-    flags `low_history_confidence`, so a predict build for a season's first games fails
-    `validate.py`'s NaN check (`numeric_nan_inf`). The policy is part of `features_hash`:
-    train and predict must be built with the same one. At the start of a season the
+    bot shows a forecast only for such games (Задача 73). The policy (`train:drop|predict:drop`) is part of `features_hash`.
+    At the start of a season the
     predict dataset is legitimately empty (header only); `predict` then writes no rows.
 
-- `modeling/dataset_builder/schema.py`
+- `modeling/feature_schema.py`
   - Feature manifest generation (name, dtype, position).
   - `features_hash` calculation.
   - Strict train/predict schema parity check (no silent schema correction).
@@ -75,7 +73,7 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
   - Writes `data_quality_report.json`.
 
 - `modeling/train_input.py`
-  - Validates `dataset_train.csv` + `metadata_train.json` for training (manifest-ordered **X**, keys/labels/service aligned with `schema.py`).
+  - Validates `dataset_train.csv` + `metadata_train.json` for training (manifest-ordered **X**, keys/labels/service aligned with `feature_schema.py`).
 
 ## Anti-Leakage Contract
 
@@ -317,12 +315,11 @@ Downstream training code should consume the same artifacts the builder writes:
 
 Any inconsistency between the CSV and the manifest (missing/extra feature columns, wrong feature column order for parity checks, dtype mismatch) raises a predictable error (`TrainSchemaError`). Unknown columns outside `KEY_COLUMNS ∪ LABEL_COLUMNS ∪ SERVICE_COLUMNS ∪ manifest names` also fail fast (`TrainSchemaError`). Invalid or incomplete metadata raises `TrainMetadataError`.
 
-The module `modeling/train_input.py` is the single entrypoint for validating that pair and splitting columns **without guessing features by name prefixes**: the feature matrix **X** uses exactly the ordered names from `feature_manifest`, matching `ordered_columns_for_output` semantics from `schema.py`. Keys, labels (`y_home_win`, `y_over_5_5`), and service columns follow `KEY_COLUMNS`, `LABEL_COLUMNS`, and `SERVICE_COLUMNS` in `modeling/dataset_builder/schema.py`.
+The module `modeling/train_input.py` is the single entrypoint for validating that pair and splitting columns **without guessing features by name prefixes**: the feature matrix **X** uses exactly the ordered names from `feature_manifest`, matching `ordered_columns_for_output` semantics from `feature_schema.py`. Keys, labels (`y_home_win`, `y_over_5_5`), and service columns follow `KEY_COLUMNS`, `LABEL_COLUMNS`, and `SERVICE_COLUMNS` in `modeling/feature_schema.py`.
 
 Public helpers:
 
-- `load_training_table(csv_path, metadata_path)` — fail-fast validation (`features_hash` recomputed like `dataset_builder/base.py`, dtypes checked via `assert_feature_parity`) and returns the full frame.
-- `load_training_table_split(...)` — returns `(X, keys, labels, service, metadata)` for pipelines.
+- `load_training_table_split(...)` — fail-fast validation (`features_hash` recomputed like `dataset_builder/base.py`, dtypes checked via `assert_feature_parity`); returns `(X, keys, labels, service, metadata)` for pipelines.
 
 Example paths after `build-dataset --mode train --output-dir artifacts/datasets`:
 

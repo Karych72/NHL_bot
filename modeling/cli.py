@@ -33,13 +33,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--feature-set-version", default="v2")
     build.add_argument("--rolling-windows", type=_parse_windows, default=[5, 10, 20])
     build.add_argument("--min-prior-games", type=int, default=5)
-    build.add_argument(
-        "--cold-start-policy-predict",
-        choices=("allow_with_flag", "drop"),
-        # drop: the bot shows a forecast only when both teams have min_prior_games games
-        # this season (Задача 73); allow_with_flag leaves NaN features that fail validation.
-        default="drop",
-    )
     build.add_argument("--min-rows-threshold", type=int, default=0)
     build.add_argument(
         "--config",
@@ -497,7 +490,6 @@ def main() -> None:
             feature_set_version=args.feature_set_version,
             rolling_windows=args.rolling_windows,
             min_prior_games=args.min_prior_games,
-            cold_start_policy_predict=args.cold_start_policy_predict,
             min_rows_threshold=args.min_rows_threshold,
             season_ids=season_ids,
             first_season_id=load_yaml_config(args.config).dataset.first_season_id,

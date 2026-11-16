@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import json
-import logging
 import subprocess
 import sys
 import tempfile
@@ -23,8 +22,6 @@ from modeling.config import (
     ResolvedConfig,
     apply_overrides,
     build_run_id,
-    configure_run_logger,
-    derive_seed,
     parse_override,
     resolve_config,
 )
@@ -35,7 +32,7 @@ from modeling.dataset_builder.features import (
     build_match_feature_snapshots,
     compute_team_rolling_features,
 )
-from modeling.dataset_builder.schema import features_hash
+from modeling.feature_schema import features_hash
 from modeling.elo import compute_pregame_elo
 
 
@@ -49,7 +46,7 @@ def _minimal_manifest() -> list[dict[str, str]]:
 def _minimal_metadata(*, manifest: list[dict[str, str]] | None = None) -> dict:
     manifest = manifest or _minimal_manifest()
     rolling = [5, 10]
-    cold_predict = "allow_with_flag"
+    cold_predict = "drop"
     fsv = "v1"
     fh = features_hash(
         feature_manifest=manifest,
@@ -116,7 +113,6 @@ def _minimal_yaml_text(**overrides: object) -> str:
         evaluation:
           ece_bins: 10
           bootstrap_samples: 1000
-          bootstrap_block_by_day: true
           epsilon_clip: 1.0e-15
         """
     ).strip()
@@ -276,30 +272,7 @@ class TestTaskFeatures(unittest.TestCase):
 
 
 class TestMetadataMerge(unittest.TestCase):
-    def test_features_hash_mismatch_raises_diff(self) -> None:
-        metadata = _minimal_metadata()
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            cfg_path = tmp / "cfg.yaml"
-            cfg_path.write_text(_minimal_yaml_text(features_hash="deadbeef"), encoding="utf-8")
-            with self.assertRaises(ConfigError) as ctx:
-                resolve_config(cfg_path, metadata)
-            msg = str(ctx.exception)
-            self.assertIn("features_hash", msg)
-            self.assertIn("value_yaml", msg)
-            self.assertIn("value_metadata", msg)
-
-    def test_feature_set_version_mismatch_raises_diff(self) -> None:
-        metadata = _minimal_metadata()
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            cfg_path = tmp / "cfg.yaml"
-            cfg_path.write_text(_minimal_yaml_text(feature_set_version="v2"), encoding="utf-8")
-            with self.assertRaises(ConfigError) as ctx:
-                resolve_config(cfg_path, metadata)
-            self.assertIn("feature_set_version", str(ctx.exception))
-
-    def test_missing_yaml_reference_fields_filled_from_metadata(self) -> None:
+    def test_metadata_fields_land_in_resolved_config(self) -> None:
         metadata = _minimal_metadata()
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
@@ -348,30 +321,6 @@ class TestHelpers(unittest.TestCase):
         )
         pattern = r"^home_win_logreg_b334df68_20260530T120000Z$"
         self.assertRegex(run_id, pattern)
-
-    def test_derive_seed_deterministic(self) -> None:
-        self.assertEqual(derive_seed("bootstrap", 42), derive_seed("bootstrap", 42))
-        self.assertNotEqual(derive_seed("bootstrap", 42), derive_seed("metrics", 42))
-
-    def test_resolved_config_derive_seed(self) -> None:
-        metadata = _minimal_metadata()
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            cfg_path = tmp / "cfg.yaml"
-            cfg_path.write_text(_minimal_yaml_text(), encoding="utf-8")
-            resolved = resolve_config(cfg_path, metadata)
-            self.assertEqual(resolved.derive_seed("bootstrap"), derive_seed("bootstrap", resolved.random_seed))
-
-    def test_configure_run_logger_creates_log_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            log_path = configure_run_logger("test_run", "INFO", reports_root=tmp / "reports")
-            self.assertTrue(log_path.exists())
-            logging.getLogger().info("stage 2 logger smoke")
-            for handler in logging.getLogger().handlers:
-                handler.flush()
-            content = log_path.read_text(encoding="utf-8")
-            self.assertIn("stage 2 logger smoke", content)
 
 
 class TestPrintResolvedConfigCli(unittest.TestCase):

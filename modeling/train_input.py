@@ -11,8 +11,8 @@ Required artifacts (same directory after ``python -m modeling.cli build-dataset`
 Parquet is **not** supported here until symmetric read paths are added and this
 contract is extended.
 
-JSON fields required by :func:`load_training_table`
---------------------------------------------------
+JSON fields required by :func:`load_training_table_split`
+--------------------------------------------------------
 The loader treats these keys as authoritative:
 
 - ``feature_manifest`` — ordered list of ``{\"name\", \"dtype\", \"position\"}``
@@ -30,11 +30,11 @@ Semantics of splits
 - **X** — built **only** from ``feature_manifest`` column names, in manifest order.
   No prefix-based guessing and no \"all other columns\" fallback when the manifest
   lists the full feature set.
-- **Keys** — columns intersecting ``schema.KEY_COLUMNS`` that exist in the table,
+- **Keys** — columns intersecting ``feature_schema.KEY_COLUMNS`` that exist in the table,
   ordered as in ``KEY_COLUMNS``.
-- **Labels** — columns intersecting ``schema.LABEL_COLUMNS`` that exist (typically
+- **Labels** — columns intersecting ``feature_schema.LABEL_COLUMNS`` that exist (typically
   both ``y_home_win`` and ``y_over_5_5`` for train).
-- **Service** — columns present in the frame that belong to ``schema.SERVICE_COLUMNS``.
+- **Service** — columns present in the frame that belong to ``feature_schema.SERVICE_COLUMNS``.
 
 Any column not in ``KEY_COLUMNS ∪ LABEL_COLUMNS ∪ SERVICE_COLUMNS ∪ manifest names``
 raises ``TrainSchemaError`` (fail-fast).
@@ -185,32 +185,6 @@ def _prepare_training_frame(csv_path: Path, meta_path: Path) -> tuple[pd.DataFra
     return df, metadata
 
 
-def load_training_table(
-    dataset_csv_path: Path | str,
-    metadata_json_path: Path | str,
-) -> pd.DataFrame:
-    """Load a train CSV and validate against ``metadata_train.json``.
-
-    Args:
-        dataset_csv_path: Path to ``dataset_train.csv`` (v1: CSV only).
-        metadata_json_path: Path to ``metadata_train.json``.
-
-    Returns:
-        Full DataFrame including keys, features, labels (if present), and service columns.
-
-    Raises:
-        TrainMetadataError: Missing/invalid metadata, inconsistent ``features_hash``, invalid JSON.
-        TrainSchemaError: CSV columns disagree with manifest (parity, extras, missing features).
-
-    Use :func:`split_training_frame` or :func:`load_training_table_split` for matrix ``X``
-    strictly aligned with ``feature_manifest``.
-    """
-    csv_path = Path(dataset_csv_path)
-    meta_path = Path(metadata_json_path)
-    df, _ = _prepare_training_frame(csv_path, meta_path)
-    return df
-
-
 def split_training_frame(
     df: pd.DataFrame,
     metadata: Mapping[str, Any],
@@ -218,7 +192,7 @@ def split_training_frame(
     """Split a validated train frame into ``X``, keys, labels, and service columns.
 
     Args:
-        df: DataFrame already validated against ``metadata`` (e.g. from :func:`load_training_table`).
+        df: DataFrame already validated against ``metadata`` (e.g. from ``_prepare_training_frame``).
         metadata: Training metadata dict containing ``feature_manifest``.
 
     Returns:
@@ -279,7 +253,6 @@ def load_training_table_split(
 __all__ = [
     "TrainMetadataError",
     "TrainSchemaError",
-    "load_training_table",
     "split_training_frame",
     "load_training_table_split",
 ]

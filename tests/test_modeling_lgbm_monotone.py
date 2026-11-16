@@ -332,14 +332,13 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
             "evaluation": {
                 "ece_bins": 5,
                 "bootstrap_samples": 1,
-                "bootstrap_block_by_day": True,
                 "epsilon_clip": 1e-15,
             },
             "feature_set_version": "v1",
             "rolling_windows": [5],
             "features_hash": "a" * 64,
             "feature_manifest": [{"name": "feat_mono"}, {"name": "feat_noise"}],
-            "cold_start_policy_predict": "allow_with_flag",
+            "cold_start_policy_predict": "drop",
         }
     )
 

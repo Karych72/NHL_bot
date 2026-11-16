@@ -102,8 +102,8 @@ train+inner_val+calibration; Platt нет, калибратор тождеств
 Критерий карточки «≤ 2 п.п. в корзинах от 100 игр» заменён решением человека 2026-10-11: шум корзины
 ±4–8 п.п., и сам Elo его не проходит; корзины получили полосу шума ±2 SE, только в отчёте.
 
-**Artifacts.** Per-season raw model + calibrator: `models/<task>/<model>/<run_id>/season_<season_id>/`
-(replaces `fold_<k>/`). `final/metadata.json` carries `test_seasons`; the `holdout_*`, `test_days`,
+**Artifacts.** Per-season models are not saved (only their predictions enter `metrics.json`);
+`final/metadata.json` carries `test_seasons`; the `holdout_*`, `test_days`,
 `n_rows_test`, `n_rows_holdout` fields are gone.
 
 **Результат на реальных данных** (2026-10-10, датасет `--min-prior-games 5`: 6049 строк,
@@ -294,8 +294,7 @@ mean P(tie) within ±2 pp of the actual tie share (card acceptance).
 текущем сезоне** — модель обучена и проверена лишь на таких играх (`--min-prior-games 5`). По
 сезонам 2021–2025 это наступает для всей лиги на 12–19-й день сезона (19–27 октября), до этого —
 7–8% игр сезона. В первые дни predict и так падает (у команд без игр в сезоне rolling-колонки
-пусты, `validate.py` их отклоняет); с 1 до 4 игр строки проходят с флагом `low_history_confidence` —
-показ таких прогнозов отсекает потребитель (Задача 73).
+пусты, `validate.py` их отклоняет); игры, где у команды меньше 5 игр сезона, `build-dataset` отбрасывает (Задача 73).
 
 **Хозяева-андердоги (Задача 74, 2026-10-28): сдвиг подтверждён, модель не меняется.** Прогнозы —
 те же, что в прогоне выше (воспроизведён: 0.6688, ECE 0.018, C 0.01 / 10 / 10); одноразовые
@@ -402,12 +401,8 @@ mean P(tie) within ±2 pp of the actual tie share (card acceptance).
 - `feature_manifest`
 - `cold_start_policy_predict`
 
-Rules (UPDATE plan cross-cutting requirements):
-
-1. Resolved config **always** takes these values from `metadata_train.json`.
-2. YAML may contain matching reference copies for human readability.
-3. If a reference field in YAML **differs** from metadata → `ConfigError` with a field-by-field diff. **Fail-fast**, no silent override.
-4. If a reference field is absent in YAML → value from metadata is merged into the resolved config.
+The resolved config **always** takes these values from `metadata_train.json`; the YAML does not
+carry them (an unknown YAML key is a `ConfigError`).
 
 ### CLI flags
 
@@ -469,7 +464,6 @@ artifacts/
     home_win/
       logreg/
         <run_id>/
-          season_<season_id>/
           final/{model.joblib, calibrator.joblib, metadata.json}
         latest -> <run_id>/final/
     over_5_5/
@@ -478,7 +472,6 @@ artifacts/
     <run_id>/{metrics.json, summary.md, reliability_<task>.png, run.log}
 ```
 
-- **Per-season runs** — `artifacts/models/<task>/<model>/<run_id>/season_<season_id>/` (raw model, calibrator, metadata of the run that was checked on that season; §2a).
 - **Production bundle** — `artifacts/models/<task>/<model>/<run_id>/final/{model.joblib, calibrator.joblib, metadata.json}` (`model_final` + `calibrator_final`, fitted on every row of the dataset).
   For LGBM, `model_final` is retrained on `train_full` for a **fixed** number of
   rounds — the `best_iteration` an honest inner-val grid search already picked —
@@ -494,7 +487,7 @@ artifacts/
 - **`latest`** — symlink pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
-### `metadata.json` (final and per-season artifacts)
+### `metadata.json` (final artifact)
 
 Required fields include:
 
@@ -587,9 +580,7 @@ Steps performed by `run_predict()`:
 1. Resolve `artifacts/models/<task>/<model>/latest` (symlink)
    to a `final/` directory (`modeling.artifacts.resolve_latest_model_dir`).
 2. Load `model.joblib` + `metadata.json` (`load_model_artifact`) and
-   `calibrator.joblib` (`load_latest_calibrator` — a plain estimator dump, distinct
-   from the `model_raw.joblib` triple `modeling.calibrate.load_calibration_artifact`
-   reads for per-season artifacts).
+   `calibrator.joblib` (`load_latest_calibrator` — a plain estimator dump).
 3. Load the predict CSV + metadata with the same schema-generic loader training uses
    (`train_input.load_training_table_split`), then compare the loaded model's
    `features_hash` against the predict dataset's (`modeling.artifacts.check_features_hash_match`)

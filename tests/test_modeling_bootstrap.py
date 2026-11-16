@@ -32,16 +32,16 @@ def _run(
     y_pred: np.ndarray,
     *,
     seed: int = 42,
-    block_by_day: bool = False,
     day=None,
     n_resamples: int = 200,
 ) -> dict[str, BootstrapResult]:
+    if day is None:  # one game per day
+        day = pd.date_range("2020-01-01", periods=len(y_true), freq="D")
     return bootstrap_metrics(
         y_true,
         y_pred,
         day=day,
         n_resamples=n_resamples,
-        block_by_day=block_by_day,
         seed=seed,
         metric_fns=_metric_fns(),
     )
@@ -94,43 +94,12 @@ def test_coverage_synthetic() -> None:
     assert hits / _COVERAGE_N_SEEDS >= _COVERAGE_MIN_FRACTION
 
 
-def test_block_bootstrap_wider_than_iid() -> None:
-    """Block resampling preserves day-level prevalence; i.i.d. mixes matches more."""
-    n_days = 24
-    per_day = 6
-    n = n_days * per_day
-    days = np.repeat(pd.date_range("2020-01-01", periods=n_days, freq="D"), per_day)
-    y_true = np.zeros(n, dtype=int)
-    y_pred = np.zeros(n, dtype=float)
-    for i in range(n_days):
-        mask = slice(i * per_day, (i + 1) * per_day)
-        if i < n_days // 2:
-            y_true[mask] = 0
-            y_pred[mask] = 0.15
-        else:
-            y_true[mask] = 1
-            y_pred[mask] = 0.85
-
-    iid = _run(y_true, y_pred, block_by_day=False, seed=99, n_resamples=600)
-    block = _run(
-        y_true,
-        y_pred,
-        block_by_day=True,
-        day=days,
-        seed=99,
-        n_resamples=600,
-    )
-    iid_width = iid["brier"].ci_high - iid["brier"].ci_low
-    block_width = block["brier"].ci_high - block["brier"].ci_low
-    assert block_width > iid_width * 1.2
-
-
 def test_block_single_day_raises() -> None:
     y_true = np.array([0, 1, 0])
     y_pred = np.array([0.2, 0.8, 0.3])
     day = pd.to_datetime(["2020-01-01"] * 3)
     with pytest.raises(BootstrapError, match="D=1"):
-        _run(y_true, y_pred, block_by_day=True, day=day)
+        _run(y_true, y_pred, day=day)
 
 
 def test_block_nat_in_day_raises() -> None:
@@ -138,12 +107,7 @@ def test_block_nat_in_day_raises() -> None:
     y_pred = np.array([0.2, 0.8, 0.3, 0.7])
     day = pd.Series(["2020-01-01", "2020-01-02", pd.NaT, "2020-01-02"])
     with pytest.raises(BootstrapError, match="NaT"):
-        _run(y_true, y_pred, block_by_day=True, day=day)
-
-
-def test_block_without_day_raises() -> None:
-    with pytest.raises(BootstrapError, match="day is required"):
-        _run(np.array([0, 1]), np.array([0.3, 0.7]), block_by_day=True)
+        _run(y_true, y_pred, day=day)
 
 
 def test_n_resamples_zero_raises() -> None:
@@ -151,6 +115,7 @@ def test_n_resamples_zero_raises() -> None:
         bootstrap_metrics(
             np.array([0, 1]),
             np.array([0.3, 0.7]),
+            day=pd.to_datetime(["2020-01-01", "2020-01-02"]),
             n_resamples=0,
             seed=1,
             metric_fns=_metric_fns(),
@@ -196,7 +161,7 @@ def test_result_metadata_json_serializable() -> None:
     plain = asdict(out)
     assert "bootstrap.N" not in plain
     assert payload["bootstrap.N"] == out.n_resamples
-    assert payload["bootstrap.block_by_day"] is False
+    assert payload["bootstrap.block_by_day"] is True
     assert payload["bootstrap.seed"] == 5
 
 
@@ -223,7 +188,6 @@ def test_mean_diff_point_is_difference_of_means_and_ci_contains_it() -> None:
     assert out.point == pytest.approx(loss_a.mean() - loss_b.mean())
     assert out.ci_low <= out.point <= out.ci_high
     assert out.ci_high < 0.0  # the 0.02 edge is far larger than the paired noise
-    assert out.block_by_day is True
 
 
 def test_mean_diff_is_deterministic_per_seed_and_varies_across_seeds() -> None:
