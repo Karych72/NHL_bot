@@ -165,7 +165,7 @@ read-only запросы к живой БД (`docker exec nhl_bot-db-1 psql -U p
 ### Cited Findings
 - GC1 YAGNI (абстракция с третьего повторения); GC2 расширять существующие модули; GC3 без обратной совместимости — замена удаляет старое; GC4 падать громко; GC5 новый пакет — только с разрешения, ML → `requirements-modeling.txt`; GC6 >300 строк чистого прироста — Important; GC7 docstring + обновление `docs/architecture.md`; GC8 масштаб под фактический объём данных — [CLAUDE.md](../../../../../CLAUDE.md)
 - `requirements-modeling.in`: `numpy==2.2.6, pandas==2.2.3, scikit-learn==1.6.1, lightgbm==4.6.0, matplotlib==3.10.1, pyyaml==6.0.2, joblib==1.4.2, pydantic==2.10.6`; в lock транзитивно есть `scipy==1.17.1` — [requirements-modeling.in](../../../../../requirements-modeling.in); [requirements-modeling.txt](../../../../../requirements-modeling.txt)
-- Modeling-стек не входит в образ бота; отдельная стадия Dockerfile `modeling` — [docs/architecture.md:312-322](../../../../../docs/architecture.md)
+- Modeling-стек не входит в образ бота; отдельная стадия Dockerfile `modeling` — [Dockerfile](../../../../../Dockerfile)
 - Ревью любой задачи — Opus; одна задача плана = одна сессия — [CLAUDE.md](../../../../../CLAUDE.md)
 
 ### Inferences

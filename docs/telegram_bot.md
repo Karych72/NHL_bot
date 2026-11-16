@@ -139,7 +139,7 @@ make all-tests         # test-fast + test-db (с поднятой БД)
 - [`data_loading.md`](data_loading.md) — установка окружения, БД, загрузка данных NHL.
 - [`pipeline_nulls_and_explicit_null_tz.md`](pipeline_nulls_and_explicit_null_tz.md) — контракт `NULL`-семантики; важно для понимания, почему бот в некоторых местах рендерит `—` или «Unknown».
 - [`premium.md`](premium.md) — что входит в премиум и что нет: лимиты ИИ, расписания.
-- [`architecture.md`](architecture.md) — общая архитектура и схема таблиц БД.
+- [`architecture.md`](architecture.md) — карта проекта (модули и потоки данных); схема таблиц БД — `data_tables/t.*.sql` и миграции.
 - [`api_data_research.md`](api_data_research.md) — какие поля NHL API маппятся в какие колонки.
 
 ---
@@ -557,3 +557,78 @@ VALUES (<chat_id>, 'leaders', '{"category": "goals"}', 'week', 5, '10:00', 'Euro
 ```
 
 `next_run_at = now()` — первая отправка на ближайшей минуте, дальше тикер считает сам.
+
+---
+
+## 12. Устройство кода
+
+Что где в `telegram_bot/` и какие у него неочевидные свойства. Построчная карта модулей —
+[`architecture.md`](architecture.md), поведение экранов — §4–§11 выше.
+
+### Точка входа: `bot.py`
+
+- `build_dispatcher()` — единственная точка сборки: outer-middleware `callback_query`
+  (троттлинг, затем журнал действий), два роутера по порядку — `standalone` (команды и
+  кнопки) и `tail` (свободный текст `on_free_text`); апдейт берёт первый подошедший хендлер.
+  `run_polling` запускает `start_polling()` и рядом тикер `run_schedule_ticker` (§11).
+  Тест маршрутизации без сети — `tests/test_bot_application.py`, сквозные сценарии
+  «запрос → ответ» на подменённых границах БД и сети — `tests/test_bot_integration.py`.
+- Состояний FSM нет: каждая кнопка несёт в `callback_data` всё нужное хендлеру и работает в
+  сообщении любой давности. Форму `callback_data` проверяет regex фильтра регистрации,
+  хендлер получает готовый `match`.
+- Экран команды — функция `show_*(bot, chat_id)` без `Message`; её зовут хендлер команды
+  (`_command_handler`), экран ИИ (`AI_SCREENS`) и расписание (`SCHEDULE_SCREENS`).
+- Апдейты обрабатываются конкурентно, но апдейты одного пользователя — по одному
+  (`SimpleEventIsolation`): иначе двойной тап по матчу `/tonight` обгоняет запись реестра
+  ответов. Блокирующую работу выносят в поток (`asyncio.to_thread`): скачивание клипа и два
+  прохода ffmpeg (`video_replay.download_goal_video`, до ~2 минут, только для клипа вне
+  кэша `bot_goal_clips`), `nhl_scoreboard.fetch_score`, SQL ИИ, обращения тикера к БД.
+- Рассылки (`push_digest_job.py`) — отдельный запуск сервисом `sync`, не часть процесса бота:
+  свой `Bot` без `Dispatcher` (таймаут сессии 300 с ради загрузки клипов), `asyncio.run(main())`.
+- Кнопка матча `/tonight` шлёт карточку один раз: повтор отвечает reply на уже отправленное.
+  Реестр ответов (`stats_handlers._tonight_sent`) — в памяти процесса, после перезапуска
+  первое нажатие снова шлёт ответ.
+
+### Троттлинг кнопок: `throttle.py`
+
+Outer-middleware `enforce_callback_rate_limit` на `Dispatcher.callback_query`: окно на
+пользователя, `CALLBACK_RATE_LIMIT` нажатий за `CALLBACK_RATE_WINDOW_SEC`; при превышении
+нажатие получает `answer()` и до хендлеров не доходит. Команды и текст не ограничиваются.
+Состояние — `dict` в памяти процесса. Тесты — `tests/test_bot_throttle.py`.
+
+### Слой данных: `database.py`
+
+#### Connection Pool (`database.py`)
+
+- `get_pool()` лениво создаёт общий `psycopg2.pool.SimpleConnectionPool` на 1–5 соединений
+  по `PG_*` из `config`.
+- `get_connection()` — контекстный менеджер: при исключении `rollback()`, на выходе
+  соединение возвращается в пул.
+
+#### Безопасные запросы
+
+- Динамические идентификаторы проходят allowlist `ALLOWED_TABLES` / `ALLOWED_COLUMNS`
+  (`validate_table`, `validate_column`) и подставляются через `psycopg2.sql.Identifier`;
+  значения — параметрами `%s`.
+- `fetch_all(query, params, columns)` возвращает `{колонка: [значения], 'count_rows': N}`.
+- `cached_fetch_all = ttl_cache(fetch_all)` — кэш на `CACHED_FETCH_ALL_TTL_SECONDS` (5 минут)
+  для справочников, таблиц и лидеров: они меняются раз в загрузку. Данные идущей игры (счёт,
+  события в `game_message()` и `day_digest()`) и `game_exists()` — гейт, решающий между
+  карточкой матча и превью, — идут через `fetch_all()` без кэша.
+- SQL свободных вопросов ИИ идёт отдельной ролью `nhl_ai_reader` (см. `ai_capabilities.md`),
+  а не через этот allowlist.
+
+### Шаблоны и таблицы
+
+- Jinja2-шаблоны — `telegram_bot/messages/`: `game_message.txt` (карточка матча под шапкой),
+  `league_table.txt` (`/standings`), `team_profile.txt` (`/BOS` и `/BOS_FULL`). Рендер —
+  `template_funcs.output_text()`; пути относительные, бот запускается из `telegram_bot/`.
+- Лидерборды шаблона не имеют: `player_stats_with_count()` / `team_stats_with_count()`
+  рисуют страницу таблицей `_table` с колонкой сортировки и постоянным «хвостом»
+  (игры/смены, сейвы, баланс). Подписи показателей и раскладка меню — `leaderboard_specs.py`.
+- Таблицы и блоки rich-сообщений собирают `_table()`, `rich_message()`, `rich_footer()`,
+  `rich_details()`, `rich_list()` (`bot_messages.py`); лимит `RICH_MESSAGE_MAX_LENGTH`,
+  `truncate_telegram_text` режет целыми строками. Правила стиля — §9.
+- `players_season_stats` не хранит команду игрока: сезонные очки целиком относятся к
+  `rosters.current_team_id` — обменянный игрок попадёт в профиль только последней команды, со
+  всей суммой сезона.

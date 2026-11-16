@@ -1,8 +1,8 @@
 # Задача 128. Пул БД бота: потокобезопасный пул и `statement_timeout`
 
 **Блок:** инженерия · **Надобность:** 🟠
-**Область:** `telegram_bot/database.py`, `tests/test_bot_database.py`, `docs/architecture.md`
-(раздел «Connection Pool»).
+**Область:** `telegram_bot/database.py`, `tests/test_bot_database.py`, `docs/telegram_bot.md`
+(§12, «Connection Pool»; до Задачи 129 раздел был в `docs/architecture.md`).
 **Зависит от:** ничего.
 **Источник:** ревизия качества кода 2026-11-16, просьба человека завести задачи; реестр —
 [`../open_tasks.md`](../open_tasks.md).
@@ -40,7 +40,7 @@
    `database.py` (вопрос 1 ниже).
 3. Тест: соединение из пула возвращает заданный `statement_timeout` (DB-тест в
    `tests/test_db_nhl.py` либо проверка аргументов `connect` в `tests/test_bot_database.py`).
-4. Обновить раздел «Connection Pool» в `docs/architecture.md`.
+4. Обновить раздел «Connection Pool» в `docs/telegram_bot.md` §12.
 
 **Критерии приёмки.**
 - `grep -n "SimpleConnectionPool" telegram_bot/` пуст.

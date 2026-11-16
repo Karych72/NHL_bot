@@ -702,8 +702,8 @@ model under the old `p`-input, L2 fit).
 > Историческая запись: числа ниже получены по схеме до Задачи 66 (месячные окна + holdout 2025-11-20…2026-04-16,
 > гейт против константы). Действующая схема — §2a.
 
-Реальный прогон (не разведка): `build-dataset --mode train` на живой БД (6049 строк, 5
-сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
+Реальный прогон (не разведка): `build-dataset --mode train` на живой БД (6049 строк до фикса
+отставания признаков, после него 6128; 5 сезонов) → `python -m modeling.cli train --config configs/modeling_default.yaml` (обе
 задачи, обе модели, один вызов, `run_start_utc` общий для всех 4 пар —
 `bb0c2b06_20260928T183528Z` в `run_id`). Конфиг уже включает результаты Задач 1–3 этой
 карточки: `calibration.method: platt`, `diff_elo` в фичах и в `models.lgbm.monotone` (на тот момент; для `home_win` позже убрано),
