@@ -68,10 +68,10 @@ def _text(text: str) -> SimpleNamespace:
 
 @pytest.fixture
 def ai(bot_module, fake_db_router, monkeypatch):
-    """Фабрика окружения: чат задал `asked` = (за сутки, за неделю, всего) вопросов, `premium` —
+    """Фабрика окружения: чат задал `asked` = (за сутки, за неделю) вопросов, `premium` —
     у него премиум; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
 
-    def _make(result: Any, asked: tuple = (0, 0, 0), premium: bool = False):
+    def _make(result: Any, asked: tuple = (0, 0), premium: bool = False):
         bot = bot_module("bot")
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
@@ -360,24 +360,22 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
 
 
 # ---------------------------------------------------------------------------
-# Лимит (Задача 96): премиум — 20 в сутки; бесплатный — 3 в неделю и 8 за всё время.
-# Сам счёт (границы суток и недели МСК, источники) — на настоящей БД, tests/test_db_nhl.py.
+# Лимит (Задача 96): премиум — 20 в сутки; бесплатный — 3 в неделю, потолка за всё время нет
+# (Задача 124). Сам счёт (границы суток и недели МСК, источники) — на настоящей БД,
+# tests/test_db_nhl.py.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("premium", "asked", "refusal", "limit"),
     [
-        (True, (19, 30, 500), None, None),
-        (True, (20, 20, 20), "LIMIT_TEXT", "day"),
-        (False, (2, 2, 7), None, None),
-        (False, (0, 3, 3), "WEEK_LIMIT_TEXT", "week"),
-        # Потолок за всё время — раньше недельного: новой недели бесплатный уже не дождётся.
-        (False, (0, 0, 8), "TOTAL_LIMIT_TEXT", "total"),
-        (False, (0, 3, 8), "TOTAL_LIMIT_TEXT", "total"),
+        (True, (19, 30), None, None),
+        (True, (20, 20), "LIMIT_TEXT", "day"),
+        (False, (2, 2), None, None),
+        (False, (0, 3), "WEEK_LIMIT_TEXT", "week"),
     ],
 )
-async def test_limit_is_daily_for_premium_and_weekly_with_total_cap_for_free(
+async def test_limit_is_daily_for_premium_and_weekly_for_free(
     ai, bot_module, make_message, fake_bot, api, premium, asked, refusal, limit
 ):
     """Отказ модель не вызывает и в `ai_questions` не пишется — только строкой `ai_limit`

@@ -25,21 +25,17 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5-5"
 # Решения человека 2026-10-29 (Задача 96): премиуму — 20 вопросов в сутки по МСК; бесплатным —
-# 3 в календарную неделю МСК (пн–вс) и не больше 8 за всё время, включая вопросы до выкатки 96.
+# 3 в календарную неделю МСК (пн–вс). Потолка за всё время нет (Задача 124).
 PREMIUM_DAILY_LIMIT = 20
 FREE_WEEKLY_LIMIT = 3
-FREE_TOTAL_LIMIT = 8
 # Цены Sonnet 5.5, $ за 1M токенов (2026-10-25): вход, выход, чтение и запись кэша (TTL 5 мин).
 _PRICE_INPUT, _PRICE_OUTPUT, _PRICE_CACHE_READ, _PRICE_CACHE_WRITE = 2.0, 10.0, 0.2, 2.5
 
-# Отказ премиуму (суточный лимит) в /premium не зовёт; отказы бесплатному — зовут (Задача 97B).
+# Отказ премиуму (суточный лимит) в /premium не зовёт; отказ бесплатному — зовёт (Задача 97B).
 LIMIT_TEXT = "На сегодня лимит вопросов исчерпан, команды работают как обычно: /help"
 WEEK_LIMIT_TEXT = (
     "Бесплатные вопросы на этой неделе закончились, новые — в понедельник. "
     "Больше вопросов — в премиуме: /premium. Команды работают как обычно: /help"
-)
-TOTAL_LIMIT_TEXT = (
-    "Бесплатные вопросы закончились. Больше вопросов — в премиуме: /premium. Команды работают как обычно: /help"
 )
 FAILURE_TEXT = "Не удалось разобрать вопрос, попробуйте командой: /help"
 UNSUPPORTED_TEXT = "Это я пока не умею. Что умею — /help"
@@ -256,26 +252,23 @@ def limit_refusal(chat_id: int) -> Optional[str]:
     """Отказ по лимиту вопросов или None, если чат ещё может спросить.
 
     Премиуму (`premium.is_premium`) — `PREMIUM_DAILY_LIMIT` за сутки МСК; бесплатному —
-    `FREE_WEEKLY_LIMIT` за календарную неделю МСК и `FREE_TOTAL_LIMIT` за всё время, отказ
-    у каждого свой. Вопрос — строка `ai_questions` (вызов маршрутизатора 81) или `ai_stats_log`
-    (ответ по статистике 83, в том числе продолжение диалога мимо маршрутизатора); выбор
+    `FREE_WEEKLY_LIMIT` за календарную неделю МСК. Вопрос — строка `ai_questions` (вызов
+    маршрутизатора 81) или `ai_stats_log` (ответ по статистике 83, в том числе продолжение диалога мимо маршрутизатора); выбор
     `stats_question` в `ai_questions` не считается — вопрос списывает строка `ai_stats_log`,
     иначе он стоил бы две единицы. Сбой (`outcome = 'error'`) не списывает: пользователь не
     виноват, что модель не ответила.
     """
     rows = fetch_all(
         f"SELECT count(*) FILTER (WHERE asked_at >= {_msk_start('day')}), "
-        f"count(*) FILTER (WHERE asked_at >= {_msk_start('week')}), count(*) FROM ("
+        f"count(*) FILTER (WHERE asked_at >= {_msk_start('week')}) FROM ("
         "SELECT asked_at FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' "
         "AND tool IS DISTINCT FROM 'stats_question' "
         "UNION ALL SELECT asked_at FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error') q",
         (chat_id, chat_id),
-        columns=["day", "week", "total"],
+        columns=["day", "week"],
     )
     if premium.is_premium(chat_id):
         return LIMIT_TEXT if rows["day"][0] >= PREMIUM_DAILY_LIMIT else None
-    if rows["total"][0] >= FREE_TOTAL_LIMIT:
-        return TOTAL_LIMIT_TEXT
     return WEEK_LIMIT_TEXT if rows["week"][0] >= FREE_WEEKLY_LIMIT else None
 
 

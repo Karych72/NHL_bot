@@ -121,10 +121,10 @@ class FakeReaderConnection:
 def stats(bot_module, fake_db_router, monkeypatch):
     """Фабрика окружения. `responses` — очередь ответов модели; `reader` — {подстрока SQL:
     (колонки, строки) или исключение}; `history` — строки журнала окна (вопрос, исход,
-    шаги, ответ, свежая ли) от новой к старой; `asked` — (за сутки, за неделю, всего) вопросов
+    шаги, ответ, свежая ли) от новой к старой; `asked` — (за сутки, за неделю) вопросов
     бесплатного чата (Задача 96)."""
 
-    def _make(responses, reader=None, history=(), asked=(0, 0, 0),
+    def _make(responses, reader=None, history=(), asked=(0, 0),
               reader_error: Optional[Exception] = None, router=None):
         bot, ai_stats, ai_router, config = (bot_module(n) for n in ("bot", "ai_stats", "ai_router", "config"))
         monkeypatch.setattr(config, "SEASON_ID", 20262027)
@@ -512,7 +512,7 @@ async def test_chat_inside_window_skips_router(stats, make_message, fake_bot, ap
 async def test_limit_stops_continuation_inside_window(stats, make_message, fake_bot, api):
     """Продолжение диалога 83 — тоже вопрос: недельный лимит бесплатного его останавливает,
     хотя окно открыто (а записанная строка `ai_stats_log` его списывает — tests/test_db_nhl.py)."""
-    s = stats([], history=[_past()], asked=(0, 3, 3))
+    s = stats([], history=[_past()], asked=(0, 3))
     replies = await _ask(s, make_message, fake_bot, api, "а в прошлом сезоне?")
 
     assert replies == [_as_reply(s.bot.ai_router.WEEK_LIMIT_TEXT)]

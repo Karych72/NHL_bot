@@ -1598,7 +1598,7 @@ class TestGoalClipCacheSql(unittest.TestCase):
 class TestAiLimitSql(unittest.TestCase):
     """Премиум и лимит вопросов к ИИ (Задачи 81, 96) на настоящих ``premium_access``,
     ``ai_questions`` и ``ai_stats_log``. Юнит-тесты подменяют ответ БД, здесь проверяется сам
-    SQL: срок премиума, границы суток и недели по МСК, потолок за всё время, что считается
+    SQL: срок премиума, границы суток и недели по МСК, отсутствие потолка за всё время, что считается
     вопросом. Чаты — отрицательные, как в ``TestSubscriptionRepoSql``; строки удаляются до и
     после."""
 
@@ -1663,12 +1663,13 @@ class TestAiLimitSql(unittest.TestCase):
         self._asked(self.EXPIRED_CHAT, 1)
         self.assertEqual(ai.limit_refusal(self.EXPIRED_CHAT), ai.WEEK_LIMIT_TEXT)
 
-    def test_free_total_cap_counts_whole_history(self):
+    def test_free_chat_has_no_lifetime_cap(self):
+        """Задача 124: прошлые недели не копятся в потолок — чат с прежним отказом «8 за всё
+        время» на новой неделе снова спрашивает."""
         ai = self.ai
-        self._asked(self.FREE_CHAT, ai.FREE_TOTAL_LIMIT - 1, at="now() - interval '60 days'")
+        self._asked(self.FREE_CHAT, 8, at=self.BEFORE_WEEK)
+        self._asked(self.FREE_CHAT, 4, at="now() - interval '30 days'")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
-        self._asked(self.FREE_CHAT, 1, at="now() - interval '30 days'")
-        self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.TOTAL_LIMIT_TEXT)
 
     def test_each_question_counts_once_and_failures_do_not(self):
         """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
