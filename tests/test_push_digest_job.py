@@ -13,7 +13,6 @@ PTB 21.x) ровно потому, что ни один тест его не и�
 from __future__ import annotations
 
 import re
-import sys
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
@@ -530,9 +529,9 @@ GAME_A, GAME_B = 2026020001, 2026020002
 FOOTER = "<footer>Настроить подписки: /subscriptions</footer>"
 # Причина рассылки — в подвале («По подписке: …»), а не первой строкой: первой идёт табло.
 RUS_FOOTER = "<footer>По подписке: Россия<br>Настроить подписки: /subscriptions</footer>"
-# Подвал превью предстоящего матча: «Сезон …» из `matchup_season_preview`, затем подписки.
-# Бесплатному вместо оценки модели — тизер (Задача 97B).
-PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium<br>Настроить подписки: /subscriptions</footer>"
+# Подвал превью предстоящего матча: «Сезон …» из `matchup_season_preview`, затем подписки;
+# строки прогноза и тизера премиума нет (Задача 123).
+PREVIEW_FOOTER = "<footer>Сезон 2026/27<br>Настроить подписки: /subscriptions</footer>"
 
 
 def _goals(game_id, n, first_event=100):
@@ -995,10 +994,8 @@ def upcoming_env(push_job, monkeypatch):
     ходили в NHL, ``previews`` — пары (гости, хозяева), для которых собиралось превью,
     ``sent`` — отметки (подписка, матч), ``deactivated`` — погашенные подписки, ``chats`` —
     (id подписки, chat_id) активных подписчиков, ``read_subs`` — сколько раз их читали из БД;
-    ``premium`` — чаты с премиумом (Задача 96), ``predicted`` — матчи, чей прогноз читался из
-    ``game_predictions`` (у каждого — победа хозяев 61%); ``run(bot, now)`` — один прогон."""
-    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0,
-                          premium=set(), predicted=[])
+    ``run(bot, now)`` — один прогон."""
+    env = SimpleNamespace(days=[], previews=[], sent=set(), deactivated=[], chats=[], read_subs=0)
 
     def fetch(day):
         env.days.append(day)
@@ -1013,15 +1010,6 @@ def upcoming_env(push_job, monkeypatch):
         env.read_subs += 1
         return env.chats
 
-    def predictions(query, params, columns):
-        env.predicted.append(params[0])
-        return {"count_rows": 1, "task": ["home_win"], "probability": [0.61]}
-
-    # Строка прогноза — настоящая `with_model_prediction`, подменены только её выборка
-    # и название хозяев из `teams`.
-    monkeypatch.setattr(sys.modules["bot_messages"], "fetch_all", predictions)
-    monkeypatch.setattr(sys.modules["bot_messages"], "team_name_for_abbrev", lambda abbrev: f"{abbrev} Club")
-    monkeypatch.setattr(push_job.premium, "is_premium", lambda chat_id: chat_id in env.premium)
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
     monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
@@ -1079,29 +1067,6 @@ async def test_upcoming_one_preview_per_run_in_start_order(push_job, upcoming_en
     assert api.sent_messages == [], "превью уходят rich-сообщениями"
     assert all(m.rich_message.html.startswith("<p>⏰ Начало в ") for m in api.sent_rich)
     assert upcoming_env.previews == [("BOS", "TOR"), ("NYR", "MTL"), ("VAN", "SEA")]
-    assert upcoming_env.predicted == [], "бесплатным прогноз не читается"
-
-
-@pytest.mark.asyncio
-async def test_upcoming_prediction_only_for_premium_chat(push_job, upcoming_env, fake_bot, api):
-    """Задача 96: один матч, два чата — премиум получает строку прогноза, бесплатный нет;
-    превью общее и собирается один раз, прогноз дописывается при отправке, кто бы ни шёл
-    в рассылке первым."""
-    upcoming_env.chats = [(10, 111), (20, 222), (30, 333)]
-    upcoming_env.premium = {222}
-    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
-
-    plain = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + PREVIEW_FOOTER
-    with_prediction = rich_html("⏰ Начало в 02:00 МСК\nPREVIEW BOS @ TOR") + (
-        "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа TOR Club — 61%"
-        "<br>Настроить подписки: /subscriptions</footer>"
-    )
-    assert [(m.chat_id, m.rich_message.html) for m in api.sent_rich] == [
-        (111, plain), (222, with_prediction), (333, plain),
-    ]
-    assert upcoming_env.previews == [("BOS", "TOR")]
-    assert upcoming_env.predicted == [GAME_A]
-    assert all("🔒" not in m.rich_message.html for m in api.sent_rich if m.chat_id == 222)
 
 
 @pytest.mark.asyncio
@@ -1280,7 +1245,7 @@ async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Канал (Задачи 118, 120): превью без прогноза, итоги всех матчей ночи, посты выходных
+# Канал (Задачи 118, 120): превью, итоги всех матчей ночи, посты выходных
 # ---------------------------------------------------------------------------
 
 # Id канала строкой, как его читает `config` из `.env` (@username Telegram принимает так же).
@@ -1298,7 +1263,7 @@ def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
     """Канал ``CHANNEL`` без паузы между постами: отметки (game_id, вид) — в ``posted``;
     NHL ``score`` — ``SLATE``; загруженные матчи ночи — ``games``; БД превью и блоков стран — ``fake_db_router``: у любой пары
     команд есть сезон, ``players`` — {страна: строки ``game_player_stats``}. Превью и блоки
-    стран собираются настоящими сборщиками; запрос прогноза упал бы — маршрута у него нет."""
+    стран собираются настоящими сборщиками."""
     config = bot_module("config")
     monkeypatch.setattr(config, "CHANNEL_ID", CHANNEL)
     monkeypatch.setattr(push_job, "_CHANNEL_POST_INTERVAL_SEC", 0)
@@ -1324,10 +1289,10 @@ def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
 
 
 @pytest.mark.asyncio
-async def test_channel_previews_every_upcoming_game_once_without_prediction(push_job, channel_env, fake_bot, api):
+async def test_channel_previews_every_upcoming_game_once(push_job, channel_env, fake_bot, api):
     """С 15:30 МСК все предстоящие матчи дня — одним постом по времени начала: у каждого
-    время, команды, сравнение свёрнуто; ни прогноза, ни тизера премиума, ни подписок, ни
-    кнопок — подвал один, в нём ссылка на бота. Повторный прогон ничего не дублирует."""
+    время, команды, сравнение свёрнуто; ни подписок, ни кнопок — подвал один, в нём ссылка
+    на бота. Повторный прогон ничего не дублирует."""
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
 

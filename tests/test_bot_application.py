@@ -654,8 +654,8 @@ async def test_start_in_private_greets_new_chat_with_trial_gift(
 
     help_text = bot_module("help_text")
     expected = help_text.start_message_with_gift(
-        "🎁 Премиум на 3 дня в подарок — до 06.11: прогноз модели и ИИ до 20 вопросов в сутки. "
-        "Подробнее — /premium"
+        "🎁 Премиум на 3 дня в подарок — до 06.11: ИИ до 20 вопросов в сутки и свои рассылки "
+        "без ограничений. Подробнее — /premium"
     ) if until else help_text.START_MESSAGE
     [reply] = api.sent_rich
     assert body(reply) == rich_html(expected)

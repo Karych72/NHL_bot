@@ -28,6 +28,11 @@
 | 114 | [ИИ отвечает на вопросы о самом боте](task_114_ai_bot_questions.md) | Продукт | 🟡 |
 | 119 | [Карточка матча: видео голов в свёрнутых блоках, шапка-табло с маскотами](task_119_goal_videos_in_details.md) | Продукт | 🟡 |
 | 118 | [Telegram-канал: предстоящие матчи и Россия/Беларусь](task_118_telegram_channel.md) | Продукт | 🟡 |
+| 122 | [Подписка на игрока](task_122_player_subscription.md) | Продукт | 🟡 |
+| 123 | [Убрать прогноз модели из бота](task_123_remove_model_prediction.md) | Продукт | 🟠 |
+| 124 | [Бесплатный ИИ: без пожизненного потолка](task_124_free_ai_no_total_limit.md) | Продукт | 🟠 |
+| 125 | [Конец пробника: сообщение вместо тишины](task_125_trial_end_message.md) | Продукт | 🟡 |
+| 126 | [Премиум без прогноза: чем наполнить](task_126_premium_content.md) | Продукт | 🟠 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
