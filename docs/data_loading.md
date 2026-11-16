@@ -246,8 +246,10 @@ make test-db                # unittest по схеме (RUN_DB_SCHEMA_TESTS=1 п
 плей-офф отчёты типа 3 пусты, и ежедневный sync пишет только регулярку:
 
 1. **`load_team_reference()`** — справочник команд (`/stats/rest/en/team`) +
-   текущая турнирная таблица (`/v1/standings/now`) для названий
-   дивизионов / конференций.
+   турнирная таблица на последний день сезона `season_id` (`/v1/standings-season` →
+   `standingsEnd`, затем `/v1/standings/{дата}`) для названий дивизионов / конференций:
+   прошлый сезон получает свою раскладку, исчезнувшие клубы (ATL, PHX) — не NULL; у текущего
+   сезона это последняя таблица, та же, что `now` (Задача 121).
 2. **`build_teams()`** + **`build_teams_stats()`** — `teams` из `team/summary` регулярки
    (в плей-офф-отчёте только 16 клубов), `teams_stats` — из `team/summary` каждого типа.
 3. **`build_rosters()`** — обход всех команд через `/v1/roster/{TRI}/{SEASON_ID}`.
@@ -304,7 +306,8 @@ Date window 2026-09-01 .. 2027-03-29 (season_id=20262027, games.season=26/27)
 | URL | Что забираем |
 |-----|--------------|
 | `https://api.nhle.com/stats/rest/en/team` | Справочник всех команд (id, triCode, fullName). |
-| `https://api-web.nhle.com/v1/standings/now` | Текущая турнирная таблица (для дивизиона/конференции). |
+| `https://api-web.nhle.com/v1/standings-season` | Сезоны и последний день их таблицы (`standingsEnd`); сезона нет в списке — `KeyError`. |
+| `https://api-web.nhle.com/v1/standings/{YYYY-MM-DD}` | Турнирная таблица на `standingsEnd` сезона (для дивизиона/конференции). |
 | `https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=gameTypeId={2,3}%20and%20seasonId=…` | Командные сезонные агрегаты регулярки и плей-офф. |
 | `https://api-web.nhle.com/v1/roster/{TRI}/{SEASON_ID}` | Текущий ростер команды на сезон. |
 | `https://api.nhle.com/stats/rest/en/skater/{summary,timeonice,faceoffpercentages,shootout,realtime,goalsForAgainst,puckPossessions,shottype}?cayenneExp=…` | Сезонные отчёты по полевым. |
@@ -471,6 +474,33 @@ SEASON_ID=20242025 \
 Строки текущего сезона не трогаются: UPSERT-ы идут только по своим PK,
 а `DELETE … WHERE game_id = ANY(...)` фильтрует только игры из переданного
 окна, чьи `game_id` в любом случае уникальны на уровне NHL.
+
+### 9.1. История 2009/10–2020/21 (Задача 121)
+
+Двенадцать сезонов (14 917 завершённых матчей регулярки и плей-офф) грузятся тем же лоадером
+по одному сезону, от старого к новому, окном на весь сезон (`--season-id S --date-from Y-09-01
+--date-to Y+1-10-31`). На `nhl_dev` это делает `sh scripts/dev_history_load.sh` с ноутбука:
+сверяет кэш, копирует его в том dev-стека, останавливает его `sync` на время загрузки, грузит
+сезоны и сверяет матчи, броски, справочник команд и `build-dataset` до и после.
+
+Матчи берутся из кэша `all_data/raw/{season}/` (§6.5): сырой слой собран целиком на ноутбуке
+человека (2009/10–2026/27, 441 МБ, история — 415 МБ; в git и бэкап не входит). С API те же
+матчи грузились бы сутки и больше — на VM кэш копировать в том (`nhl_bot_dev_syncdata` для
+`nhl_dev`, `nhl_bot_syncdata` для продовой базы), а не качать. Сезонные отчёты, составы и
+турнирная таблица идут в сеть и для истории.
+
+Матчей по сезонам (регулярка + плей-офф): 2009/10 — 1319, 2010/11 — 1319, 2011/12 — 1316,
+2012/13 — 806 (локаут), 2013/14 — 1323, 2014/15 — 1319, 2015/16 — 1321, 2016/17 — 1317,
+2017/18 — 1355, 2018/19 — 1358, 2019/20 — 1212 (COVID), 2020/21 — 952. В плей-офф 2019/20 есть
+`round = 0` (турнир за посев и квалификация до трёх побед): у этих серий `playoff_series.winner_id`
+всегда NULL. В 2020/21 конференций не было: `teams.conference_name` — NULL, дивизионы со спонсорскими
+названиями («MassMutual East»). Датасет модели история не меняет — его нижняя граница `dataset.first_season_id`
+в `configs/modeling_*.yaml` ([`modeling_dataset_builder.md`](modeling_dataset_builder.md)).
+
+**Смена сезона.** `load_team_reference` берёт таблицу на последний день сезона из
+`/v1/standings-season`; пока API не завёл новый сезон, лоадер падает с `RuntimeError`, и
+ночной sync стоит. `SEASON_ID` переключать на новый сезон только после того, как он появился
+в `https://api-web.nhle.com/v1/standings-season` (2026/27 там с `standingsStart` 2026-09-29).
 
 Проверить, какие сезоны лежат в базе:
 

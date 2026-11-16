@@ -38,6 +38,9 @@ from .validate import validate_or_raise, write_report
 class DatasetBuildConfig:
     mode: str
     output_dir: Path
+    # Lower season bound of everything read from the DB, Elo and shot-share history
+    # included (Задача 121): history loaded below it leaves the dataset unchanged.
+    first_season_id: int
     feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
@@ -64,10 +67,11 @@ def _git_commit_hash() -> str:
 
 
 def _season_where_clause(config: DatasetBuildConfig) -> str:
-    if not config.season_ids:
-        return ""
-    ids = ",".join(str(int(v)) for v in config.season_ids)
-    return f" AND g.season_id IN ({ids})"
+    clause = f" AND g.season_id >= {int(config.first_season_id)}"
+    if config.season_ids:
+        ids = ",".join(str(int(v)) for v in config.season_ids)
+        clause += f" AND g.season_id IN ({ids})"
+    return clause
 
 
 def _day_where_clause(config: DatasetBuildConfig) -> str:
@@ -202,6 +206,24 @@ def load_history_team_stats(conn, config: DatasetBuildConfig) -> pd.DataFrame:
     return pd.read_sql_query(query, conn)
 
 
+def load_elo_history(conn, config: DatasetBuildConfig) -> pd.DataFrame:
+    """Played history of the Elo and shot-share features, with OT/SO outcome and goals.
+
+    Elo (Task 3) and the shot share (Задача 68) persist across seasons, so they need the
+    complete played history regardless of ``season_ids``/``target_day_from`` — this reuses
+    ``load_target_games`` (``mode="train"`` forces ``winner_id IS NOT NULL``) rather than a
+    near-duplicate query. Only ``first_season_id`` (Задача 121) and ``target_day_to`` (a
+    historical "as of" snapshot) bound it.
+
+    Args:
+        conn: соединение psycopg2.
+        config: режим сборки; из фильтров действуют только ``first_season_id`` и ``target_day_to``.
+    """
+    return load_target_games(
+        conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_outcome=True
+    ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
+
+
 def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
     """Загружает попытки бросков сыгранных игр для xG-модели (Задача 69) — содержимое ``shots_train.csv``.
 
@@ -253,6 +275,7 @@ def _compose_data_snapshot_id(config: DatasetBuildConfig, built_at_iso: str) -> 
         parts.append("seasons=" + ",".join(str(int(s)) for s in config.season_ids))
     else:
         parts.append("seasons=all")
+    parts.append(f"first_season={int(config.first_season_id)}")
     if config.target_day_from:
         parts.append("day_from=" + config.target_day_from)
     if config.target_day_to:
@@ -424,15 +447,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     with _connect_from_env() as conn:
         target_games = load_target_games(conn, config)
         history = load_history_team_stats(conn, config)
-        # Elo (Task 3) and the shot share (Задача 68) persist across seasons, so they
-        # need the *complete* played history regardless of
-        # config.season_ids/target_day_from — reuse
-        # load_target_games itself (mode="train" forces winner_id IS NOT NULL)
-        # rather than a near-duplicate query; only target_day_to still bounds it,
-        # for a historical "as of" snapshot.
-        elo_history = load_target_games(
-            conn, replace(config, mode="train", season_ids=[], target_day_from=None), with_outcome=True
-        ).rename(columns={"home_goals_target": "home_goals", "away_goals_target": "away_goals"})
+        elo_history = load_elo_history(conn, config)
         shots = load_shot_attempts(conn, config) if config.mode == "train" else None
 
     team_facts, team_facts_report = build_team_game_facts(history)

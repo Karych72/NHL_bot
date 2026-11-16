@@ -33,6 +33,7 @@ Both are validated by typed models in [`modeling/config.py`](../modeling/config.
 | `random_seed` | Single seed for all subsystems (training, bootstrap, LightGBM, Platt calibration) |
 | `compute.num_threads`, `compute.log_level` | Thread limit for sklearn/LightGBM and log level for `run.log` |
 | `tasks.{home_win,over_5_5}.enabled` | Which targets to train (at least one must be `true`) |
+| `dataset.first_season_id` | First season `build-dataset` reads from the DB, Elo and shot-share history included (`20212022`; the DB holds history back to 2009/10, Задача 121). Not read by `train` — see `modeling_dataset_builder.md` §«Lower season bound» |
 | `split.*` | Season-by-season check: `test_seasons` (strictly increasing), `inner_val_games`, `calibration_games` — see §2a |
 | `elo.grid` | Search grid of the Elo benchmark (`k`, `home_advantage`, `season_regression`, `mov`, `ot_win_weight`) — see §2a |
 | `goals.{alpha,tie_halflife_days}` | Goal model: ridge grid of the Poisson GLM, half-life of the tracked tie rate — see §2b |

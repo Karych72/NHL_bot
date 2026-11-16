@@ -309,6 +309,7 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
             "random_seed": 42,
             "compute": {"num_threads": 1, "log_level": "INFO"},
             "tasks": {"home_win": {"enabled": True}, "over_5_5": {"enabled": True}},
+            "dataset": {"first_season_id": 20212022},
             "split": {"test_seasons": [20252026], "inner_val_games": 1, "calibration_games": 1},
             "elo": {
                 "grid": {
