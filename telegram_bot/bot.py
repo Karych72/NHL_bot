@@ -1277,7 +1277,8 @@ def build_dispatcher() -> Dispatcher:
 
 async def run_polling(token: str) -> None:
     """Long polling бота с токеном `token` (в проде `config.TOKEN`) до сигнала остановки;
-    рядом — тикер расписаний (`run_schedule_ticker`), он останавливается вместе с polling."""
+    рядом — тикер расписаний и конца пробника (`run_schedule_ticker`), он останавливается
+    вместе с polling."""
     bot = Bot(token)
     ticker = asyncio.create_task(run_schedule_ticker(bot))
     try:
