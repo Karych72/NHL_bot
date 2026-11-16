@@ -23,8 +23,7 @@ that responsibility and passes it via *metadata*.
 
 **Inference-side additions (Задача 15):** :func:`resolve_latest_model_dir`,
 :func:`load_latest_calibrator`, and :func:`check_features_hash_match` support
-``modeling/predict_runner.py`` loading the ``latest`` trained artifact (symlink
-or ``latest.txt`` fallback) and refusing to score with a stale one.
+``modeling/predict_runner.py`` loading the ``latest`` trained artifact (``latest`` symlink) and refusing to score with a stale one.
 """
 
 from __future__ import annotations
@@ -52,8 +51,8 @@ _METADATA_FILENAME = "metadata.json"
 def _get_git_commit(repo_root: Path | None = None) -> str | None:
     """Return the current HEAD commit hash, or ``None`` on any failure.
 
-    Wrapped in a broad try/except so missing ``.git`` directories, absent
-    ``git`` binary, or non-zero exit codes all silently return ``None``.
+    A missing ``git`` binary, a timeout or a non-zero exit code (no ``.git`` in the
+    Docker image) return ``None``; the metadata contract allows ``git_commit: null``.
 
     Args:
         repo_root: Directory to run ``git rev-parse HEAD`` in.  Defaults to the
@@ -70,7 +69,7 @@ def _get_git_commit(repo_root: Path | None = None) -> str | None:
         )
         if result.returncode == 0:
             return result.stdout.strip() or None
-    except Exception:  # noqa: BLE001 — intentionally broad; any failure → null
+    except (OSError, subprocess.TimeoutExpired):  # no git binary / hung git → null (contract)
         pass
     return None
 
@@ -92,11 +91,7 @@ def _collect_library_versions() -> dict[str, str]:
         ("joblib", "joblib"),
         ("lightgbm", "lightgbm"),
     ]:
-        try:
-            mod = importlib.import_module(import_name)
-            versions[pkg] = getattr(mod, "__version__", "unknown")
-        except Exception:  # noqa: BLE001
-            versions[pkg] = "unknown"
+        versions[pkg] = importlib.import_module(import_name).__version__
     return versions
 
 
@@ -191,9 +186,7 @@ def load_model_artifact(path_dir: Path | str) -> tuple[Any, dict[str, Any]]:
 def resolve_latest_model_dir(artifacts_root: Path | str, task: str, model: str) -> Path:
     """Resolve ``artifacts/models/<task>/<model>/latest`` to its ``<run_id>/final/`` directory.
 
-    Handles both forms written by ``train_runner.update_latest_symlink``
-    (``modeling/train_runner.py:579-621``): a real symlink, or the
-    ``latest.txt`` fallback used on filesystems without symlink support.
+    Reads the symlink written by ``train_runner.update_latest_symlink``.
 
     Args:
         artifacts_root: Root directory containing ``models/<task>/<model>/latest``.
@@ -204,20 +197,16 @@ def resolve_latest_model_dir(artifacts_root: Path | str, task: str, model: str) 
         Absolute path to the resolved ``final/`` directory.
 
     Raises:
-        FileNotFoundError: Neither a ``latest`` symlink nor ``latest.txt`` exists
+        FileNotFoundError: No ``latest`` symlink exists
             (no run with ``status: ok`` has been produced yet for this pair).
     """
     base = Path(artifacts_root) / "models" / task / model
     link_path = base / "latest"
     if link_path.is_symlink():
         return (base / os.readlink(link_path)).resolve()
-    txt_path = base / "latest.txt"
-    if txt_path.is_file():
-        rel_target = txt_path.read_text(encoding="utf-8").strip()
-        return (base / rel_target).resolve()
     raise FileNotFoundError(
         f"no 'latest' pointer for {task}/{model} under {base} "
-        "(expected a symlink or latest.txt; train a model with status=ok first)"
+        "(expected a symlink; train a model with status=ok first)"
     )
 
 

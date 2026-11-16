@@ -337,28 +337,16 @@ def _validate_latest_symlink(
 ) -> None:
     """Require ``latest`` symlink → ``<run_id>/final/`` (UPDATE plan DoD §5).
 
-    ``train_runner.update_latest_symlink`` may write ``latest.txt`` when the host
-    filesystem cannot create symlinks. That fallback is for production convenience
-    only and **does not** satisfy acceptance DoD — phase-2 checks insist on a
-    real symlink here.
     """
     if not expect_pointer:
         return
     base = artifacts_root / "models" / task / model
     link_path = base / "latest"
     if not link_path.is_symlink():
-        txt = base / "latest.txt"
-        if txt.is_file():
-            _issue(
-                issues,
-                f"latest for {task}/{model} is latest.txt fallback, not a symlink "
-                f"(DoD requires symlink → {run_id}/final/)",
-            )
-        else:
-            _issue(
-                issues,
-                f"latest symlink missing for {task}/{model} (expected → {run_id}/final/)",
-            )
+        _issue(
+            issues,
+            f"latest symlink missing for {task}/{model} (expected → {run_id}/final/)",
+        )
         return
     resolved = (base / os.readlink(link_path)).resolve()
     if resolved != (base / run_id / "final").resolve():

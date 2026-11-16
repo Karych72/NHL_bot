@@ -665,8 +665,7 @@ def update_latest_symlink(
 ) -> None:
     """Atomically point ``artifacts/models/<task>/<model>/latest`` at ``<run_id>/final/``.
 
-    Skipped when ``status != ok``. On filesystems without symlink support, writes
-    ``latest.txt`` with the relative target path instead of raising.
+    Skipped when ``status != ok``. A failure to create the symlink raises ``OSError``.
     """
     if status != "ok":
         logger.info(
@@ -684,19 +683,11 @@ def update_latest_symlink(
     link_path = base / "latest"
     tmp_link = base / f".latest_tmp_{run_id}"
 
-    try:
-        if tmp_link.exists() or tmp_link.is_symlink():
-            tmp_link.unlink()
-        os.symlink(rel_target, tmp_link)
-        os.replace(tmp_link, link_path)
-        logger.info("Updated latest symlink → %s", rel_target)
-    except OSError as exc:
-        logger.warning(
-            "Symlink not supported or failed (%s); writing latest.txt fallback",
-            exc,
-        )
-        pointer = base / "latest.txt"
-        pointer.write_text(f"{rel_target.as_posix()}\n", encoding="utf-8")
+    if tmp_link.exists() or tmp_link.is_symlink():
+        tmp_link.unlink()
+    os.symlink(rel_target, tmp_link)
+    os.replace(tmp_link, link_path)
+    logger.info("Updated latest symlink → %s", rel_target)
 
 
 def promote_model(task: str, model: str, run_id: str, *, artifacts_root: Path) -> Path:

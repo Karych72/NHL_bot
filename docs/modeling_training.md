@@ -491,7 +491,7 @@ artifacts/
   holdout log-loss for `home_win`/lgbm from 0.6926 (fixed-round retrain) to 0.7646.
   The old 7-axis × 3-value grid (2187 points) that grid selection searched over also
   took about 19 minutes per fold on this dataset; the 8-point grid in `configs/modeling_default.yaml` (`models.lgbm.grids`) replaces it.
-- **`latest`** — symlink (or `latest.txt` fallback) pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
+- **`latest`** — symlink pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
 ### `metadata.json` (final and per-season artifacts)
@@ -584,7 +584,7 @@ python -m modeling.cli predict --task home_win --model logreg
 
 Steps performed by `run_predict()`:
 
-1. Resolve `artifacts/models/<task>/<model>/latest` (symlink or `latest.txt` fallback)
+1. Resolve `artifacts/models/<task>/<model>/latest` (symlink)
    to a `final/` directory (`modeling.artifacts.resolve_latest_model_dir`).
 2. Load `model.joblib` + `metadata.json` (`load_model_artifact`) and
    `calibrator.joblib` (`load_latest_calibrator` — a plain estimator dump, distinct
