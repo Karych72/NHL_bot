@@ -46,6 +46,7 @@ cd /opt/nhl_bot
 echo "nhl_dev сейчас: $(sudo -u deploy docker compose exec -T db psql -U postgres -At \
   -c "SELECT pg_size_pretty(pg_database_size('nhl_dev'))" </dev/null)"
 [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 4 ] || { echo "Мало места" >&2; exit 1; }
+! pgrep -f nhl_history_load.sh >/dev/null || { echo "Прошлая загрузка ещё идёт" >&2; exit 1; }
 REMOTE
 
 echo "== Архив кэша → VM"
@@ -69,8 +70,9 @@ dataset_rows() {
       --output-dir /tmp/ds >/dev/null && cd /tmp/ds && wc -l dataset_train.csv games_train.csv shots_train.csv'
 }
 SYNC_STOPPED=0
-# Сигнал идёт через exit, чтобы EXIT-ловушка вернула sync и в этом случае (dash иначе её не зовёт).
-trap 'exit 1' HUP INT TERM
+# HUP и INT после setsid nohup игнорируются; TERM (срабатывает после текущего шага) идёт через
+# exit, чтобы EXIT-ловушка вернула sync и в этом случае — dash иначе её не зовёт.
+trap 'exit 1' TERM
 trap 'rc=$?; if [ "$SYNC_STOPPED" = 1 ]; then echo "== sync dev-стека снова запущен"; dc up -d sync; fi
   if [ "$rc" = 0 ]; then echo "ГОТОВО: все сверки сошлись."; else echo "СБОЙ (код $rc) — см. выше"; fi' EXIT
 
@@ -152,6 +154,7 @@ LOG=/tmp/nhl_history_load_$STAMP.log
 echo "== Загрузка на VM запущена в фоне, лог — $LOG"
 PID=$(ssh_vm --command "EXPECTED='$EXPECTED' LOADER_LOG=/tmp/nhl_history_loader_$STAMP.log \
   setsid nohup sh /tmp/nhl_history_load.sh >$LOG 2>&1 </dev/null & echo \$!")
+case $PID in ''|*[!0-9]*) echo "Не разобрал PID загрузки: $PID" >&2; exit 1 ;; esac
 FOLLOW="tail --pid=$PID -n +1 -f $LOG"
 echo "Если связь оборвётся, следить дальше:"
 echo "  gcloud compute ssh $VM --zone $ZONE --project $PROJECT --command '$FOLLOW'"
