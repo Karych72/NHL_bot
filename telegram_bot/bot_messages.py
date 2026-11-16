@@ -1654,6 +1654,48 @@ def season_teams_by_division() -> Dict[str, List[Tuple[int, str, str]]]:
     return result
 
 
+# Группы состава в меню подписки на игрока (Задача 122): код группы → (подпись, позиции rosters).
+ROSTER_GROUPS = {"F": ("Нападающие", ("C", "L", "R")), "D": ("Защитники", ("D",)), "G": ("Вратари", ("G",))}
+
+
+def team_roster_group(team_id: int, group: str) -> List[Tuple[int, str]]:
+    """Игроки клуба `team_id` текущего сезона из группы `group` (`ROSTER_GROUPS`) для меню
+    подписки на игрока: [(player_id, имя)] по фамилии. Имя — `player_display_name` (с инициалом
+    у однофамильцев, Задача 117). Состав — из `rosters`: вызванный из фарм-клуба после последней
+    загрузки ростера появится после следующей.
+
+    Аргументы:
+        team_id: клуб (`teams.team_id`).
+        group: `F`, `D` или `G`.
+    """
+    rows = cached_fetch_all(
+        "SELECT player_id, player_display_name(name, lastname, season_id) FROM rosters "
+        "WHERE season_id = %s AND current_team_id = %s AND position = ANY(%s) ORDER BY lastname, name",
+        (config.SEASON_ID, team_id, list(ROSTER_GROUPS[group][1])),
+        columns=["player_id", "name"],
+    )
+    return [(int(rows["player_id"][i]), rows["name"][i]) for i in range(rows["count_rows"])]
+
+
+def player_labels(player_ids: Sequence[int]) -> Dict[int, str]:
+    """Подписи игроков «Имя (КОД)» по последнему сезону в `rosters`: player_id → строка.
+
+    Зачем: сводка `/subscriptions` и подвал рассылки (Задача 122) называют подписанных игроков,
+    в том числе сменивших клуб, — код клуба отличает однофамильцев из разных команд.
+
+    Аргументы:
+        player_ids: игроки подписок чата.
+    """
+    rows = fetch_all(
+        "SELECT DISTINCT ON (player_id) player_id, "
+        "player_display_name(name, lastname, season_id) || ' (' || coalesce(trim(abbreviation), '?') || ')' "
+        "FROM rosters WHERE player_id = ANY(%s) ORDER BY player_id, season_id DESC",
+        (list(player_ids),),
+        columns=["player_id", "label"],
+    )
+    return {int(rows["player_id"][i]): rows["label"][i] for i in range(rows["count_rows"])}
+
+
 _TEAM_PROFILE_TOP = 5
 
 # Порядок полевых игроков клуба — два фиксированных литерала модуля, не ввод

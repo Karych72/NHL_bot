@@ -118,17 +118,17 @@ def test_main_screen_schedule_hint_depends_on_schedules_and_premium(bot_module):
         return hint_line
 
     for is_premium in (False, True):
-        empty, _ = bot._subscriptions_main_screen(False, False, [], [], 0, is_premium)
+        empty, _ = bot._subscriptions_main_screen(False, False, [], [], [], 0, is_premium)
         assert hint(empty) == (
             "<b>⏰ Свои рассылки — любой экран в нужное время. Просто напишите боту: "
             f"«{example}». Одна такая рассылка бесплатно, с премиумом — сколько угодно: /premium</b>"
         )
-    free, _ = bot._subscriptions_main_screen(False, False, [], [], 1, False)
+    free, _ = bot._subscriptions_main_screen(False, False, [], [], [], 1, False)
     assert hint(free) == (
         "<b>⏰ Хотите больше своих рассылок? С /premium их можно завести сколько угодно — "
         "просто напишите боту, что и когда присылать.</b>"
     )
-    paid, _ = bot._subscriptions_main_screen(False, False, [], [], 3, True)
+    paid, _ = bot._subscriptions_main_screen(False, False, [], [], [], 3, True)
     assert hint(paid) == (
         "<b>⭐ С премиумом своих рассылок сколько угодно — новую заводите одной фразой: "
         "напишите боту, что и когда присылать.</b>"

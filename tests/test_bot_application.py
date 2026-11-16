@@ -338,7 +338,7 @@ async def test_double_tap_of_one_user_is_handled_one_after_another(
     monkeypatch.setattr(sh, "game_message", lambda game_id, clips, collapsed: "CARD")
     monkeypatch.setattr(sh, "game_goal_events", lambda game_id: [])
     monkeypatch.setattr(sh, "get_chat_subscriptions", lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(
-        False, False, set(), []
+        False, False, set(), [], set()
     ))
 
     await asyncio.gather(*(

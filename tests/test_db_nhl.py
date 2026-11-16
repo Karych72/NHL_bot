@@ -371,10 +371,10 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
         # Отписка от одной страны; переподписка реактивирует ту же строку.
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN"], set()))
         repo.upsert_country(self.CHAT, "RUS")
         self.assertEqual(
-            repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN", "RUS"])
+            repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["FIN", "RUS"], set())
         )
 
     def test_chat_game_marks_and_deactivate_chat(self):
@@ -402,8 +402,8 @@ class TestSubscriptionRepoSql(unittest.TestCase):
             repo.upsert_country(chat_id, "RUS")
         repo.upsert_team_scores(self.CHAT, self.TEAM)
         repo.deactivate_chat(self.CHAT)
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
-        self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), [], set()))
+        self.assertEqual(repo.get_chat_subscriptions(self.OTHER_CHAT), (True, True, set(), ["RUS"], set()))
 
     def test_channel_post_marks(self):
         """Задача 118: отметка поста в канал — по паре (матч, вид), повторная — no-op; превью
@@ -513,16 +513,16 @@ class TestSubscriptionRepoSql(unittest.TestCase):
 
     def test_get_chat_subscriptions_reads_only_active_rows_of_the_chat(self):
         repo = self.repo
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), []))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, set(), [], set()))
         repo.upsert_chat_kind(self.CHAT, "morning_digest")
         repo.upsert_team_scores(self.CHAT, self.TEAM)
         repo.upsert_team_scores(self.CHAT, self.TEAM + 1)
         repo.upsert_country(self.CHAT, "RUS")
         repo.upsert_chat_kind(self.OTHER_CHAT, "morning_digest")
         repo.deactivate_team_scores(self.CHAT, self.TEAM + 1)
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (True, False, {self.TEAM}, ["RUS"], set()))
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "morning_digest")
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, {self.TEAM}, ["RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, False, {self.TEAM}, ["RUS"], set()))
 
     def test_upcoming_games_subscription(self):
         """Задача 78: подписка на чат — одна строка, переподписка реактивирует её; в
@@ -535,7 +535,7 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.upsert_country(self.CHAT, "RUS")
         ((upcoming, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.CHAT]
         ((other, _),) = [r for r in repo.list_active_upcoming_rows() if r[1] == self.OTHER_CHAT]
-        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, True, set(), ["RUS"]))
+        self.assertEqual(repo.get_chat_subscriptions(self.CHAT), (False, True, set(), ["RUS"], set()))
 
         game = 2099990003
         repo.mark_game_sent(upcoming, game)
@@ -699,11 +699,11 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             "<br>Превью матчей дня — с 15:30 МСК, по одному раз в полчаса.</footer>"
         ))
         # Переключатели — каждый в своём ряду: вдвоём на телефоне не влезают.
-        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1])
+        self.assertEqual([len(row) for row in markup.inline_keyboard], [1, 1, 2, 1, 1, 1])
         self.assertEqual(
             [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row],
             [("➕ Дайджест", "sub:d"), ("➕ Предстоящие матчи", "sub:u"),
-             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"),
+             ("🏒 Команды (0)", "sub:T"), ("🌍 Страны (0)", "sub:C"), ("👤 Игроки (0)", "sub:P"),
              ("⏰ Расписания (0)", "sub:s"), ("Готово", "sub:x")],
         )
         self.assertEqual(self._rows(), [])
@@ -822,6 +822,74 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, f"<p>{self.bot._SUBSCRIPTIONS_DB_ERROR}</p>")
         self.assertEqual(buttons, [])
         self.assertEqual(self._rows(), [])
+
+    async def test_player_toggle_through_division_team_and_roster(self):
+        """Задача 122: дивизион → клуб → группа состава; нажатие на игрока включает и
+        выключает `player_scores` (одна строка, история в журнале), сводка называет игрока
+        с кодом клуба. Состав — `rosters` сезона, по группам позиций."""
+        players = ((8470001, "Ivan", "Forwardov", "C"), (8470002, "Petr", "Defensov", "D"))
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            for player_id, name, lastname, position in players:
+                cur.execute(
+                    "INSERT INTO rosters (player_id, season_id, name, lastname, position, abbreviation, "
+                    "current_team_id) VALUES (%s, %s, %s, %s, %s, 'BBB', 900012)",
+                    (player_id, self.SEASON, name, lastname, position),
+                )
+        self.addCleanup(self._query_cleanup_rosters)
+
+        _, text, buttons = await self._press("sub:P")
+        self.assertIn("<b>Игроки</b>", text)
+        self.assertEqual(buttons[1], ("Metropolitan", "sub:Q:1"))
+        _, _, buttons = await self._press("sub:Q:1")
+        self.assertEqual(buttons, [("AAA", "sub:R:1:900011:F"), ("BBB", "sub:R:1:900012:F"),
+                                   ("« К дивизионам", "sub:P")])
+        _, text, buttons = await self._press("sub:R:1:900012:F")
+        self.assertIn("Bbb Club · Нападающие", text)
+        self.assertEqual(buttons[0], ("Forwardov", "sub:p:1:900012:F:8470001"))
+        self.assertEqual(buttons[1:4], [("• Нападающие", "sub:R:1:900012:F"),
+                                        ("Защитники", "sub:R:1:900012:D"), ("Вратари", "sub:R:1:900012:G")])
+        _, _, buttons = await self._press("sub:R:1:900012:D")
+        self.assertEqual(buttons[0], ("Defensov", "sub:p:1:900012:D:8470002"))
+
+        hint, _, buttons = await self._press("sub:p:1:900012:F:8470001")
+        self.assertEqual(hint, "Подписка на Forwardov (BBB) включена")
+        self.assertEqual(buttons[0], ("✅ Forwardov", "sub:p:1:900012:F:8470001"))
+        _, text, _ = await self._press("sub:m")
+        self.assertIn("<li>Игроки: Forwardov (BBB)</li>", text)
+
+        hint, _, _ = await self._press("sub:p:1:900012:F:8470001")
+        self.assertEqual(hint, "Подписка на Forwardov (BBB) отключена")
+        await self._press("sub:p:1:900012:F:8470001")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("SELECT kind, player_id, active FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
+            self.assertEqual(cur.fetchall(), [("player_scores", 8470001, True)], "одна строка")
+            cur.execute("SELECT player_id, active FROM bot_subscription_events WHERE chat_id = %s ORDER BY id",
+                        (self.CHAT,))
+            self.assertEqual(cur.fetchall(), [(8470001, True), (8470001, False), (8470001, True)])
+
+    def _query_cleanup_rosters(self):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM rosters WHERE season_id = %s", (self.SEASON,))
+
+    def test_player_constraints_and_migration_roll_back(self):
+        """CHECK и уникальность миграции 0027: игрок — ровно у ``player_scores``; откат и
+        повторное применение проходят."""
+        self.repo.upsert_player(self.CHAT, 8470001)
+        for error, statement in (
+            (psycopg2.errors.CheckViolation,
+             "INSERT INTO bot_subscriptions (chat_id, kind, team_id, player_id) "
+             "VALUES (%s, 'team_scores', 7, 8470001)"),
+            (psycopg2.errors.UniqueViolation,
+             "INSERT INTO bot_subscriptions (chat_id, kind, player_id) VALUES (%s, 'player_scores', 8470001)"),
+        ):
+            with self.subTest(statement=statement), closing(_connect()) as conn, conn:
+                with self.assertRaises(error), conn.cursor() as cur:
+                    cur.execute(statement, (self.CHAT,))
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute((migrations / "0027_player_subscription.down.sql").read_text())
+            cur.execute((migrations / "0027_player_subscription.up.sql").read_text())
+            conn.rollback()
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

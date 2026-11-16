@@ -764,7 +764,7 @@ async def test_clip_uploaded_once_serves_later_runs_and_the_menu_card(push_env, 
     monkeypatch.setattr(stats_handlers, "game_exists", lambda game_id: True)
     monkeypatch.setattr(
         stats_handlers, "get_chat_subscriptions",
-        lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(False, False, set(), []),
+        lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(False, False, set(), [], set()),
     )
     await stats_handlers.send_game_card_message(push_env.bot, 333, GAME_A)
 
