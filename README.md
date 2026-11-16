@@ -31,19 +31,21 @@ If `PG_USER` is empty, Makefile uses your current macOS user automatically.
 
 ## Initialize database
 
-```bash
-make db-init
-```
-
-If your local PostgreSQL user is not `postgres`, use:
+Пустая БД:
 
 ```bash
-make db-init-local
+make db-sync
 ```
+
+`make db-sync` не делает DROP и падает, если таблицы уже есть. `make db-reset` — **разрушительная**
+цель: DROP таблиц данных NHL_bot (`DDL_TABLES` в `Makefile`), затем CREATE заново; применять
+только к БД, данные которой не жалко.
+Если локальный пользователь PostgreSQL не `postgres`, есть `db-sync-local` и `db-reset-local`.
 
 This applies:
 - table DDL from `data_tables/*.sql`
 - SQL functions from `telegram_bot/queries/*.sql`
+- migrations from `data_tables/migrations/*.up.sql`
 
 ## Load NHL data
 
@@ -66,7 +68,7 @@ In Telegram send `/stats`.
 ## Tests
 
 - **`make test-fast`** — `pytest` по всем файлам в `tests/`, кроме `test_db_nhl.py` (без обязательной БД).
-- **`make test-db`** — `unittest` для схемы PostgreSQL; нужен доступ к БД из `.env`, таблицы из `make db-init` / `db-init-local`. Включает `RUN_DB_SCHEMA_TESTS=1` (см. `Makefile`).
+- **`make test-db`** — `unittest` для схемы PostgreSQL; нужен доступ к БД из `.env`, таблицы из `make db-sync` / `db-sync-local`. Включает `RUN_DB_SCHEMA_TESTS=1` (см. `Makefile`).
 - **`make test-db-data`** — проверки загруженных данных (`TestNhlLoadedData`); нужна БД с данными.
 - **`make all-tests`** — сначала `test-fast`, затем `test-db` (полный контур для разработчика с поднятой БД).
 
@@ -80,13 +82,7 @@ make test-db-data
 
 ## One-command flows
 
-Stable local start (setup + bot). Use this when NHL API is unavailable:
-
-```bash
-make run-local
-```
-
-`setup` recreates `.venv` only if Python architecture changed (arm64/x86_64).
+`setup` recreates `.venv` only if Python architecture changed (arm64/x86_64) or the venv interpreter no longer starts.
 
 Bot run (with setup + env copy helper):
 

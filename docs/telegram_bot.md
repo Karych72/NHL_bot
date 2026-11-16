@@ -64,7 +64,6 @@ make bot
 
 ```bash
 make run-bot    # setup + env-example + bot
-make run-local  # синоним run-bot
 ```
 
 Полезно при первом запуске или после `git pull`, когда могли измениться
@@ -89,7 +88,6 @@ make bot
 ## 3. Тесты бота
 
 ```bash
-make test-skater-bot   # текст лидербордов, без БД
 make test-fast         # все pytest-тесты, кроме требующих PostgreSQL
 make all-tests         # test-fast + test-db (с поднятой БД)
 ```

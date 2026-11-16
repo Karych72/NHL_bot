@@ -57,7 +57,7 @@ telegram_bot/bot.py (только чтение БД)  ── см. telegram_bot.
 ```bash
 make setup env-example          # venv + зависимости + .env из шаблона
 # Отредактируйте .env: PG_*, SEASON_ID (обязателен), при желании DATE_FROM/DATE_TO
-make db-reset-local             # DROP всех таблиц проекта + CREATE из data_tables/t.*.sql + SQL-функции
+make db-reset-local             # DROP таблиц данных (DDL_TABLES) + CREATE из data_tables/t.*.sql + SQL-функции
 make season-sync-month          # загрузка за последние ~30 дней (сеть + NHL API)
 make test-db                    # проверка схемы в PostgreSQL
 RUN_DB_DATA_TESTS=1 make test-db  # проверка ссылочной целостности после загрузки
@@ -178,7 +178,7 @@ make env-example
 Они применяются автоматически целью `db-functions` (входит в `db-reset` и
 `db-sync`).
 
-### 5.3. Полный сброс и создание (`db-reset` / `db-init`)
+### 5.3. Полный сброс и создание (`db-reset`)
 
 **Деструктивная** цепочка `DROP → CREATE → функции`:
 
@@ -186,11 +186,6 @@ make env-example
 make db-reset-local    # PG_USER = $(id -un), удобно на macOS без отдельной роли postgres
 make db-reset          # PG_* из .env (значение PG_USER из переменной)
 ```
-
-Эквиваленты:
-
-- `make db-init` ≡ `make db-reset` (то же самое, оставлено для совместимости);
-- `make db-init-local` ≡ `make db-reset-local`.
 
 Под капотом:
 
@@ -408,10 +403,7 @@ rm -rf all_data/raw/{season_id}
 |---------|-----------|---------|-----------------|
 | `make season-sync DATE_FROM=… DATE_TO=…` | как задано | как задано | универсальная цель; **обязательны** оба аргумента, иначе ошибка `Usage:` |
 | `make season-load-full` | не передаётся (Makefile явно очищает `DATE_FROM=`) — лоадер сам выводит из `SEASON_ID` (1 сентября первого года, `config.derive_season()`) | `$(date +%Y-%m-%d)` | **полный** реload текущего сезона до сегодня |
-| `make season-reload-current` | то же | то же | алиас на `season-load-full` |
-| `make season-load` | то же | то же | алиас на `season-load-full` |
 | `make season-sync-week` | `$(date -v-7d +%Y-%m-%d)` (BSD `date`) | `$(date +%Y-%m-%d)` | последние 7 дней (свежие игры) |
-| `make season-update` | то же | то же | алиас на `season-sync-week` |
 | `make season-sync-month` | вычислено через Python-однострочник в Makefile (30 дней назад) | `$(date +%Y-%m-%d)` | последние 30 дней (рекомендуется как «обновить локалку») |
 | `make season-sync-today` | `$(date +%Y-%m-%d)` | то же | только сегодня |
 

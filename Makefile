@@ -57,10 +57,10 @@ MONTH_AGO := $(shell $(PYTHON) -c "from datetime import date, timedelta; print((
 # tests/test_db_nhl.py: schema checks default on; skip with RUN_DB_SCHEMA_TESTS=0 make test-db
 export RUN_DB_SCHEMA_TESTS ?= 1
 
-.PHONY: setup setup-dev modeling-dev modeling-train modeling-publish env-example db-drop db-tables db-tables-local db-reset db-reset-local db-init db-init-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-reload-current season-sync-week season-sync-month season-sync-today season-load season-update bot run-bot run-local verify-skater-schema test-skater-bot test-fast test-db test-db-data ai-eval ai-stats-eval all-tests lint typecheck lock ci-local
+.PHONY: setup setup-dev modeling-dev modeling-train modeling-publish modeling-promote env-example db-drop db-tables db-reset db-reset-local db-sync db-sync-local db-functions db-functions-local db-migrate db-migrate-down season-sync season-load-full season-sync-week season-sync-month season-sync-today bot run-bot verify-skater-schema test-fast test-db test-db-data ai-eval ai-stats-eval all-tests lint typecheck lock ci-local
 
 setup:
-	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ]; then \
+	@if [ ! -d "$(VENV)" ] || [ ! -f "$(VENV_ARCH_FILE)" ] || [ "$$(cat "$(VENV_ARCH_FILE)")" != "$(ARCH)" ] || ! "$(PY)" -c '' >/dev/null 2>&1; then \
 		rm -rf "$(VENV)"; \
 		$(PYTHON) -m venv "$(VENV)"; \
 		echo "$(ARCH)" > "$(VENV_ARCH_FILE)"; \
@@ -116,9 +116,6 @@ db-tables:
 	@echo "  data_tables/ai_reader_grants.sql"
 	@$(PSQL) -v ON_ERROR_STOP=1 -f data_tables/ai_reader_grants.sql
 
-db-tables-local:
-	$(MAKE) db-tables PG_USER="$$(id -un)"
-
 # Full reset: DROP all NHL_bot tables, CREATE from data_tables/t.*.sql, load SQL
 # functions, apply migrations. db-drop only drops DDL_TABLES — bot_subscriptions and
 # schema_migrations survive it, so a migration touching a DDL_TABLES table must also be
@@ -128,11 +125,6 @@ db-reset: db-drop db-tables db-functions db-migrate
 
 db-reset-local:
 	$(MAKE) db-reset PG_USER="$$(id -un)"
-
-# Same as db-reset (destructive). Use after pulling DDL changes.
-db-init: db-reset
-
-db-init-local: db-reset-local
 
 # Apply DDL (fails if tables already exist), then SQL functions, then migrations. No DROP.
 db-sync: db-tables db-functions db-migrate
@@ -180,9 +172,6 @@ db-migrate-down:
 		$(PSQL) -v ON_ERROR_STOP=1 --single-transaction -f $$downfile -c "DELETE FROM schema_migrations WHERE version = '$$version'"; \
 		echo "Rollback complete."; \
 	fi
-
-test-skater-bot:
-	@$(PY) -m unittest tests.test_skater_reports_bot -v
 
 # Pytest over tests/* except unittest DB module (see all-tests / test-db).
 test-fast:
@@ -272,9 +261,7 @@ season-sync: setup env-example
 season-load-full: setup env-example
 	cd pipeline && DATE_FROM= DATE_TO="$$(date +%Y-%m-%d)" ../$(PY) -u load_season_modern.py
 
-season-reload-current: season-load-full
-
-# Last 7 days inclusive (DATE_FROM via Python, portable; same as historical season-update).
+# Last 7 days inclusive (DATE_FROM via Python, portable).
 season-sync-week: setup env-example
 	$(MAKE) season-sync DATE_FROM="$(WEEK_AGO)" DATE_TO="$$(date +%Y-%m-%d)"
 
@@ -286,14 +273,7 @@ season-sync-month: setup env-example
 season-sync-today: setup env-example
 	$(MAKE) season-sync DATE_FROM="$$(date +%Y-%m-%d)" DATE_TO="$$(date +%Y-%m-%d)"
 
-season-load: season-load-full
-
-season-update: season-sync-week
-
 bot:
 	cd telegram_bot && ../$(PY) bot.py
 
 run-bot: setup env-example bot
-
-run-local:
-	$(MAKE) run-bot
