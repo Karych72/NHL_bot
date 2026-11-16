@@ -62,7 +62,8 @@ def _git_commit_hash() -> str:
             .decode("utf-8")
             .strip()
         )
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):
+        # Docker image ships without .git and without the git binary.
         return "unknown"
 
 

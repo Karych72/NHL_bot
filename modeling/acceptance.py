@@ -335,9 +335,7 @@ def _validate_latest_symlink(
     expect_pointer: bool,
     issues: list[str],
 ) -> None:
-    """Require ``latest`` symlink → ``<run_id>/final/`` (UPDATE plan DoD §5).
-
-    """
+    """Require ``latest`` symlink → ``<run_id>/final/`` (UPDATE plan DoD §5)."""
     if not expect_pointer:
         return
     base = artifacts_root / "models" / task / model

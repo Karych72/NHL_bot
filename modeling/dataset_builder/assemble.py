@@ -65,9 +65,6 @@ def apply_cold_start_policy(
     cold_start_policy_predict: str,
 ) -> ColdStartResult:
     out = data.copy()
-    missing = {"home_prior_games_count", "away_prior_games_count"} - set(out.columns)
-    if missing:
-        raise KeyError(f"apply_cold_start_policy: columns missing from snapshots: {sorted(missing)}")
     low_hist_mask = (
         out["home_prior_games_count"].astype("int64") < min_prior_games
     ) | (
@@ -94,6 +91,11 @@ def apply_cold_start_policy(
 
 
 def attach_train_labels(data: pd.DataFrame) -> pd.DataFrame:
+    """Add ``y_home_win`` and ``y_over_5_5`` to train rows.
+
+    Raises ``ValueError`` when a finished game has no goals in ``game_team_stats``:
+    a silent zero would mislabel it as under 5.5.
+    """
     out = data.copy()
     out["y_home_win"] = (out["winner_id"] == out["home_team_id"]).astype("int64")
     goals = out[["home_goals_target", "away_goals_target"]]

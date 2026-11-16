@@ -49,7 +49,7 @@ _METADATA_FILENAME = "metadata.json"
 
 
 def _get_git_commit(repo_root: Path | None = None) -> str | None:
-    """Return the current HEAD commit hash, or ``None`` on any failure.
+    """Return the current HEAD commit hash, or ``None`` when git cannot answer.
 
     A missing ``git`` binary, a timeout or a non-zero exit code (no ``.git`` in the
     Docker image) return ``None``; the metadata contract allows ``git_commit: null``.
