@@ -177,7 +177,6 @@ class TestBaselineGate(unittest.TestCase):
             )
             base = tmp / "models" / "home_win" / "logreg"
             self.assertFalse((base / "latest").exists())
-            self.assertFalse((base / "latest.txt").exists())
 
 
 class TestCliTrainSmoke(unittest.TestCase):
@@ -355,8 +354,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             self.assertEqual(meta["n_rows_train"] + meta["n_rows_calibration"], 2000)
             self.assertIn("scikit-learn", meta["library_versions"])
             latest = artifacts / "models" / "over_5_5" / "logreg" / "latest"
-            latest_txt = artifacts / "models" / "over_5_5" / "logreg" / "latest.txt"
-            self.assertTrue(latest.exists() or latest_txt.exists())
+            self.assertTrue(latest.is_symlink())
             self.assertTrue((artifacts / "reports" / run_id / "metrics.json").exists())
             self.assertTrue((artifacts / "reports" / run_id / "run.log").exists())
 

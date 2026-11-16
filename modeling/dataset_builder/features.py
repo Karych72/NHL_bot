@@ -49,6 +49,9 @@ def compute_team_rolling_features(
     if team_game_facts.empty:
         return team_game_facts.copy()
 
+    if 5 not in rolling_windows:
+        raise ValueError(f"rolling_windows must contain 5 (goal_diff/pace_sum features), got {list(rolling_windows)}")
+
     data = team_game_facts.sort_values(["team_id", "season_id", "day", "game_id"]).copy()
     grp = data.groupby(["team_id", "season_id"], sort=False)
     data["prior_games_count"] = grp.cumcount() + 1
@@ -58,26 +61,10 @@ def compute_team_rolling_features(
             rolled = grp[field].transform(lambda s: s.rolling(window=window, min_periods=1).mean())
             data[f"{field}_roll_mean_{window}"] = rolled.astype("float64")
 
-    goals_for_rm = (
-        data["goals_for_roll_mean_5"]
-        if "goals_for_roll_mean_5" in data.columns
-        else pd.Series(0.0, index=data.index, dtype="float64")
-    )
-    goals_against_rm = (
-        data["goals_against_roll_mean_5"]
-        if "goals_against_roll_mean_5" in data.columns
-        else pd.Series(0.0, index=data.index, dtype="float64")
-    )
-    shots_for_rm = (
-        data["shots_for_roll_mean_5"]
-        if "shots_for_roll_mean_5" in data.columns
-        else pd.Series(0.0, index=data.index, dtype="float64")
-    )
-    shots_against_rm = (
-        data["shots_against_roll_mean_5"]
-        if "shots_against_roll_mean_5" in data.columns
-        else pd.Series(0.0, index=data.index, dtype="float64")
-    )
+    goals_for_rm = data["goals_for_roll_mean_5"]
+    goals_against_rm = data["goals_against_roll_mean_5"]
+    shots_for_rm = data["shots_for_roll_mean_5"]
+    shots_against_rm = data["shots_against_roll_mean_5"]
     data["goal_diff_roll_mean_5"] = (goals_for_rm - goals_against_rm).astype("float64")
     data["pace_sum_roll_mean_5"] = (shots_for_rm + shots_against_rm).astype("float64")
     return data

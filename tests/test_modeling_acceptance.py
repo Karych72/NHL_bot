@@ -523,21 +523,6 @@ class TestVerifyLatestSymlinks(unittest.TestCase):
         )
         self.assertFalse(latest.ok)
 
-    def test_verify_latest_rejects_latest_txt_fallback(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            symlink_ok=False,
-        )
-        base = self.tmp / "artifacts" / "models" / "home_win" / "logreg"
-        (base / "latest.txt").write_text(f"{run.run_id}/final\n", encoding="utf-8")
-        latest = verify_latest_symlinks(
-            [self._make_outcome(run)],
-            artifacts_root=self.tmp / "artifacts",
-        )
-        self.assertFalse(latest.ok)
-        self.assertTrue(any("latest.txt" in issue for issue in latest.issues))
-
 
 class TestApplyAcceptanceIntegration(unittest.TestCase):
     def test_apply_updates_summary_and_exit_code(self) -> None:
@@ -689,7 +674,6 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
             self.assertEqual(outcome.result.status, "failed_baseline_check")
             self.assertEqual(outcome.result.exit_code, 1)
             self.assertEqual(os.readlink(model_base / "latest"), "previous_run/final")
-            self.assertFalse((model_base / "latest.txt").exists())
             self.assertTrue((run.reports_dir / "summary.md").exists())
             self.assertTrue((run.reports_dir / "metrics.json").exists())
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")

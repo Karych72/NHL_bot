@@ -9,6 +9,7 @@ import pandas as pd
 
 from modeling.dataset_builder.assemble import (
     _assert_train_labels_match_facts,
+    attach_train_labels,
     apply_cold_start_policy,
     assemble_dataset,
 )
@@ -297,6 +298,19 @@ class TestModelingDatasetBuild(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             _assert_train_labels_match_facts(df)
+
+    def test_rolling_requires_window_5(self):
+        team_facts, _ = build_team_game_facts(_history_df())
+        with self.assertRaises(ValueError):
+            compute_team_rolling_features(team_facts, [3, 10])
+
+    def test_train_labels_reject_missing_goals(self):
+        df = pd.DataFrame(
+            [{"game_id": 1, "winner_id": 10, "home_team_id": 10,
+              "home_goals_target": None, "away_goals_target": 2.0}]
+        )
+        with self.assertRaises(ValueError):
+            attach_train_labels(df)
 
     def test_no_merge_suffix_columns_in_snapshots(self):
         team_facts, _ = build_team_game_facts(_history_df())
