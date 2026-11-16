@@ -106,24 +106,32 @@ def test_schedule_label(bot_module, screen, params, freq, weekday, month_day, tz
 def test_main_screen_schedule_hint_depends_on_schedules_and_premium(bot_module):
     """Задача 116: без расписаний главный экран `/subscriptions` подсказывает, как их завести,
     тем же примером фразы, что экран `sub:s`, и что больше одного — в премиуме; без премиума
-    с расписанием — что больше даёт /premium; премиуму — что новое заводится фразой."""
+    с расписанием — что больше даёт /premium; премиуму — что рассылок сколько угодно.
+    Подсказка — жирный абзац между подписками и мелким подвалом, не в подвале."""
     bot = bot_module("bot")
     example = "присылай лидеров по голам по пятницам в 10"
     assert bot._SCHEDULE_HINT == f"Создать — напишите боту, например: {example}."
+
+    def hint(text):
+        *_, gap, hint_line, footer = text.split("\n")
+        assert gap == "" and footer.startswith("<footer>Итоги ночи") and "⏰" not in footer
+        return hint_line
+
     for is_premium in (False, True):
         empty, _ = bot._subscriptions_main_screen(False, False, [], [], 0, is_premium)
-        assert empty.endswith(
-            "<br>⏰ Свои рассылки — любой экран в нужное время. Просто напишите боту: "
-            f"«{example}». Одна такая рассылка бесплатно, с премиумом — сколько угодно: /premium</footer>"
+        assert hint(empty) == (
+            "<b>⏰ Свои рассылки — любой экран в нужное время. Просто напишите боту: "
+            f"«{example}». Одна такая рассылка бесплатно, с премиумом — сколько угодно: /premium</b>"
         )
     free, _ = bot._subscriptions_main_screen(False, False, [], [], 1, False)
-    assert free.endswith(
-        "<br>⏰ Хотите больше своих рассылок? С /premium их можно завести сколько угодно — "
-        "просто напишите боту, что и когда присылать.</footer>"
+    assert hint(free) == (
+        "<b>⏰ Хотите больше своих рассылок? С /premium их можно завести сколько угодно — "
+        "просто напишите боту, что и когда присылать.</b>"
     )
     paid, _ = bot._subscriptions_main_screen(False, False, [], [], 3, True)
-    assert paid.endswith(
-        "<br>⏰ Новую рассылку можно завести одной фразой — напишите боту, что и когда присылать.</footer>"
+    assert hint(paid) == (
+        "<b>⭐ С премиумом своих рассылок сколько угодно — новую заводите одной фразой: "
+        "напишите боту, что и когда присылать.</b>"
     )
 
 
