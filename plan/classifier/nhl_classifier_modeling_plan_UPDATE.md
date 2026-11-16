@@ -167,7 +167,7 @@
 
 - Обновить строку статуса в [nhl_classifier_modeling_plan.md](nhl_classifier_modeling_plan.md): датасет-билдер + контракт загрузки реализованы; обучение — по этому UPDATE.
 - Создать `docs/modeling_training.md` со ссылкой на `configs/modeling_default.yaml`, описанием `<run_id>`, схемой каталога `artifacts/`, и примером полного прогона.
-- Обновить ТЗ исполнителя в [`agents/classifier_modeling/`](../agents/classifier_modeling/) (по одной паре `executor_tz.md` / `reviewer_tz.md` на этап UPDATE-плана) — каждое должно ссылаться на этот UPDATE.
+- Обновить ТЗ исполнителя в [`plan/archive/agents/classifier_modeling/`](../archive/agents/classifier_modeling/) (по одной паре `executor_tz.md` / `reviewer_tz.md` на этап UPDATE-плана) — каждое должно ссылаться на этот UPDATE.
 
 ### 14. Фаза 2 (интеграция в бота) — после стабилизации модели
 

@@ -136,7 +136,7 @@ make env-example
 |---------|----|----|
 | `teams` | `(team_id, season_id)` | команда × сезон (название, дивизион, конференция) |
 | `teams_stats` | `(team_id, season_id, game_type)` | агрегаты команды за сезон (`game_type` 2 регулярка, 3 плей-офф) |
-| `rosters` | `(player_id, season_id)` | состав: игроки, привязанные к команде на сезон |
+| `rosters` | `(player_id, season_id)` | состав: игроки, привязанные к команде на сезон; `abbreviation` хранит код позиции (дублирует `position`), а не код команды |
 | `players_season_stats` | `(player_id, season_id, game_type)` | сезонная статистика полевых |
 | `players_advanced_stats` | `(player_id, season_id, game_type)` | Corsi/Fenwick/GF%/zone-start и т.п. |
 | `players_shot_types` | `(player_id, season_id, game_type)` | броски по типам (wrist/snap/slap/…) |
@@ -605,5 +605,5 @@ RUN_DB_SCHEMA_TESTS=0 make test-db # только TestNhlLoadedData (если RU
 
 - [`pipeline_nulls_and_explicit_null_tz.md`](pipeline_nulls_and_explicit_null_tz.md) — что пишется как `NULL` и какие default остались осознанно;
 - [`api_data_research.md`](api_data_research.md) — какие поля NHL API маппятся в какие колонки БД и что пока не парсится;
-- [`architecture.md`](architecture.md) — полная карта проекта;
+- [`architecture.md`](architecture.md) — карта проекта;
 - [`modeling_dataset_builder.md`](modeling_dataset_builder.md) — как из этих таблиц собирается датасет для моделирования.
