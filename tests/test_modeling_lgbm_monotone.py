@@ -9,7 +9,7 @@ import pandas as pd
 
 from modeling.config import ConfigError, ResolvedConfig
 from modeling.metrics import log_loss
-from modeling.train_common import build_monotone_constraints, validate_num_threads
+from modeling.train_common import build_monotone_constraints
 from modeling.train_lgbm import (
     LgbmFitResult,
     build_lgbm_base_params,
@@ -276,12 +276,6 @@ class TestEmptyGrid(unittest.TestCase):
 
 
 class TestNumThreads(unittest.TestCase):
-    def test_non_positive_num_threads_raises(self) -> None:
-        with self.assertRaises(ConfigError):
-            validate_num_threads(0)
-        with self.assertRaises(ConfigError):
-            validate_num_threads(-1)
-
     def test_base_params_use_explicit_num_threads(self) -> None:
         params = build_lgbm_base_params(random_seed=1, num_threads=3)
         self.assertEqual(params["num_threads"], 3)

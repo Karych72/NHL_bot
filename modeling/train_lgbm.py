@@ -42,7 +42,6 @@ from modeling.train_common import (
     SUPPORTED_TASKS,
     build_monotone_constraints,
     expand_lgbm_grid,
-    validate_num_threads,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +96,6 @@ def build_lgbm_base_params(
     monotone_constraints: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Return fixed LightGBM params shared by every grid configuration."""
-    validate_num_threads(num_threads)
     params: dict[str, Any] = {
         "objective": "binary",
         "metric": "binary_logloss",

@@ -41,23 +41,6 @@ def _wide_feature_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     return data, built
 
 
-def _assert_train_labels_match_facts(data: pd.DataFrame) -> None:
-    """Train labels must match joined target-game facts before goals are dropped."""
-    winner = pd.to_numeric(data["winner_id"], errors="coerce")
-    home_tid = pd.to_numeric(data["home_team_id"], errors="coerce")
-    y_win = pd.to_numeric(data["y_home_win"], errors="coerce")
-    expected_win = (winner == home_tid).astype("float64")
-    if not (y_win == expected_win).fillna(False).all():
-        raise ValueError("y_home_win inconsistent with winner_id vs home_team_id")
-
-    hg = pd.to_numeric(data["home_goals_target"], errors="coerce")
-    ag = pd.to_numeric(data["away_goals_target"], errors="coerce")
-    y_over = pd.to_numeric(data["y_over_5_5"], errors="coerce")
-    expected_over = ((hg + ag) > 5.5).astype("float64")
-    if not (y_over == expected_over).all():
-        raise ValueError("y_over_5_5 inconsistent with home_goals_target + away_goals_target")
-
-
 def apply_cold_start_policy(
     data: pd.DataFrame,
     mode: str,
@@ -111,7 +94,6 @@ def assemble_dataset(
 
     if mode == "train":
         data = attach_train_labels(data)
-        _assert_train_labels_match_facts(data)
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")
     else:
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")

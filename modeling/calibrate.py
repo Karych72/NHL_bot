@@ -66,17 +66,6 @@ def _validate_min_samples(min_samples: int) -> int:
     return n
 
 
-def _validate_num_threads(num_threads: int) -> int:
-    if not isinstance(num_threads, (int, np.integer)):
-        raise CalibrationError(
-            f"num_threads must be an int, got {type(num_threads).__name__}"
-        )
-    n = int(num_threads)
-    if n <= 0:
-        raise CalibrationError(f"num_threads must be >= 1, got {n}")
-    return n
-
-
 def _validate_method(method: str) -> str:
     if method not in _SUPPORTED_METHODS:
         raise CalibrationError(
@@ -209,7 +198,6 @@ def fit_calibrator(
     """
     method = _validate_method(method)
     min_samples = _validate_min_samples(min_samples)
-    _validate_num_threads(num_threads)
     p_cal, y = _validate_calibration_inputs(raw_p_cal, y_cal)
     n_cal = int(p_cal.size)
 

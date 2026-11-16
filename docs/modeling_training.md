@@ -537,7 +537,7 @@ ls -la artifacts/models/<task>/<model>/latest/
 
 Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
 
-**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair, and skips the `latest` acceptance check. Move `latest` afterwards with `promote` (see §9).
+**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair. Move `latest` afterwards with `promote` (see §9).
 
 ---
 
@@ -744,7 +744,7 @@ task, `evaluate_baseline_gate` picks the trained model family with the lowest ca
 holdout log loss (`pick_winning_family`) and compares *that one* against
 `trivial_base_rate`; the resulting pass/fail is the task's single verdict. Every
 `(task, model)` pair for that task then inherits the task's verdict
-(`pair_run_status(task=..., baseline, artifacts)` looks up the verdict by `task` only) —
+(`pair_run_status(task=..., baseline=...)` looks up the verdict by `task` only) —
 so if the winning family for a task passes, **both** trained model families for that task
 get `status: ok` and both get their own `latest` symlink written, even a losing model that
 individually did not beat trivial (in this run both `home_win` families happen to

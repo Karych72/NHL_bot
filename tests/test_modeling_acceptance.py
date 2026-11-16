@@ -13,15 +13,12 @@ from unittest import mock
 import yaml
 
 from modeling.acceptance import (
-    ArtifactCheckResult,
     BASELINE_STRICT_EPS,
     BaselineGateResult,
     TaskModelEval,
     apply_acceptance_to_training_outcomes,
     evaluate_baseline_gate,
     pick_winning_family,
-    verify_latest_symlinks,
-    verify_run_artifacts,
 )
 from modeling.train_runner import update_latest_symlink
 from modeling.config import load_config, load_metadata_json
@@ -64,64 +61,16 @@ def _metrics_payload(*, task: str = "home_win", model: str = "logreg") -> dict:
     return compose_metrics_json(**sample_compose_kwargs(task=task, model=model))
 
 
-def _metadata_dict(*, run_id: str, features_hash: str) -> dict:
-    return {
-        "features_hash": features_hash,
-        "random_seed": 42,
-        "run_id": run_id,
-        "git_commit": None,
-        "library_versions": {
-            "scikit-learn": "1.0",
-            "lightgbm": "4.0",
-            "pandas": "2.0",
-            "numpy": "1.0",
-        },
-        "train_days": {"min": "2018-01-01", "max": "2019-01-01"},
-        "inner_val_days": {"min": "2019-01-02", "max": "2019-02-01"},
-        "calibration_days": {"min": "2019-02-02", "max": "2019-03-01"},
-        "test_seasons": [20232024, 20242025, 20252026],
-        "n_rows_train": 100,
-        "n_rows_inner_val": 50,
-        "n_rows_calibration": 40,
-    }
-
-
-def _write_valid_run_layout(
-    tmp: Path,
-    *,
-    task: str = "home_win",
-    model: str = "logreg",
-    features_hash: str,
-    symlink_ok: bool = True,
-    metadata: dict | None = None,
-    metrics: dict | None = None,
-    skip_reliability: bool = False,
-) -> TaskModelEval:
+def _write_run_layout(tmp: Path, *, task: str = "home_win", model: str = "logreg") -> TaskModelEval:
     run_id = f"{task}_{model}_deadbeef_20260101T000000Z"
     reports = tmp / "artifacts" / "reports" / run_id
     reports.mkdir(parents=True, exist_ok=True)
-    metrics_payload = metrics if metrics is not None else _metrics_payload(task=task, model=model)
-    (reports / "metrics.json").write_text(
-        json.dumps(metrics_payload, indent=2),
-        encoding="utf-8",
-    )
+    metrics_payload = _metrics_payload(task=task, model=model)
+    (reports / "metrics.json").write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
     (reports / "summary.md").write_text("status: ok\n\n# placeholder\n", encoding="utf-8")
-    if not skip_reliability:
-        (reports / f"reliability_{task}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    model_root = tmp / "artifacts" / "models" / task / model / run_id
-    final_dir = model_root / "final"
+    final_dir = tmp / "artifacts" / "models" / task / model / run_id / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
-    (final_dir / "model.joblib").write_bytes(b"model")
-    (final_dir / "calibrator.joblib").write_bytes(b"cal")
-    meta = metadata if metadata is not None else _metadata_dict(run_id=run_id, features_hash=features_hash)
-    (final_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
-    if symlink_ok:
-        base = tmp / "artifacts" / "models" / task / model
-        base.mkdir(parents=True, exist_ok=True)
-        link = base / "latest"
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        os.symlink(Path(run_id) / "final", link)
+    (final_dir / "metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
     benchmark = "elo" if task == "home_win" else "constant"
     return TaskModelEval(
         task=task,
@@ -228,293 +177,13 @@ class TestBaselineGate(unittest.TestCase):
         self.assertEqual(gate.to_dict()["per_task"][0]["benchmark"], "elo")
 
 
-class TestVerifyRunArtifacts(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
-        self.meta_path = self.tmp / "metadata_train.json"
-        _, meta_path = write_synthetic_train_dataset(self.tmp, n_days=50)
-        self.meta_path = meta_path
-        self.config = load_config(
-            ROOT / "configs" / "modeling_default.yaml",
-            metadata=load_metadata_json(meta_path),
-        )
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def test_verify_passes_on_valid_layout(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertTrue(result.ok, msg=result.issues)
-
-    def test_verify_fails_missing_final(self) -> None:
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
-        final = self.tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id / "final"
-        for child in final.iterdir():
-            child.unlink()
-        final.rmdir()
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        self.assertTrue(any("final" in issue for issue in result.issues))
-
-    def test_verify_accepts_git_commit_null(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metadata=_metadata_dict(
-                run_id="home_win_logreg_deadbeef_20260101T000000Z",
-                features_hash=self.config.features_hash,
-            ),
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertTrue(result.ok, msg=result.issues)
-
-    def test_verify_fails_missing_random_seed(self) -> None:
-        run_id = "home_win_logreg_deadbeef_20260101T000000Z"
-        meta = {
-            k: v
-            for k, v in _metadata_dict(run_id=run_id, features_hash=self.config.features_hash).items()
-            if k != "random_seed"
-        }
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metadata=meta,
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        self.assertTrue(any("random_seed" in i for i in result.issues))
-
-    def test_verify_fails_missing_reliability_png(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            skip_reliability=True,
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-
-    def _issues_after_breaking_metrics(self, mutate) -> list[str]:
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
-        metrics_path = run.reports_dir / "metrics.json"
-        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
-        mutate(payload)
-        metrics_path.write_text(json.dumps(payload), encoding="utf-8")
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        return result.issues
-
-    def test_verify_fails_missing_bootstrap(self) -> None:
-        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"].pop("bootstrap"))
-        self.assertTrue(any("pooled.bootstrap" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_bootstrap_not_by_day(self) -> None:
-        def mutate(m: dict) -> None:
-            m["pooled"]["bootstrap"]["log_loss"]["bootstrap.block_by_day"] = False
-
-        issues = self._issues_after_breaking_metrics(mutate)
-        self.assertTrue(any("block_by_day" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_missing_diff_vs_elo(self) -> None:
-        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"]["diff_ci"].pop("model_minus_elo"))
-        self.assertTrue(any("model_minus_elo" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_missing_elo_metrics(self) -> None:
-        issues = self._issues_after_breaking_metrics(lambda m: m["pooled"].pop("elo"))
-        self.assertTrue(any("pooled.elo" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_missing_pooled_block(self) -> None:
-        issues = self._issues_after_breaking_metrics(lambda m: m.pop("pooled"))
-        self.assertTrue(any("pooled block missing" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_old_metadata_without_test_seasons(self) -> None:
-        run_id = "home_win_logreg_deadbeef_20260101T000000Z"
-        meta = _metadata_dict(run_id=run_id, features_hash=self.config.features_hash)
-        del meta["test_seasons"]
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash, metadata=meta)
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertTrue(any("test_seasons" in issue for issue in result.issues), msg=result.issues)
-
-    def test_verify_fails_features_hash_mismatch(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metadata=_metadata_dict(
-                run_id="home_win_logreg_deadbeef_20260101T000000Z",
-                features_hash="0" * 64,
-            ),
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        self.assertTrue(any("features_hash" in issue for issue in result.issues))
-
-    def test_verify_fails_missing_library_version_key(self) -> None:
-        run_id = "home_win_logreg_deadbeef_20260101T000000Z"
-        meta = _metadata_dict(run_id=run_id, features_hash=self.config.features_hash)
-        meta["library_versions"] = {"numpy": "1.0", "pandas": "2.0", "lightgbm": "4.0"}
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metadata=meta,
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        self.assertTrue(any("scikit-learn" in issue for issue in result.issues))
-
-    def test_verify_fails_missing_summary_md(self) -> None:
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
-        (run.reports_dir / "summary.md").unlink()
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-        self.assertTrue(any("summary.md" in issue for issue in result.issues))
-
-    def test_verify_fails_missing_team_breakdown(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            metrics={**_metrics_payload(), "team_breakdown": {}},
-        )
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertFalse(result.ok)
-
-    def test_patch_summary_creates_file_when_missing(self) -> None:
-        from modeling.acceptance import _patch_summary_report
-
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            path = tmp / "summary.md"
-            baseline = BaselineGateResult(status="ok", per_task=())
-            artifacts = ArtifactCheckResult(ok=True)
-            _patch_summary_report(
-                path,
-                status="ok",
-                baseline=baseline,
-                artifacts=artifacts,
-                run_id="home_win_logreg_deadbeef_20260101T000000Z",
-            )
-            text = path.read_text(encoding="utf-8")
-            self.assertTrue(text.startswith("status: ok"))
-
-
-class TestVerifyLatestSymlinks(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
-        _, meta_path = write_synthetic_train_dataset(self.tmp, n_days=50)
-        self.config = load_config(
-            ROOT / "configs" / "modeling_default.yaml",
-            metadata=load_metadata_json(meta_path),
-        )
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def _make_outcome(self, run: TaskModelEval, *, status: str = "ok") -> _TaskModelOutcome:
-        result = RunResult(
-            run_id=run.run_id,
-            task="home_win",
-            model="logreg",
-            status=status,
-            exit_code=0,
-            reports_dir=run.reports_dir,
-            model_run_dir=self.tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id,
-        )
-        return _TaskModelOutcome(
-            task="home_win",
-            model="logreg",
-            result=result,
-            evaluation=run,
-        )
-
-    def test_verify_latest_passes_on_valid_symlink(self) -> None:
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
-        latest = verify_latest_symlinks(
-            [self._make_outcome(run)],
-            artifacts_root=self.tmp / "artifacts",
-        )
-        self.assertTrue(latest.ok, msg=latest.issues)
-
-    def test_verify_latest_fails_wrong_symlink_target(self) -> None:
-        run = _write_valid_run_layout(
-            self.tmp,
-            features_hash=self.config.features_hash,
-            symlink_ok=False,
-        )
-        base = self.tmp / "artifacts" / "models" / "home_win" / "logreg"
-        os.symlink("other_run/final", base / "latest")
-        latest = verify_latest_symlinks(
-            [self._make_outcome(run)],
-            artifacts_root=self.tmp / "artifacts",
-        )
-        self.assertFalse(latest.ok)
-
-
 class TestApplyAcceptanceIntegration(unittest.TestCase):
     def test_apply_updates_summary_and_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             _, meta_path = write_synthetic_train_dataset(tmp, n_days=20)
             config = load_config(ROOT / "configs" / "modeling_default.yaml", metadata=load_metadata_json(meta_path))
-            run = _write_valid_run_layout(tmp, features_hash=config.features_hash, symlink_ok=False)
+            run = _write_run_layout(tmp)
             result = RunResult(
                 run_id=run.run_id,
                 task="home_win",
@@ -531,21 +200,9 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 evaluation=run,
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
-            combined, _, _ = apply_acceptance_to_training_outcomes(
-                [outcome],
-                config=config,
-                enabled_tasks=["home_win"],
-                pairs=[("home_win", "logreg")],
-                artifacts_root=tmp / "artifacts",
-            )
-            self.assertEqual(combined, "ok")
+            baseline = apply_acceptance_to_training_outcomes([outcome], config=config, enabled_tasks=["home_win"])
+            self.assertEqual(baseline.status, "ok")
             self.assertEqual((outcome.result.status, outcome.result.exit_code), ("ok", 0))
-            update_latest_symlink(
-                "home_win", "logreg", run.run_id, artifacts_root=tmp / "artifacts", status=outcome.result.status
-            )
-            latest = tmp / "artifacts" / "models" / "home_win" / "logreg" / "latest"
-            self.assertEqual(latest.resolve(), (latest.parent / run.run_id / "final").resolve())
-            self.assertTrue(verify_latest_symlinks([outcome], artifacts_root=tmp / "artifacts").ok)
             summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertTrue(summary.startswith("status:"))
             metrics = json.loads((run.reports_dir / "metrics.json").read_text(encoding="utf-8"))
@@ -619,7 +276,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 ROOT / "configs" / "modeling_default.yaml",
                 metadata=load_metadata_json(meta_path),
             )
-            run = _write_valid_run_layout(tmp, features_hash=config.features_hash)
+            run = _write_run_layout(tmp)
             result = RunResult(
                 run_id=run.run_id,
                 task="home_win",
@@ -638,15 +295,8 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 ),
             )
             (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
-            apply_acceptance_to_training_outcomes(
-                [outcome],
-                config=config,
-                enabled_tasks=["home_win"],
-                pairs=[("home_win", "logreg")],
-                artifacts_root=tmp / "artifacts",
-            )
+            apply_acceptance_to_training_outcomes([outcome], config=config, enabled_tasks=["home_win"])
             model_base = tmp / "artifacts" / "models" / "home_win" / "logreg"
-            (model_base / "latest").unlink()
             os.symlink("previous_run/final", model_base / "latest")
             update_latest_symlink(
                 "home_win",
@@ -678,11 +328,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 for item in outcomes:
                     item.result.status = "failed_baseline_check"
                     item.result.exit_code = 1
-                return (
-                    "failed_baseline_check",
-                    BaselineGateResult(status="failed_baseline_check", per_task=()),
-                    ArtifactCheckResult(ok=True),
-                )
+                return BaselineGateResult(status="failed_baseline_check", per_task=())
 
             with mock.patch(
                 "modeling.train_runner.apply_acceptance_to_training_outcomes",

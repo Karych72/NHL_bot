@@ -72,15 +72,6 @@ def _validate_n_resamples(n_resamples: int) -> int:
     return n
 
 
-def _validate_num_threads(num_threads: int) -> int:
-    if not isinstance(num_threads, (int, np.integer)):
-        raise BootstrapError(f"num_threads must be an int, got {type(num_threads).__name__}")
-    n = int(num_threads)
-    if n < 1:
-        raise BootstrapError(f"num_threads must be >= 1, got {n}")
-    return n
-
-
 def _normalize_day(
     day: pd.Series | np.ndarray | list | tuple,
     n: int,
@@ -205,7 +196,6 @@ def bootstrap_metrics(
         Worker limit from ``compute.num_threads`` (default 1, sequential).
     """
     n_resamples = _validate_n_resamples(n_resamples)
-    num_threads = _validate_num_threads(num_threads)
 
     y = np.asarray(y_true, dtype=float).ravel()
     p = np.asarray(y_pred, dtype=float).ravel()

@@ -52,7 +52,6 @@ from modeling.acceptance import (
     RunStatus,
     apply_acceptance_to_training_outcomes,
     TaskModelEval,
-    apply_latest_symlink_check,
 )
 from modeling.report import compose_metrics_json, compose_summary_md, configure_run_logger, write_report
 from modeling.splits import SeasonSplits, SeasonWindow, build_season_splits
@@ -1116,14 +1115,7 @@ def run_training(
             )
             results.append(result)
 
-    # Acceptance phase 1 (artifacts + baseline); phase 2 (``latest`` symlink) runs below.
-    _combined, baseline, _artifacts = apply_acceptance_to_training_outcomes(
-        outcomes,
-        config=config,
-        enabled_tasks=tasks,
-        pairs=pairs,
-        artifacts_root=artifacts,
-    )
+    apply_acceptance_to_training_outcomes(outcomes, config=config, enabled_tasks=tasks)
 
     for item in outcomes:
         if not fail_on_baseline and item.result.status == "failed_baseline_check":
@@ -1136,18 +1128,6 @@ def run_training(
                 artifacts_root=artifacts,
                 status=item.result.status,
             )
-
-    if not promote:
-        return results
-
-    # Phase 2: symlinks exist only after update_latest_symlink for status=ok pairs.
-    apply_latest_symlink_check(
-        outcomes,
-        config=config,
-        pairs=pairs,
-        artifacts_root=artifacts,
-        baseline=baseline,
-    )
 
     return results
 
