@@ -1,7 +1,7 @@
 """Хранение подписок на рассылку (таблица bot_subscriptions).
 
 Слой данных меню `/subscriptions` в `bot.py` и рассылки `push_digest_job.py`: чтение,
-включение и отключение подписок (дайджест, предстоящие матчи, команда, страна) и отметки
+включение и отключение подписок (дайджест, предстоящие матчи, команда, страна, игрок) и отметки
 об отправке, защищающие от дублей при повторных прогонах sync: ночи дайджеста
 (`last_sent_night`), итога матча чату (`bot_chat_game_sent`, Задача 85), превью матча
 подписке (`bot_game_sent`), поста о матче в канал (`bot_channel_posts`, Задача 118) и
@@ -47,6 +47,7 @@ class ChatSubscriptions(NamedTuple):
     upcoming: bool
     team_ids: Set[int]
     countries: List[str]
+    player_ids: Set[int]
 
 
 def get_chat_subscriptions(chat_id: int) -> ChatSubscriptions:
@@ -58,13 +59,13 @@ def get_chat_subscriptions(chat_id: int) -> ChatSubscriptions:
     Аргументы: `chat_id` — чат, чьи подписки читаем.
 
     Возвращает: `ChatSubscriptions` — подписан ли на дайджест и на предстоящие матчи,
-    множество `team_id` команд, коды стран по алфавиту.
+    множество `team_id` команд, коды стран по алфавиту, множество `player_id` игроков.
     """
     row = fetch_all(
-        "SELECT kind, team_id, country FROM bot_subscriptions "
+        "SELECT kind, team_id, country, player_id FROM bot_subscriptions "
         "WHERE chat_id = %s AND active = TRUE ORDER BY country",
         (chat_id,),
-        columns=["kind", "team_id", "country"],
+        columns=["kind", "team_id", "country", "player_id"],
     )
     kinds = row["kind"]
     return ChatSubscriptions(
@@ -72,6 +73,7 @@ def get_chat_subscriptions(chat_id: int) -> ChatSubscriptions:
         "upcoming_games" in kinds,
         {int(t) for k, t in zip(kinds, row["team_id"]) if k == "team_scores"},
         [c for k, c in zip(kinds, row["country"]) if k == "country_players"],
+        {int(p) for k, p in zip(kinds, row["player_id"]) if k == "player_scores"},
     )
 
 
@@ -136,22 +138,37 @@ def upsert_country(chat_id: int, country: str) -> None:
         conn.commit()
 
 
-def list_active_game_rows() -> List[Tuple[int, Optional[int], Optional[str]]]:
-    """Активные подписки на команды и страны — источник рассылки итогов по матчу в
-    `push_digest_job.py`: кортежи (chat_id, team_id, country), у строки задано одно из двух;
-    по чату, страны чата — по алфавиту."""
+def upsert_player(chat_id: int, player_id: int) -> None:
+    """Включает (реактивирует) подписку чата на игрока `player_id` (Задача 122); идемпотентно."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bot_subscriptions (chat_id, kind, player_id, active) "
+                "VALUES (%s, 'player_scores', %s, TRUE) "
+                "ON CONFLICT (chat_id, player_id) WHERE kind = 'player_scores' "
+                "DO UPDATE SET active = TRUE, updated_at = now()",
+                (chat_id, player_id),
+            )
+        conn.commit()
+
+
+def list_active_game_rows() -> List[Tuple[int, Optional[int], Optional[str], Optional[int]]]:
+    """Активные подписки на команды, страны и игроков (Задача 122) — источник рассылки итогов
+    по матчу в `push_digest_job.py`: кортежи (chat_id, team_id, country, player_id), у строки
+    задано одно из трёх; по чату, страны чата — по алфавиту."""
     row = fetch_all(
-        "SELECT chat_id, team_id, country FROM bot_subscriptions "
-        "WHERE kind IN ('team_scores', 'country_players') AND active = TRUE "
-        "ORDER BY chat_id, country, team_id",
+        "SELECT chat_id, team_id, country, player_id FROM bot_subscriptions "
+        "WHERE kind IN ('team_scores', 'country_players', 'player_scores') AND active = TRUE "
+        "ORDER BY chat_id, country, team_id, player_id",
         None,
-        columns=["chat_id", "team_id", "country"],
+        columns=["chat_id", "team_id", "country", "player_id"],
     )
     return [
         (
             int(row["chat_id"][i]),
             None if row["team_id"][i] is None else int(row["team_id"][i]),
             row["country"][i],
+            None if row["player_id"][i] is None else int(row["player_id"][i]),
         )
         for i in range(row["count_rows"])
     ]
@@ -318,23 +335,28 @@ def deactivate_chat(chat_id: int) -> None:
 
 
 def mark_subscription_inactive_by_chat_kind_team(
-    chat_id: int, kind: str, team_id: Optional[int] = None, country: Optional[str] = None
+    chat_id: int,
+    kind: str,
+    team_id: Optional[int] = None,
+    country: Optional[str] = None,
+    player_id: Optional[int] = None,
 ) -> None:
-    """Гасит подписку по (chat_id, kind[, team_id][, country]) — общий деактиватор
-    для произвольного `kind`, в отличие от `deactivate_team_scores`, привязанного к
-    команде; гасит и подписки из `CHAT_KINDS`.
+    """Гасит подписку по (chat_id, kind[, team_id][, country][, player_id]) — общий
+    деактиватор для произвольного `kind`, в отличие от `deactivate_team_scores`, привязанного
+    к команде; гасит и подписки из `CHAT_KINDS`.
 
     Args:
         team_id: `None` ищет запись без команды (напр. morning_digest);
             иначе фильтрует по конкретной команде (team_scores).
         country: то же для кода страны (country_players).
+        player_id: то же для игрока (player_scores, Задача 122).
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bot_subscriptions SET active = FALSE, updated_at = now() "
                 "WHERE chat_id = %s AND kind = %s AND team_id IS NOT DISTINCT FROM %s "
-                "AND country IS NOT DISTINCT FROM %s",
-                (chat_id, kind, team_id, country),
+                "AND country IS NOT DISTINCT FROM %s AND player_id IS NOT DISTINCT FROM %s",
+                (chat_id, kind, team_id, country, player_id),
             )
         conn.commit()

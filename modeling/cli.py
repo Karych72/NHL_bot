@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="drop",
     )
     build.add_argument("--min-rows-threshold", type=int, default=0)
+    build.add_argument(
+        "--config",
+        default="configs/modeling_default.yaml",
+        help="YAML config; build-dataset reads only dataset.first_season_id from it",
+    )
     build.add_argument("--season-ids", default="")
     build.add_argument("--target-day-from")
     build.add_argument("--target-day-to")
@@ -495,6 +500,7 @@ def main() -> None:
             cold_start_policy_predict=args.cold_start_policy_predict,
             min_rows_threshold=args.min_rows_threshold,
             season_ids=season_ids,
+            first_season_id=load_yaml_config(args.config).dataset.first_season_id,
             target_day_from=args.target_day_from,
             target_day_to=args.target_day_to,
             train_metadata_path=Path(args.train_metadata_path) if args.train_metadata_path else None,

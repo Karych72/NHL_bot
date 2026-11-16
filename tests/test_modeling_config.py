@@ -78,6 +78,8 @@ def _minimal_yaml_text(**overrides: object) -> str:
             enabled: true
           over_5_5:
             enabled: true
+        dataset:
+          first_season_id: 20212022
         split:
           test_seasons: [20232024, 20242025]
           inner_val_games: 300

@@ -6,8 +6,9 @@
 
     chat_id        BIGINT NOT NULL,       -- Telegram chat_id получателя
     kind           TEXT NOT NULL,         -- 'morning_digest' | 'team_scores' | 'country_players'
-                                          -- | 'upcoming_games' (Задача 78)
+                                          -- | 'upcoming_games' (Задача 78) | 'player_scores' (122)
     team_id        BIGINT,                -- для kind='team_scores'; иначе NULL
+    player_id      BIGINT,                -- игрок; только у player_scores (Задача 122)
     country        TEXT,                  -- код страны; только у country_players (Задача 61)
     last_sent_night DATE,                 -- ночь дайджеста, уже отправленная чату (защита от дубля)
     active         BOOLEAN DEFAULT TRUE,

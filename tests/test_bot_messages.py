@@ -757,8 +757,7 @@ def _preview_stats_row(home="BBB"):
 
 
 def _render_preview(bot_messages, home="BBB"):
-    """Превью AAA @ home: (тело, подвал). Прогноз превью не читает (Задача 96) — некэшированный
-    `fetch_all` (им читается `game_predictions`) падает."""
+    """Превью AAA @ home: (тело, подвал); все запросы превью — кэшированные."""
     stats_row = _preview_stats_row(home)
 
     def fake_cached(query, params=None, columns=None):
@@ -771,7 +770,7 @@ def _render_preview(bot_messages, home="BBB"):
         raise AssertionError(f"unexpected query: {q}")
 
     with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
-            patch.object(bot_messages, "fetch_all", side_effect=AssertionError("превью читает прогноз")):
+            patch.object(bot_messages, "fetch_all", side_effect=AssertionError("некэшированный запрос")):
         return bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", home)
 
 
@@ -795,7 +794,7 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
     ]
     assert table[-1] == ["Разница шайб", "+1.5", "-0.9"]
-    assert footer == f"Сезон {bot_messages.config.CURRENT_SEASON}", "строку прогноза добавляет вызывающий"
+    assert footer == f"Сезон {bot_messages.config.CURRENT_SEASON}"
     assert "н/д" not in text
 
 
@@ -835,28 +834,6 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
     assert "<b>" not in points
 
 
-def _with_prediction(bot_messages, predictions, home="BBB"):
-    """`with_model_prediction("Сезон 2026/27", 777, home)` при строках `game_predictions`
-    {task: p}; в `teams` хозяева называются «<home> Club». Возвращает (подвал, mock `fetch_all`)."""
-    rows = {"count_rows": len(predictions), "task": list(predictions),
-            "probability": list(predictions.values())}
-    name = {"count_rows": 1, "name": [f"{home} Club"]}
-    with patch.object(bot_messages, "fetch_all", return_value=rows) as mock_fetch, \
-            patch.object(bot_messages, "cached_fetch_all", return_value=name):
-        return bot_messages.with_model_prediction("Сезон 2026/27", 777, home), mock_fetch
-
-
-def test_with_model_prediction_appends_win_and_total_to_footer(bot_module):
-    bot_messages = bot_module("bot_messages")
-    footer, mock_fetch = _with_prediction(bot_messages, {"over_5_5": 0.468, "home_win": 0.574})
-
-    assert footer == "Сезон 2026/27\nОценка модели (не совет): победа BBB Club — 57%, тотал больше 5.5 — 47%"
-    # Запрос параметризован game_id из кнопки, берёт обе задачи, без кэша.
-    query, params = mock_fetch.call_args.args[:2]
-    assert "game_predictions" in query and "task IN ('home_win', 'over_5_5')" in query
-    assert params == (777,)
-
-
 def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_module):
     """Код — параметром, в верхнем регистре без пробелов; команды нет в `teams` — LookupError,
     а не код вместо названия (Задача 98)."""
@@ -869,22 +846,6 @@ def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_
     with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
             pytest.raises(LookupError, match="ZZZ"):
         bot_messages.team_name_for_abbrev("ZZZ")
-
-
-def test_with_model_prediction_shows_total_without_win(bot_module):
-    """Гейт победы не пройден — строки home_win нет, тотал выходит один."""
-    footer, _ = _with_prediction(bot_module("bot_messages"), {"over_5_5": 0.55})
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): тотал больше 5.5 — 55%"
-
-
-def test_with_model_prediction_without_rows_keeps_footer(bot_module):
-    footer, _ = _with_prediction(bot_module("bot_messages"), {})
-    assert footer == "Сезон 2026/27"
-
-
-def test_with_model_prediction_escapes_home_name(bot_module):
-    footer, _ = _with_prediction(bot_module("bot_messages"), {"home_win": 0.5}, home="B&B")
-    assert footer.splitlines()[-1] == "Оценка модели (не совет): победа B&amp;B Club — 50%"
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):

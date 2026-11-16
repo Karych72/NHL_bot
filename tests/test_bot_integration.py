@@ -401,10 +401,10 @@ async def test_game_card_of_country_subscriber_ends_with_country_block(
     """Задача 76: подписчику страны под полной карточкой — блок игроков страны в матче."""
     bot = bot_module("bot")
     cursor = fake_db_router([
-        ("FROM bot_subscriptions", [("country_players", None, "RUS")]),
-        # (game_id, фамилия, команда, позиция, Г, П, броски, ±, хиты, блоки, вбр., время)
+        ("FROM bot_subscriptions", [("country_players", None, "RUS", None)]),
+        # (game_id, player_id, фамилия, команда, позиция, Г, П, броски, ±, хиты, блоки, вбр., время)
         ("FROM game_player_stats s", [
-            (GAME_ONE, "Panarin", "NYR", "L", 2, 1, 5, 2, 0, 0, None, None, "20:15"),
+            (GAME_ONE, 8478550, "Panarin", "NYR", "L", 2, 1, 5, 2, 0, 0, None, None, "20:15"),
         ]),
         ("FROM game_goalie_stats s", []),
     ] + _GAME_CARD_ROUTES)

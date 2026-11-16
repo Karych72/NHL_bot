@@ -39,7 +39,7 @@ def no_country_subscriptions(bot_module, monkeypatch):
     подписчику — в tests/test_bot_integration.py."""
     monkeypatch.setattr(
         bot_module("stats_handlers"), "get_chat_subscriptions",
-        lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(False, False, set(), []),
+        lambda chat_id: bot_module("subscription_repo").ChatSubscriptions(False, False, set(), [], set()),
     )
 
 
@@ -363,35 +363,22 @@ async def test_tonight_game_opens_card_when_game_already_in_db(bot_module, make_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("premium", "footer"),
-    [
-        (False, "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium</footer>"),
-        (True, "<footer>Сезон 2026/27<br>Оценка модели (не совет): победа New York Rangers — 61%</footer>"),
-    ],
-)
 async def test_tonight_game_shows_season_preview_when_game_not_yet_in_db(
-    bot_module, make_callback, fake_bot, api, premium, footer
+    bot_module, make_callback, fake_bot, api
 ):
-    """Превью матча, которого ещё нет в БД; строка прогноза — только премиум-чату (Задача 96):
-    премиум проверяется по чату нажатия, прогноз — настоящей `with_model_prediction`."""
+    """Превью матча, которого ещё нет в БД; подвал — только сезон: строки прогноза и тизера
+    премиума нет ни у кого (Задача 123)."""
     stats_handlers = bot_module("stats_handlers")
-    prediction = {"count_rows": 1, "task": ["home_win"], "probability": [0.61]}
 
     with patch.object(stats_handlers, "game_exists", return_value=False), \
             patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")) as mock_preview, \
-            patch.object(stats_handlers.premium, "is_premium", return_value=premium) as mock_premium, \
-            patch.object(bot_module("bot_messages"), "fetch_all", return_value=prediction) as mock_fetch, \
-            patch.object(bot_module("bot_messages"), "team_name_for_abbrev", return_value="New York Rangers"), \
             patch.object(stats_handlers, "truncate_telegram_text", side_effect=lambda text, **kw: text):
         await _tap_tonight(stats_handlers, make_callback, fake_bot)
 
     mock_preview.assert_called_once_with(555, "DET", "NYR")
-    mock_premium.assert_called_once_with(make_callback("").message.chat.id)
-    assert [c.args[1] for c in mock_fetch.call_args_list] == ([(555,)] if premium else [])
     [sent] = api.sent_rich
     # Тело превью, затем подвал: «Сезон …» уехал из заголовка в <footer>.
-    assert body(sent) == rich_html("PREVIEW") + footer
+    assert body(sent) == rich_html("PREVIEW") + "<footer>Сезон 2026/27</footer>"
 
 
 @pytest.mark.asyncio
@@ -498,7 +485,6 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
     матча то же нажатие шлёт карточку, а не ссылку на превью."""
     stats_handlers = bot_module("stats_handlers")
     with patch.object(stats_handlers, "matchup_season_preview", return_value=("PREVIEW", "Сезон 2026/27")), \
-            patch.object(stats_handlers.premium, "is_premium", return_value=False), \
             patch.object(stats_handlers, "game_message", return_value="CARD"), \
             patch.object(stats_handlers, "game_goal_events", return_value=[]):
         with patch.object(stats_handlers, "game_exists", return_value=False):
@@ -510,7 +496,7 @@ async def test_tonight_game_card_after_preview_is_a_new_answer(bot_module, make_
             await _tap_tonight(stats_handlers, make_callback, fake_bot, "tn:556:BOS:MIN")
 
     assert [body(m) for m in api.outgoing] == [
-        rich_html("PREVIEW") + "<footer>Сезон 2026/27<br>🔒 Прогноз модели — в премиуме: /premium</footer>",
+        rich_html("PREVIEW") + "<footer>Сезон 2026/27</footer>",
         rich_html("CARD"), rich_html("CARD"),
     ]
 

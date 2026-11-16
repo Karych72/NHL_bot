@@ -89,7 +89,11 @@ NHL_bot/
 │       ├── 0024_channel_posts.up.sql         # Отметки постов о матчах в канал bot_channel_posts (Задача 118)
 │       ├── 0024_channel_posts.down.sql
 │       ├── 0025_channel_weekly_posts.up.sql  # Отметки еженедельных постов канала bot_channel_weekly_posts (Задача 120)
-│       └── 0025_channel_weekly_posts.down.sql
+│       ├── 0025_channel_weekly_posts.down.sql
+│       ├── 0026_trial_notice.up.sql          # premium_access.is_trial / trial_notice_at, bot_actions trial_ended (Задача 125)
+│       ├── 0026_trial_notice.down.sql
+│       ├── 0027_player_subscription.up.sql   # Подписка на игрока: bot_subscriptions.player_id, kind player_scores (Задача 122)
+│       └── 0027_player_subscription.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -132,6 +136,7 @@ NHL_bot/
 │   ├── bot_users_report.sh             # Отчёт по пользователям обоих ботов: подписки, ИИ, действия, премиум (только чтение)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
+│   ├── dev_history_load.sh             # История 2009/10–2020/21 в nhl_dev из кэша сырого слоя со сверками (Задача 121)
 │   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
 │   ├── show_game_card.sh               # Витрина карточки матча на dev-боте кодом рабочей копии (Задача 119)
 │   ├── show_game_card_probe.py         # Шаблон пробы витрины: в него вшивается bot_messages.py
@@ -154,7 +159,7 @@ NHL_bot/
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
-│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и прогноз модели (Задача 96); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и расписания без лимита (Задачи 96, 107); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115) и одно сообщение о его конце (Задача 125)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
@@ -372,7 +377,7 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 (08:00 UTC); времени у подписчика нет. Днём, с 12:30 UTC
 (15:30 МСК), слоты раз в 30 минут (`PREVIEW_STEP`) идут без загрузчика — только `push_digest_job.py --upcoming-only`, ради
 превью предстоящих матчей (Задача 78; `loads_data`). Загрузчику днём грузить нечего, а в
-12:00 UTC работают `retrain` и `predict` — первый дневной слот через полчаса, когда прогноз уже опубликован. Дневной прогон статус-файл не пишет: healthcheck
+12:00 UTC работают `retrain` и `predict` — первый дневной слот через полчаса после них. Дневной прогон статус-файл не пишет: healthcheck
 следит за свежестью данных, и успешная рассылка не скрывает упавшую ночную загрузку. Повторные
 прогоны одного дня идемпотентны: per-game таблицы — `DELETE` по `game_id` окна и `INSERT` в одной транзакции, сезонные — UPSERT. Расписание, здоровье сервиса,
 том с диск-кэшем/статусом и ручной запуск — `DEVELOPMENT.md` §Docker. Каждый такой прогон
@@ -409,7 +414,9 @@ Broски (SOG) берутся из boxscore (`homeTeam.sog`, `awayTeam.sog`).
 `predict` → `publish-predictions` → `publish-goals`; модели — из `deploy/models/` в образе, не
 обучаются. Догоняющий прогон при старте — если статуса нет или он старше суток. Статус —
 `all_data/publish_status.json` в томе `syncdata`, healthcheck — ok и моложе 26 часов. Тесты —
-`tests/test_scheduled_publish.py`.
+`tests/test_scheduled_publish.py`. Бот публикацию не показывает (Задача 123); сервис оставлен
+решением человека 2026-11-16 ради журнала `prediction_log` и образа `modeling` для разовых
+прогонов (`scripts/dev_history_load.sh`, Задача 121).
 
 Тем же принципом (долгоживущий контейнер со своим циклом, не host cron) в `docker-compose.yml`
 устроен и сервис `backup` (Задача 35): ежесуточный `pg_dump` тома `pgdata` на bind mount
@@ -439,7 +446,8 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 (`_command_handler`), экран ИИ (`AI_SCREENS`, сигнатура `(bot, chat_id, params)`) и расписание
 зовут одну и ту же функцию. **Расписания (Задача 107):** `run_polling` рядом со
 `start_polling()` запускает asyncio-задачу `run_schedule_ticker` — раз в минуту
-`send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
+`send_due_schedules` и `send_trial_endings` (сообщение о конце пробника, Задача 125; шаги не
+мешают друг другу). `send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
 `AI_SCREENS` без дайджеста за дату и `open_command` без `subscriptions` / `help`) через
 `push_digest_job._throttled` → `schedule_repo.advance` от `now` (после простоя уходит одна
 пропущенная отправка). Без премиума чат получает только старейшее активное расписание;
@@ -501,7 +509,7 @@ polling, таймаут сессии 300 с ради загрузки клипо
 кнопка, но новым сообщением; апдейты обрабатываются конкурентно, и ожидание модели не держит
 остальные. Системный промпт и инструменты стабильны и кэшируются, дата —
 в вопросе. Лимит (`ai_router.limit_refusal`, Задача 96): премиуму (`premium.is_premium`) — 20 вопросов
-в сутки по МСК, бесплатным — 3 в календарную неделю МСК и не больше 8 за всё время; вопрос —
+в сутки по МСК, бесплатным — 3 в календарную неделю МСК (потолка за всё время нет); вопрос —
 строка `ai_questions` или `ai_stats_log` (выбор `stats_question` не в счёт), сбои API не в счёт; каждый вызов модели — строка `ai_questions` (экран
 или текст, токены, стоимость, задержка, `request_id`, ошибка). Сбой API — сообщение «попробуйте
 командой» и строка с ошибкой. Выбор модели проверяет `make ai-eval`, маршрутизацию —
@@ -822,13 +830,10 @@ PK `(player_id, season_id, game_type)`, как у полевых; FK `(player_id
 
 Поток: `scheduled_games` → `build-dataset --mode predict` → `predict` (CSV) →
 `publish-predictions` (`home_win`) и `publish-goals` (`over_5_5`, `model = goals`) →
-`game_predictions` → бот (читает только PG). Ежедневно публикует сервис `predict`
+`game_predictions`. Ежедневно публикует сервис `predict`
 (`pipeline/scheduled_publish.py`). Строки есть только у игр, где у обеих команд ≥ 5 игр в сезоне.
-Бот читает обе задачи только для премиум-чата (Задача 96): `with_model_prediction` (запрос без
-кэша по `game_id`) вызывают превью по кнопке `/tonight` и рассылка превью при отправке каждому чату,
-общее превью `matchup_season_preview` прогноза не содержит. В подвал добавляется строка «Оценка модели (не совет): победа HOME — N%, тотал больше
-5.5 — M%»; части без
-строки в таблице пропускаются, нет ни одной — нет и строки.
+Бот таблицу не читает (Задача 123: прогноз убран из превью до приёмки модели против рынка);
+публикация продолжается ради журнала `prediction_log`.
 Строки задачи целиком заменяются при каждой публикации; при непройденном гейте
 (нет `latest` / `status != ok`) строки задачи удаляются. FK на `games` нет — игра ещё не сыграна.
 
@@ -1067,8 +1072,8 @@ Telegram, поэтому ни обрезки фамилий, ни выбрасы
 Вход — команда `/BOS` из списка `/team` (`team_list_text()`, хендлер `cmd_team_profile` в
 `bot.py` по `TEAM_COMMAND_PATTERN`) и инструмент `team_profile` свободного текста; аббревиатура
 резолвится через `_team_id_for_abbrev()`, как в `matchup_season_preview()` (Фаза C). В тексте
-клуб — полным названием без кода (Задача 98); там, где на руках только код (прогноз модели,
-подпись к видео гола), название даёт `team_name_for_abbrev()`.
+клуб — полным названием без кода (Задача 98); там, где на руках только код (подпись к видео
+гола), название даёт `team_name_for_abbrev()`.
 
 `players_season_stats` не хранит команду игрока — очки/голы за весь сезон целиком относятся
 к тому `current_team_id`, что сейчас стоит в `rosters` (последний обработанный ростер,

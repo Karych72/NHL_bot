@@ -42,7 +42,13 @@ from tests._pipeline_fixtures import (
 
 TEAM_REFERENCE = "stats/rest/en/team"
 TEAM_SUMMARY = "stats/rest/en/team/summary"
-STANDINGS = "standings/now"
+STANDINGS_SEASON = "v1/standings-season"
+# Standings on the last standings day of SEASON_ID (Задача 121) — routing the
+# date, not "now", is what pins load_team_reference to the loaded season.
+STANDINGS_ROUTES = {
+    STANDINGS_SEASON: {"seasons": [{"id": SEASON_ID, "standingsEnd": "2026-04-17"}]},
+    "v1/standings/2026-04-17": load_fixture("nhl_standings_now.json"),
+}
 ROSTER = "/v1/roster/"
 LANDING = "/landing"
 TKACHUK = 8480801  # OTT; only in the playoff fixtures (``nhl_playoff_*.json``)
@@ -132,7 +138,7 @@ class TeamRowsTest(LoaderApiTestCase):
         instance = make_loader()
         stub_api(
             instance,
-            json_routes={STANDINGS: load_fixture("nhl_standings_now.json")},
+            json_routes=STANDINGS_ROUTES,
             paginated_routes={
                 TEAM_REFERENCE: load_fixture("nhl_team_reference.json"),
                 TEAM_SUMMARY: (
@@ -144,6 +150,52 @@ class TeamRowsTest(LoaderApiTestCase):
         )
         instance.load_team_reference()
         return instance
+
+    def _past_season_loader(self, season_id):
+        """Loader of *season_id* with the API's season list and 2010-04-11 standings (ATL only)."""
+        instance = make_loader()
+        instance.season_id = season_id
+        stub_api(
+            instance,
+            json_routes={
+                STANDINGS_SEASON: {
+                    "seasons": [
+                        {"id": 20092010, "standingsEnd": "2010-04-11"},
+                        {"id": SEASON_ID, "standingsEnd": "2026-04-17"},
+                    ]
+                },
+                "v1/standings/2010-04-11": {
+                    "standings": [
+                        {
+                            "teamAbbrev": {"default": "ATL"},
+                            "teamCommonName": {"default": "Thrashers"},
+                            "divisionName": "Southeast",
+                            "conferenceName": "Eastern",
+                        }
+                    ]
+                },
+            },
+            paginated_routes={
+                TEAM_REFERENCE: [{"id": 11, "triCode": "ATL", "fullName": "Atlanta Thrashers"}],
+            },
+        )
+        return instance
+
+    def test_past_season_takes_standings_of_its_last_day(self):
+        """Задача 121: today's table has no ATL, and its divisions are not 2009/10's."""
+        instance = self._past_season_loader(20092010)
+        instance.load_team_reference()
+        (atl,) = instance.build_teams([{"teamId": 11}])
+
+        self.assertEqual(field(atl, "teams", "division_name"), "Southeast")
+        self.assertEqual(field(atl, "teams", "conference_name"), "Eastern")
+        self.assertEqual(field(atl, "teams", "short_name"), "Thrashers")
+
+    def test_season_unknown_to_the_api_raises(self):
+        instance = self._past_season_loader(20082009)
+
+        with self.assertRaisesRegex(RuntimeError, "20082009"):
+            instance.load_team_reference()
 
     def test_teams_row_merges_summary_meta_and_standings(self):
         teams_rows, _ = regular_teams_and_stats(self._loader())
@@ -213,7 +265,7 @@ class RosterRowsTest(LoaderApiTestCase):
         stub_api(
             instance,
             json_routes={
-                STANDINGS: load_fixture("nhl_standings_now.json"),
+                **STANDINGS_ROUTES,
                 ROSTER: (
                     load_fixture("nhl_roster_wsh.json")
                     if roster_payload is None
@@ -338,7 +390,7 @@ class RosterRowsTest(LoaderApiTestCase):
         stub_api(
             instance,
             json_routes={
-                STANDINGS: load_fixture("nhl_standings_now.json"),
+                **STANDINGS_ROUTES,
                 ROSTER: load_fixture("nhl_roster_wsh.json"),
                 LANDING: load_fixture("nhl_player_landing.json"),
             },
@@ -374,7 +426,7 @@ class RosterRowsTest(LoaderApiTestCase):
         stub_api(
             instance,
             json_routes={
-                STANDINGS: load_fixture("nhl_standings_now.json"),
+                **STANDINGS_ROUTES,
                 ROSTER: load_fixture("nhl_roster_wsh.json"),
                 LANDING: without(load_fixture("nhl_player_landing.json"), "playerId"),
             },
@@ -693,7 +745,7 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         stub_api(
             instance,
             json_routes={
-                STANDINGS: load_fixture("nhl_standings_now.json"),
+                **STANDINGS_ROUTES,
                 ROSTER: load_fixture("nhl_roster_wsh.json"),
                 LANDING: load_fixture("nhl_player_landing.json"),
             },

@@ -46,6 +46,7 @@ from throttle import enforce_callback_rate_limit
 from bot_messages import (
     COUNTRY_LABELS,
     MSK,
+    ROSTER_GROUPS,
     country_profile,
     country_rankings,
     day_digest,
@@ -53,8 +54,10 @@ from bot_messages import (
     rich_list,
     rich_message,
     last_night_day,
+    player_labels,
     season_teams_by_division,
     team_list_text,
+    team_roster_group,
     team_full_stats,
     team_profile,
     team_table,
@@ -176,11 +179,11 @@ async def show_help(bot: Bot, chat_id: int) -> None:
 
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
-    "прогноз модели в превью матчей, свои рассылки без ограничений — заводятся одной фразой боту."
+    "свои рассылки без ограничений — заводятся одной фразой боту."
 )
 _TRIAL_GIFT = (
-    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: прогноз модели и ИИ "
-    f"до {ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки. Подробнее — /premium"
+    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: ИИ до "
+    f"{ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки и свои рассылки без ограничений. Подробнее — /premium"
 )
 _PREMIUM_CANCEL_HINT = (
     "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
@@ -188,6 +191,35 @@ _PREMIUM_CANCEL_HINT = (
 )
 _PREMIUM_GROUP_TEXT = "Оплатить премиум можно только в личном чате с ботом: откройте его и отправьте /premium."
 _PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
+# Конец пробника (Задача 125): что остаётся бесплатно и что даёт премиум; числа — из констант.
+_TRIAL_ENDED_TEXT = (
+    "⏳ <b>Пробный премиум закончился.</b>\n"
+    "Бесплатно остаётся всё остальное: экраны, карточки матчей, подписки, одно своё расписание "
+    f"и вопросы ИИ — до {ai_router.FREE_WEEKLY_LIMIT} в неделю.\n"
+    f"Премиум — вопросы ИИ до {ai_router.PREMIUM_DAILY_LIMIT} в сутки и свои рассылки без ограничений: "
+    f"{premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."
+)
+
+
+async def premium_pay_markup(bot: Bot) -> InlineKeyboardMarkup:
+    """Кнопка оплаты премиума — ссылка на счёт подписки Stars (`createInvoiceLink`).
+
+    Зачем: один счёт для `/premium` и сообщения о конце пробника (Задача 125) — оплата по любой
+    кнопке идёт тем же `on_successful_payment`.
+
+    Аргументы:
+        bot: бот, от имени которого выставляется счёт.
+    """
+    link = await bot.create_invoice_link(
+        title="Премиум на 30 дней",
+        description=_PREMIUM_PERKS,
+        payload="premium",
+        currency="XTR",
+        prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
+        subscription_period=premium.PERIOD_SECONDS,
+    )
+    button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
 async def cmd_premium(message: Message, bot: Bot) -> None:
@@ -208,18 +240,7 @@ async def cmd_premium(message: Message, bot: Bot) -> None:
     if subscribed:
         await message.answer_rich(rich_message("\n".join(lines + ["", _PREMIUM_CANCEL_HINT])))
         return
-    link = await bot.create_invoice_link(
-        title="Премиум на 30 дней",
-        description=_PREMIUM_PERKS,
-        payload="premium",
-        currency="XTR",
-        prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
-        subscription_period=premium.PERIOD_SECONDS,
-    )
-    button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
-    await message.answer_rich(
-        rich_message("\n".join(lines)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
-    )
+    await message.answer_rich(rich_message("\n".join(lines)), reply_markup=await premium_pay_markup(bot))
 
 
 async def cmd_paysupport(message: Message, bot: Bot) -> None:
@@ -370,12 +391,19 @@ _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполни
 # Кнопки меню `/subscriptions` (Задача 63): `sub:m` главный экран, `sub:d` дайджест,
 # `sub:u` предстоящие матчи (Задача 78), `sub:T` дивизионы, `sub:D:<i>` команды дивизиона i, `sub:t:<i>:<team_id>` команда
 # (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
-# `sub:x` «Готово», `sub:s` расписания (Задача 107), `sub:s:<id>` удалить расписание. Самая
-# длинная — `sub:t:3:` + id команды, заведомо меньше 64 байт.
-SUBSCRIPTIONS_CALLBACK_PATTERN = r"^sub:(m|d|u|T|C|x|s|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3}|s:\d+)$"
+# `sub:x` «Готово», `sub:s` расписания (Задача 107), `sub:s:<id>` удалить расписание. Игроки
+# (Задача 122): `sub:P` дивизионы, `sub:Q:<i>` клубы дивизиона, `sub:R:<i>:<team_id>:<g>` группа
+# состава g (`ROSTER_GROUPS`), `sub:p:<i>:<team_id>:<g>:<player_id>` игрок, `sub:o:<player_id>`
+# отписка с экрана `sub:P` (игрока может не быть в составах сезона). Самая длинная —
+# `sub:p:3:` + id команды + `:F:` + семизначный id игрока, около 20 байт из 64.
+SUBSCRIPTIONS_CALLBACK_PATTERN = (
+    r"^sub:(m|d|u|T|C|P|x|s|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3}|s:\d+|Q:[0-3]|R:[0-3]:\d+:[FDG]"
+    r"|p:[0-3]:\d+:[FDG]:\d+|o:\d+)$"
+)
 _DIVISION_BUTTON_COLUMNS = 2
 _TEAM_BUTTON_COLUMNS = 4
 _COUNTRY_BUTTON_COLUMNS = 3
+_PLAYER_BUTTON_COLUMNS = 2
 
 _Screen = Tuple[str, InlineKeyboardMarkup]
 
@@ -394,6 +422,7 @@ def _subscriptions_main_screen(
     upcoming: bool,
     team_names: List[str],
     countries: List[str],
+    players: List[str],
     schedules: int,
     is_premium: bool,
 ) -> _Screen:
@@ -413,6 +442,8 @@ def _subscriptions_main_screen(
         items.append("Команды: " + ", ".join(html.escape(name) for name in team_names))
     if countries:
         items.append("Страны: " + ", ".join(countries))
+    if players:
+        items.append("Игроки: " + ", ".join(html.escape(name) for name in players))
     lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
     if not schedules:
         hint = _MAIN_SCHEDULE_HINT_FIRST
@@ -428,6 +459,7 @@ def _subscriptions_main_screen(
             InlineKeyboardButton(text=f"🏒 Команды ({len(team_names)})", callback_data="sub:T"),
             InlineKeyboardButton(text=f"🌍 Страны ({len(countries)})", callback_data="sub:C"),
         ],
+        [InlineKeyboardButton(text=f"👤 Игроки ({len(players)})", callback_data="sub:P")],
         [InlineKeyboardButton(text=f"⏰ Расписания ({schedules})", callback_data="sub:s")],
         [InlineKeyboardButton(text="Готово", callback_data="sub:x")],
     ])
@@ -488,18 +520,64 @@ def _subscriptions_schedules_screen(schedules: List[schedule_repo.Schedule]) -> 
 
 
 def _subscriptions_divisions_screen(
-    teams_by_division: Dict[str, List[Tuple[int, str, str]]], team_ids: Set[int]
+    teams_by_division: Dict[str, List[Tuple[int, str, str]]],
+    team_ids: Set[int],
+    title: str = "Команды",
+    action: str = "D",
 ) -> _Screen:
-    """Шаг 1 выбора команд: дивизионы с числом выбранных команд в скобках."""
+    """Шаг 1 выбора команд (`action` `D`) или клуба игрока (`Q`, Задача 122): дивизионы с
+    числом выбранных команд в скобках."""
     buttons = []
     for i, (division, teams) in enumerate(teams_by_division.items()):
         chosen = sum(1 for team_id, _, _ in teams if team_id in team_ids)
         label = f"{division} ({chosen})" if chosen else division
-        buttons.append(InlineKeyboardButton(text=label, callback_data=f"sub:D:{i}"))
+        buttons.append(InlineKeyboardButton(text=label, callback_data=f"sub:{action}:{i}"))
     rows = build_menu(buttons, n_cols=_DIVISION_BUTTON_COLUMNS)
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="sub:m")])
     return (
-        "<b>Команды</b>\n" + rich_footer("Выберите дивизион."),
+        f"<b>{title}</b>\n" + rich_footer("Выберите дивизион."),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def _subscriptions_player_teams_screen(
+    teams_by_division: Dict[str, List[Tuple[int, str, str]]], division_index: int
+) -> _Screen:
+    """Шаг 2 выбора игрока (Задача 122): клубы дивизиона, нажатие открывает нападающих клуба."""
+    division, teams = list(teams_by_division.items())[division_index]
+    buttons = [
+        InlineKeyboardButton(text=abbrev, callback_data=f"sub:R:{division_index}:{team_id}:F")
+        for team_id, abbrev, _ in teams
+    ]
+    rows = build_menu(buttons, n_cols=_TEAM_BUTTON_COLUMNS)
+    rows.append([InlineKeyboardButton(text="« К дивизионам", callback_data="sub:P")])
+    return (
+        f"<b>{html.escape(division)}</b>\n" + rich_footer("Выберите клуб игрока."),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+def _subscriptions_roster_screen(
+    team_name: str, roster: List[Tuple[int, str]], player_ids: Set[int], division_index: int,
+    team_id: int, group: str,
+) -> _Screen:
+    """Шаг 3 выбора игрока (Задача 122): группа `group` состава клуба, у выбранных ✅; ряд
+    переключения групп (текущая — с точкой) и возврат к клубам дивизиона."""
+    base = f"{division_index}:{team_id}"
+    buttons = [
+        _sub_button(name, player_id in player_ids, f"sub:p:{base}:{group}:{player_id}")
+        for player_id, name in roster
+    ]
+    rows = build_menu(buttons, n_cols=_PLAYER_BUTTON_COLUMNS)
+    rows.append([
+        InlineKeyboardButton(text=("• " if g == group else "") + label, callback_data=f"sub:R:{base}:{g}")
+        for g, (label, _) in ROSTER_GROUPS.items()
+    ])
+    rows.append([InlineKeyboardButton(text="« К клубам", callback_data=f"sub:Q:{division_index}")])
+    hint = "Нажмите на игрока, чтобы подписаться или отписаться: придёт матч, где он вышел на лёд."
+    body = "" if roster else "\nВ составе пусто."
+    return (
+        f"<b>{html.escape(team_name)} · {ROSTER_GROUPS[group][0]}</b>{body}\n" + rich_footer(hint),
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -546,9 +624,10 @@ def _subscriptions_main_screen_for(chat_id: int) -> _Screen:
         for team_id, _, name in teams
         if team_id in subs.team_ids
     )
+    players = sorted(player_labels(sorted(subs.player_ids)).values()) if subs.player_ids else []
     schedules = len(schedule_repo.list_for_chat(chat_id))
     return _subscriptions_main_screen(
-        subs.digest, subs.upcoming, names, subs.countries, schedules, premium.is_premium(chat_id)
+        subs.digest, subs.upcoming, names, subs.countries, players, schedules, premium.is_premium(chat_id)
     )
 
 
@@ -565,9 +644,21 @@ async def show_subscriptions(bot: Bot, chat_id: int) -> None:
 
 
 def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
-    """Переключает подписку по нажатой кнопке (`sub:d`, `sub:u`, `sub:t:…`, `sub:c:…`), пишет
-    в БД и возвращает подсказку для ответа на нажатие."""
-    digest, upcoming, team_ids, countries = subscription_repo.get_chat_subscriptions(chat_id)
+    """Переключает подписку по нажатой кнопке (`sub:d`, `sub:u`, `sub:t:…`, `sub:c:…`, `sub:p:…`),
+    пишет в БД и возвращает подсказку для ответа на нажатие."""
+    digest, upcoming, team_ids, countries, player_ids = subscription_repo.get_chat_subscriptions(chat_id)
+    if action in ("p", "o"):
+        player_id = int(args[-1])
+        name = player_labels([player_id])[player_id]
+        # `sub:o` только отписывает: устаревшая кнопка не должна подписать снова.
+        off = player_id in player_ids or action == "o"
+        if off:
+            subscription_repo.mark_subscription_inactive_by_chat_kind_team(
+                chat_id, "player_scores", player_id=player_id
+            )
+        else:
+            subscription_repo.upsert_player(chat_id, player_id)
+        return f"Подписка на {name} " + ("отключена" if off else "включена")
     if action in ("d", "u"):
         kind, on = ("morning_digest", digest) if action == "d" else ("upcoming_games", upcoming)
         if on:
@@ -597,6 +688,29 @@ def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
     return f"Подписка на {code} " + ("отключена" if code in countries else "включена")
 
 
+def _subscriptions_players_step(chat_id: int, action: str, args: List[str]) -> _Screen:
+    """Экран выбора игрока (Задача 122) после нажатия `sub:P` / `sub:o:…` / `sub:Q:…` /
+    `sub:R:…` / `sub:p:…`: дивизионы (над ними — ✅ подписанных игроков, нажатие отписывает:
+    игрока может не быть в составах сезона), клубы дивизиона или группа состава клуба; читает БД."""
+    teams_by_division = season_teams_by_division()
+    if action in ("P", "o"):
+        text, markup = _subscriptions_divisions_screen(teams_by_division, set(), "Игроки", "Q")
+        chosen = sorted(player_labels(sorted(subscription_repo.get_chat_subscriptions(chat_id).player_ids)).items(),
+                        key=lambda item: item[1])
+        rows = [[_sub_button(label, True, f"sub:o:{player_id}")] for player_id, label in chosen]
+        return text, InlineKeyboardMarkup(inline_keyboard=rows + markup.inline_keyboard)
+    division_index = int(args[0])
+    if action == "Q":
+        return _subscriptions_player_teams_screen(teams_by_division, division_index)
+    team_id, group = int(args[1]), args[2]
+    _, teams = list(teams_by_division.items())[division_index]
+    team_name = next(name for t, _, name in teams if t == team_id)
+    return _subscriptions_roster_screen(
+        team_name, team_roster_group(team_id, group),
+        subscription_repo.get_chat_subscriptions(chat_id).player_ids, division_index, team_id, group,
+    )
+
+
 async def callback_subscriptions(callback: CallbackQuery) -> None:
     """Кнопки `sub:…` меню `/subscriptions`: переключают подписку (каждое нажатие сразу
     пишется в БД) и перерисовывают то же сообщение; ✅ рисуются по данным БД после записи,
@@ -608,7 +722,7 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
     _, action, *args = callback.data.split(":")
     hint = None
     try:
-        if action in ("d", "u", "t", "c"):
+        if action in ("d", "u", "t", "c", "p", "o"):
             hint = _toggle_subscription(chat_id, action, args)
         if action == "s" and args:
             deleted = schedule_repo.delete(chat_id, int(args[0]))
@@ -619,6 +733,8 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
             text, markup = _subscriptions_schedules_screen(schedule_repo.list_for_chat(chat_id))
         elif action in ("m", "d", "u", "x"):
             text, markup = _subscriptions_main_screen_for(chat_id)
+        elif action in ("P", "o", "Q", "R", "p"):
+            text, markup = _subscriptions_players_step(chat_id, action, args)
         elif action in ("T", "D", "t"):
             teams_by_division = season_teams_by_division()
             team_ids = subscription_repo.get_chat_subscriptions(chat_id).team_ids
@@ -981,27 +1097,62 @@ async def send_due_schedules(bot: Bot, now: datetime) -> None:
         await asyncio.to_thread(schedule_repo.advance, schedule, now)
 
 
+async def send_trial_endings(bot: Bot, now: datetime) -> None:
+    """Сообщение о конце пробника — один раз каждому чату из `premium.expired_trials` (Задача 125).
+
+    Зачем: без него конец пробника молчалив, и человек видит только внезапный отказ по лимиту.
+    Текст — что остаётся бесплатно и что даёт премиум, с кнопкой оплаты (`premium_pay_markup`,
+    счёт один на проход). Отметка `trial_notice_at` ставится после попытки, как у рассылок:
+    сбой логируется и не повторяется. Удачная отправка пишется в журнал `trial_ended` — для
+    конверсии «сообщение → оплата». Заблокировавший бота чат теряет подписки (`deactivate_chat`).
+
+    Аргументы: `bot` — бот процесса; `now` — момент прохода (aware).
+    """
+    chats = await asyncio.to_thread(premium.expired_trials, now)
+    if not chats:
+        return
+    markup = await premium_pay_markup(bot)
+    for chat_id in chats:
+        try:
+            await throttled(
+                partial(bot.send_rich_message, chat_id=chat_id, rich_message=rich_message(_TRIAL_ENDED_TEXT),
+                        reply_markup=markup),
+                chat_id,
+            )
+            await asyncio.to_thread(log_action, chat_id, None, "trial_ended", None)
+        except TelegramForbiddenError:
+            logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+            await asyncio.to_thread(subscription_repo.deactivate_chat, chat_id)
+        except Exception:
+            logger.exception("trial ending chat_id=%s failed", chat_id)
+        await asyncio.to_thread(premium.mark_trial_notice, chat_id)
+
+
 async def run_schedule_ticker(bot: Bot) -> None:
-    """«Будильник» расписаний: раз в минуту, в начале минуты, — `send_due_schedules`.
+    """«Будильник» бота: раз в минуту, в начале минуты, — `send_due_schedules` и
+    `send_trial_endings` (Задача 125).
 
     Зачем в процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке
     (ночь и день с 12:30 UTC), а расписанию нужно любое время суток (решение человека,
-    Задача 107). Сбой прохода (например, БД недоступна) логируется, следующий проход — через
-    минуту: упавшая задача asyncio молча остановила бы все расписания при живом боте.
+    Задача 107), как и концу пробника. Сбой шага (например, БД недоступна) логируется и не
+    мешает другому, следующий проход — через минуту: упавшая задача asyncio молча остановила бы
+    всё при живом боте.
     """
     while True:
-        try:
-            await send_due_schedules(bot, datetime.now(timezone.utc))
-        except Exception:
-            logger.exception("schedule tick failed")
+        now = datetime.now(timezone.utc)
+        for step in (send_due_schedules, send_trial_endings):
+            try:
+                await step(bot, now)
+            except Exception:
+                logger.exception("ticker step %s failed", step.__name__)
         await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
-# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), неделя, всего.
+# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя).
+# Строки `total` в журнале — история потолка «8 за всё время», снятого Задачей 124.
 _AI_LIMIT_KINDS = {
     ai_router.LIMIT_TEXT: "day",
     ai_router.WEEK_LIMIT_TEXT: "week",
-    ai_router.TOTAL_LIMIT_TEXT: "total",
 }
 
 
@@ -1084,11 +1235,11 @@ def log_action(chat_id: int, user_id: Optional[int], kind: str, data: Optional[s
     Зачем: по журналу видно, сколько у бота пользователей и кто возвращается, какие экраны
     открывают и что делают до лимита ИИ — без него действия вне ИИ следа в БД не оставляют.
 
-    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` никого:
-    шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent`,
-    `schedule_deleted` (Задача 107) или `schedule_created` (Задача 108); `data` — имя команды,
-    `callback_data`, вид лимита, `<id>:<экран>` отправленного или созданного или `<id>`
-    удалённого расписания.
+    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` и
+    `trial_ended` никого: шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent`,
+    `schedule_deleted` (Задача 107), `schedule_created` (Задача 108) или `trial_ended` (Задача 125);
+    `data` — имя команды, `callback_data`, вид лимита, `<id>:<экран>` отправленного или
+    созданного или `<id>` удалённого расписания; у `trial_ended` — пусто.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1224,7 +1375,8 @@ def build_dispatcher() -> Dispatcher:
 
 async def run_polling(token: str) -> None:
     """Long polling бота с токеном `token` (в проде `config.TOKEN`) до сигнала остановки;
-    рядом — тикер расписаний (`run_schedule_ticker`), он останавливается вместе с polling."""
+    рядом — тикер расписаний и конца пробника (`run_schedule_ticker`), он останавливается
+    вместе с polling."""
     bot = Bot(token)
     ticker = asyncio.create_task(run_schedule_ticker(bot))
     try:

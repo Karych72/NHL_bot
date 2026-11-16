@@ -18,7 +18,7 @@
 Подписками управляет команда ``/subscriptions`` (``bot.py``); каждое сообщение рассылки
 заканчивается строкой «Настроить подписки: /subscriptions».
 Канал ``CHANNEL_ID`` (Задача 118) — отдельный шаг после чатов, со своими отметками
-``bot_channel_posts``: превью матчей дня без прогноза и итоги всех матчей ночи с блоками
+``bot_channel_posts``: превью матчей дня и итоги всех матчей ночи с блоками
 игроков России и Беларуси; по выходным в 18:00 МСК — турнирная таблица и лучшие игроки
 России (Задача 120, отметки ``bot_channel_weekly_posts``); подписки, премиум и лимиты он
 не читает. Сам выходит с кодом 0 и логирует, если ``ENABLE_PUSH_DIGEST`` выключен. Ручной запуск — та же команда:
@@ -39,7 +39,7 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
-from typing import Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
+from typing import Awaitable, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -63,21 +63,23 @@ if _HERE not in sys.path:
 
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
-    MODEL_PREDICTION_TEASER,
     MSK,
+    country_heading,
     country_name,
     country_night_blocks,
+    country_night_entries,
     country_profile,
     day_digest,
     matchup_season_preview,
     night_goals,
+    player_labels,
+    players_block,
+    players_night_entries,
     plural_word,
     rich_footer,
     rich_message,
     team_table,
-    with_model_prediction,
 )
-import premium  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402
     fetch_score,
@@ -118,9 +120,8 @@ logger = logging.getLogger("push_digest_job")
 # этот прогон упал на загрузчике, рассылка не запускается и ночь не уходит вовсе.
 NIGHT_DEADLINE_MSK = time(11, 0)
 
-# Превью матчей дня лиги — не раньше первого дневного слота sync, через полчаса после
-# публикации прогноза в 12:00 UTC (решение человека, Задача 78; scheduled_sync.PREVIEW_START_UTC
-# — тот же момент по UTC).
+# Превью матчей дня лиги — не раньше первого дневного слота sync (решение человека,
+# Задача 78; scheduled_sync.PREVIEW_START_UTC — тот же момент по UTC).
 UPCOMING_START_MSK = time(15, 30)
 
 # Сдвиг, переводящий момент ночи в игровую дату лиги: матчи даты D (ET) идут
@@ -212,19 +213,30 @@ class _GameSubscriptions(NamedTuple):
     teams: List[str]
     """Полные названия подписанных команд матча, хозяева первыми."""
     countries: List[Tuple[str, str]]
-    """(код, блок игроков страны) подписанных стран, чьи игроки играли, — по алфавиту."""
+    """(код, блок игроков страны) подписанных стран, чьи игроки играли, — по алфавиту; блок
+    пуст, если все игроки страны в матче уже в «Ваших игроках»."""
+    players: Tuple[str, ...] = ()
+    """Подписи подписанных игроков, вышедших на лёд (Задача 122), — для подвала."""
+    players_block: str = ""
+    """Блок «Ваши игроки» или пусто."""
+    player_ids: FrozenSet[int] = frozenset()
+    """Эти игроки — их голы идут в альбом."""
 
 
 # chat_id → {game_id: подписки чата на матч}.
 _SubscribedGames = Dict[int, Dict[int, _GameSubscriptions]]
 
+_PLAYERS_HEADING = "<b>Ваши игроки</b>"
+
 
 def subscribed_games(night: date) -> _SubscribedGames:
-    """Матчи ночи *night*, на которые у чата есть подписка на команду или страну.
+    """Матчи ночи *night*, на которые у чата есть подписка на команду, страну или игрока,
+    вышедшего на лёд (Задача 122).
 
     Зачем: такой матч приходит чату одним сообщением под его подписки
     (``run_game_broadcast``), а в дайджест не попадает (``run_morning_digest_broadcast``).
-    Чата без таких матчей в ответе нет. Владелец (``config.OWNER_CHAT_ID``) — первым и со
+    Чата без таких матчей в ответе нет. Игрок подписки на игрока в блоке своей страны не
+    повторяется — он в «Ваших игроках». Владелец (``config.OWNER_CHAT_ID``) — первым и со
     всеми матчами ночи (без подписки — с пустыми подписками): его карточка грузит клипы
     голов в кэш, остальным они уходят по ``file_id`` (Задача 119).
 
@@ -244,29 +256,44 @@ def subscribed_games(night: date) -> _SubscribedGames:
         (config.SEASON_ID, night),
         columns=["game_id", "home_id", "home", "away_id", "away"],
     )
-    blocks = {
-        country: dict(country_night_blocks(country, night))
-        for country in sorted({country for _, _, country in rows if country is not None})
+    by_country = {
+        country: country_night_entries(country, night)
+        for country in sorted({country for _, _, country, _ in rows if country is not None})
     }
-    chats: Dict[int, Tuple[Set[int], List[str]]] = defaultdict(lambda: (set(), []))
-    for chat_id, team_id, country in rows:
+    player_ids = sorted({player_id for *_, player_id in rows if player_id is not None})
+    on_ice = players_night_entries(player_ids, night) if player_ids else {}
+    labels = player_labels(player_ids) if player_ids else {}
+    chats: Dict[int, Tuple[Set[int], List[str], Set[int]]] = defaultdict(lambda: (set(), [], set()))
+    for chat_id, team_id, country, player_id in rows:
         if team_id is not None:
             chats[chat_id][0].add(team_id)
         if country is not None:
             chats[chat_id][1].append(country)
+        if player_id is not None:
+            chats[chat_id][2].add(player_id)
     result: _SubscribedGames = {}
-    for chat_id, (team_ids, countries) in chats.items():
+    for chat_id, (team_ids, countries, chat_players) in chats.items():
         for i in range(games["count_rows"]):
             game_id = int(games["game_id"][i])
+            mine = [entry for entry in on_ice.get(game_id, []) if entry[0] in chat_players]
+            mine_ids = frozenset(player_id for player_id, _ in mine)
+            country_blocks = []
+            for country in countries:
+                if game_id in by_country[country]:
+                    rest = [entry for entry in by_country[country][game_id] if entry[0] not in mine_ids]
+                    country_blocks.append((country, players_block(country_heading(country), rest) if rest else ""))
             subs = _GameSubscriptions(
                 [
                     games[side][i]
                     for side in ("home", "away")
                     if int(games[f"{side}_id"][i]) in team_ids
                 ],
-                [(country, blocks[country][game_id]) for country in countries if game_id in blocks[country]],
+                country_blocks,
+                tuple(labels[player_id] for player_id, _ in mine),
+                players_block(_PLAYERS_HEADING, mine) if mine else "",
+                mine_ids,
             )
-            if subs.teams or subs.countries:
+            if subs.teams or subs.countries or subs.players:
                 result.setdefault(chat_id, {})[game_id] = subs
     if owner is None:
         return result
@@ -432,10 +459,11 @@ async def run_game_broadcast(
     """Итог каждого матча подписок чата (``subscribed``) — одним сообщением, ровно один раз.
 
     Зачем: правило «каждый матч ночи — чату ровно один раз» (Задача 85): сколько бы
-    подписок ни вело на матч (команда, страны), сообщение одно и собрано под них. Первая
+    подписок ни вело на матч (команда, страны, игроки), сообщение одно и собрано под них. Первая
     строка — шапка со счётом (видна в уведомлении), подписки «По подписке: …» и ссылка на
-    их настройку — подвал. Карточка с видео голов в строках голов (``send_game_card``) и
-    блоки стран под ней; подписка только на страны — карточка под шапкой свёрнута.
+    их настройку — подвал. Карточка с видео голов в строках голов (``send_game_card``), под
+    ней «Ваши игроки» (Задача 122) и блоки стран; без подписанной команды карточка под шапкой
+    свёрнута. Альбом — голы игроков подписанных стран и подписанных игроков.
     Матч уходит на первом прогоне sync, когда он уже в ``games`` и NHL выложила клипы всех
     его голов; ``final`` (крайний срок ночи) — с тем, что есть. Отметка — пара (чат, матч)
     в ``bot_chat_game_sent``, ставится после любой попытки: сбой Telegram на одном матче
@@ -448,37 +476,42 @@ async def run_game_broadcast(
     if not subscribed:
         return
     sent = chat_games_sent(sorted({game_id for games in subscribed.values() for game_id in games}))
-    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
-    for game_id, event_id, nationality in night_goals(night):
-        goals[game_id].append(((game_id, event_id), nationality))
+    goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str], Optional[int]]]] = defaultdict(list)
+    for game_id, event_id, nationality, scorer in night_goals(night):
+        goals[game_id].append(((game_id, event_id), nationality, scorer))
     published: Dict[Tuple[int, int], bool] = {}
     for chat_id, games in subscribed.items():
         for game_id, subs in games.items():
             if (chat_id, game_id) in sent:
                 continue
-            if not final and not await _clips_published([goal for goal, _ in goals[game_id]], published):
+            if not final and not await _clips_published([goal for goal, *_ in goals[game_id]], published):
                 logger.info("game_id=%s: клипы ещё не выложены, ждём", game_id)
                 continue
-            labels = [html.escape(team) for team in subs.teams] + [
-                html.escape(country_name(country)) for country, _ in subs.countries
-            ]
+            labels = (
+                [html.escape(team) for team in subs.teams]
+                + [html.escape(country_name(country)) for country, _ in subs.countries]
+                + [html.escape(player) for player in subs.players]
+            )
             # Причина и ссылка на подписки — подвал: первой строкой, видной в
             # уведомлении, идёт шапка со счётом. Матч владельца без подписки — без «По подписке».
             reason = f"По подписке: {' · '.join(labels)}\n" if labels else ""
             footer = rich_footer(f"{reason}{SUBSCRIPTIONS_FOOTER}")
-            blocks = "".join(f"\n\n{block}" for _, block in subs.countries)
+            blocks = "".join(
+                f"\n\n{block}" for block in [subs.players_block, *(b for _, b in subs.countries)] if block
+            )
             countries = {country for country, _ in subs.countries}
             try:
                 await throttled(
                     partial(
                         send_game_card, bot, chat_id, game_id, f"{blocks}\n{footer}",
-                        collapsed=bool(subs.countries) and not subs.teams,
+                        collapsed=bool(subs.countries or subs.players) and not subs.teams,
                     ),
                     chat_id,
                 )
-                await _send_goal_album(
-                    bot, chat_id, [goal for goal, nationality in goals[game_id] if nationality in countries]
-                )
+                await _send_goal_album(bot, chat_id, [
+                    goal for goal, nationality, scorer in goals[game_id]
+                    if nationality in countries or scorer in subs.player_ids
+                ])
             except TelegramForbiddenError:
                 logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
                 deactivate_chat(chat_id)
@@ -519,12 +552,10 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     """Превью предстоящего матча — подписчикам ``upcoming_games`` (Задача 78).
 
     Зачем: бот на виду у подписчика весь день — с 15:30 МСК раз в 30 минут (ночные слоты
-    sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight`` (сравнение команд, премиум-чату —
-    и строка оценки модели, если прогноз опубликован, Задача 96): ближайший по началу ещё не
-    начавшийся матч дня, которого он не получал (решение человека 2026-10-25). Превью
-    собирается раз на матч, а не на подписчика, и без прогноза — его строка добавляется при
-    отправке каждому чату. Отметка — по паре (подписка, матч) в ``bot_game_sent``,
-    ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
+    sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight``
+    (сравнение команд): ближайший по началу ещё не начавшийся матч дня, которого он не
+    получал (решение человека 2026-10-25). Превью собирается раз на матч, а не на
+    подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
@@ -542,10 +573,6 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         if game_id not in previews:
             previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
         body, footer = previews[game_id]
-        if premium.is_premium(chat_id):
-            footer = with_model_prediction(footer, game_id, home)
-        else:
-            footer = f"{footer}\n{MODEL_PREDICTION_TEASER}"
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
@@ -623,8 +650,8 @@ async def run_channel_previews(bot: Bot, now: datetime) -> None:
     (``upcoming_games``) все неопубликованные превью уходят одним сообщением, по времени
     начала: пост на матч засыпал ленту канала (решение человека 2026-11-14). Первый пост
     дня открывает вступление ``channel_preview_intro``. Превью матча — то же, что у
-    подписки (сравнение команд свёрнуто), но без прогноза модели (премиум, Задача 96) и без
-    ссылки на подписки; подвал один на пост — сезон и ссылка на бота.
+    подписки (сравнение команд свёрнуто), но без ссылки на подписки; подвал один на
+    пост — сезон и ссылка на бота.
     Отметка ``bot_channel_posts`` — после удачной отправки: отказ Telegram (бот не админ
     канала) пробрасывается, матчи не отмечаются и повторятся следующим прогоном.
     Без ``CHANNEL_ID`` — ничего.
@@ -690,7 +717,7 @@ async def run_channel_results(bot: Bot, night: date, final: bool) -> None:
             blocks[game_id] += f"\n\n{block}"
     posted = channel_posted(game_ids, "result")
     goals: Dict[int, List[Tuple[Tuple[int, int], Optional[str]]]] = defaultdict(list)
-    for game_id, event_id, nationality in night_goals(night):
+    for game_id, event_id, nationality, _ in night_goals(night):
         goals[game_id].append(((game_id, event_id), nationality))
     published: Dict[Tuple[int, int], bool] = {}
     footer = rich_footer(await _channel_footer(bot))
