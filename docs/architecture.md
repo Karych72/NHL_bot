@@ -89,7 +89,9 @@ NHL_bot/
 │       ├── 0024_channel_posts.up.sql         # Отметки постов о матчах в канал bot_channel_posts (Задача 118)
 │       ├── 0024_channel_posts.down.sql
 │       ├── 0025_channel_weekly_posts.up.sql  # Отметки еженедельных постов канала bot_channel_weekly_posts (Задача 120)
-│       └── 0025_channel_weekly_posts.down.sql
+│       ├── 0025_channel_weekly_posts.down.sql
+│       ├── 0026_trial_notice.up.sql          # premium_access.is_trial / trial_notice_at, bot_actions trial_ended (Задача 125)
+│       └── 0026_trial_notice.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
@@ -155,7 +157,7 @@ NHL_bot/
 │   ├── throttle.py                     # Троттлинг callback-кнопок (per-user, in-memory)
 │   ├── ai_router.py                    # Свободный текст: Claude выбирает экран бота или его расписание, лимит вопросов, журнал ai_questions (Задачи 81, 96, 108)
 │   ├── ai_stats.py                     # Ответы ИИ на статистические вопросы: SQL модели под read-only ролью, обзор игрока, ревью, журнал ai_stats_log (Задача 83)
-│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и расписания без лимита (Задачи 96, 107); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115)
+│   ├── premium.py                      # Премиум чата (premium_access): ИИ без недельного лимита и расписания без лимита (Задачи 96, 107); оплата Stars — продление и CLI возврата (Задача 97); пробник 3 дня новой личке (Задача 115) и одно сообщение о его конце (Задача 125)
 │   ├── prompts/                        # Промпты ai_stats: stats_answer.md, stats_reviewer.md, stats_schema_notes.md (аннотация схемы)
 │   ├── config.py                       # Чтение .env-переменных
 │   ├── database.py                     # Пул соединений + fetch_all + whitelist
@@ -442,7 +444,8 @@ callback-кнопок (`throttle.py`) — outer-middleware `callback_query`, з�
 (`_command_handler`), экран ИИ (`AI_SCREENS`, сигнатура `(bot, chat_id, params)`) и расписание
 зовут одну и ту же функцию. **Расписания (Задача 107):** `run_polling` рядом со
 `start_polling()` запускает asyncio-задачу `run_schedule_ticker` — раз в минуту
-`send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
+`send_due_schedules` и `send_trial_endings` (сообщение о конце пробника, Задача 125; шаги не
+мешают друг другу). `send_due_schedules`: `schedule_repo.due(now)` → экран из `SCHEDULE_SCREENS` (подмножество
 `AI_SCREENS` без дайджеста за дату и `open_command` без `subscriptions` / `help`) через
 `push_digest_job._throttled` → `schedule_repo.advance` от `now` (после простоя уходит одна
 пропущенная отправка). Без премиума чат получает только старейшее активное расписание;

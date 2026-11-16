@@ -5,13 +5,15 @@
 (миграция 0016): чат и срок. Покупка — подписка Telegram Stars (`bot.py`: `/premium`, оплата);
 каждый платёж пишется в журнал `premium_payments` (миграция 0018) и продлевает срок на 30 дней
 (`extend_premium`); новый чат лички при первом `/start` получает пробник на 3 дня
-(`grant_trial`, Задача 115). Возврат делает человек на VM: `python premium.py refund <charge_id>`.
+(`grant_trial`, Задача 115); о конце пробника чат узнаёт один раз (`expired_trials`,
+`mark_trial_notice`, миграция 0026, Задача 125). Возврат делает человек на VM:
+`python premium.py refund <charge_id>`.
 """
 
 import argparse
 import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from aiogram import Bot
 
@@ -88,8 +90,8 @@ def grant_trial(chat_id: int) -> Optional[datetime]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO premium_access (chat_id, expires_at) "
-                "SELECT %(chat)s, now() + make_interval(days => %(days)s) "
+                "INSERT INTO premium_access (chat_id, expires_at, is_trial) "
+                "SELECT %(chat)s, now() + make_interval(days => %(days)s), true "
                 "WHERE NOT EXISTS (SELECT 1 FROM bot_subscriptions WHERE chat_id = %(chat)s) "
                 "AND NOT EXISTS (SELECT 1 FROM ai_questions WHERE chat_id = %(chat)s) "
                 "AND NOT EXISTS (SELECT 1 FROM ai_stats_log WHERE chat_id = %(chat)s) "
@@ -100,6 +102,40 @@ def grant_trial(chat_id: int) -> Optional[datetime]:
             row = cur.fetchone()
         conn.commit()
     return row[0] if row else None
+
+
+def expired_trials(now: datetime) -> List[int]:
+    """Чаты, чей пробник истёк к `now` и о конце которого они ещё не знают, — от давнего к свежему.
+
+    Зачем: сообщение о конце пробника (Задача 125) — единственная точка, где пробник естественно
+    предложить оплатить. Пробник — `is_trial` (ставит `grant_trial`); ручная выдача и пробники до
+    миграции 0026 — `false` и в выборку не попадают. Чат с любым платежом Stars — тоже нет:
+    оплата во время пробника сдвинула срок, а оплативший и так знает о премиуме.
+
+    Аргументы:
+        now: момент прохода тикера (aware).
+    """
+    rows = fetch_all(
+        "SELECT chat_id FROM premium_access a WHERE is_trial AND expires_at <= %s "
+        "AND trial_notice_at IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM premium_payments p WHERE p.chat_id = a.chat_id) "
+        "ORDER BY expires_at",
+        (now,),
+        columns=["chat_id"],
+    )
+    return [int(chat_id) for chat_id in rows["chat_id"]]
+
+
+def mark_trial_notice(chat_id: int) -> None:
+    """Отмечает, что сообщение о конце пробника чату отправлено (или попытка не удалась).
+
+    Аргументы:
+        chat_id: чат из `expired_trials`.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE premium_access SET trial_notice_at = now() WHERE chat_id = %s", (chat_id,))
+        conn.commit()
 
 
 def extend_premium(chat_id: int, charge_id: str, amount_stars: int, is_recurring: bool) -> datetime:
