@@ -91,7 +91,9 @@ NHL_bot/
 │       ├── 0025_channel_weekly_posts.up.sql  # Отметки еженедельных постов канала bot_channel_weekly_posts (Задача 120)
 │       ├── 0025_channel_weekly_posts.down.sql
 │       ├── 0026_trial_notice.up.sql          # premium_access.is_trial / trial_notice_at, bot_actions trial_ended (Задача 125)
-│       └── 0026_trial_notice.down.sql
+│       ├── 0026_trial_notice.down.sql
+│       ├── 0027_player_subscription.up.sql   # Подписка на игрока: bot_subscriptions.player_id, kind player_scores (Задача 122)
+│       └── 0027_player_subscription.down.sql
 │
 ├── deploy/                             # Только VM: токены ботов и ключ Claude API из Secret Manager (Задачи 65, 81), dev-стек (Задача 80), DEVELOPMENT.md §«Прод-деплой»
 │   ├── compose.prod.yml                # Оверрайд: bot и sync получают токен, bot — ещё ключ Claude API файлами-секретами (COMPOSE_FILE в .env на VM)
