@@ -152,8 +152,6 @@ class TestBaselineGate(unittest.TestCase):
                     TaskModelEval(
                         task="home_win",
                         model="logreg",
-                        run_id=VALID_RUN_ID,
-                        reports_dir=Path("."),
                         model_log_loss=0.75,
                         benchmark_log_loss=0.70,
                         benchmark="elo",

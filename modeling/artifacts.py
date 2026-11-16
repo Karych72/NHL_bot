@@ -48,7 +48,7 @@ _METADATA_FILENAME = "metadata.json"
 # ---------------------------------------------------------------------------
 
 
-def _get_git_commit(repo_root: Path | None = None) -> str | None:
+def get_git_commit(repo_root: Path | None = None) -> str | None:
     """Return the current HEAD commit hash, or ``None`` when git cannot answer.
 
     A missing ``git`` binary, a timeout or a non-zero exit code (no ``.git`` in the
@@ -139,7 +139,7 @@ def save_model_artifact(
     if "library_versions" not in full_metadata:
         full_metadata["library_versions"] = _collect_library_versions()
     if "git_commit" not in full_metadata:
-        full_metadata["git_commit"] = _get_git_commit()
+        full_metadata["git_commit"] = get_git_commit()
 
     meta_path = out_dir / _METADATA_FILENAME
     meta_path.write_text(

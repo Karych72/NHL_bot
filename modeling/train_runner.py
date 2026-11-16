@@ -21,7 +21,7 @@ import pandas as pd
 
 from modeling.artifacts import (
     _collect_library_versions,
-    _get_git_commit,
+    get_git_commit,
     save_model_artifact,
 )
 from modeling.bootstrap import bootstrap_mean_diff, bootstrap_metrics, standard_metric_fns
@@ -534,7 +534,7 @@ def _build_final_metadata(
         "n_rows_calibration": calibrator_fit.n_calibration,
         "bootstrap": bootstrap_meta,
         "library_versions": _collect_library_versions(),
-        "git_commit": _get_git_commit(),
+        "git_commit": get_git_commit(),
     }
     if model_family == "logreg":
         assert isinstance(fit, FitResult)
@@ -1103,8 +1103,6 @@ def run_training(
                     evaluation=TaskModelEval(
                         task=task_name,
                         model=model_family,
-                        run_id=pair_run_id,
-                        reports_dir=reports_dir,
                         model_log_loss=pooled_ll,
                         benchmark_log_loss=pooled_block[benchmark_name]["log_loss"],
                         benchmark=benchmark_name,

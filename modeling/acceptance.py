@@ -32,8 +32,6 @@ class TaskModelEval:
 
     task: str
     model: str
-    run_id: str
-    reports_dir: Path
     model_log_loss: float
     benchmark_log_loss: float
     benchmark: str
@@ -224,7 +222,7 @@ def apply_acceptance_to_training_outcomes(
     *,
     config: ResolvedConfig,
     enabled_tasks: Sequence[str],
-) -> BaselineGateResult:
+) -> None:
     """End-of-run hook: baseline gate, per-pair status and exit code, patch reports and metadata."""
     from modeling.report import configure_run_logger
 
@@ -272,8 +270,6 @@ def apply_acceptance_to_training_outcomes(
                 json.dumps(meta, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
             )
-
-    return baseline
 
 
 __all__ = [

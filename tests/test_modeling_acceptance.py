@@ -47,8 +47,6 @@ def _eval_entry(
     return TaskModelEval(
         task="home_win",
         model=model,
-        run_id=VALID_RUN_ID,
-        reports_dir=Path("."),
         model_log_loss=model_ll,
         benchmark_log_loss=benchmark_ll,
         benchmark=benchmark,
@@ -61,7 +59,10 @@ def _metrics_payload(*, task: str = "home_win", model: str = "logreg") -> dict:
     return compose_metrics_json(**sample_compose_kwargs(task=task, model=model))
 
 
-def _write_run_layout(tmp: Path, *, task: str = "home_win", model: str = "logreg") -> TaskModelEval:
+def _write_run_layout(
+    tmp: Path, *, task: str = "home_win", model: str = "logreg"
+) -> tuple[str, Path, TaskModelEval]:
+    """Write reports and final metadata of one run; return ``(run_id, reports_dir, evaluation)``."""
     run_id = f"{task}_{model}_deadbeef_20260101T000000Z"
     reports = tmp / "artifacts" / "reports" / run_id
     reports.mkdir(parents=True, exist_ok=True)
@@ -72,11 +73,9 @@ def _write_run_layout(tmp: Path, *, task: str = "home_win", model: str = "logreg
     final_dir.mkdir(parents=True, exist_ok=True)
     (final_dir / "metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
     benchmark = "elo" if task == "home_win" else "constant"
-    return TaskModelEval(
+    return run_id, reports, TaskModelEval(
         task=task,
         model=model,
-        run_id=run_id,
-        reports_dir=reports,
         model_log_loss=metrics_payload["pooled"]["model"]["log_loss"],
         benchmark_log_loss=metrics_payload["pooled"][benchmark]["log_loss"],
         benchmark=benchmark,
@@ -183,15 +182,15 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
             tmp = Path(tmp_str)
             _, meta_path = write_synthetic_train_dataset(tmp, n_days=20)
             config = load_config(ROOT / "configs" / "modeling_default.yaml", metadata=load_metadata_json(meta_path))
-            run = _write_run_layout(tmp)
+            run_id, reports_dir, run = _write_run_layout(tmp)
             result = RunResult(
-                run_id=run.run_id,
+                run_id=run_id,
                 task="home_win",
                 model="logreg",
                 status="ok",
                 exit_code=0,
-                reports_dir=run.reports_dir,
-                model_run_dir=tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id,
+                reports_dir=reports_dir,
+                model_run_dir=tmp / "artifacts" / "models" / "home_win" / "logreg" / run_id,
             )
             outcome = _TaskModelOutcome(
                 task="home_win",
@@ -199,13 +198,12 @@ class TestApplyAcceptanceIntegration(unittest.TestCase):
                 result=result,
                 evaluation=run,
             )
-            (run.reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
-            baseline = apply_acceptance_to_training_outcomes([outcome], config=config, enabled_tasks=["home_win"])
-            self.assertEqual(baseline.status, "ok")
+            (reports_dir / "summary.md").write_text("status: ok\n\n# body\n", encoding="utf-8")
+            apply_acceptance_to_training_outcomes([outcome], config=config, enabled_tasks=["home_win"])
             self.assertEqual((outcome.result.status, outcome.result.exit_code), ("ok", 0))
-            summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
+            summary = (reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertTrue(summary.startswith("status:"))
-            metrics = json.loads((run.reports_dir / "metrics.json").read_text(encoding="utf-8"))
+            metrics = json.loads((reports_dir / "metrics.json").read_text(encoding="utf-8"))
             self.assertIn("acceptance", metrics)
 
 
@@ -259,7 +257,7 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
             )
             self.assertEqual(len(results), 1)
             summary = (artifacts / "reports" / VALID_RUN_ID / "summary.md").read_text(encoding="utf-8")
-            self.assertRegex(summary, r"^status: (ok|failed_baseline_check|failed_artifact_check)")
+            self.assertRegex(summary, r"^status: (ok|failed_baseline_check)")
             metrics = json.loads((artifacts / "reports" / VALID_RUN_ID / "metrics.json").read_text())
             self.assertIn("acceptance", metrics)
             self.assertEqual([s["season_id"] for s in metrics["seasons"]], _test_config_yaml()["split"]["test_seasons"])
@@ -276,15 +274,15 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                 ROOT / "configs" / "modeling_default.yaml",
                 metadata=load_metadata_json(meta_path),
             )
-            run = _write_run_layout(tmp)
+            run_id, reports_dir, run = _write_run_layout(tmp)
             result = RunResult(
-                run_id=run.run_id,
+                run_id=run_id,
                 task="home_win",
                 model="logreg",
                 status="ok",
                 exit_code=0,
-                reports_dir=run.reports_dir,
-                model_run_dir=tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id,
+                reports_dir=reports_dir,
+                model_run_dir=tmp / "artifacts" / "models" / "home_win" / "logreg" / run_id,
             )
             outcome = _TaskModelOutcome(
                 task="home_win",
@@ -294,23 +292,23 @@ class TestAcceptanceEndToEndSmoke(unittest.TestCase):
                     run, model_log_loss=0.99, benchmark_log_loss=0.50, benchmark="elo", model_ece=0.01, benchmark_ece=0.01
                 ),
             )
-            (run.reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
+            (reports_dir / "summary.md").write_text("status: ok\n", encoding="utf-8")
             apply_acceptance_to_training_outcomes([outcome], config=config, enabled_tasks=["home_win"])
             model_base = tmp / "artifacts" / "models" / "home_win" / "logreg"
             os.symlink("previous_run/final", model_base / "latest")
             update_latest_symlink(
                 "home_win",
                 "logreg",
-                run.run_id,
+                run_id,
                 artifacts_root=tmp / "artifacts",
                 status=outcome.result.status,
             )
             self.assertEqual(outcome.result.status, "failed_baseline_check")
             self.assertEqual(outcome.result.exit_code, 1)
             self.assertEqual(os.readlink(model_base / "latest"), "previous_run/final")
-            self.assertTrue((run.reports_dir / "summary.md").exists())
-            self.assertTrue((run.reports_dir / "metrics.json").exists())
-            summary = (run.reports_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertTrue((reports_dir / "summary.md").exists())
+            self.assertTrue((reports_dir / "metrics.json").exists())
+            summary = (reports_dir / "summary.md").read_text(encoding="utf-8")
             self.assertIn("status: failed_baseline_check", summary)
 
     def test_no_fail_on_baseline_flag_keeps_exit_zero(self) -> None:

@@ -455,10 +455,10 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
 class TestGitCommitWithoutDotGit(unittest.TestCase):
     def test_git_commit_null_in_non_git_dir(self) -> None:
-        from modeling.artifacts import _get_git_commit
+        from modeling.artifacts import get_git_commit
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            commit = _get_git_commit(repo_root=Path(tmpdir))
+            commit = get_git_commit(repo_root=Path(tmpdir))
         # Must be None (not an exception)
         self.assertIsNone(commit)
 
@@ -475,8 +475,8 @@ class TestGitCommitWithoutDotGit(unittest.TestCase):
         meta = {"model_family": "logreg", "task": "home_win"}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Patch _get_git_commit to simulate no .git
-            with patch("modeling.artifacts._get_git_commit", return_value=None):
+            # Patch get_git_commit to simulate no .git
+            with patch("modeling.artifacts.get_git_commit", return_value=None):
                 save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
             _, loaded_meta = load_model_artifact(tmpdir)
         self.assertIsNone(loaded_meta.get("git_commit"))

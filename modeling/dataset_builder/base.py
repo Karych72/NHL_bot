@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, cast
 import pandas as pd
 import psycopg2
 
-from modeling.artifacts import _get_git_commit
+from modeling.artifacts import get_git_commit
 from modeling.config import load_metadata_json
 from modeling.elo import compute_pregame_elo
 
@@ -290,7 +290,7 @@ def _metadata_dict(
         "cold_start_policy_predict": "drop",
         "min_prior_games": config.min_prior_games,
         "dataset_rows": dataset_rows,
-        "code_version": _get_git_commit() or "unknown",  # Docker image has no .git
+        "code_version": get_git_commit() or "unknown",  # Docker image has no .git
         "data_snapshot_id": data_snapshot_id,
         "dataset_built_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
