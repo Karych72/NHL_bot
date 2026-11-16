@@ -49,12 +49,12 @@ Training CSV loads use the same check; wording of some exceptions inside ``schem
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Dict, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import pandas as pd
 
+from modeling.config import load_metadata_json
 from modeling.feature_schema import (
     KEY_COLUMNS,
     LABEL_COLUMNS,
@@ -70,16 +70,6 @@ class TrainMetadataError(ValueError):
 
 class TrainSchemaError(ValueError):
     """Raised when the CSV disagrees with the manifest or contains forbidden columns."""
-
-
-def _read_json_metadata(path: Path) -> MutableMapping[str, Any]:
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise TrainMetadataError(f"invalid JSON in {path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise TrainMetadataError(f"metadata root must be an object, got {type(raw).__name__}")
-    return raw
 
 
 def _require_str(metadata: Mapping[str, Any], key: str) -> str:
@@ -179,7 +169,7 @@ def _load_training_csv_validated(csv_path: Path, metadata: Mapping[str, Any]) ->
 
 
 def _prepare_training_frame(csv_path: Path, meta_path: Path) -> tuple[pd.DataFrame, Dict[str, Any]]:
-    metadata = dict(_read_json_metadata(meta_path))
+    metadata = dict(load_metadata_json(meta_path))
     _validate_training_metadata(metadata)
     df = _load_training_csv_validated(csv_path, metadata)
     return df, metadata

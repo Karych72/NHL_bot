@@ -65,7 +65,7 @@ modeling/                       датасеты и модели (БД чита�
   bootstrap.py                  доверительные интервалы log loss и Brier
   report.py                     сборка и запись отчётов прогона
   artifacts.py                  сохранение и загрузка моделей (model.joblib + metadata.json)
-  acceptance.py                 приёмка прогона: бенчмарк-гейт и диагностика артефактов
+  acceptance.py                 приёмка прогона: бенчмарк-гейт и его отражение в отчётах
   train_runner.py               оркестрация прогона обучения
   predict_runner.py             инференс latest-модели на predict-датасете
   publish_predictions.py        запись вероятностей в game_predictions

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from modeling.config import ConfigError
 from modeling.feature_schema import LABEL_COLUMNS, features_hash
 from modeling.train_input import (
     TrainMetadataError,
@@ -131,7 +132,7 @@ class TestTrainInputFailures(unittest.TestCase):
             meta_path = tmp / "metadata_train.json"
             csv_path.write_text(rows, encoding="utf-8")
             meta_path.write_text("{not valid json", encoding="utf-8")
-            with self.assertRaises(TrainMetadataError) as ctx:
+            with self.assertRaises(ConfigError) as ctx:
                 load_training_table_split(csv_path, meta_path)
             self.assertIn("invalid JSON", str(ctx.exception))
 

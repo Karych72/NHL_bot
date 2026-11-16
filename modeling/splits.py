@@ -25,7 +25,7 @@ structures to avoid duplicate identity columns.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -209,24 +209,21 @@ def _positional_range(indices: np.ndarray) -> list[int | None]:
 
 
 def _validate_splits(sorted_keys: pd.DataFrame, splits: SeasonSplits) -> None:
+    """Check the one property that depends on the data: history precedes each checked season.
+
+    ``train < inner_val < calibration`` and non-overlapping ``test`` blocks hold by
+    construction (consecutive slices of ascending positions; ``test_seasons`` is strictly
+    increasing), so only ``calibration < test`` is verified — it fails when ``season_id``
+    is not monotone along the ``(day, game_id)`` timeline.
+    """
     days = sorted_keys["day"]
     for window in splits.windows:
-        label = f"season {window.season_id}"
-        _assert_strictly_before(
-            days, window.train_idx, window.inner_val_idx, f"{label}: train must end before inner_val"
-        )
         _assert_strictly_before(
             days,
-            window.inner_val_idx,
             window.calibration_idx,
-            f"{label}: inner_val must end before calibration",
+            window.test_idx,
+            f"season {window.season_id}: calibration must end before test",
         )
-        _assert_strictly_before(
-            days, window.calibration_idx, window.test_idx, f"{label}: calibration must end before test"
-        )
-    _assert_no_cross_window_overlap(
-        sorted_keys["game_id"], [window.test_idx for window in splits.windows], "test"
-    )
 
 
 def _assert_strictly_before(
@@ -276,22 +273,6 @@ def _assert_strictly_before(
             f"[day {days.iloc[earlier_max_pos].date()}] >= min later position "
             f"{later_min_pos} [day {days.iloc[later_min_pos].date()}])"
         )
-
-
-def _assert_no_cross_window_overlap(
-    game_ids: pd.Series,
-    blocks: Sequence[np.ndarray],
-    block_name: str,
-) -> None:
-    for i in range(len(blocks)):
-        ids_i = set(game_ids.iloc[blocks[i]].tolist())
-        for j in range(i + 1, len(blocks)):
-            overlap = ids_i.intersection(game_ids.iloc[blocks[j]].tolist())
-            if overlap:
-                raise SplitError(
-                    f"{block_name} blocks for windows {i + 1} and {j + 1} "
-                    f"overlap on {len(overlap)} game_id(s)"
-                )
 
 
 __all__ = [

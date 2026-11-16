@@ -484,7 +484,7 @@ artifacts/
   holdout log-loss for `home_win`/lgbm from 0.6926 (fixed-round retrain) to 0.7646.
   The old 7-axis × 3-value grid (2187 points) that grid selection searched over also
   took about 19 minutes per fold on this dataset; the 8-point grid in `configs/modeling_default.yaml` (`models.lgbm.grids`) replaces it.
-- **`latest`** — symlink pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
+- **`latest`** — symlink pointing to `<run_id>/final/` for bot loading. Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
 ### `metadata.json` (final artifact)
@@ -535,9 +535,9 @@ ls -la artifacts/models/<task>/<model>/latest/
 
 **`status: failed_baseline_check`** — first line of `summary.md` when, on the sum of the checked seasons, the best model family for a task does **not strictly improve** calibrated log loss vs its benchmark: Elo with the fitted curve for `home_win`, the constant (share of "over 5.5" on the training seasons) for `over_5_5` (§2a); for `home_win` also pooled ECE must not be above Elo, and `reason` names the failed condition. Such a run still writes reports and artifacts, but **`latest` is not updated** and the CLI exits non-zero (for CI). See UPDATE plan §12.6.
 
-Other statuses: `status: ok` (artifacts complete, baseline gate passed), `status: failed_artifact_check` (missing files or required metadata fields).
+Other statuses: `status: ok` (artifacts complete, baseline gate passed).
 
-**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair, and skips the `latest` acceptance check. Move `latest` afterwards with `promote` (see §9).
+**`--no-promote`** — `train --no-promote` does everything above (gate, reports, artifacts, statuses, exit code) but neither creates nor moves `latest` for any pair. Move `latest` afterwards with `promote` (see §9).
 
 ---
 
@@ -744,13 +744,13 @@ task, `evaluate_baseline_gate` picks the trained model family with the lowest ca
 holdout log loss (`pick_winning_family`) and compares *that one* against
 `trivial_base_rate`; the resulting pass/fail is the task's single verdict. Every
 `(task, model)` pair for that task then inherits the task's verdict
-(`pair_run_status(task=..., baseline, artifacts)` looks up the verdict by `task` only) —
+(`pair_run_status(task=..., baseline=...)` looks up the verdict by `task` only) —
 so if the winning family for a task passes, **both** trained model families for that task
 get `status: ok` and both get their own `latest` symlink written, even a losing model that
 individually did not beat trivial (in this run both `home_win` families happen to
 individually pass, but the code does not check that — only the winning family's number
 decides the task). The **whole-run** status
-(`apply_acceptance_to_training_outcomes` → `run_status`, and the CLI's exit code) is `ok`
+(`apply_acceptance_to_training_outcomes`, and the CLI's exit code) is `ok`
 only if *every* enabled task passes; here it is `failed_baseline_check` because
 `over_5_5` fails, even though `home_win` is `ok`. `update_latest_symlink` is skipped
 per-pair when that pair's own `status != ok`, so `latest` was **not** written for either
@@ -759,7 +759,7 @@ per-pair when that pair's own `status != ok`, so `latest` was **not** written fo
 `latest` after this run (`artifacts/models/<task>/<model>/latest`, all git-ignored):
 
 - `home_win/logreg/latest` → `home_win_logreg_bb0c2b06_20260928T183528Z/final` (symlink,
-  written by `update_latest_symlink`, verified by `apply_latest_symlink_check`).
+  written by `update_latest_symlink`).
 - `home_win/lgbm/latest` → `home_win_lgbm_bb0c2b06_20260928T183528Z/final` (same).
 - `over_5_5/logreg/latest`, `over_5_5/lgbm/latest` — do not exist; no run for `over_5_5`
   has ever reached `status: ok`.

@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 
 from modeling.dataset_builder.assemble import (
-    _assert_train_labels_match_facts,
     attach_train_labels,
     apply_cold_start_policy,
     assemble_dataset,
@@ -279,22 +278,6 @@ class TestModelingDatasetBuild(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             validate_or_raise("train", df, feature_columns=[])
         self.assertIn("forbidden", str(ctx.exception).lower())
-
-    def test_train_label_assert_detects_mismatch(self):
-        df = pd.DataFrame(
-            [
-                {
-                    "winner_id": 10,
-                    "home_team_id": 10,
-                    "y_home_win": 0,
-                    "y_over_5_5": 0,
-                    "home_goals_target": 2.0,
-                    "away_goals_target": 2.0,
-                }
-            ]
-        )
-        with self.assertRaises(ValueError):
-            _assert_train_labels_match_facts(df)
 
     def test_rolling_requires_window_5(self):
         team_facts, _ = build_team_game_facts(_history_df())

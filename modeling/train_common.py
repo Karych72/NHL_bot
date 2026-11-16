@@ -60,16 +60,6 @@ def get_task_label(labels, task: str) -> np.ndarray:
     return labels[col].to_numpy()
 
 
-def validate_num_threads(num_threads: int) -> int:
-    """Return *num_threads* after validating the YAML ``compute.num_threads`` contract."""
-    if not isinstance(num_threads, (int, np.integer)):
-        raise ConfigError(f"num_threads must be an int, got {type(num_threads).__name__}")
-    n = int(num_threads)
-    if n <= 0:
-        raise ConfigError(f"num_threads must be >= 1, got {n}")
-    return n
-
-
 def expand_param_grid(
     grid: Mapping[str, Sequence[Any]],
     *,
@@ -168,5 +158,4 @@ __all__ = [
     "expand_param_grid",
     "get_task_label",
     "predict_raw_proba",
-    "validate_num_threads",
 ]
