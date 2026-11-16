@@ -2398,15 +2398,18 @@ def country_profile(code: str, channel_footer: Optional[str] = None) -> str:
     ])
 
 
-# Задачи 61, 76: игроки страны в матчах игрового дня (`g.day`) или в одном матче
-# (`g.game_id`); страна — `rosters.nationality`.
+# Задачи 61, 76, 122: игроки страны (`r.nationality = %s`) или подписанные игроки
+# (`s.player_id = ANY(%s)`) в матчах игрового дня (`g.day`) или в одном матче (`g.game_id`).
 _COUNTRY_PLAYERS_FROM = (
     "FROM {stats} s "
     "JOIN games g ON g.game_id = s.game_id "
     "JOIN rosters r ON r.player_id = s.player_id AND r.season_id = g.season_id "
     "LEFT JOIN teams t ON t.team_id = s.team_id AND t.season_id = g.season_id "
-    "WHERE {scope} = %s AND r.nationality = %s AND "
+    "WHERE {scope} = %s AND {who} AND "
 )
+
+# game_id → [(player_id, строки игрока)] в порядке блока: полевые по очкам, затем вратари.
+PlayerEntries = Dict[int, List[Tuple[int, List[str]]]]
 
 
 def _night_skater_lines(s: Dict, i: int) -> List[str]:
@@ -2434,54 +2437,101 @@ def _night_skater_lines(s: Dict, i: int) -> List[str]:
     return [head, " · ".join(parts)]
 
 
-def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int, str]:
-    """Блок страны `code` по матчам выборки `scope = value` (`g.day` или `g.game_id`):
-    game_id → HTML. Заголовок — страна жирным, с флагом, у игрока две строки — имя и
-    статистика по позиции, между игроками пустая строка; полевые по очкам и голам,
-    затем вратари. Матча, где никто из страны не играл, в словаре нет."""
+def _player_entries(scope: str, value: Union[date, int], who: str, who_value: Any) -> PlayerEntries:
+    """Строки игроков, вышедших на лёд, по матчам выборки `scope = value` (`g.day` или
+    `g.game_id`), отобранных условием `who` (`r.nationality = %s` или `s.player_id = ANY(%s)`)
+    со значением `who_value`. У игрока две строки — имя и статистика по позиции; полевые по
+    очкам и голам, затем вратари. Матча без таких игроков в словаре нет."""
     skaters = fetch_all(
-        "SELECT s.game_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
+        "SELECT s.game_id, s.player_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
         "r.position, s.goals, s.assists, s.shots, "
         "s.plus_minus, s.hits, s.blocked, s.face_off_wins, s.face_off_taken, s.time_on_ice "
-        + _COUNTRY_PLAYERS_FROM.format(stats="game_player_stats", scope=scope)
+        + _COUNTRY_PLAYERS_FROM.format(stats="game_player_stats", scope=scope, who=who)
         + "r.position <> 'G' AND s.time_on_ice IS NOT NULL AND s.time_on_ice <> '00:00' "
         "ORDER BY COALESCE(s.goals, 0) + COALESCE(s.assists, 0) DESC, "
         "COALESCE(s.goals, 0) DESC, r.lastname",
-        (value, code),
-        columns=["game_id", "lastname", "team", "position", "goals", "assists", "shots",
+        (value, who_value),
+        columns=["game_id", "player_id", "lastname", "team", "position", "goals", "assists", "shots",
                  "plus_minus", "hits", "blocked", "fo_wins", "fo_taken", "toi"],
     )
     goalies = fetch_all(
-        "SELECT s.game_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
+        "SELECT s.game_id, s.player_id, player_display_name(r.name, r.lastname, r.season_id), t.name, "
         "s.saves, s.shots, s.save_percentage, "
         "s.timeonice "
-        + _COUNTRY_PLAYERS_FROM.format(stats="game_goalie_stats", scope=scope)
+        + _COUNTRY_PLAYERS_FROM.format(stats="game_goalie_stats", scope=scope, who=who)
         + "s.timeonice IS NOT NULL AND s.timeonice <> '00:00' ORDER BY r.lastname",
-        (value, code),
-        columns=["game_id", "lastname", "team", "saves", "shots", "save_percentage", "toi"],
+        (value, who_value),
+        columns=["game_id", "player_id", "lastname", "team", "saves", "shots", "save_percentage", "toi"],
     )
-    players: Dict[int, List[str]] = defaultdict(list)
+    players: PlayerEntries = defaultdict(list)
     for i in range(skaters["count_rows"]):
-        players[int(skaters["game_id"][i])] += [""] + _night_skater_lines(skaters, i)
+        players[int(skaters["game_id"][i])].append(
+            (int(skaters["player_id"][i]), _night_skater_lines(skaters, i))
+        )
     for i in range(goalies["count_rows"]):
         pct = goalies["save_percentage"][i]
-        players[int(goalies["game_id"][i])] += [
-            "",
+        players[int(goalies["game_id"][i])].append((int(goalies["player_id"][i]), [
             f"{html.escape(goalies['lastname'][i])} ({html.escape(goalies['team'][i] or '?')})",
             f"{goalies['saves'][i] if goalies['saves'][i] is not None else '—'}/"
             f"{goalies['shots'][i] if goalies['shots'][i] is not None else '—'} · "
             f"{f'{round(pct, 2)}%' if pct is not None else '—'} · {goalies['toi'][i]}",
-        ]
-    heading = f"<b>{country_label(code)}</b>"
-    return {game_id: "\n".join([heading] + lines) for game_id, lines in players.items()}
+        ]))
+    return dict(players)
+
+
+def players_block(heading: str, entries: List[Tuple[int, List[str]]]) -> str:
+    """Блок игроков под карточкой: заголовок `heading` (HTML), между игроками пустая строка.
+
+    Зачем: один формат у блока страны и у блока «Ваши игроки» подписки на игрока (Задача 122).
+
+    Аргументы:
+        heading: заголовок блока, уже HTML.
+        entries: (player_id, строки игрока) одного матча, как в `PlayerEntries`.
+    """
+    return "\n".join([heading] + [line for _, lines in entries for line in ["", *lines]])
+
+
+def country_heading(code: str) -> str:
+    """Заголовок блока страны: флаг и название жирным."""
+    return f"<b>{country_label(code)}</b>"
+
+
+def _country_blocks(code: str, scope: str, value: Union[date, int]) -> Dict[int, str]:
+    """Блок страны `code` по матчам выборки `scope = value`: game_id → HTML
+    (`players_block` под заголовком страны). Матча, где никто из страны не играл, нет."""
+    entries = _player_entries(scope, value, "r.nationality = %s", code)
+    return {game_id: players_block(country_heading(code), rows) for game_id, rows in entries.items()}
 
 
 def country_night_blocks(code: str, night: date) -> List[Tuple[int, str]]:
     """Матчи ночи `night` (игровой день), где играли игроки страны `code`:
     (game_id, блок страны) по порядку `game_id`; формат блока — `_country_blocks`.
-    Нужно рассылке итогов по матчу (`push_digest_job.run_game_broadcast`) и итогам
-    канала (`run_channel_results`, Задача 118)."""
+    Нужно итогам канала (`run_channel_results`, Задача 118)."""
     return sorted(_country_blocks(code, "g.day", night).items())
+
+
+def country_night_entries(code: str, night: date) -> PlayerEntries:
+    """Игроки страны `code`, вышедшие на лёд в матчах ночи `night`, — строками по игроку.
+
+    Зачем: рассылка итогов (`push_digest_job.subscribed_games`) собирает блок страны чату
+    без игроков, которые у него уже в «Ваших игроках» (Задача 122).
+
+    Аргументы:
+        code: код страны (`rosters.nationality`).
+        night: игровая дата ночи.
+    """
+    return _player_entries("g.day", night, "r.nationality = %s", code)
+
+
+def players_night_entries(player_ids: Sequence[int], night: date) -> PlayerEntries:
+    """Подписанные игроки, вышедшие на лёд в матчах ночи `night`, — строками по игроку
+    (Задача 122). Игрока в запасе, травмированного или без матча в выборке нет.
+
+    Аргументы:
+        player_ids: игроки подписок `player_scores`.
+        night: игровая дата ночи.
+    """
+    return _player_entries("g.day", night, "s.player_id = ANY(%s)", list(player_ids))
 
 
 def country_game_block(code: str, game_id: int) -> Optional[str]:
@@ -2490,15 +2540,15 @@ def country_game_block(code: str, game_id: int) -> Optional[str]:
     return _country_blocks(code, "g.game_id", game_id).get(game_id)
 
 
-def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
-    """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`) по
-    порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с `is_shootouts`;
-    в плей-офф 5+ — овертаймы) пропускаются.
+def night_goals(night: date) -> List[Tuple[int, int, Optional[str], Optional[int]]]:
+    """Голы ночи `night` с видео: (game_id, event_id, страна автора гола или `None`, автор
+    гола) по порядку игры. Голы без `event_id` и буллиты (`period >= 5` в матче с
+    `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются.
     Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) и итоги канала
-    (`run_channel_results`) ждут клипов всех голов матча, а в альбом подписчику страны
-    рассылка берёт голы её игроков."""
+    (`run_channel_results`) ждут клипов всех голов матча, а в альбом подписчику страны или
+    игрока (Задача 122) рассылка берёт голы этих игроков."""
     goals = fetch_all(
-        "SELECT a.game_id, a.event_id, r.nationality "
+        "SELECT a.game_id, a.event_id, r.nationality, a.goal_player_id "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
         "LEFT JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
@@ -2506,10 +2556,13 @@ def night_goals(night: date) -> List[Tuple[int, int, Optional[str]]]:
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
         (night,),
-        columns=["game_id", "event_id", "nationality"],
+        columns=["game_id", "event_id", "nationality", "scorer"],
     )
     return [
-        (int(goals["game_id"][i]), int(goals["event_id"][i]), goals["nationality"][i])
+        (
+            int(goals["game_id"][i]), int(goals["event_id"][i]), goals["nationality"][i],
+            None if goals["scorer"][i] is None else int(goals["scorer"][i]),
+        )
         for i in range(goals["count_rows"])
     ]
 

@@ -586,7 +586,8 @@ def push_env(push_job, bot_module, monkeypatch, tmp_path, fake_bot, api, goal_cl
 
     for name, fake in (
         ("mark_chat_games_sent", mark),
-        ("night_goals", lambda night: env.goals),
+        # Автор гола (четвёртое поле) нужен только альбому подписки на игрока: по умолчанию None.
+        ("night_goals", lambda night: [goal if len(goal) == 4 else (*goal, None) for goal in env.goals]),
         ("goal_clip_published", published),
         ("deactivate_chat", env.deactivated.append),
         ("subscribed_games", lambda night: env.subscribed),
@@ -599,7 +600,7 @@ def push_env(push_job, bot_module, monkeypatch, tmp_path, fake_bot, api, goal_cl
         monkeypatch.setattr(push_job, name, fake)
     for name, fake in (
         ("game_message", _card),
-        ("game_goal_events", lambda game_id: [e for g, e, _ in env.goals if g == game_id]),
+        ("game_goal_events", lambda game_id: [e for g, e, *_ in env.goals if g == game_id]),
         ("download_goal_video", download),
     ):
         monkeypatch.setattr(stats_handlers, name, fake)
@@ -912,12 +913,34 @@ async def test_subscriber_of_two_countries_gets_one_message_with_both_blocks(pus
     assert [m.media for m in album.media] == ["fid-1", "fid-3"]
 
 
+@pytest.mark.asyncio
+async def test_player_subscriber_gets_collapsed_card_with_players_block_and_own_goals(push_env):
+    """Задача 122: подписка на игрока и его страну — одно сообщение: свёрнутая карточка,
+    «Ваши игроки» перед блоком страны, в подвале игрок после стран; в альбом — голы
+    подписанного игрока и игроков страны, чужие — нет. С подписанной командой карточка открыта."""
+    push_env.goals = [(GAME_A, 100, "USA", 7), (GAME_A, 101, "CAN", 8), (GAME_A, 102, "RUS", 9)]
+    subs = push_env.subs([], [("RUS", "RUS BLOCK")], ("Michkov (PHI)",), "PLAYERS BLOCK", frozenset({7}))
+    await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {111: {GAME_A: subs}})
+
+    [message] = push_env.api.outgoing
+    assert message.rich_message.html == rich_html(
+        f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\nPLAYERS BLOCK\n\nRUS BLOCK"
+    ) + "<footer>По подписке: Россия · Michkov (PHI)<br>Настроить подписки: /subscriptions</footer>"
+    [album] = push_env.api.sent(SendMediaGroup)
+    assert [m.media for m in album.media] == ["fid-1", "fid-3"]
+
+    team = push_env.subs(["Flyers"], [], ("Michkov (PHI)",), "PLAYERS BLOCK", frozenset({7}))
+    await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {222: {GAME_A: team}})
+    assert push_env.api.sent_rich[-1].chat_id == 222
+    assert " collapsed" not in push_env.api.sent_rich[-1].rich_message.html
+
+
 def test_owner_gets_every_game_of_the_night_first(push_job, monkeypatch):
     """Задача 119: владелец — первым и со всеми матчами ночи (без подписки — с пустыми
     подписками): его карточка грузит клипы в кэш, остальным они уходят по ``file_id``."""
     owner = 168669418
     monkeypatch.setattr(push_job.config, "OWNER_CHAT_ID", owner)
-    monkeypatch.setattr(push_job, "list_active_game_rows", lambda: [(222, 10, None), (owner, 20, None)])
+    monkeypatch.setattr(push_job, "list_active_game_rows", lambda: [(222, 10, None, None), (owner, 20, None, None)])
     monkeypatch.setattr(push_job, "fetch_all", lambda query, params, columns: {
         "game_id": [GAME_A, GAME_B], "home_id": [10, 30], "home": ["Boston", "New York"],
         "away_id": [40, 20], "away": ["Toronto", "Montréal"], "count_rows": 2,
@@ -1361,9 +1384,9 @@ async def test_channel_without_channel_id_is_not_touched(push_job, channel_env, 
     assert api.requests == [] and channel_env.scores == 0
 
 
-def _skater(game_id, lastname, team):
+def _skater(game_id, lastname, team, player_id=8470000):
     """Строка ``game_player_stats`` блока страны: нападающий с голом."""
-    return (game_id, lastname, team, "L", 1, 0, 3, 1, 2, 0, 0, 0, "17:05")
+    return (game_id, player_id, lastname, team, "L", 1, 0, 3, 1, 2, 0, 0, 0, "17:05")
 
 
 @pytest.mark.asyncio

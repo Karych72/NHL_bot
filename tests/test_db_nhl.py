@@ -324,7 +324,7 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         return [r for r in self.repo.list_active_morning_digest_rows() if r[0] == chat_id]
 
     def _game_rows(self, chat_id=CHAT):
-        """Строки рассылки итогов по матчу (команды и страны) чата: (team_id, country)."""
+        """Строки рассылки итогов по матчу (команды, страны, игроки) чата: (team_id, country, player_id)."""
         return [r[1:] for r in self.repo.list_active_game_rows() if r[0] == chat_id]
 
     def _last_sent(self, chat_id, kind):
@@ -365,9 +365,15 @@ class TestSubscriptionRepoSql(unittest.TestCase):
         repo.upsert_team_scores(self.CHAT, self.TEAM)
         repo.upsert_country(self.OTHER_CHAT, "RUS")
         repo.upsert_chat_kind(self.CHAT, "morning_digest")
-        # Задача 85: рассылка по матчу читает команды и страны чата одним списком.
-        self.assertEqual(self._game_rows(), [(None, "FIN"), (None, "RUS"), (self.TEAM, None)])
-        self.assertEqual(self._game_rows(self.OTHER_CHAT), [(None, "RUS")])
+        repo.upsert_player(self.CHAT, 8470001)
+        # Задачи 85, 122: рассылка по матчу читает команды, страны и игроков чата одним списком.
+        self.assertEqual(
+            self._game_rows(),
+            [(None, "FIN", None), (None, "RUS", None), (self.TEAM, None, None), (None, None, 8470001)],
+        )
+        self.assertEqual(self._game_rows(self.OTHER_CHAT), [(None, "RUS", None)])
+        repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "player_scores", player_id=8470001)
+        self.assertEqual(self._game_rows()[-1], (self.TEAM, None, None), "погашенный игрок не читается")
 
         # Отписка от одной страны; переподписка реактивирует ту же строку.
         repo.mark_subscription_inactive_by_chat_kind_team(self.CHAT, "country_players", None, "RUS")
@@ -1128,7 +1134,8 @@ class TestCountryNightSql(unittest.TestCase):
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(
             self.messages.night_goals(self.NIGHT),
-            [(self.GAME, 5, "ZZZ"), (self.GAME, 10, "ZZZ"), (self.GAME, 20, "YYY"), (self.GAME, 30, "ZZZ")],
+            [(self.GAME, 5, "ZZZ", -1), (self.GAME, 10, "ZZZ", -1), (self.GAME, 20, "YYY", -3),
+             (self.GAME, 30, "ZZZ", -6)],
         )
 
     def test_subscribed_games_match_teams_and_countries_of_each_chat(self):
@@ -1156,14 +1163,47 @@ class TestCountryNightSql(unittest.TestCase):
 
         blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
         self.assertEqual(subscribed[both], {
-            self.GAME: (["Home Club"], [("ZZZ", blocks[self.GAME])]),
-            self.GAME2: (["Home Club"], [("ZZZ", blocks[self.GAME2])]),
+            self.GAME: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME])]),
+            self.GAME2: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME2])]),
         })
         self.assertEqual(
             {game: (subs.teams, [code for code, _ in subs.countries]) for game, subs in subscribed[yyy].items()},
             {self.GAME: ([], ["YYY"])},
         )
         self.assertNotIn(gone, subscribed)
+
+    def test_subscribed_players_on_ice_get_own_block_and_leave_country_block(self):
+        """Задача 122: матч, где подписанный игрок вышел на лёд, — чату с блоком «Ваши игроки»
+        (вратарь — строкой сейвов); игрок не повторяется в блоке своей страны. Игрок с нулевым
+        временем и вратарь-запасной матча не приводят."""
+        import push_digest_job
+        import subscription_repo as repo
+
+        chats = (-999000122, -999000123)
+        self.addCleanup(self._delete_subscriptions, chats)
+        fan, bench = chats
+        repo.upsert_country(fan, "ZZZ")
+        repo.upsert_player(fan, -1)
+        repo.upsert_player(fan, -4)
+        repo.upsert_player(bench, -2)
+        repo.upsert_player(bench, -5)
+        with patch.object(config, "SEASON_ID", self.SEASON), patch.object(config, "OWNER_CHAT_ID", None):
+            subscribed = push_digest_job.subscribed_games(self.NIGHT)
+
+        self.assertNotIn(bench, subscribed)
+        game = subscribed[fan][self.GAME]
+        self.assertEqual((game.teams, game.players, game.player_ids), ([], ("Скорер<", "Стенка"), frozenset({-1, -4})))
+        block = game.players_block.split("\n")
+        self.assertEqual(block[:3], ["<b>Ваши игроки</b>", "", "Скорер&lt; (Home Club, ц)"])
+        self.assertIn("Стенка (Home Club)", block)
+        [(code, country)] = game.countries
+        self.assertEqual(code, "ZZZ")
+        self.assertNotIn("Скорер", country)
+        self.assertNotIn("Стенка", country)
+        self.assertIn("Крыло", country)
+        # Во втором матче подписанные игроки не играли — только страна.
+        self.assertEqual(subscribed[fan][self.GAME2].players, ())
+        self.assertEqual([c for c, _ in subscribed[fan][self.GAME2].countries], ["ZZZ"])
 
     def _delete_subscriptions(self, chats):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
