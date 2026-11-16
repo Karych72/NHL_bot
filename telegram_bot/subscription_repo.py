@@ -152,22 +152,23 @@ def upsert_player(chat_id: int, player_id: int) -> None:
         conn.commit()
 
 
-def list_active_game_rows() -> List[Tuple[int, Optional[int], Optional[str]]]:
-    """Активные подписки на команды и страны — источник рассылки итогов по матчу в
-    `push_digest_job.py`: кортежи (chat_id, team_id, country), у строки задано одно из двух;
-    по чату, страны чата — по алфавиту."""
+def list_active_game_rows() -> List[Tuple[int, Optional[int], Optional[str], Optional[int]]]:
+    """Активные подписки на команды, страны и игроков (Задача 122) — источник рассылки итогов
+    по матчу в `push_digest_job.py`: кортежи (chat_id, team_id, country, player_id), у строки
+    задано одно из трёх; по чату, страны чата — по алфавиту."""
     row = fetch_all(
-        "SELECT chat_id, team_id, country FROM bot_subscriptions "
-        "WHERE kind IN ('team_scores', 'country_players') AND active = TRUE "
-        "ORDER BY chat_id, country, team_id",
+        "SELECT chat_id, team_id, country, player_id FROM bot_subscriptions "
+        "WHERE kind IN ('team_scores', 'country_players', 'player_scores') AND active = TRUE "
+        "ORDER BY chat_id, country, team_id, player_id",
         None,
-        columns=["chat_id", "team_id", "country"],
+        columns=["chat_id", "team_id", "country", "player_id"],
     )
     return [
         (
             int(row["chat_id"][i]),
             None if row["team_id"][i] is None else int(row["team_id"][i]),
             row["country"][i],
+            None if row["player_id"][i] is None else int(row["player_id"][i]),
         )
         for i in range(row["count_rows"])
     ]
