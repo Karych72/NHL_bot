@@ -223,8 +223,8 @@ NHL_bot/
 |---|---|
 | `make setup` | Создаёт `.venv` (с учётом архитектуры arm64/x86_64), устанавливает зависимости |
 | `make env-example` | Копирует `.env.example` → `.env`, если файл не существует |
-| `make db-init` / `db-reset` | DROP → CREATE: DDL из `data_tables/*.sql`, затем PL/pgSQL из `telegram_bot/queries/*.sql`, затем `data_tables/migrations/*.up.sql` |
-| `make db-init-local` / `db-reset-local` | То же, но с текущим пользователем ОС вместо `postgres` |
+| `make db-reset` | **Разрушительная:** DROP таблиц данных (`DDL_TABLES`) → CREATE: DDL из `data_tables/*.sql`, затем PL/pgSQL из `telegram_bot/queries/*.sql`, затем `data_tables/migrations/*.up.sql` |
+| `make db-reset-local` | То же, но с текущим пользователем ОС вместо `postgres` |
 | `make db-sync` | Без DROP: DDL → функции → миграции (порядок как выше) |
 | `make db-migrate` | Применяет непримененные `data_tables/migrations/*.up.sql` по возрастанию версии, фиксируя каждую в `schema_migrations` |
 | `make db-migrate-down` | Откатывает последнюю применённую миграцию (`*.down.sql` + удаление строки из `schema_migrations`) |
@@ -233,7 +233,6 @@ NHL_bot/
 | `make season-sync-week` / `-month` / `-today` | Синхронизация за последние 7 / 30 / 0 дней |
 | `make bot` | Запуск Telegram-бота (`bot.py::main()` проверяет обязательные переменные окружения) |
 | `make run-bot` | `setup` + `env-example` + `bot` |
-| `make run-local` | Запуск бота без pipeline (для работы с уже загруженными данными) |
 | `make lock` | Перегенерирует `requirements*.txt` из `requirements*.in` (pip-tools, hash-режим), в порядке рантайм → modeling → dev |
 
 ### Зависимости (`requirements.in` → `requirements.txt`)
@@ -1215,7 +1214,7 @@ make bot                # запустить бота
 ### Повседневный запуск
 
 ```bash
-make run-local            # бот без перезагрузки данных
+make bot                  # бот без перезагрузки данных
 make season-sync-month    # обновить данные за последние ~30 дней
 ```
 

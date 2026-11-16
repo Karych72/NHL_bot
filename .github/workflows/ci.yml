@@ -75,7 +75,7 @@ jobs:
       - name: Install dependencies (venv via make modeling-dev — tests/test_db_nhl.py импортирует modeling)
         run: make modeling-dev
 
-      - name: Apply DDL and SQL functions (DDL_TABLES, then queries) — same order as make db-init
+      - name: Apply DDL and SQL functions (DDL_TABLES, then queries) — make db-sync
         run: make db-sync
 
       - name: DB schema tests (tests/test_db_nhl.py)

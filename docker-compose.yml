@@ -1,5 +1,5 @@
 # Local stack: PostgreSQL + bot. Copy .env.example → .env and set TELEGRAM_BOT_TOKEN.
-# Apply schema/functions on first run: make db-init with PG_* pointed at localhost:5432,
+# Apply schema/functions on first run: make db-sync with PG_* pointed at localhost:5432,
 # or run the Makefile DDL targets against host port 5432 after `docker compose up -d db`.
 # `name:` pins the compose project (and therefore the pgdata volume name) so it does not
 # depend on the directory the command is run from (e.g. a task worktree vs. the main checkout).

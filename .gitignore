@@ -26,3 +26,10 @@ artifacts/reports/*/
 
 # git worktrees, создаваемые SDD-скиллом
 .claude/worktrees/
+
+# рабочие файлы человека в корне (Задача 127): выгрузки логов, отчёты, заметки, скриншоты
+/bot_users_*.log
+/reports/
+/research_notes/
+/UI_screenshot/
+/*.png
