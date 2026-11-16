@@ -917,15 +917,18 @@ async def test_subscriber_of_two_countries_gets_one_message_with_both_blocks(pus
 async def test_player_subscriber_gets_collapsed_card_with_players_block_and_own_goals(push_env):
     """Задача 122: подписка на игрока и его страну — одно сообщение: свёрнутая карточка,
     «Ваши игроки» перед блоком страны, в подвале игрок после стран; в альбом — голы
-    подписанного игрока и игроков страны, чужие — нет. С подписанной командой карточка открыта."""
+    подписанного игрока и игроков страны, чужие — нет. Страна, чьи игроки в матче все подписаны
+    (пустой блок), — только в подвале. С подписанной командой карточка открыта."""
     push_env.goals = [(GAME_A, 100, "USA", 7), (GAME_A, 101, "CAN", 8), (GAME_A, 102, "RUS", 9)]
-    subs = push_env.subs([], [("RUS", "RUS BLOCK")], ("Michkov (PHI)",), "PLAYERS BLOCK", frozenset({7}))
+    subs = push_env.subs(
+        [], [("BLR", ""), ("RUS", "RUS BLOCK")], ("Michkov (PHI)",), "PLAYERS BLOCK", frozenset({7})
+    )
     await push_env.job.run_game_broadcast(push_env.bot, NIGHT, False, {111: {GAME_A: subs}})
 
     [message] = push_env.api.outgoing
     assert message.rich_message.html == rich_html(
         f"CARD {GAME_A} clips=[100, 101, 102] collapsed\n\nPLAYERS BLOCK\n\nRUS BLOCK"
-    ) + "<footer>По подписке: Россия · Michkov (PHI)<br>Настроить подписки: /subscriptions</footer>"
+    ) + "<footer>По подписке: Беларусь · Россия · Michkov (PHI)<br>Настроить подписки: /subscriptions</footer>"
     [album] = push_env.api.sent(SendMediaGroup)
     assert [m.media for m in album.media] == ["fid-1", "fid-3"]
 

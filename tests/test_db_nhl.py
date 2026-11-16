@@ -1179,14 +1179,17 @@ class TestCountryNightSql(unittest.TestCase):
         import push_digest_job
         import subscription_repo as repo
 
-        chats = (-999000122, -999000123)
+        chats = (-999000122, -999000123, -999000124)
         self.addCleanup(self._delete_subscriptions, chats)
-        fan, bench = chats
+        fan, bench, only = chats
         repo.upsert_country(fan, "ZZZ")
         repo.upsert_player(fan, -1)
         repo.upsert_player(fan, -4)
         repo.upsert_player(bench, -2)
         repo.upsert_player(bench, -5)
+        # Единственный игрок YYY в матче подписан: блок страны пуст, страна остаётся в подписках.
+        repo.upsert_country(only, "YYY")
+        repo.upsert_player(only, -3)
         with patch.object(config, "SEASON_ID", self.SEASON), patch.object(config, "OWNER_CHAT_ID", None):
             subscribed = push_digest_job.subscribed_games(self.NIGHT)
 
@@ -1204,6 +1207,8 @@ class TestCountryNightSql(unittest.TestCase):
         # Во втором матче подписанные игроки не играли — только страна.
         self.assertEqual(subscribed[fan][self.GAME2].players, ())
         self.assertEqual([c for c, _ in subscribed[fan][self.GAME2].countries], ["ZZZ"])
+        self.assertEqual(subscribed[only][self.GAME].countries, [("YYY", "")])
+        self.assertEqual(subscribed[only][self.GAME].players, ("Чужой",))
 
     def _delete_subscriptions(self, chats):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
