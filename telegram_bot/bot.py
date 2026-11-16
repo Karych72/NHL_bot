@@ -997,11 +997,11 @@ async def run_schedule_ticker(bot: Bot) -> None:
         await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
-# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), неделя, всего.
+# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя).
+# Строки `total` в журнале — история потолка «8 за всё время», снятого Задачей 124.
 _AI_LIMIT_KINDS = {
     ai_router.LIMIT_TEXT: "day",
     ai_router.WEEK_LIMIT_TEXT: "week",
-    ai_router.TOTAL_LIMIT_TEXT: "total",
 }
 
 
