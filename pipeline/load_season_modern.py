@@ -303,6 +303,15 @@ class ModernNhlLoader:
         return out
 
     def load_team_reference(self):
+        """Fill the team lookups ``build_teams`` reads: stats metadata by id, standings by triCode.
+
+        Standings are taken on the last standings day of ``season_id``
+        (``/v1/standings-season``), not ``/v1/standings/now``: a past season must get
+        its own divisions and conferences, and clubs that are gone (ATL, PHX) are
+        missing from today's table (Задача 121). For the current season that day is
+        the latest one, the same table ``now`` gives. A season the API does not list
+        raises ``KeyError``.
+        """
         teams = self.fetch_paginated(
             "https://api.nhle.com/stats/rest/en/team", "id", page_size=200
         )
@@ -312,7 +321,11 @@ class ModernNhlLoader:
             if tri:
                 self.team_abbrev_by_id[team_id] = tri
 
-        standings = self.get_json("https://api-web.nhle.com/v1/standings/now").get("standings", [])
+        seasons = self.get_json("https://api-web.nhle.com/v1/standings-season")["seasons"]
+        standings_end = {s["id"]: s["standingsEnd"] for s in seasons}[self.season_id]
+        standings = self.get_json(f"https://api-web.nhle.com/v1/standings/{standings_end}").get(
+            "standings", []
+        )
         self.team_standings_by_abbrev = {}
         for s in standings:
             tri = (s.get("teamAbbrev") or {}).get("default")

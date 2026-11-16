@@ -44,6 +44,9 @@ class DatasetBuildConfig:
     cold_start_policy_predict: str = "drop"
     min_rows_threshold: int = 0
     season_ids: Sequence[int] = field(default_factory=list)
+    # Lower season bound of everything read from the DB, Elo and shot-share history
+    # included (Задача 121): history loaded below it leaves the dataset unchanged.
+    first_season_id: Optional[int] = None
     target_day_from: Optional[str] = None
     target_day_to: Optional[str] = None
     train_metadata_path: Optional[Path] = None
@@ -64,10 +67,13 @@ def _git_commit_hash() -> str:
 
 
 def _season_where_clause(config: DatasetBuildConfig) -> str:
-    if not config.season_ids:
-        return ""
-    ids = ",".join(str(int(v)) for v in config.season_ids)
-    return f" AND g.season_id IN ({ids})"
+    clause = ""
+    if config.first_season_id is not None:
+        clause += f" AND g.season_id >= {int(config.first_season_id)}"
+    if config.season_ids:
+        ids = ",".join(str(int(v)) for v in config.season_ids)
+        clause += f" AND g.season_id IN ({ids})"
+    return clause
 
 
 def _day_where_clause(config: DatasetBuildConfig) -> str:
@@ -253,6 +259,8 @@ def _compose_data_snapshot_id(config: DatasetBuildConfig, built_at_iso: str) -> 
         parts.append("seasons=" + ",".join(str(int(s)) for s in config.season_ids))
     else:
         parts.append("seasons=all")
+    if config.first_season_id is not None:
+        parts.append(f"first_season={int(config.first_season_id)}")
     if config.target_day_from:
         parts.append("day_from=" + config.target_day_from)
     if config.target_day_to:

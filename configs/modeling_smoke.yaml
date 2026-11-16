@@ -12,6 +12,12 @@ tasks:
   over_5_5:
     enabled: true
 
+# First season build-dataset reads from the DB, Elo and shot-share history included
+# (Задача 121). The DB holds history back to 2009/10; moving this bound is the job of a
+# season-by-season check, not of loading data.
+dataset:
+  first_season_id: 20212022
+
 # Smoke profile: small geometry and grids, only to exercise the pipeline end to
 # end (Задача 66 scheme, see configs/modeling_default.yaml). Not for production.
 # Needs >= 3 seasons in the data: two checked seasons, the Elo fit needs one

@@ -686,7 +686,7 @@ class GameJsonCacheTest(LoaderApiTestCase):
 
         def counting_get_json(url):
             calls["get_json"] += 1
-            return {"standings": []}
+            return {"seasons": [{"id": SEASON_ID, "standingsEnd": "2026-04-17"}], "standings": []}
 
         def counting_fetch_paginated(url, sort_key, page_size=500):
             calls["fetch_paginated"] += 1
@@ -698,7 +698,7 @@ class GameJsonCacheTest(LoaderApiTestCase):
         instance.load_team_reference()
         instance.load_team_reference()
 
-        self.assertEqual(calls["get_json"], 2)
+        self.assertEqual(calls["get_json"], 4)  # standings-season + standings, twice
         self.assertEqual(calls["fetch_paginated"], 2)
         # The real assertion: nothing landed in the per-game cache directory.
         # A cache keyed off get_json/fetch_paginated instead of fetch_game_json

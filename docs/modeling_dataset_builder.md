@@ -126,6 +126,16 @@ does), plus `season_id, day, home_team_id, away_team_id` from `games`, ordered b
 (`modeling/xg_model.py`; `situation_code` must be read as text). Not part of the metadata or
 the feature table.
 
+## Lower season bound (Задача 121)
+
+The DB holds seasons back to 2009/10, but `build-dataset` reads only seasons from
+`dataset.first_season_id` of the YAML config (`--config`, default `configs/modeling_default.yaml`;
+now `20212022`). The bound applies to every DB read — target games, team history,
+`shot_attempts` and the Elo / shot-share history, which ignores `--season-ids` — so loading
+history below it leaves `dataset_train` / `games_train` / `shots_train` unchanged. It is written
+into `data_snapshot_id` as `first_season=…`. Moving it is the job of a season-by-season check,
+not of a data load.
+
 ## Elo team-strength feature
 
 Added Задача 40 (Task 3; tuned via a read-only diagnostic spike, 40a, before any code
@@ -135,7 +145,7 @@ Unlike every other feature above, Elo is **cross-team and cross-season**: it is 
 in `(day, game_id)` order (`modeling/elo.py::compute_pregame_elo`, attached to every target game by
 `features.py::attach_pregame_elo`). `base.py` gets that history by calling `load_target_games`
 itself with `mode="train"`/`season_ids=[]`/`target_day_from=None` (not a near-duplicate query)
-— unfiltered by `--season-ids`/`--target-day-from`.
+— unfiltered by `--season-ids`/`--target-day-from`, bounded only by `dataset.first_season_id`.
 
 - **Formula** (Задача 66: the core moved to `modeling/elo.py` and takes an `EloParams`; the
   defaults `k=8, home_advantage=35, season_regression=1/3, mov=True, ot_win_weight=1.0` are the

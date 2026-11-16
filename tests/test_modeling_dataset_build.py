@@ -780,6 +780,36 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         self.assertIn("AS away_reg_goals", query)
 
 
+class TestFirstSeasonBound(unittest.TestCase):
+    """Задача 121: история ниже ``first_season_id`` в БД не меняет ни датасет, ни Elo, ни броски."""
+
+    def test_every_db_read_is_bounded_from_below(self):
+        from dataclasses import replace
+        from pathlib import Path
+        from unittest import mock
+
+        from modeling.dataset_builder.base import (
+            DatasetBuildConfig,
+            load_history_team_stats,
+            load_shot_attempts,
+            load_target_games,
+        )
+
+        config = DatasetBuildConfig(mode="train", output_dir=Path("."), first_season_id=20212022)
+        # Elo history is read with season_ids cleared (build_dataset); the bound must survive that.
+        elo_config = replace(config, season_ids=[], target_day_from=None)
+        readers = (
+            lambda: load_target_games(object(), config),
+            lambda: load_target_games(object(), elo_config, with_outcome=True),
+            lambda: load_history_team_stats(object(), config),
+            lambda: load_shot_attempts(object(), config),
+        )
+        for read in readers:
+            with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
+                read()
+            self.assertIn("g.season_id >= 20212022", read_sql.call_args.args[0])
+
+
 class TestLoadShotAttempts(unittest.TestCase):
     """Задача 69: ``shots_train.csv`` — броски сыгранных игр выбранных сезонов, сезоны целиком."""
 

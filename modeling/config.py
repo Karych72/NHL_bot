@@ -72,6 +72,17 @@ class TasksConfig(_ForbidExtraModel):
         return self
 
 
+class DatasetConfig(_ForbidExtraModel):
+    """YAML ``dataset.*``: what ``build-dataset`` reads from the DB.
+
+    ``first_season_id`` is the first season of the dataset, Elo and shot-share history
+    included: the DB holds history back to 2009/10 (Задача 121), and moving the bound
+    is a decision of a season-by-season check, not a side effect of loading data.
+    """
+
+    first_season_id: int
+
+
 class SplitConfig(_ForbidExtraModel):
     """Season-by-season check geometry (YAML ``split.*``).
 
@@ -237,6 +248,7 @@ class ModelingConfig(_ForbidExtraModel):
     random_seed: int
     compute: ComputeConfig
     tasks: TasksConfig
+    dataset: DatasetConfig
     split: SplitConfig
     elo: EloConfig
     goals: GoalsConfig
