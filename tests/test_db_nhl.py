@@ -830,10 +830,12 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         players = ((8470001, "Ivan", "Forwardov", "C"), (8470002, "Petr", "Defensov", "D"))
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             for player_id, name, lastname, position in players:
+                # В abbreviation загрузчик пишет позицию (load_season_modern) — код клуба
+                # подпись берёт из teams.
                 cur.execute(
                     "INSERT INTO rosters (player_id, season_id, name, lastname, position, abbreviation, "
-                    "current_team_id) VALUES (%s, %s, %s, %s, %s, 'BBB', 900012)",
-                    (player_id, self.SEASON, name, lastname, position),
+                    "current_team_id) VALUES (%s, %s, %s, %s, %s, %s, 900012)",
+                    (player_id, self.SEASON, name, lastname, position, position),
                 )
         self.addCleanup(self._query_cleanup_rosters)
 
@@ -860,12 +862,22 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
         hint, _, _ = await self._press("sub:p:1:900012:F:8470001")
         self.assertEqual(hint, "Подписка на Forwardov (BBB) отключена")
         await self._press("sub:p:1:900012:F:8470001")
+        # С экрана «Игроки» подписку можно снять, даже если игрока нет в составах сезона.
+        _, _, buttons = await self._press("sub:P")
+        self.assertEqual(buttons[0], ("✅ Forwardov (BBB)", "sub:o:8470001"))
+        hint, _, buttons = await self._press("sub:o:8470001")
+        self.assertEqual(hint, "Подписка на Forwardov (BBB) отключена")
+        self.assertEqual(buttons[0], ("Atlantic", "sub:Q:0"))
+        hint, _, _ = await self._press("sub:o:8470001")
+        self.assertEqual(hint, "Подписка на Forwardov (BBB) отключена", "устаревшая кнопка не подписывает")
+        await self._press("sub:p:1:900012:F:8470001")
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
             cur.execute("SELECT kind, player_id, active FROM bot_subscriptions WHERE chat_id = %s", (self.CHAT,))
             self.assertEqual(cur.fetchall(), [("player_scores", 8470001, True)], "одна строка")
             cur.execute("SELECT player_id, active FROM bot_subscription_events WHERE chat_id = %s ORDER BY id",
                         (self.CHAT,))
-            self.assertEqual(cur.fetchall(), [(8470001, True), (8470001, False), (8470001, True)])
+            self.assertEqual(cur.fetchall(), [(8470001, True), (8470001, False), (8470001, True),
+                                              (8470001, False), (8470001, True)])
 
     def _query_cleanup_rosters(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:

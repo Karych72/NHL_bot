@@ -1681,15 +1681,19 @@ def player_labels(player_ids: Sequence[int]) -> Dict[int, str]:
     """Подписи игроков «Имя (КОД)» по последнему сезону в `rosters`: player_id → строка.
 
     Зачем: сводка `/subscriptions` и подвал рассылки (Задача 122) называют подписанных игроков,
-    в том числе сменивших клуб, — код клуба отличает однофамильцев из разных команд.
+    в том числе сменивших клуб, — код клуба (`teams` по `current_team_id`; в
+    `rosters.abbreviation` загрузчик пишет позицию) отличает однофамильцев из разных команд.
+    У игрока без клуба в том сезоне (свободный агент) — только имя: клуба у него нет.
 
     Аргументы:
         player_ids: игроки подписок чата.
     """
     rows = fetch_all(
-        "SELECT DISTINCT ON (player_id) player_id, "
-        "player_display_name(name, lastname, season_id) || ' (' || coalesce(trim(abbreviation), '?') || ')' "
-        "FROM rosters WHERE player_id = ANY(%s) ORDER BY player_id, season_id DESC",
+        "SELECT DISTINCT ON (r.player_id) r.player_id, "
+        "player_display_name(r.name, r.lastname, r.season_id) "
+        "|| coalesce(' (' || trim(t.abbreviation) || ')', '') "
+        "FROM rosters r LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
+        "WHERE r.player_id = ANY(%s) ORDER BY r.player_id, r.season_id DESC",
         (list(player_ids),),
         columns=["player_id", "label"],
     )

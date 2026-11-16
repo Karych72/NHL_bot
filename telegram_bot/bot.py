@@ -393,11 +393,12 @@ _SUBSCRIPTIONS_DB_ERROR = "Подписки недоступны: выполни
 # (i — чтобы перерисовать тот же дивизион), `sub:C` страны, `sub:c:<CODE>` страна,
 # `sub:x` «Готово», `sub:s` расписания (Задача 107), `sub:s:<id>` удалить расписание. Игроки
 # (Задача 122): `sub:P` дивизионы, `sub:Q:<i>` клубы дивизиона, `sub:R:<i>:<team_id>:<g>` группа
-# состава g (`ROSTER_GROUPS`), `sub:p:<i>:<team_id>:<g>:<player_id>` игрок. Самая длинная —
+# состава g (`ROSTER_GROUPS`), `sub:p:<i>:<team_id>:<g>:<player_id>` игрок, `sub:o:<player_id>`
+# отписка с экрана `sub:P` (игрока может не быть в составах сезона). Самая длинная —
 # `sub:p:3:` + id команды + `:F:` + семизначный id игрока, около 20 байт из 64.
 SUBSCRIPTIONS_CALLBACK_PATTERN = (
     r"^sub:(m|d|u|T|C|P|x|s|D:[0-3]|t:[0-3]:\d+|c:[A-Z]{3}|s:\d+|Q:[0-3]|R:[0-3]:\d+:[FDG]"
-    r"|p:[0-3]:\d+:[FDG]:\d+)$"
+    r"|p:[0-3]:\d+:[FDG]:\d+|o:\d+)$"
 )
 _DIVISION_BUTTON_COLUMNS = 2
 _TEAM_BUTTON_COLUMNS = 4
@@ -443,7 +444,7 @@ def _subscriptions_main_screen(
         items.append("Страны: " + ", ".join(countries))
     if players:
         items.append("Игроки: " + ", ".join(html.escape(name) for name in players))
-    lines =["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
+    lines = ["<b>Ваши подписки</b>", rich_list(items) if items else "Пока ничего нет."]
     if not schedules:
         hint = _MAIN_SCHEDULE_HINT_FIRST
     elif is_premium:
@@ -646,16 +647,18 @@ def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
     """Переключает подписку по нажатой кнопке (`sub:d`, `sub:u`, `sub:t:…`, `sub:c:…`, `sub:p:…`),
     пишет в БД и возвращает подсказку для ответа на нажатие."""
     digest, upcoming, team_ids, countries, player_ids = subscription_repo.get_chat_subscriptions(chat_id)
-    if action == "p":
-        player_id = int(args[3])
+    if action in ("p", "o"):
+        player_id = int(args[-1])
         name = player_labels([player_id])[player_id]
-        if player_id in player_ids:
+        # `sub:o` только отписывает: устаревшая кнопка не должна подписать снова.
+        off = player_id in player_ids or action == "o"
+        if off:
             subscription_repo.mark_subscription_inactive_by_chat_kind_team(
                 chat_id, "player_scores", player_id=player_id
             )
         else:
             subscription_repo.upsert_player(chat_id, player_id)
-        return f"Подписка на {name} " + ("отключена" if player_id in player_ids else "включена")
+        return f"Подписка на {name} " + ("отключена" if off else "включена")
     if action in ("d", "u"):
         kind, on = ("morning_digest", digest) if action == "d" else ("upcoming_games", upcoming)
         if on:
@@ -686,11 +689,16 @@ def _toggle_subscription(chat_id: int, action: str, args: List[str]) -> str:
 
 
 def _subscriptions_players_step(chat_id: int, action: str, args: List[str]) -> _Screen:
-    """Экран выбора игрока (Задача 122) после нажатия `sub:P` / `sub:Q:…` / `sub:R:…` /
-    `sub:p:…`: дивизионы, клубы дивизиона или группа состава клуба; читает БД."""
+    """Экран выбора игрока (Задача 122) после нажатия `sub:P` / `sub:o:…` / `sub:Q:…` /
+    `sub:R:…` / `sub:p:…`: дивизионы (над ними — ✅ подписанных игроков, нажатие отписывает:
+    игрока может не быть в составах сезона), клубы дивизиона или группа состава клуба; читает БД."""
     teams_by_division = season_teams_by_division()
-    if action == "P":
-        return _subscriptions_divisions_screen(teams_by_division, set(), "Игроки", "Q")
+    if action in ("P", "o"):
+        text, markup = _subscriptions_divisions_screen(teams_by_division, set(), "Игроки", "Q")
+        chosen = sorted(player_labels(sorted(subscription_repo.get_chat_subscriptions(chat_id).player_ids)).items(),
+                        key=lambda item: item[1])
+        rows = [[_sub_button(label, True, f"sub:o:{player_id}")] for player_id, label in chosen]
+        return text, InlineKeyboardMarkup(inline_keyboard=rows + markup.inline_keyboard)
     division_index = int(args[0])
     if action == "Q":
         return _subscriptions_player_teams_screen(teams_by_division, division_index)
@@ -714,7 +722,7 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
     _, action, *args = callback.data.split(":")
     hint = None
     try:
-        if action in ("d", "u", "t", "c", "p"):
+        if action in ("d", "u", "t", "c", "p", "o"):
             hint = _toggle_subscription(chat_id, action, args)
         if action == "s" and args:
             deleted = schedule_repo.delete(chat_id, int(args[0]))
@@ -725,7 +733,7 @@ async def callback_subscriptions(callback: CallbackQuery) -> None:
             text, markup = _subscriptions_schedules_screen(schedule_repo.list_for_chat(chat_id))
         elif action in ("m", "d", "u", "x"):
             text, markup = _subscriptions_main_screen_for(chat_id)
-        elif action in ("P", "Q", "R", "p"):
+        elif action in ("P", "o", "Q", "R", "p"):
             text, markup = _subscriptions_players_step(chat_id, action, args)
         elif action in ("T", "D", "t"):
             teams_by_division = season_teams_by_division()
