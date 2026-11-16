@@ -56,7 +56,7 @@ class BuildCommandsTest(unittest.TestCase):
         (dataset, *_rest) = build_commands(NOW)
         self.assertEqual(_arg(dataset.argv, "--target-day-to"), "2026-10-16")
 
-    def test_dataset_is_built_with_drop_policy_and_five_prior_games(self) -> None:
+    def test_dataset_is_built_with_five_prior_games(self) -> None:
         # The ≥ 5 games rule of the preview lives in the dataset's cold-start policy
         # (the drop itself — test_modeling_dataset_build.test_cold_start_policy).
         (dataset, *_rest) = build_commands(NOW)

@@ -30,11 +30,11 @@ Semantics of splits
 - **X** — built **only** from ``feature_manifest`` column names, in manifest order.
   No prefix-based guessing and no \"all other columns\" fallback when the manifest
   lists the full feature set.
-- **Keys** — columns intersecting ``schema.KEY_COLUMNS`` that exist in the table,
+- **Keys** — columns intersecting ``feature_schema.KEY_COLUMNS`` that exist in the table,
   ordered as in ``KEY_COLUMNS``.
-- **Labels** — columns intersecting ``schema.LABEL_COLUMNS`` that exist (typically
+- **Labels** — columns intersecting ``feature_schema.LABEL_COLUMNS`` that exist (typically
   both ``y_home_win`` and ``y_over_5_5`` for train).
-- **Service** — columns present in the frame that belong to ``schema.SERVICE_COLUMNS``.
+- **Service** — columns present in the frame that belong to ``feature_schema.SERVICE_COLUMNS``.
 
 Any column not in ``KEY_COLUMNS ∪ LABEL_COLUMNS ∪ SERVICE_COLUMNS ∪ manifest names``
 raises ``TrainSchemaError`` (fail-fast).

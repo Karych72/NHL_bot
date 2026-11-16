@@ -1,7 +1,7 @@
 """Tests for modeling/train_logreg.py and modeling/artifacts.py (UPDATE plan stage 7).
 
 Coverage:
-    1.  Pipeline composition (steps, order, hyperparameters, class_weight default).
+    1.  Pipeline composition (steps, order, hyperparameters).
     2.  Forbidden team-ID column guard.
     3.  No statistics leakage: imputer/scaler fit only on train block.
     4.  C-grid selection picks the best C by inner-val log loss.

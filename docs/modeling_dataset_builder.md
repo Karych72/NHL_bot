@@ -57,7 +57,8 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     (`features.py`, Task 30), the first game of every season has
     `prior_games_count == 0` and NaN `*_roll_mean_*` in its snapshot. Both modes drop
     games where either team has fewer than `--min-prior-games` (5) games this season — the
-    bot shows a forecast only for such games (Задача 73). The policy (`train:drop|predict:drop`) is part of `features_hash`. At the start of a season the
+    bot shows a forecast only for such games (Задача 73). The policy (`train:drop|predict:drop`) is part of `features_hash`.
+    At the start of a season the
     predict dataset is legitimately empty (header only); `predict` then writes no rows.
 
 - `modeling/feature_schema.py`
