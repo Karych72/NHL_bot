@@ -188,6 +188,35 @@ _PREMIUM_CANCEL_HINT = (
 )
 _PREMIUM_GROUP_TEXT = "Оплатить премиум можно только в личном чате с ботом: откройте его и отправьте /premium."
 _PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
+# Конец пробника (Задача 125): что остаётся бесплатно и что даёт премиум; числа — из констант.
+_TRIAL_ENDED_TEXT = (
+    "⏳ <b>Пробный премиум закончился.</b>\n"
+    "Бесплатно остаётся всё остальное: экраны, карточки матчей, подписки, одно своё расписание "
+    f"и вопросы ИИ — до {ai_router.FREE_WEEKLY_LIMIT} в неделю.\n"
+    f"Премиум — вопросы ИИ до {ai_router.PREMIUM_DAILY_LIMIT} в сутки и свои рассылки без ограничений: "
+    f"{premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."
+)
+
+
+async def premium_pay_markup(bot: Bot) -> InlineKeyboardMarkup:
+    """Кнопка оплаты премиума — ссылка на счёт подписки Stars (`createInvoiceLink`).
+
+    Зачем: один счёт для `/premium` и сообщения о конце пробника (Задача 125) — оплата по любой
+    кнопке идёт тем же `on_successful_payment`.
+
+    Аргументы:
+        bot: бот, от имени которого выставляется счёт.
+    """
+    link = await bot.create_invoice_link(
+        title="Премиум на 30 дней",
+        description=_PREMIUM_PERKS,
+        payload="premium",
+        currency="XTR",
+        prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
+        subscription_period=premium.PERIOD_SECONDS,
+    )
+    button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
 async def cmd_premium(message: Message, bot: Bot) -> None:
@@ -208,18 +237,7 @@ async def cmd_premium(message: Message, bot: Bot) -> None:
     if subscribed:
         await message.answer_rich(rich_message("\n".join(lines + ["", _PREMIUM_CANCEL_HINT])))
         return
-    link = await bot.create_invoice_link(
-        title="Премиум на 30 дней",
-        description=_PREMIUM_PERKS,
-        payload="premium",
-        currency="XTR",
-        prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
-        subscription_period=premium.PERIOD_SECONDS,
-    )
-    button = InlineKeyboardButton(text=f"Оплатить {premium.PRICE_STARS} ⭐", url=link)
-    await message.answer_rich(
-        rich_message("\n".join(lines)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
-    )
+    await message.answer_rich(rich_message("\n".join(lines)), reply_markup=await premium_pay_markup(bot))
 
 
 async def cmd_paysupport(message: Message, bot: Bot) -> None:
@@ -981,19 +999,54 @@ async def send_due_schedules(bot: Bot, now: datetime) -> None:
         await asyncio.to_thread(schedule_repo.advance, schedule, now)
 
 
+async def send_trial_endings(bot: Bot, now: datetime) -> None:
+    """Сообщение о конце пробника — один раз каждому чату из `premium.expired_trials` (Задача 125).
+
+    Зачем: без него конец пробника молчалив, и человек видит только внезапный отказ по лимиту.
+    Текст — что остаётся бесплатно и что даёт премиум, с кнопкой оплаты (`premium_pay_markup`,
+    счёт один на проход). Отметка `trial_notice_at` ставится после попытки, как у рассылок:
+    сбой логируется и не повторяется. Удачная отправка пишется в журнал `trial_ended` — для
+    конверсии «сообщение → оплата». Заблокировавший бота чат теряет подписки (`deactivate_chat`).
+
+    Аргументы: `bot` — бот процесса; `now` — момент прохода (aware).
+    """
+    chats = await asyncio.to_thread(premium.expired_trials, now)
+    if not chats:
+        return
+    markup = await premium_pay_markup(bot)
+    for chat_id in chats:
+        try:
+            await throttled(
+                partial(bot.send_rich_message, chat_id=chat_id, rich_message=rich_message(_TRIAL_ENDED_TEXT),
+                        reply_markup=markup),
+                chat_id,
+            )
+            await asyncio.to_thread(log_action, chat_id, None, "trial_ended", None)
+        except TelegramForbiddenError:
+            logger.info("chat_id=%s blocked bot; deactivate chat", chat_id)
+            await asyncio.to_thread(subscription_repo.deactivate_chat, chat_id)
+        except Exception:
+            logger.exception("trial ending chat_id=%s failed", chat_id)
+        await asyncio.to_thread(premium.mark_trial_notice, chat_id)
+
+
 async def run_schedule_ticker(bot: Bot) -> None:
-    """«Будильник» расписаний: раз в минуту, в начале минуты, — `send_due_schedules`.
+    """«Будильник» бота: раз в минуту, в начале минуты, — `send_due_schedules` и
+    `send_trial_endings` (Задача 125).
 
     Зачем в процессе бота, а не в сервисе `sync`: sync запускает рассылки только по своей сетке
     (ночь и день с 12:30 UTC), а расписанию нужно любое время суток (решение человека,
-    Задача 107). Сбой прохода (например, БД недоступна) логируется, следующий проход — через
-    минуту: упавшая задача asyncio молча остановила бы все расписания при живом боте.
+    Задача 107), как и концу пробника. Сбой шага (например, БД недоступна) логируется и не
+    мешает другому, следующий проход — через минуту: упавшая задача asyncio молча остановила бы
+    всё при живом боте.
     """
     while True:
-        try:
-            await send_due_schedules(bot, datetime.now(timezone.utc))
-        except Exception:
-            logger.exception("schedule tick failed")
+        now = datetime.now(timezone.utc)
+        for step in (send_due_schedules, send_trial_endings):
+            try:
+                await step(bot, now)
+            except Exception:
+                logger.exception("ticker step %s failed", step.__name__)
         await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
@@ -1084,11 +1137,11 @@ def log_action(chat_id: int, user_id: Optional[int], kind: str, data: Optional[s
     Зачем: по журналу видно, сколько у бота пользователей и кто возвращается, какие экраны
     открывают и что делают до лимита ИИ — без него действия вне ИИ следа в БД не оставляют.
 
-    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` никого:
-    шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent`,
-    `schedule_deleted` (Задача 107) или `schedule_created` (Задача 108); `data` — имя команды,
-    `callback_data`, вид лимита, `<id>:<экран>` отправленного или созданного или `<id>`
-    удалённого расписания.
+    Аргументы: `chat_id` и `user_id` — чат и тот, кто действовал (у `schedule_sent` и
+    `trial_ended` никого: шлёт тикер); `kind` — `command`, `callback`, `ai_limit`, `schedule_sent`,
+    `schedule_deleted` (Задача 107), `schedule_created` (Задача 108) или `trial_ended` (Задача 125);
+    `data` — имя команды, `callback_data`, вид лимита, `<id>:<экран>` отправленного или
+    созданного или `<id>` удалённого расписания; у `trial_ended` — пусто.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1224,7 +1277,8 @@ def build_dispatcher() -> Dispatcher:
 
 async def run_polling(token: str) -> None:
     """Long polling бота с токеном `token` (в проде `config.TOKEN`) до сигнала остановки;
-    рядом — тикер расписаний (`run_schedule_ticker`), он останавливается вместе с polling."""
+    рядом — тикер расписаний и конца пробника (`run_schedule_ticker`), он останавливается
+    вместе с polling."""
     bot = Bot(token)
     ticker = asyncio.create_task(run_schedule_ticker(bot))
     try:

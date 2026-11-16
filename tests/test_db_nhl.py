@@ -1845,6 +1845,11 @@ class TestPremiumTrialSql(unittest.TestCase):
         [(days,)] = self._query("SELECT extract(epoch FROM (%s::timestamptz - now())) / 86400", (until,))
         self.assertAlmostEqual(float(days), 3, places=2)
         self.assertTrue(self.premium.is_premium(self.CHAT))
+        self.assertEqual(
+            self._query("SELECT is_trial, trial_notice_at FROM premium_access WHERE chat_id = %s", (self.CHAT,)),
+            [(True, None)],
+            "пробник помечен для сообщения о конце (Задача 125)",
+        )
 
         self._log_start()
         self.assertIsNone(self.premium.grant_trial(self.CHAT))
@@ -1875,6 +1880,121 @@ class TestPremiumTrialSql(unittest.TestCase):
                     self._query("SELECT count(*) FROM premium_access WHERE chat_id = %s", (self.CHAT,)),
                     [(0,)],
                 )
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestTrialEndSql(unittest.IsolatedAsyncioTestCase):
+    """Сообщение о конце пробника (Задача 125) на настоящих ``premium_access``,
+    ``premium_payments`` и ``bot_actions``: тикер (``bot.send_trial_endings``) шлёт его истёкшему
+    пробнику ровно один раз, с кнопкой оплаты; оплатившему, ручной выдаче и действующему
+    пробнику — нет. Telegram — записывающая сессия; чаты отрицательные, строки удаляются до и после."""
+
+    TRIAL = -999000125
+    PAID = -999000126
+    MANUAL = -999000127
+    ACTIVE = -999000128
+    CHATS = [TRIAL, PAID, MANUAL, ACTIVE]
+
+    def setUp(self):
+        import bot
+
+        self.bot = bot
+        self._cleanup()
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for table in ("premium_payments", "premium_access", "bot_actions", "bot_subscriptions",
+                      "bot_subscription_events"):
+            self._query(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
+
+    @staticmethod
+    def _query(sql, params=()):
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall() if cur.description else []
+
+    def _grant(self, chat_id, expires, is_trial=True):
+        self._query("INSERT INTO premium_access (chat_id, expires_at, is_trial) VALUES (%s, now() + %s::interval, %s)",
+                    (chat_id, expires, is_trial))
+
+    def _fake_bot(self):
+        from aiogram import Bot
+
+        from tests._telegram_fakes import FAKE_TOKEN, FakeSession
+
+        return Bot(FAKE_TOKEN, session=FakeSession())
+
+    def _notified(self):
+        return [c for (c,) in self._query(
+            "SELECT chat_id FROM premium_access WHERE chat_id = ANY(%s) AND trial_notice_at IS NOT NULL "
+            "ORDER BY chat_id", (self.CHATS,))]
+
+    def test_migration_rolls_back_and_applies_again(self):
+        migrations = Path(REPO_ROOT, "data_tables", "migrations")
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute((migrations / "0026_trial_notice.down.sql").read_text())
+            cur.execute("SELECT count(*) FROM information_schema.columns "
+                        "WHERE table_name = 'premium_access' AND column_name = 'is_trial'")
+            self.assertEqual(cur.fetchone(), (0,))
+            cur.execute((migrations / "0026_trial_notice.up.sql").read_text())
+            conn.rollback()
+
+    async def test_expired_trial_gets_one_message_with_pay_button(self):
+        from aiogram.methods import CreateInvoiceLink
+
+        self._grant(self.TRIAL, "-1 minute")
+        fake_bot = self._fake_bot()
+        await self.bot.send_trial_endings(fake_bot, datetime.now(timezone.utc))
+        await self.bot.send_trial_endings(fake_bot, datetime.now(timezone.utc))
+
+        [sent] = fake_bot.session.sent_rich
+        self.assertEqual(sent.chat_id, self.TRIAL)
+        self.assertIn("Пробный премиум закончился", sent.rich_message.html)
+        [[button]] = sent.reply_markup.inline_keyboard
+        self.assertEqual(button.url, "https://t.me/$fake-invoice")
+        [invoice] = fake_bot.session.sent(CreateInvoiceLink)
+        self.assertEqual((invoice.currency, invoice.subscription_period), ("XTR", 2592000))
+        self.assertEqual(self._notified(), [self.TRIAL])
+        self.assertEqual(
+            self._query("SELECT user_id, kind, data FROM bot_actions WHERE chat_id = %s", (self.TRIAL,)),
+            [(None, "trial_ended", None)],
+        )
+
+    async def test_paid_manual_and_active_chats_get_nothing(self):
+        self._grant(self.PAID, "-1 minute")
+        self._query(
+            "INSERT INTO premium_payments (chat_id, telegram_payment_charge_id, amount_stars, is_recurring, "
+            "paid_until) VALUES (%s, 'charge-125', 100, false, now() + interval '29 days')", (self.PAID,))
+        self._grant(self.MANUAL, "-1 minute", is_trial=False)
+        self._grant(self.ACTIVE, "1 hour")
+        fake_bot = self._fake_bot()
+        await self.bot.send_trial_endings(fake_bot, datetime.now(timezone.utc))
+
+        self.assertEqual(fake_bot.session.requests, [], "ни счёта, ни сообщений")
+        self.assertEqual(self._notified(), [])
+
+    async def test_blocked_chat_is_marked_and_loses_subscriptions(self):
+        from aiogram.exceptions import TelegramForbiddenError
+        from aiogram.methods import GetMe, SendRichMessage
+
+        import subscription_repo
+
+        self._grant(self.TRIAL, "-1 minute")
+        subscription_repo.upsert_chat_kind(self.TRIAL, "morning_digest")
+        fake_bot = self._fake_bot()
+        fake_bot.session.fail_next(SendRichMessage, TelegramForbiddenError(GetMe(), "blocked"))
+        await self.bot.send_trial_endings(fake_bot, datetime.now(timezone.utc))
+
+        self.assertEqual(self._notified(), [self.TRIAL], "попытка отмечена — не повторяется")
+        self.assertEqual(
+            self._query("SELECT active FROM bot_subscriptions WHERE chat_id = %s", (self.TRIAL,)), [(False,)]
+        )
+        self.assertEqual(self._query("SELECT kind FROM bot_actions WHERE chat_id = %s AND kind = 'trial_ended'",
+                                     (self.TRIAL,)), [])
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
