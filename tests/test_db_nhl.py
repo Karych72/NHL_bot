@@ -2355,6 +2355,22 @@ class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
     "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
 )
+class TestBotPoolTimeout(unittest.TestCase):
+    """Пул бота (Задача 128): соединение из него несёт серверный `statement_timeout`."""
+
+    def test_pooled_connection_has_statement_timeout(self):
+        import database
+
+        with database.get_connection() as conn, conn.cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            self.assertEqual(cur.fetchone()[0], "5s")
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
 class TestAiStatsWindow(unittest.TestCase):
     """Окно продолжения диалога (Задача 83) на настоящем `ai_stats_log`: условие времени — на каждой
     строке, ошибки и чужие чаты в историю не попадают. Чаты отрицательные; строки чистятся."""
