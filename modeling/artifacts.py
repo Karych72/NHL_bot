@@ -264,6 +264,7 @@ def check_features_hash_match(
 
 __all__ = [
     "check_features_hash_match",
+    "get_git_commit",
     "load_latest_calibrator",
     "load_model_artifact",
     "resolve_latest_model_dir",

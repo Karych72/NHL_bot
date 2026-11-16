@@ -132,7 +132,7 @@ PR #200, ждёт живой проверки на dev-боте. Код **124** 
 | 127 | Окружение и гигиена репозитория: venv, алиасы Makefile, мусор в git | Инженерия | 🟠 | 🟨 код в ветке `task-127-env-hygiene`, PR #208, ждёт выкатки в `master`: `setup` пересоздаёт venv с незапускающимся `$(PY)`, удалены `db-init` (был DROP всех таблиц) и алиасы целей, gitlink `.claude/worktrees/sdd-tasks-1-3` и клип `downloads/` убраны из индекса, `.dockerignore` без `tests/ plan/ agents/ docs/`. Заведена 2026-11-16 |
 | 128 | Пул БД бота: потокобезопасный пул и `statement_timeout` | Инженерия | 🟠 | 🟨 код в ветке `task-128-db-pool`, PR #210, ждёт живой проверки на dev-боте и выкатки в `master`: `ThreadedConnectionPool` вместо `SimpleConnectionPool`, `statement_timeout` 5 с на соединениях пула бота (загрузчик и миграции не затронуты). Заведена 2026-11-16 |
 | 129 | `docs/architecture.md` — карта на 200 строк вместо справочника на 1227 | Инженерия | 🟠 | 🟨 код в ветке `task-129-architecture-map`, PR #209, ждёт выкатки в `master`: карта ~150 строк, подробности — в `docs/telegram_bot.md` §12 и docstring; `agents/` и старое ревью — в `plan/archive/`. Заведена 2026-11-16 |
-| 130 | `modeling/`: мёртвый код и запасные ветки | Инженерия | 🟡 | 🟨 код в трёх PR (ветки `task-130a-modeling-fallbacks` PR #211, `task-130b-modeling-dead-code` PR #212, `task-130c-modeling-selfchecks` PR #?), ждёт проверки еженедельного retrain и публикации на dev-стенде и выкатки в `master`: убраны запасные ветки и мёртвый код `modeling/`, самопроверки, истинные по построению, и дубли валидаторов, загрузчиков metadata и git-хеша. Заведена 2026-11-16 |
+| 130 | `modeling/`: мёртвый код и запасные ветки | Инженерия | 🟡 | 🟨 код в трёх PR (ветки `task-130a-modeling-fallbacks` PR #211, `task-130b-modeling-dead-code` PR #212, `task-130c-modeling-selfchecks` PR #213), ждёт проверки еженедельного retrain и публикации на dev-стенде и выкатки в `master`: убраны запасные ветки и мёртвый код `modeling/`, самопроверки, истинные по построению, и дубли валидаторов, загрузчиков metadata и git-хеша. Заведена 2026-11-16 |
 | 67 | Голевая модель v1 | Трек B | 🔴 (для трека B) | 🟨 модель и проверка в репозитории (ветка `task-67-goal-model`, PR #86) — приёмка не пройдена: тотал 5.5 −0.0008 к константе, ДИ включает 0; xG (69) не помог, ждёт вратарей (71). Poisson λ → сетка счёта → P(тотал > L); заменит `over_5_5` после приёмки |
 | 70 | Линии букмекеров и рыночный бенчмарк | Трек B | 🟠 | ⏸ отложена человеком 2026-10-14. `game_odds`, де-виг, log-loss модели против закрытия, симуляция EV/CLV; ждёт решения о покупке данных |
 | 71 | Вратари | Трек B | 🟡 | ⏸ отложена человеком 2026-10-14; карточка оформлена 2026-10-28. Флаг стартера из boxscore, рейтинг вратаря (GSAx на нашем xG) as-of, смесь по доле стартов — сначала в модель победы, затем в голевую (приёмка 67) |
@@ -233,14 +233,14 @@ Connection Pool, шаблоны) и в шапку `pipeline/load_season_modern.p
 Карточка — [`tasks/task_130_modeling_dead_code.md`](./tasks/task_130_modeling_dead_code.md).
 Сделано тремя PR. PR #211 (`task-130a-modeling-fallbacks`) — убраны запасные ветки и «fallback на
 всякий случай». PR #212 (`task-130b-modeling-dead-code`) — мёртвый код; в нём же удалён режим
-`allow_with_flag`. PR3 (`task-130c-modeling-selfchecks`, PR #?) — самопроверки: `modeling/acceptance.py`
+`allow_with_flag`. PR3 (`task-130c-modeling-selfchecks`, PR #213) — самопроверки: `modeling/acceptance.py`
 сокращён до бенчмарк-гейта и патча отчётов (`verify_run_artifacts`, проверка симлинка `latest`,
 `ArtifactCheckResult` удалены; блок `acceptance` в `metrics.json` теперь без артефакт-проверок);
 удалены проверки, истинные по построению: `_assert_train_labels_match_facts` и в `modeling/splits.py`
 порядок `train < inner_val < calibration` и пересечение `test`-блоков (оставлена проверка
 `calibration < test` — она зависит от данных). Дубли сведены: три валидатора `num_threads` поверх
 pydantic (`ge=1` в конфиге) убраны, три загрузчика metadata-JSON → `config.load_metadata_json`,
-два получателя git-хеша → `artifacts._get_git_commit`. Решение 131 (LightGBM, калибровка,
+два получателя git-хеша → `artifacts.get_git_commit`. Решение 131 (LightGBM, калибровка,
 rolling-признаки, logreg `over_5_5`) не принято, поэтому они остались нетронутыми.
 
 **Статус: код готов, ждёт проверки еженедельного retrain и публикации на dev-стенде и выкатки в `master`** (2026-11-17, ветки `task-130a-…`, `task-130b-…`,
