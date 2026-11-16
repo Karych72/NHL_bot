@@ -330,7 +330,7 @@ class ModernNhlLoader:
                 f"Сезона {self.season_id} нет в /v1/standings-season: API ещё не завёл его — "
                 "SEASON_ID переключают на новый сезон только после этого."
             )
-        standings =self.get_json(f"https://api-web.nhle.com/v1/standings/{standings_end}").get(
+        standings = self.get_json(f"https://api-web.nhle.com/v1/standings/{standings_end}").get(
             "standings", []
         )
         self.team_standings_by_abbrev = {}
