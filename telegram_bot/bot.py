@@ -176,11 +176,11 @@ async def show_help(bot: Bot, chat_id: int) -> None:
 
 _PREMIUM_PERKS = (
     f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
-    "прогноз модели в превью матчей, свои рассылки без ограничений — заводятся одной фразой боту."
+    "свои рассылки без ограничений — заводятся одной фразой боту."
 )
 _TRIAL_GIFT = (
-    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: прогноз модели и ИИ "
-    f"до {ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки. Подробнее — /premium"
+    f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: ИИ до "
+    f"{ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки и свои рассылки без ограничений. Подробнее — /premium"
 )
 _PREMIUM_CANCEL_HINT = (
     "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
