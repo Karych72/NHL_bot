@@ -210,7 +210,7 @@ class TestLatestMetadataIsValidTrainMetadata(unittest.TestCase):
             _write_real_latest_model(artifacts_root, model_family="logreg")
             loaded = _load_train_metadata(artifacts_root / "models" / "home_win" / "logreg" / "latest" / "metadata.json")
         self.assertEqual(loaded["feature_manifest"], MANIFEST)
-        self.assertEqual(loaded["features_hash"], _features_hash("drop"))
+        self.assertEqual(loaded["features_hash"], _features_hash(FEATURE_SET_VERSION))
         self.assertEqual(loaded["feature_set_version"], FEATURE_SET_VERSION)
 
 

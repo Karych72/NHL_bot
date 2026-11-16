@@ -46,7 +46,7 @@ def _minimal_manifest() -> list[dict[str, str]]:
 def _minimal_metadata(*, manifest: list[dict[str, str]] | None = None) -> dict:
     manifest = manifest or _minimal_manifest()
     rolling = [5, 10]
-    cold_predict = "allow_with_flag"
+    cold_predict = "drop"
     fsv = "v1"
     fh = features_hash(
         feature_manifest=manifest,
@@ -272,7 +272,7 @@ class TestTaskFeatures(unittest.TestCase):
 
 
 class TestMetadataMerge(unittest.TestCase):
-    def test_missing_yaml_reference_fields_filled_from_metadata(self) -> None:
+    def test_metadata_fields_land_in_resolved_config(self) -> None:
         metadata = _minimal_metadata()
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

@@ -110,18 +110,12 @@ def test_block_nat_in_day_raises() -> None:
         _run(y_true, y_pred, day=day)
 
 
-def test_block_without_day_raises() -> None:
-    with pytest.raises(BootstrapError, match="day is required"):
-        bootstrap_metrics(
-            np.array([0, 1]), np.array([0.3, 0.7]), seed=1, metric_fns=_metric_fns()
-        )
-
-
 def test_n_resamples_zero_raises() -> None:
     with pytest.raises(BootstrapError, match="positive"):
         bootstrap_metrics(
             np.array([0, 1]),
             np.array([0.3, 0.7]),
+            day=pd.to_datetime(["2020-01-01", "2020-01-02"]),
             n_resamples=0,
             seed=1,
             metric_fns=_metric_fns(),

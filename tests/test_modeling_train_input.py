@@ -25,7 +25,7 @@ def _minimal_manifest() -> list[dict[str, str]]:
 
 def _minimal_metadata_rows(*, manifest: list[dict[str, str]], rows: int = 2) -> dict:
     rolling = [5, 10]
-    cold_predict = "allow_with_flag"
+    cold_predict = "drop"
     fsv = "v1"
     fh = features_hash(
         feature_manifest=manifest,

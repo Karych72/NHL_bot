@@ -61,7 +61,6 @@ class BuildCommandsTest(unittest.TestCase):
         # (the drop itself — test_modeling_dataset_build.test_cold_start_policy).
         (dataset, *_rest) = build_commands(NOW)
         args = build_parser().parse_args(dataset.argv[dataset.argv.index("modeling.cli") + 1 :])
-        self.assertEqual(args.cold_start_policy_predict, "drop")
         self.assertEqual(args.min_prior_games, 5)
 
 
@@ -77,7 +76,7 @@ class ShippedModelsTest(unittest.TestCase):
         expected_hash = features_hash(
             feature_manifest=metadata["feature_manifest"],
             rolling_windows=defaults.rolling_windows,
-            cold_start_policy=f"train:drop|predict:{defaults.cold_start_policy_predict}",
+            cold_start_policy="train:drop|predict:drop",
             feature_set_version=defaults.feature_set_version,
         )
         self.assertEqual(metadata["features_hash"], expected_hash)

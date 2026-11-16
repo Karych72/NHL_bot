@@ -82,11 +82,9 @@ def _validate_num_threads(num_threads: int) -> int:
 
 
 def _normalize_day(
-    day: pd.Series | np.ndarray | list | tuple | None,
+    day: pd.Series | np.ndarray | list | tuple,
     n: int,
 ) -> np.ndarray:
-    if day is None:
-        raise BootstrapError("day is required for block bootstrap")
     series = day if isinstance(day, pd.Series) else pd.Series(day)
     if len(series) != n:
         raise BootstrapError(
@@ -182,7 +180,7 @@ def bootstrap_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     *,
-    day: pd.Series | np.ndarray | list | tuple | None = None,
+    day: pd.Series | np.ndarray | list | tuple,
     n_resamples: int = DEFAULT_N_RESAMPLES,
     seed: int,
     metric_fns: Mapping[str, MetricFn],

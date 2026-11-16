@@ -294,8 +294,7 @@ mean P(tie) within ±2 pp of the actual tie share (card acceptance).
 текущем сезоне** — модель обучена и проверена лишь на таких играх (`--min-prior-games 5`). По
 сезонам 2021–2025 это наступает для всей лиги на 12–19-й день сезона (19–27 октября), до этого —
 7–8% игр сезона. В первые дни predict и так падает (у команд без игр в сезоне rolling-колонки
-пусты, `validate.py` их отклоняет); с 1 до 4 игр строки проходят с флагом `low_history_confidence` —
-показ таких прогнозов отсекает потребитель (Задача 73).
+пусты, `validate.py` их отклоняет); игры, где у команды меньше 5 игр сезона, `build-dataset` отбрасывает (Задача 73).
 
 **Хозяева-андердоги (Задача 74, 2026-10-28): сдвиг подтверждён, модель не меняется.** Прогнозы —
 те же, что в прогоне выше (воспроизведён: 0.6688, ECE 0.018, C 0.01 / 10 / 10); одноразовые
@@ -488,7 +487,7 @@ artifacts/
 - **`latest`** — symlink pointing to `<run_id>/final/` for bot loading (phase 2). Updated per `(task, model)` pair, only when that pair's status is `ok` (the gate is judged per task — see §8).
 - **Reports** — one directory per `<run_id>` under `artifacts/reports/` (even when multiple tasks/models run in one CLI invocation, each pair gets its own `<run_id>`).
 
-### `metadata.json` (final and per-season artifacts)
+### `metadata.json` (final artifact)
 
 Required fields include:
 

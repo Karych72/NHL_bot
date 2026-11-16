@@ -266,7 +266,6 @@ class ResolvedConfig(ModelingConfig):
     run_id: Optional[str] = None
 
 
-
 def _load_yaml_mapping(path: Path) -> MutableMapping[str, Any]:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))

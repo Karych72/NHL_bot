@@ -338,7 +338,7 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
             "rolling_windows": [5],
             "features_hash": "a" * 64,
             "feature_manifest": [{"name": "feat_mono"}, {"name": "feat_noise"}],
-            "cold_start_policy_predict": "allow_with_flag",
+            "cold_start_policy_predict": "drop",
         }
     )
 

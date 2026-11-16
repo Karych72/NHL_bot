@@ -540,7 +540,6 @@ def _build_final_metadata(
     if model_family == "logreg":
         assert isinstance(fit, FitResult)
         meta["chosen_C"] = fit.chosen_C
-        meta["class_weight"] = None
     else:
         assert isinstance(fit, LgbmFitResult)
         meta["chosen_params"] = fit.chosen_params

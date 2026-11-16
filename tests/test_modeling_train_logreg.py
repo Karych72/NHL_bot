@@ -79,19 +79,6 @@ def _dummy_log_loss(y_true: np.ndarray, p: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _logreg_meta(
-    *, task: str, chosen_C: float, class_weight: object, random_seed: int, features_hash: str,
-    feature_set_version: str, feature_manifest: list, n_rows_train: int, n_rows_inner_val: int,
-) -> dict:
-    """Minimal metadata dict of a logreg artifact for ``save_model_artifact`` round trips."""
-    return {
-        "model_family": "logreg", "task": task, "chosen_C": chosen_C, "class_weight": class_weight,
-        "random_seed": random_seed, "features_hash": features_hash,
-        "feature_set_version": feature_set_version, "feature_manifest": feature_manifest,
-        "n_rows_train": n_rows_train, "n_rows_inner_val": n_rows_inner_val,
-    }
-
-
 class TestBuildLogregPipeline(unittest.TestCase):
     def setUp(self) -> None:
         self.pipe = build_logreg_pipeline(C=1.0, random_seed=42)
@@ -120,10 +107,6 @@ class TestBuildLogregPipeline(unittest.TestCase):
         self.assertEqual(lr.solver, "lbfgs")
         self.assertEqual(lr.max_iter, 5000)
         self.assertEqual(lr.C, 1.0)
-
-    def test_class_weight_default_is_none(self) -> None:
-        _, lr = self.pipe.steps[2]
-        self.assertIsNone(lr.class_weight)
 
     def test_random_state_set(self) -> None:
         pipe = build_logreg_pipeline(C=1.0, random_seed=99)
@@ -444,17 +427,7 @@ class TestArtifactRoundTrip(unittest.TestCase):
         X_test = pd.DataFrame(rng.standard_normal((30, 4)), columns=[f"feat_{i}" for i in range(4)])
         proba_before = result.pipeline.predict_proba(X_test)
 
-        meta = _logreg_meta(
-            task="home_win",
-            chosen_C=result.chosen_C,
-            class_weight=None,
-            random_seed=7,
-            features_hash="abc123",
-            feature_set_version="v1",
-            feature_manifest=[{"name": f"feat_{i}", "dtype": "float64", "position": i} for i in range(4)],
-            n_rows_train=result.n_rows_train,
-            n_rows_inner_val=result.n_rows_inner_val,
-        )
+        meta = {"features_hash": "abc123", "model_family": "logreg"}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
@@ -465,44 +438,15 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
     def test_metadata_json_is_valid(self) -> None:
         result = self._train_result()
-        meta = _logreg_meta(
-            task="home_win",
-            chosen_C=result.chosen_C,
-            class_weight=None,
-            random_seed=7,
-            features_hash="abc123",
-            feature_set_version="v1",
-            feature_manifest=[{"name": f"feat_{i}", "dtype": "float64", "position": i} for i in range(4)],
-            n_rows_train=200,
-            n_rows_inner_val=60,
-        )
+        meta = {"features_hash": "abc123", "model_family": "logreg"}
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
-            meta_path = Path(tmpdir) / "metadata.json"
-            raw = meta_path.read_text(encoding="utf-8")
+            raw = (Path(tmpdir) / "metadata.json").read_text(encoding="utf-8")
             loaded = json.loads(raw)  # Must not raise
 
-        # Required fields
-        required = [
-            "features_hash", "feature_set_version", "feature_manifest",
-            "model_family", "task", "chosen_C", "class_weight", "random_seed",
-            "n_rows_train", "n_rows_inner_val",
-            "library_versions", "git_commit",
-        ]
-        for key in required:
+        # Fields save_model_artifact adds on top of the caller's metadata
+        for key in ("library_versions", "git_commit"):
             self.assertIn(key, loaded, f"Missing metadata key: {key!r}")
-
-    def test_model_family_is_logreg(self) -> None:
-        result = self._train_result()
-        meta = _logreg_meta(
-            task="over_5_5", chosen_C=1.0, class_weight=None, random_seed=0,
-            features_hash="x", feature_set_version="v1", feature_manifest=[],
-            n_rows_train=100, n_rows_inner_val=30,
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
-            _, loaded_meta = load_model_artifact(tmpdir)
-        self.assertEqual(loaded_meta["model_family"], "logreg")
 
 
 # ---------------------------------------------------------------------------
