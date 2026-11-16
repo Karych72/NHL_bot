@@ -1245,7 +1245,7 @@ async def test_main_upcoming_only_skips_the_night(push_job, bot_module, monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Канал (Задачи 118, 120): превью без прогноза, итоги всех матчей ночи, посты выходных
+# Канал (Задачи 118, 120): превью, итоги всех матчей ночи, посты выходных
 # ---------------------------------------------------------------------------
 
 # Id канала строкой, как его читает `config` из `.env` (@username Telegram принимает так же).
@@ -1291,7 +1291,8 @@ def channel_env(push_job, bot_module, monkeypatch, fake_db_router):
 @pytest.mark.asyncio
 async def test_channel_previews_every_upcoming_game_once(push_job, channel_env, fake_bot, api):
     """С 15:30 МСК все предстоящие матчи дня — одним постом по времени начала: у каждого
-    время, команды, сравнение свёрнуто; ни подписок, ни кнопок — подвал один, в нём ссылка на бота. Повторный прогон ничего не дублирует."""
+    время, команды, сравнение свёрнуто; ни подписок, ни кнопок — подвал один, в нём ссылка
+    на бота. Повторный прогон ничего не дублирует."""
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     await push_job.run_channel_previews(fake_bot, datetime(2026, 10, 24, 13, 0, tzinfo=UTC))
 
