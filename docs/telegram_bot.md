@@ -600,8 +600,12 @@ Outer-middleware `enforce_callback_rate_limit` на `Dispatcher.callback_query`:
 
 #### Connection Pool (`database.py`)
 
-- `get_pool()` лениво создаёт общий `psycopg2.pool.SimpleConnectionPool` на 1–5 соединений
-  по `PG_*` из `config`.
+- `get_pool()` лениво создаёт общий `psycopg2.pool.ThreadedConnectionPool` на 1–5 соединений
+  по `PG_*` из `config`: соединения берут и event loop, и потоки `asyncio.to_thread`.
+- Каждое соединение пула открывается с `statement_timeout` = `STATEMENT_TIMEOUT_MS` (5 с): один
+  зависший запрос не останавливает бота для всех чатов. Таймаут действует на всё, что ходит
+  через пул бота (экраны, тикер, `push_digest_job`, `premium`); загрузчик `pipeline/`, миграции и
+  `ai_stats.run_readonly` (своё соединение со своим таймаутом) его не получают.
 - `get_connection()` — контекстный менеджер: при исключении `rollback()`, на выходе
   соединение возвращается в пул.
 

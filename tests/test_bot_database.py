@@ -1,6 +1,6 @@
 """Unit tests for telegram_bot/database.py: pooling, identifier whitelists, and
 fetch_all() query/param formation and empty-result handling. No real Postgres
-connection is ever made — psycopg2.pool.SimpleConnectionPool and
+connection is ever made — psycopg2.pool.ThreadedConnectionPool and
 get_connection() are both replaced with fakes at their respective boundaries.
 """
 from __future__ import annotations
@@ -327,21 +327,21 @@ def test_get_connection_rolls_back_and_still_returns_conn_on_exception(bot_modul
 # get_pool — construction args and reuse
 # ---------------------------------------------------------------------------
 
-class _FakeSimpleConnectionPool:
-    """Stands in for psycopg2.pool.SimpleConnectionPool; never touches a socket."""
+class _FakeThreadedConnectionPool:
+    """Stands in for psycopg2.pool.ThreadedConnectionPool; never touches a socket."""
 
     instances: list = []
 
-    def __init__(self, *, minconn: int, maxconn: int, host: str, port: str, user: str, database: str) -> None:
-        self.kwargs = dict(minconn=minconn, maxconn=maxconn, host=host, port=port, user=user, database=database)
-        _FakeSimpleConnectionPool.instances.append(self)
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        _FakeThreadedConnectionPool.instances.append(self)
 
 
 @pytest.fixture
 def fake_pool_class(bot_module, monkeypatch):
     database = bot_module("database")
-    _FakeSimpleConnectionPool.instances = []
-    monkeypatch.setattr(database.psycopg2.pool, "SimpleConnectionPool", _FakeSimpleConnectionPool)
+    _FakeThreadedConnectionPool.instances = []
+    monkeypatch.setattr(database.psycopg2.pool, "ThreadedConnectionPool", _FakeThreadedConnectionPool)
     monkeypatch.setattr(database, "_pool", None)
     yield database
     monkeypatch.setattr(database, "_pool", None)
@@ -356,7 +356,7 @@ def test_get_pool_creates_pool_with_config_values(fake_pool_class, monkeypatch):
 
     pool = database.get_pool()
 
-    assert isinstance(pool, _FakeSimpleConnectionPool)
+    assert isinstance(pool, _FakeThreadedConnectionPool)
     assert pool.kwargs == {
         "minconn": 1,
         "maxconn": 5,
@@ -364,6 +364,7 @@ def test_get_pool_creates_pool_with_config_values(fake_pool_class, monkeypatch):
         "port": "6543",
         "user": "test-user",
         "database": "test-db",
+        "options": "-c statement_timeout=5000",
     }
 
 
@@ -374,4 +375,4 @@ def test_get_pool_reuses_existing_open_pool(fake_pool_class):
     second = database.get_pool()
 
     assert first is second
-    assert len(_FakeSimpleConnectionPool.instances) == 1
+    assert len(_FakeThreadedConnectionPool.instances) == 1
