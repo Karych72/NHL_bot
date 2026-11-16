@@ -310,7 +310,9 @@ class ModernNhlLoader:
         its own divisions and conferences, and clubs that are gone (ATL, PHX) are
         missing from today's table (Задача 121). For the current season that day is
         the latest one, the same table ``now`` gives. A season the API does not list
-        raises ``KeyError``.
+        yet raises ``RuntimeError`` — the nightly sync stops until it does, so
+        ``SEASON_ID`` moves to a new season only once the API lists it
+        (``docs/data_loading.md`` §9).
         """
         teams = self.fetch_paginated(
             "https://api.nhle.com/stats/rest/en/team", "id", page_size=200
@@ -322,8 +324,13 @@ class ModernNhlLoader:
                 self.team_abbrev_by_id[team_id] = tri
 
         seasons = self.get_json("https://api-web.nhle.com/v1/standings-season")["seasons"]
-        standings_end = {s["id"]: s["standingsEnd"] for s in seasons}[self.season_id]
-        standings = self.get_json(f"https://api-web.nhle.com/v1/standings/{standings_end}").get(
+        standings_end = {s["id"]: s["standingsEnd"] for s in seasons}.get(self.season_id)
+        if standings_end is None:
+            raise RuntimeError(
+                f"Сезона {self.season_id} нет в /v1/standings-season: API ещё не завёл его — "
+                "SEASON_ID переключают на новый сезон только после этого."
+            )
+        standings =self.get_json(f"https://api-web.nhle.com/v1/standings/{standings_end}").get(
             "standings", []
         )
         self.team_standings_by_abbrev = {}

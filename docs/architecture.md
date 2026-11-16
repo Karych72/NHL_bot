@@ -132,6 +132,7 @@ NHL_bot/
 │   ├── bot_users_report.sh             # Отчёт по пользователям обоих ботов: подписки, ИИ, действия, премиум (только чтение)
 │   ├── capture_nhl_fixtures.py         # Захват реальных ответов NHL API → tests/fixtures/nhl_*.json
 │   ├── db_drop_all_tables.sql
+│   ├── dev_history_load.sh             # История 2009/10–2020/21 в nhl_dev из кэша сырого слоя со сверками (Задача 121)
 │   ├── dev_premium.sh                  # Премиум чата на dev-боте: выдать на 2 часа / снять (Задача 96, DEVELOPMENT.md)
 │   ├── show_game_card.sh               # Витрина карточки матча на dev-боте кодом рабочей копии (Задача 119)
 │   ├── show_game_card_probe.py         # Шаблон пробы витрины: в него вшивается bot_messages.py

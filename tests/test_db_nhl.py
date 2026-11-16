@@ -1329,7 +1329,7 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
             load_target_games,
         )
 
-        cfg = DatasetBuildConfig(mode="train", output_dir=Path("."), season_ids=[self.SEASON])
+        cfg = DatasetBuildConfig(mode="train", output_dir=Path("."), first_season_id=20212022, season_ids=[self.SEASON])
         regular = [self.REG1, self.REG2]
         with closing(_connect()) as conn:
             self.assertEqual(load_target_games(conn, cfg)["game_id"].tolist(), regular)

@@ -742,7 +742,7 @@ class TestLoadTargetGamesSource(unittest.TestCase):
         from modeling.dataset_builder.base import DatasetBuildConfig, load_target_games
 
         config = DatasetBuildConfig(
-            mode=mode, output_dir=Path("."), season_ids=[20262027], target_day_from="2026-10-01"
+            mode=mode, output_dir=Path("."), first_season_id=20212022, season_ids=[20262027], target_day_from="2026-10-01"
         )
         with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
             load_target_games(object(), config, **kwargs)  # type: ignore[arg-type]
@@ -784,30 +784,33 @@ class TestFirstSeasonBound(unittest.TestCase):
     """Задача 121: история ниже ``first_season_id`` в БД не меняет ни датасет, ни Elo, ни броски."""
 
     def test_every_db_read_is_bounded_from_below(self):
-        from dataclasses import replace
         from pathlib import Path
         from unittest import mock
 
         from modeling.dataset_builder.base import (
             DatasetBuildConfig,
+            load_elo_history,
             load_history_team_stats,
             load_shot_attempts,
             load_target_games,
         )
 
-        config = DatasetBuildConfig(mode="train", output_dir=Path("."), first_season_id=20212022)
-        # Elo history is read with season_ids cleared (build_dataset); the bound must survive that.
-        elo_config = replace(config, season_ids=[], target_day_from=None)
-        readers = (
-            lambda: load_target_games(object(), config),
-            lambda: load_target_games(object(), elo_config, with_outcome=True),
-            lambda: load_history_team_stats(object(), config),
-            lambda: load_shot_attempts(object(), config),
+        config = DatasetBuildConfig(
+            mode="train", output_dir=Path("."), first_season_id=20212022, season_ids=[20252026]
         )
-        for read in readers:
+        readers = {
+            "target": load_target_games,
+            "history": load_history_team_stats,
+            "shots": load_shot_attempts,
+            "elo": load_elo_history,
+        }
+        for name, read in readers.items():
             with mock.patch("modeling.dataset_builder.base.pd.read_sql_query") as read_sql:
-                read()
-            self.assertIn("g.season_id >= 20212022", read_sql.call_args.args[0])
+                read(object(), config)
+            query = read_sql.call_args.args[0]
+            self.assertIn("g.season_id >= 20212022", query, name)
+            # Elo history drops season_ids (it needs every season) but keeps the bound.
+            self.assertEqual(name != "elo", "g.season_id IN (20252026)" in query, name)
 
 
 class TestLoadShotAttempts(unittest.TestCase):
@@ -822,6 +825,7 @@ class TestLoadShotAttempts(unittest.TestCase):
         config = DatasetBuildConfig(
             mode="train",
             output_dir=Path("."),
+            first_season_id=20212022,
             season_ids=[20242025, 20252026],
             target_day_from="2025-01-01",
             target_day_to="2026-03-01",
@@ -869,7 +873,7 @@ class TestGamesTrainCsv(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "games_train.csv"
-            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp)), path)
+            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp), first_season_id=20212022), path)
             written = pd.read_csv(path)
 
         self.assertEqual(
@@ -892,7 +896,7 @@ class TestGamesTrainCsv(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "games_train.csv"
-            config = DatasetBuildConfig(mode="train", output_dir=Path(tmp), season_ids=[20252026])
+            config = DatasetBuildConfig(mode="train", output_dir=Path(tmp), first_season_id=20212022, season_ids=[20252026])
             _write_games_train(self._played(), config, path)
             written = pd.read_csv(path)
 
@@ -907,7 +911,7 @@ class TestGamesTrainCsv(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "games_train.csv"
-            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp)), path)
+            _write_games_train(self._played(), DatasetBuildConfig(mode="train", output_dir=Path(tmp), first_season_id=20212022), path)
             from_csv = EloHistory(pd.read_csv(path))
         from_builder_frame = EloHistory(self._played())
 

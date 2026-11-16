@@ -194,7 +194,7 @@ class TeamRowsTest(LoaderApiTestCase):
     def test_season_unknown_to_the_api_raises(self):
         instance = self._past_season_loader(20082009)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaisesRegex(RuntimeError, "20082009"):
             instance.load_team_reference()
 
     def test_teams_row_merges_summary_meta_and_standings(self):
