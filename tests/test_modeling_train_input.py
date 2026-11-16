@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from modeling.dataset_builder.schema import LABEL_COLUMNS, features_hash
+from modeling.feature_schema import LABEL_COLUMNS, features_hash
 from modeling.train_input import (
     TrainMetadataError,
     TrainSchemaError,

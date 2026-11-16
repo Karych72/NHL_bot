@@ -15,7 +15,6 @@ Usage pattern (orchestrated by CLI stage 10)::
         X_train=X_train_k, y_train=y_train_k,
         X_val=X_inner_val_k, y_val=y_inner_val_k,
         C_grid=[0.01, 0.1, 1.0, 10.0],
-        class_weight=None,
         random_seed=42,
         log_loss_fn=modeling.metrics.log_loss,
     )
@@ -94,7 +93,6 @@ class FitResult:
 def build_logreg_pipeline(
     C: float,
     *,
-    class_weight: object = None,
     random_seed: int,
 ) -> Pipeline:
     """Return a fresh sklearn Pipeline for logistic regression.
@@ -106,9 +104,6 @@ def build_logreg_pipeline(
 
     Args:
         C: Inverse regularization strength (must be > 0).
-        class_weight: Passed to ``LogisticRegression``.  Default is ``None``
-            (no re-weighting).  ``"balanced"`` is reserved for stage 15 experiments
-            and must **not** be passed here in production training runs.
         random_seed: Passed as ``random_state`` to ``LogisticRegression`` for
             reproducibility parity with other subsystems (even though lbfgs is
             deterministic, the seed is set explicitly).
@@ -127,7 +122,6 @@ def build_logreg_pipeline(
                     solver="lbfgs",
                     max_iter=5000,
                     C=C,
-                    class_weight=class_weight,
                     random_state=random_seed,
                 ),
             ),
@@ -175,7 +169,6 @@ def select_C_by_inner_val(
     y_val: np.ndarray,
     C_grid: list[float],
     *,
-    class_weight: object = None,
     random_seed: int,
     log_loss_fn: Callable[[np.ndarray, np.ndarray], float],
 ) -> tuple[float, Pipeline, dict[float, float]]:
@@ -192,7 +185,6 @@ def select_C_by_inner_val(
         X_val: Feature matrix for inner-validation block (evaluate step only).
         y_val: Binary labels for inner-validation block.
         C_grid: Non-empty list of positive C values to try.
-        class_weight: Passed to each :func:`build_logreg_pipeline` call.
         random_seed: Fixed seed for all pipelines (no per-C variation).
         log_loss_fn: Callable ``(y_true, y_pred_proba) -> float`` sourced from
             ``modeling.metrics`` so the ε-clipping matches final evaluation.
@@ -216,7 +208,7 @@ def select_C_by_inner_val(
     best_loss: float = float("inf")
 
     for c_val in C_grid:
-        pipeline = build_logreg_pipeline(c_val, class_weight=class_weight, random_seed=random_seed)
+        pipeline = build_logreg_pipeline(c_val, random_seed=random_seed)
         pipeline.fit(X_train, y_train)
         p_val = pipeline.predict_proba(X_val)[:, 1]
         loss = log_loss_fn(y_val, p_val)
@@ -251,7 +243,6 @@ def train_logreg_for_task(
     y_val: np.ndarray,
     *,
     C_grid: list[float],
-    class_weight: object = None,
     random_seed: int,
     log_loss_fn: Callable[[np.ndarray, np.ndarray], float],
 ) -> FitResult:
@@ -274,7 +265,6 @@ def train_logreg_for_task(
         y_val: Binary label vector for inner-validation block.
         C_grid: List of positive C values to search over (from ``models.logreg.grids``).
             Default grid documented in UPDATE plan §7: ``[0.001, 0.01, 0.1, 1.0, 10.0, 100.0]``.
-        class_weight: Passed through to the pipeline (default ``None``).
         random_seed: Fixed integer seed; no per-task or per-C variation.
         log_loss_fn: ``modeling.metrics.log_loss`` (or a compatible callable for tests).
 
@@ -303,7 +293,6 @@ def train_logreg_for_task(
         X_val,
         np.asarray(y_val),
         C_grid,
-        class_weight=class_weight,
         random_seed=random_seed,
         log_loss_fn=log_loss_fn,
     )

@@ -1,9 +1,8 @@
 """Bootstrap confidence intervals for log loss and Brier (UPDATE plan stage 6).
 
 Percentile 95% CIs on resampled metric values. Callers checking a model over
-several seasons use ``block_by_day=True`` (block resample whole game days) and
-:func:`bootstrap_mean_diff` for paired differences of per-game losses;
-``block_by_day=False`` is i.i.d. match resampling.
+several seasons resample whole game days (block bootstrap) and use
+:func:`bootstrap_mean_diff` for paired differences of per-game losses.
 
 All randomness uses a single ``numpy.random.Generator`` from ``seed``
 (``bootstrap_seed = random_seed`` in YAML). Independent per-fold or per-metric
@@ -43,7 +42,6 @@ class BootstrapResult:
     ci_low: float
     ci_high: float
     n_resamples: int
-    block_by_day: bool
     seed: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,7 +58,7 @@ class BootstrapResult:
             "ci_low": self.ci_low,
             "ci_high": self.ci_high,
             "bootstrap.N": self.n_resamples,
-            "bootstrap.block_by_day": self.block_by_day,
+            "bootstrap.block_by_day": True,
             "bootstrap.seed": self.seed,
         }
 
@@ -88,7 +86,7 @@ def _normalize_day(
     n: int,
 ) -> np.ndarray:
     if day is None:
-        raise BootstrapError("day is required when block_by_day=True")
+        raise BootstrapError("day is required for block bootstrap")
     series = day if isinstance(day, pd.Series) else pd.Series(day)
     if len(series) != n:
         raise BootstrapError(
@@ -113,10 +111,6 @@ def _build_day_blocks(day: np.ndarray) -> tuple[list[Any], dict[Any, np.ndarray]
             f"недостаточно дней для block bootstrap (D={d_count})"
         )
     return sorted_days, day_to_idx, d_count
-
-
-def _iid_resample_indices(rng: np.random.Generator, n: int) -> np.ndarray:
-    return rng.integers(0, n, size=n)
 
 
 def _block_resample_indices(
@@ -159,7 +153,6 @@ def _bootstrap_one_metric(
     indices_list: list[np.ndarray],
     *,
     n_resamples: int,
-    block_by_day: bool,
     seed: int,
     num_threads: int,
 ) -> BootstrapResult:
@@ -181,7 +174,6 @@ def _bootstrap_one_metric(
         ci_low=ci_low,
         ci_high=ci_high,
         n_resamples=n_resamples,
-        block_by_day=block_by_day,
         seed=seed,
     )
 
@@ -192,7 +184,6 @@ def bootstrap_metrics(
     *,
     day: pd.Series | np.ndarray | list | tuple | None = None,
     n_resamples: int = DEFAULT_N_RESAMPLES,
-    block_by_day: bool = False,
     seed: int,
     metric_fns: Mapping[str, MetricFn],
     num_threads: int = 1,
@@ -205,13 +196,9 @@ def bootstrap_metrics(
         Aligned length-``n`` arrays. Labels in ``{0, 1}``; probabilities in
         ``[0, 1]``. Clipping for log loss is done inside ``metric_fns`` (stage 5).
     day
-        Game day per row. Required when ``block_by_day=True``;
-        ignored when ``block_by_day=False``.
+        Game day per row (required): whole days are resampled as blocks.
     n_resamples
         Number of bootstrap draws (``evaluation.bootstrap_samples``, default 1000).
-    block_by_day
-        If True, block-bootstrap whole game days. If False, i.i.d. match
-        resampling. The caller chooses the mode.
     seed
         ``random_seed`` from YAML (``bootstrap_seed``); no derived seeds.
     metric_fns
@@ -236,17 +223,11 @@ def bootstrap_metrics(
     n = y.size
     rng = np.random.default_rng(seed)
 
-    if block_by_day:
-        day_arr = _normalize_day(day, n)
-        sorted_days, day_to_idx, d_count = _build_day_blocks(day_arr)
-        indices_list = [
-            _block_resample_indices(rng, sorted_days, day_to_idx, d_count)
-            for _ in range(n_resamples)
-        ]
-    else:
-        if n == 0:
-            raise BootstrapError("cannot bootstrap with zero samples")
-        indices_list = [_iid_resample_indices(rng, n) for _ in range(n_resamples)]
+    sorted_days, day_to_idx, d_count = _build_day_blocks(_normalize_day(day, n))
+    indices_list = [
+        _block_resample_indices(rng, sorted_days, day_to_idx, d_count)
+        for _ in range(n_resamples)
+    ]
 
     results: dict[str, BootstrapResult] = {}
     for name, fn in metric_fns.items():
@@ -257,7 +238,6 @@ def bootstrap_metrics(
             p,
             indices_list,
             n_resamples=n_resamples,
-            block_by_day=block_by_day,
             seed=seed,
             num_threads=num_threads,
         )
@@ -313,7 +293,6 @@ def bootstrap_mean_diff(
         ci_low=float(np.quantile(resamples, 0.025)),
         ci_high=float(np.quantile(resamples, 0.975)),
         n_resamples=n_resamples,
-        block_by_day=True,
         seed=seed,
     )
 

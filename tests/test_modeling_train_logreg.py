@@ -42,7 +42,6 @@ from modeling.train_logreg import (
     train_logreg_for_task,
 )
 from modeling.artifacts import (
-    build_logreg_metadata,
     load_model_artifact,
     save_model_artifact,
 )
@@ -79,6 +78,20 @@ def _dummy_log_loss(y_true: np.ndarray, p: np.ndarray) -> float:
 # Test 1: Pipeline composition
 # ---------------------------------------------------------------------------
 
+
+def _logreg_meta(
+    *, task: str, chosen_C: float, class_weight: object, random_seed: int, features_hash: str,
+    feature_set_version: str, feature_manifest: list, n_rows_train: int, n_rows_inner_val: int,
+) -> dict:
+    """Minimal metadata dict of a logreg artifact for ``save_model_artifact`` round trips."""
+    return {
+        "model_family": "logreg", "task": task, "chosen_C": chosen_C, "class_weight": class_weight,
+        "random_seed": random_seed, "features_hash": features_hash,
+        "feature_set_version": feature_set_version, "feature_manifest": feature_manifest,
+        "n_rows_train": n_rows_train, "n_rows_inner_val": n_rows_inner_val,
+    }
+
+
 class TestBuildLogregPipeline(unittest.TestCase):
     def setUp(self) -> None:
         self.pipe = build_logreg_pipeline(C=1.0, random_seed=42)
@@ -111,11 +124,6 @@ class TestBuildLogregPipeline(unittest.TestCase):
     def test_class_weight_default_is_none(self) -> None:
         _, lr = self.pipe.steps[2]
         self.assertIsNone(lr.class_weight)
-
-    def test_class_weight_passed_through(self) -> None:
-        pipe = build_logreg_pipeline(C=0.5, class_weight="balanced", random_seed=0)
-        _, lr = pipe.steps[2]
-        self.assertEqual(lr.class_weight, "balanced")
 
     def test_random_state_set(self) -> None:
         pipe = build_logreg_pipeline(C=1.0, random_seed=99)
@@ -359,7 +367,6 @@ class TestDeterminism(unittest.TestCase):
             X_train=X_train, y_train=y_train,
             X_val=X_val, y_val=y_val,
             C_grid=[0.01, 0.1, 1.0],
-            class_weight=None,
             random_seed=42,
             log_loss_fn=_dummy_log_loss,
         )
@@ -437,7 +444,7 @@ class TestArtifactRoundTrip(unittest.TestCase):
         X_test = pd.DataFrame(rng.standard_normal((30, 4)), columns=[f"feat_{i}" for i in range(4)])
         proba_before = result.pipeline.predict_proba(X_test)
 
-        meta = build_logreg_metadata(
+        meta = _logreg_meta(
             task="home_win",
             chosen_C=result.chosen_C,
             class_weight=None,
@@ -458,7 +465,7 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
     def test_metadata_json_is_valid(self) -> None:
         result = self._train_result()
-        meta = build_logreg_metadata(
+        meta = _logreg_meta(
             task="home_win",
             chosen_C=result.chosen_C,
             class_weight=None,
@@ -468,8 +475,6 @@ class TestArtifactRoundTrip(unittest.TestCase):
             feature_manifest=[{"name": f"feat_{i}", "dtype": "float64", "position": i} for i in range(4)],
             n_rows_train=200,
             n_rows_inner_val=60,
-            train_days=("2021-01-01", "2021-06-30"),
-            inner_val_days=("2021-07-01", "2021-09-30"),
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
@@ -489,7 +494,7 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
     def test_model_family_is_logreg(self) -> None:
         result = self._train_result()
-        meta = build_logreg_metadata(
+        meta = _logreg_meta(
             task="over_5_5", chosen_C=1.0, class_weight=None, random_seed=0,
             features_hash="x", feature_set_version="v1", feature_manifest=[],
             n_rows_train=100, n_rows_inner_val=30,

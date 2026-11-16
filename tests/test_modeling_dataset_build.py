@@ -18,7 +18,7 @@ from modeling.dataset_builder.features import (
     build_match_feature_snapshots,
     compute_team_rolling_features,
 )
-from modeling.dataset_builder.schema import (
+from modeling.feature_schema import (
     assert_feature_parity,
     build_feature_manifest,
     feature_columns_from_df,

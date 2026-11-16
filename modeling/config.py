@@ -6,7 +6,6 @@ Stage 2 contract: all training stages read hyperparameters only through
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -231,7 +230,6 @@ class CalibrationConfig(_ForbidExtraModel):
 class EvaluationConfig(_ForbidExtraModel):
     ece_bins: int = Field(..., ge=2)
     bootstrap_samples: int = Field(..., ge=1)
-    bootstrap_block_by_day: bool
     epsilon_clip: float
 
     @field_validator("epsilon_clip")
@@ -255,11 +253,6 @@ class ModelingConfig(_ForbidExtraModel):
     models: ModelsConfig
     calibration: CalibrationConfig
     evaluation: EvaluationConfig
-    feature_set_version: Optional[str] = None
-    rolling_windows: Optional[List[int]] = None
-    features_hash: Optional[str] = None
-    feature_manifest: Optional[List[Dict[str, Any]]] = None
-    cold_start_policy_predict: Optional[str] = None
 
 
 class ResolvedConfig(ModelingConfig):
@@ -272,9 +265,6 @@ class ResolvedConfig(ModelingConfig):
     cold_start_policy_predict: str
     run_id: Optional[str] = None
 
-    def derive_seed(self, name: str) -> int:
-        """Derive a subsystem seed from this config's ``random_seed`` (TZ one-arg form)."""
-        return derive_seed(name, self.random_seed)
 
 
 def _load_yaml_mapping(path: Path) -> MutableMapping[str, Any]:
@@ -352,36 +342,6 @@ def _require_metadata_field(metadata: Mapping[str, Any], key: str) -> Any:
     return metadata[key]
 
 
-def _metadata_conflicts(yaml_cfg: ModelingConfig, metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
-    diffs: list[dict[str, Any]] = []
-    payload = yaml_cfg.model_dump(by_alias=True)
-    for key in METADATA_TRUTH_KEYS:
-        yaml_value = payload.get(key)
-        if yaml_value is None:
-            continue
-        meta_value = metadata.get(key)
-        if meta_value is None:
-            continue
-        if yaml_value != meta_value:
-            diffs.append(
-                {
-                    "field": key,
-                    "value_yaml": yaml_value,
-                    "value_metadata": meta_value,
-                }
-            )
-    return diffs
-
-
-def _format_metadata_diff(diffs: Sequence[Mapping[str, Any]]) -> str:
-    lines = ["Config metadata conflict (YAML vs metadata_train.json):"]
-    for item in diffs:
-        lines.append(
-            f"  {item['field']}: value_yaml={item['value_yaml']!r} value_metadata={item['value_metadata']!r}"
-        )
-    return "\n".join(lines)
-
-
 def _resolved_metadata_values(metadata: Mapping[str, Any]) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
     for key in METADATA_TRUTH_KEYS:
@@ -412,10 +372,6 @@ def resolve_config(
     raw = _load_yaml_mapping(path)
     merged = apply_overrides(raw, overrides)
     yaml_cfg = _validate_modeling_config(merged)
-
-    diffs = _metadata_conflicts(yaml_cfg, metadata)
-    if diffs:
-        raise ConfigError(_format_metadata_diff(diffs))
 
     resolved_data = yaml_cfg.model_dump(by_alias=True)
     resolved_data.update(_resolved_metadata_values(metadata))
@@ -465,17 +421,6 @@ def resolved_config_to_yaml(config: ResolvedConfig) -> str:
     return yaml.safe_dump(config.model_dump(by_alias=True, mode="json"), sort_keys=False, default_flow_style=False)
 
 
-def derive_seed(name: str, random_seed: int) -> int:
-    """Deterministic subsystem seed derived from ``random_seed`` and ``name``.
-
-    The stage-2 TZ names ``derive_seed(name) -> int``; that one-arg form is
-    :meth:`ResolvedConfig.derive_seed`. This module-level helper keeps
-    ``random_seed`` explicit for tests and pure call sites (stages 6–8).
-    """
-    digest = hashlib.sha256(f"{random_seed}:{name}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], "big")
-
-
 def build_run_id(task: str, model: str, features_hash: str, now_utc: datetime) -> str:
     """Build canonical run id: ``<task>_<model>_<features_hash[:8]>_<YYYYmmddTHHMMSSZ>``."""
     if now_utc.tzinfo is None:
@@ -486,31 +431,6 @@ def build_run_id(task: str, model: str, features_hash: str, now_utc: datetime) -
     return f"{task}_{model}_{features_hash[:8]}_{stamp}"
 
 
-def configure_run_logger(
-    run_id: str,
-    log_level: str,
-    reports_root: Union[Path, str] = "artifacts/reports",
-) -> Path:
-    """Create ``artifacts/reports/<run_id>/run.log`` and configure the root logger."""
-    log_dir = Path(reports_root) / run_id
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "run.log"
-
-    level_name = log_level.upper()
-    level = logging._nameToLevel.get(level_name, logging.INFO)  # noqa: SLF001
-
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.setLevel(level)
-
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    handler.setLevel(level)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    root.addHandler(handler)
-
-    return log_path
-
-
 __all__ = [
     "CalibrationMethod",
     "ConfigError",
@@ -519,8 +439,6 @@ __all__ = [
     "ResolvedConfig",
     "apply_overrides",
     "build_run_id",
-    "configure_run_logger",
-    "derive_seed",
     "load_config",
     "load_metadata_json",
     "load_yaml_config",

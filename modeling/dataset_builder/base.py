@@ -23,7 +23,7 @@ from .features import (
     compute_pregame_shot_share,
     compute_team_rolling_features,
 )
-from .schema import (
+from modeling.feature_schema import (
     assert_feature_parity,
     build_feature_manifest,
     feature_columns_from_df,

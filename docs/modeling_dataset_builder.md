@@ -63,7 +63,7 @@ Implementation lives in `modeling/dataset_builder/` and is exposed by CLI:
     train and predict must be built with the same one. At the start of a season the
     predict dataset is legitimately empty (header only); `predict` then writes no rows.
 
-- `modeling/dataset_builder/schema.py`
+- `modeling/feature_schema.py`
   - Feature manifest generation (name, dtype, position).
   - `features_hash` calculation.
   - Strict train/predict schema parity check (no silent schema correction).
@@ -317,7 +317,7 @@ Downstream training code should consume the same artifacts the builder writes:
 
 Any inconsistency between the CSV and the manifest (missing/extra feature columns, wrong feature column order for parity checks, dtype mismatch) raises a predictable error (`TrainSchemaError`). Unknown columns outside `KEY_COLUMNS ∪ LABEL_COLUMNS ∪ SERVICE_COLUMNS ∪ manifest names` also fail fast (`TrainSchemaError`). Invalid or incomplete metadata raises `TrainMetadataError`.
 
-The module `modeling/train_input.py` is the single entrypoint for validating that pair and splitting columns **without guessing features by name prefixes**: the feature matrix **X** uses exactly the ordered names from `feature_manifest`, matching `ordered_columns_for_output` semantics from `schema.py`. Keys, labels (`y_home_win`, `y_over_5_5`), and service columns follow `KEY_COLUMNS`, `LABEL_COLUMNS`, and `SERVICE_COLUMNS` in `modeling/dataset_builder/schema.py`.
+The module `modeling/train_input.py` is the single entrypoint for validating that pair and splitting columns **without guessing features by name prefixes**: the feature matrix **X** uses exactly the ordered names from `feature_manifest`, matching `ordered_columns_for_output` semantics from `feature_schema.py`. Keys, labels (`y_home_win`, `y_over_5_5`), and service columns follow `KEY_COLUMNS`, `LABEL_COLUMNS`, and `SERVICE_COLUMNS` in `modeling/feature_schema.py`.
 
 Public helpers:
 

@@ -115,9 +115,6 @@ def _write_valid_run_layout(
     (final_dir / "calibrator.joblib").write_bytes(b"cal")
     meta = metadata if metadata is not None else _metadata_dict(run_id=run_id, features_hash=features_hash)
     (final_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
-    season_dir = model_root / f"season_{synthetic_season_id(2)}"
-    season_dir.mkdir(parents=True, exist_ok=True)
-    (season_dir / "metadata.json").write_text("{}", encoding="utf-8")
     if symlink_ok:
         base = tmp / "artifacts" / "models" / task / model
         base.mkdir(parents=True, exist_ok=True)
@@ -363,19 +360,6 @@ class TestVerifyRunArtifacts(unittest.TestCase):
     def test_verify_fails_missing_pooled_block(self) -> None:
         issues = self._issues_after_breaking_metrics(lambda m: m.pop("pooled"))
         self.assertTrue(any("pooled block missing" in issue for issue in issues), msg=issues)
-
-    def test_verify_fails_missing_season_run_dirs(self) -> None:
-        run = _write_valid_run_layout(self.tmp, features_hash=self.config.features_hash)
-        for season_dir in (self.tmp / "artifacts" / "models" / "home_win" / "logreg" / run.run_id).glob("season_*"):
-            (season_dir / "metadata.json").unlink()
-            season_dir.rmdir()
-        result = verify_run_artifacts(
-            config=self.config,
-            artifacts_root=self.tmp / "artifacts",
-            pairs=[("home_win", "logreg")],
-            runs=[run],
-        )
-        self.assertTrue(any("per-season" in issue for issue in result.issues), msg=result.issues)
 
     def test_verify_fails_old_metadata_without_test_seasons(self) -> None:
         run_id = "home_win_logreg_deadbeef_20260101T000000Z"

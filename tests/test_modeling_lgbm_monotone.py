@@ -332,7 +332,6 @@ def _minimal_resolved_config(**lgbm_grid_overrides: list) -> ResolvedConfig:
             "evaluation": {
                 "ece_bins": 5,
                 "bootstrap_samples": 1,
-                "bootstrap_block_by_day": True,
                 "epsilon_clip": 1e-15,
             },
             "feature_set_version": "v1",

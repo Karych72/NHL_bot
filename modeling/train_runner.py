@@ -22,8 +22,6 @@ import pandas as pd
 from modeling.artifacts import (
     _collect_library_versions,
     _get_git_commit,
-    build_lgbm_metadata,
-    build_logreg_metadata,
     save_model_artifact,
 )
 from modeling.bootstrap import bootstrap_mean_diff, bootstrap_metrics, standard_metric_fns
@@ -32,7 +30,6 @@ from modeling.calibrate import (
     apply_calibrator,
     fit_calibrator,
     identity_calibrator,
-    save_calibration_artifact,
 )
 from modeling.config import ConfigError, ResolvedConfig, SplitConfig, build_run_id
 from modeling.elo import (
@@ -293,14 +290,9 @@ def dry_run_training(
     model_flag: str = "both",
 ) -> dict[str, Any]:
     """Load data, build splits, return resolved config and block sizes (no training)."""
-    X, keys, labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
+    X, keys, labels, _service, _metadata = load_training_table_split(dataset_csv, metadata_path)
     X, keys, labels = _sort_frames(X, keys, labels)
-    splits = build_season_splits(
-        keys,
-        config.split,
-        yaml_reference=config.model_dump(by_alias=True),
-        metadata=metadata,
-    )
+    splits = build_season_splits(keys, config.split)
     final_slices = compute_final_retrain_slices(keys, config.split)
     tasks = resolve_tasks(task_flag, config)
     _check_task_features(config, X, tasks)
@@ -506,81 +498,6 @@ def _raw_model_from_fit(model_family: str, fit: FitResult | LgbmFitResult) -> An
         return fit.pipeline
     assert isinstance(fit, LgbmFitResult)
     return fit.booster
-
-
-def _build_season_metadata(
-    *,
-    model_family: str,
-    task: str,
-    fit: FitResult | LgbmFitResult,
-    config: ResolvedConfig,
-    window: SeasonWindow,
-    calibrator_fit: CalibratorFit,
-    run_id: str,
-    train_days: tuple[str, str],
-    model_features: list[str],
-) -> dict[str, Any]:
-    inner_days = (
-        window.inner_val_days.min_day.date().isoformat(),
-        window.inner_val_days.max_day.date().isoformat(),
-    )
-    cal_days = (
-        window.calibration_days.min_day.date().isoformat(),
-        window.calibration_days.max_day.date().isoformat(),
-    )
-    common = {
-        "run_id": run_id,
-        "task": task,
-        "season_id": window.season_id,
-        "random_seed": config.random_seed,
-        "features_hash": config.features_hash,
-        "feature_set_version": config.feature_set_version,
-        "feature_manifest": config.feature_manifest,
-        "model_features": model_features,
-        "train_days": {"min": train_days[0], "max": train_days[1]},
-        "inner_val_days": {"min": inner_days[0], "max": inner_days[1]},
-        "calibration_days": {"min": cal_days[0], "max": cal_days[1]},
-        "n_rows_train": fit.n_rows_train,
-        "n_rows_inner_val": fit.n_rows_inner_val,
-        "n_rows_calibration": calibrator_fit.n_calibration,
-    }
-    if model_family == "logreg":
-        assert isinstance(fit, FitResult)
-        meta = build_logreg_metadata(
-            task=task,
-            chosen_C=fit.chosen_C,
-            class_weight=None,
-            random_seed=config.random_seed,
-            features_hash=config.features_hash,
-            feature_set_version=config.feature_set_version,
-            feature_manifest=config.feature_manifest,
-            n_rows_train=fit.n_rows_train,
-            n_rows_inner_val=fit.n_rows_inner_val,
-            train_days=train_days,
-            inner_val_days=inner_days,
-            calibration_days=cal_days,
-            run_id=run_id,
-        )
-    else:
-        assert isinstance(fit, LgbmFitResult)
-        meta = build_lgbm_metadata(
-            task=task,
-            chosen_params=fit.chosen_params,
-            best_iteration=fit.best_iteration,
-            random_seed=config.random_seed,
-            features_hash=config.features_hash,
-            feature_set_version=config.feature_set_version,
-            feature_manifest=config.feature_manifest,
-            n_rows_train=fit.n_rows_train,
-            n_rows_inner_val=fit.n_rows_inner_val,
-            train_days=train_days,
-            inner_val_days=inner_days,
-            calibration_days=cal_days,
-            run_id=run_id,
-        )
-    meta.update(common)
-    meta["model_family"] = model_family
-    return meta
 
 
 def _build_final_metadata(
@@ -912,16 +829,11 @@ def run_training(
     pairs = resolve_pairs(tasks, model)
     validate_run_id_override(pairs, run_id)
 
-    X, keys, labels, _service, metadata = load_training_table_split(dataset_csv, metadata_path)
+    X, keys, labels, _service, _metadata = load_training_table_split(dataset_csv, metadata_path)
     X, keys, labels = _sort_frames(X, keys, labels)
     _check_task_features(config, X, tasks)
 
-    splits = build_season_splits(
-        keys,
-        config.split,
-        yaml_reference=config.model_dump(by_alias=True),
-        metadata=metadata,
-    )
+    splits = build_season_splits(keys, config.split)
     final_slices = compute_final_retrain_slices(keys, config.split)
 
     epsilon = config.evaluation.epsilon_clip
@@ -971,7 +883,7 @@ def run_training(
                 )
                 fit: FitResult | LgbmFitResult
                 if task_name == "home_win":
-                    fit, calibrator, train_days = _fit_home_win(
+                    fit, calibrator, _ = _fit_home_win(
                         X_task,
                         y_all,
                         keys,
@@ -1005,26 +917,8 @@ def run_training(
                         seed=config.random_seed,
                         num_threads=config.compute.num_threads,
                     )
-                    train_days = _day_range_iso(keys, tr)
                 p_test_raw = predict_raw_proba(model_family, raw_model, X_task.iloc[te])
                 p_test = apply_calibrator(calibrator, p_test_raw)
-
-                save_calibration_artifact(
-                    model_run_dir / f"season_{window.season_id}",
-                    model_raw=raw_model,
-                    calibrator_fit=calibrator,
-                    metadata=_build_season_metadata(
-                        model_family=model_family,
-                        task=task_name,
-                        fit=fit,
-                        config=config,
-                        window=window,
-                        calibrator_fit=calibrator,
-                        run_id=pair_run_id,
-                        train_days=train_days,
-                        model_features=feature_names,
-                    ),
-                )
 
                 # Constant benchmark: share of positives over every row before the checked season.
                 constant = trivial_baseline(np.concatenate([y_tr, y_iv, y_cal]), y_te, epsilon=epsilon)
@@ -1073,7 +967,6 @@ def run_training(
                 y_pool,
                 p_pool,
                 day=pool_days,
-                block_by_day=True,
                 n_resamples=config.evaluation.bootstrap_samples,
                 seed=config.random_seed,
                 metric_fns=metric_fns,
