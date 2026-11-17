@@ -690,7 +690,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             },
             context={"bot": fake_bot},
         )
-        await self.bot.cmd_subscriptions(message, fake_bot)
+        await self.bot.COMMAND_HANDLERS["subscriptions"](message, fake_bot)
         self.assertEqual(fake_bot.session.sent_messages, [], "меню — rich-сообщение (Задача 91)")
         [reply] = fake_bot.session.sent_rich
         text, markup = body(reply), reply.reply_markup

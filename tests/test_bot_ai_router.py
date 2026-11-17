@@ -137,7 +137,7 @@ async def test_open_command_replies_like_the_command(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-24")
     await _ask(bot, make_message, fake_bot, "покажи")
     via_ai = list(api.requests)
-    await getattr(bot, f"cmd_{command}")(make_message(f"/{command}"), fake_bot)
+    await bot.COMMAND_HANDLERS[command](make_message(f"/{command}"), fake_bot)
     direct = api.requests[len(via_ai):]
 
     assert via_ai == direct

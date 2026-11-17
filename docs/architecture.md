@@ -28,7 +28,7 @@ telegram_bot/                   бот: читает БД, рисует меню
   stats_handlers.py             пагинация и callback-хендлеры /stats, /team_stats, дайджест, /countries
   leaderboard_specs.py          заголовки и раскладка кнопок таблиц лидеров
   keyboards.py                  помощники inline-клавиатур (сетка кнопок, нажатая кнопка)
-  help_text.py                  тексты /start и /help
+  help_text.py                  тексты /start и /help, справочник команд COMMANDS
   nhl_scoreboard.py             NHL scoreboard API: живая афиша для /tonight
   video_replay.py               видео голов: NHL Replay API -> Brightcove -> MP4, кэш клипов
   throttle.py                   outer-middleware: троттлинг нажатий callback-кнопок

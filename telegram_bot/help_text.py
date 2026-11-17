@@ -5,7 +5,11 @@
 кликабельными ссылками, а `<code>` превращает в некликабельный моноширинный текст.
 Справочное (легенда, расшифровка метрик) — свёрнутым блоком, ссылки на соседние
 экраны — подвалом (`docs/telegram_bot.md` §«Стиль сообщений»).
+Здесь же справочник команд `COMMANDS` (Задача 132): из него строятся `/help`, меню Telegram,
+команды ИИ-маршрутизатора и расписаний, регистрация хендлеров в `bot.py`.
 """
+
+from typing import List, NamedTuple, Sequence
 
 from bot_messages import rich_details, rich_footer, rich_list
 
@@ -50,20 +54,36 @@ def start_message_with_gift(gift: str) -> str:
     """
     return f"{_START_TITLE}{gift}\n\n{_START_BODY}"
 
-# (команда, описание) — один источник для /help и для меню команд Telegram
-# (`bot.py`, `set_my_commands`): кнопка «Меню» в клиенте показывает их с описанием.
-BOT_COMMANDS = (
-    ("today", "Матчи прошедшей ночи (по Москве)"),
-    ("tonight", "Расписание NHL на сегодня"),
-    ("standings", "Турнирная таблица"),
-    ("stats", "Лидеры игроков: полевые, вратари, расширенная"),
-    ("team_stats", "Статистика команд: голы, броски, спецбригады"),
-    ("team", "Команды: статистика по клубу"),
-    ("countries", "Статистика по странам"),
-    ("subscriptions", "Подписки: дайджест, команды, страны, игроки"),
-    ("premium", "Премиум: больше вопросов ИИ, оплата Stars"),
-    ("paysupport", "Вопросы по оплате и возвраты"),
-    ("help", "Справка"),
+class CommandSpec(NamedTuple):
+    """Команда бота в справочнике `COMMANDS`.
+
+    `name` — без `/`; `description` — строка меню Telegram и `/help`; `ai` — экран открывает
+    ИИ-маршрутизатор (`enum` инструмента `open_command`); `schedule` — экран ставится на
+    расписание (`schedule_screen`). Функция показа привязывается в `bot.py`.
+    """
+
+    name: str
+    description: str
+    ai: bool = False
+    schedule: bool = False
+
+
+# Справочник команд — один источник для /help, меню команд Telegram (`bot.py`, `set_my_commands`;
+# порядок — порядок меню), команд ИИ (`ai_router.SCREEN_COMMANDS`, `SCHEDULE_COMMANDS`) и
+# регистрации хендлеров (`bot.COMMAND_HANDLERS`). Меню подписок и справка — не отчёты, на
+# расписание не ставятся; /premium и /paysupport ИИ не открывает.
+COMMANDS = (
+    CommandSpec("today", "Матчи прошедшей ночи (по Москве)", ai=True, schedule=True),
+    CommandSpec("tonight", "Расписание NHL на сегодня", ai=True, schedule=True),
+    CommandSpec("standings", "Турнирная таблица", ai=True, schedule=True),
+    CommandSpec("stats", "Лидеры игроков: полевые, вратари, расширенная", ai=True, schedule=True),
+    CommandSpec("team_stats", "Статистика команд: голы, броски, спецбригады", ai=True, schedule=True),
+    CommandSpec("team", "Команды: статистика по клубу", ai=True, schedule=True),
+    CommandSpec("countries", "Статистика по странам", ai=True, schedule=True),
+    CommandSpec("subscriptions", "Подписки: дайджест, команды, страны, игроки", ai=True),
+    CommandSpec("premium", "Премиум: больше вопросов ИИ, оплата Stars"),
+    CommandSpec("paysupport", "Вопросы по оплате и возвраты"),
+    CommandSpec("help", "Справка", ai=True),
 )
 
 # Уточнения к строкам /help — в меню команд Telegram не помещаются.
@@ -79,10 +99,15 @@ _COMMAND_DETAILS = {
     "команда вида /RUS — лучшие игроки страны, /RUS_FULL — все",
 }
 
-_COMMAND_ITEMS = [
-    f"/{cmd} — {desc}" + (f" ({_COMMAND_DETAILS[cmd]})" if cmd in _COMMAND_DETAILS else "")
-    for cmd, desc in BOT_COMMANDS
-]
+
+def _command_items(commands: Sequence[CommandSpec]) -> List[str]:
+    """Строки `/команда — описание (уточнение)` списка команд в `/help`."""
+    return [
+        f"/{c.name} — {c.description}"
+        + (f" ({_COMMAND_DETAILS[c.name]})" if c.name in _COMMAND_DETAILS else "")
+        for c in commands
+    ]
+
 
 _LEGEND_NOTE = (
     "Голы в карточке матча: ББ — в большинстве, МБ — в меньшинстве, ПВ — в пустые ворота, "
@@ -135,7 +160,7 @@ HELP_MESSAGE = (
     f"{_SEASON_SCOPE}\n"
     f"{_FREE_TEXT_HINT}\n\n"
     "<b>Команды</b>\n"
-    + rich_list(_COMMAND_ITEMS)
+    + rich_list(_command_items(COMMANDS))
     + "\n"
     + rich_details("Обозначения", _LEGEND_NOTE)
 )

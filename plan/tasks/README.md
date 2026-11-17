@@ -22,6 +22,7 @@
 | 128 | [Пул БД бота: потокобезопасный пул и `statement_timeout`](task_128_db_pool_and_timeout.md) | Инженерия | 🟠 |
 | 129 | [`docs/architecture.md` — карта на 200 строк вместо справочника на 1227](task_129_architecture_doc_map.md) | Инженерия | 🟠 |
 | 130 | [`modeling/`: мёртвый код и запасные ветки](task_130_modeling_dead_code.md) | Инженерия | 🟡 |
+| 132 | [Один справочник команд бота вместо трёх списков](task_132_single_command_registry.md) | Инженерия | 🟡 |
 | 82 | [Безопасность: исследование утечек секретов и уязвимостей стека](task_82_security_research.md) | Релиз | 🟠 |
 | 67–77 | Трек B — модель: отдельная папка [`task_model/`](task_model/README.md) | Трек B | 🔴–🟡 |
 | 57 | [`/tonight`: счёт и период идущих матчей](task_57_tonight_live_score.md) | Продукт | 🟡 |
