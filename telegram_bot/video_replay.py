@@ -20,7 +20,8 @@ from typing import List, Optional, Tuple
 
 import requests
 
-from bot_messages import game_clock, team_name_for_abbrev
+from game_messages import game_clock
+from team_messages import team_name_for_abbrev
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)

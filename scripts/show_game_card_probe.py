@@ -26,6 +26,7 @@ import config  # noqa: E402
 import push_digest_job  # noqa: E402
 import stats_handlers  # noqa: E402
 from database import fetch_all  # noqa: E402
+from country_messages import country_game_block  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from rich_markup import rich_footer  # noqa: E402
 
@@ -83,7 +84,7 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
         return rich_footer(f"{reason}{SUBSCRIPTIONS_FOOTER}")
 
     def country_block(game_id: int) -> str:
-        block = bm.country_game_block("RUS", game_id)
+        block = country_game_block("RUS", game_id)
         return f"\n\n{block}" if block else ""
 
     try:

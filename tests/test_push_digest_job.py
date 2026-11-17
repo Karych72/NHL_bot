@@ -7,7 +7,7 @@ PTB 21.x) ровно потому, что ни один тест его не и�
 ``dispatch_day_digest_messages`` на настоящем aiogram ``Bot`` из conftest
 (``fake_bot`` на ``FakeSession``), поэтому забытый ``await`` виден как «сообщение
 не отправлено», а не как тихо брошенная корутина. Границы — БД
-(``subscription_repo``, ``bot_messages``) и HTTP-сессия Telegram — подменяются,
+(``subscription_repo``, экранные модули) и HTTP-сессия Telegram — подменяются,
 сеть не используется.
 """
 from __future__ import annotations

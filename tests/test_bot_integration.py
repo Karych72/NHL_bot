@@ -1,7 +1,7 @@
 """Сквозные сценарии «запрос → ответ» для основных веток бота (Задача 7).
 
 Остальные tests/test_bot_*.py рвут стек посередине: тесты хендлеров подменяют
-функции ``bot_messages``, тесты сообщений — ``fetch_all``. Здесь подменяется
+функции экранных модулей, тесты сообщений — ``fetch_all``. Здесь подменяется
 только граница БД (фикстура ``fake_db_router``: соединение psycopg2 и TTL-обёртка
 над ним) и граница Telegram (``fake_bot`` на ``FakeSession``, который записывает
 запросы Bot API), а всё между хендлером и этими границами работает по-настоящему:
@@ -710,7 +710,7 @@ async def test_stats_points_on_partial_season_shows_short_page_without_next_butt
 
 
 # Ранняя сборная (games < 20) отфильтровывается INNER JOIN players_season_stats
-# в самом запросе (bot_messages._pss_join_sql) — на 1–3 играх сезона выборка
+# в самом запросе (leaderboard_messages._pss_join_sql) — на 1–3 играх сезона выборка
 # players_advanced_stats пуста для *всех* игроков, не только по недостатку строк.
 _PARTIAL_ADVANCED_ROUTES = [("players_advanced_stats", [])]
 

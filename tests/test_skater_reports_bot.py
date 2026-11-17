@@ -11,11 +11,11 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TELEGRAM_BOT = os.path.join(REPO_ROOT, "telegram_bot")
 
 
-def _load_bot_messages():
+def _load_leaderboard_messages():
     os.chdir(TELEGRAM_BOT)
     if TELEGRAM_BOT not in sys.path:
         sys.path.insert(0, TELEGRAM_BOT)
-    return importlib.import_module("bot_messages")
+    return importlib.import_module("leaderboard_messages")
 
 
 def _load_help_text():
@@ -34,7 +34,7 @@ def _load_nhl_scoreboard():
 
 class SkaterReportsLeaderboardsTest(unittest.TestCase):
     def test_new_skater_leaderboards_render(self):
-        bot_messages = _load_bot_messages()
+        leaderboard_messages = _load_leaderboard_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
             "roster_position": ["LW"],
@@ -56,8 +56,8 @@ class SkaterReportsLeaderboardsTest(unittest.TestCase):
         ]
         for title, table, col in cases:
             with self.subTest(table=table, column=col):
-                with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows) as mock_fetch:
-                    text, _, _ = bot_messages.player_stat_leaderboard_page(title, table, col, 0)
+                with patch.object(leaderboard_messages, "cached_fetch_all", return_value=fake_rows) as mock_fetch:
+                    text, _, _ = leaderboard_messages.player_stat_leaderboard_page(title, table, col, 0)
                 self.assertIn("Ovechkin", text)
                 self.assertIn(title, text)
                 self.assertIn(
@@ -151,7 +151,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertNotIn("<script>", text_games)
 
     def test_team_table_includes_season_and_as_of(self):
-        bot_messages = _load_bot_messages()
+        leaderboard_messages = _load_leaderboard_messages()
         standings_row = {
             "name": ["Boston Bruins"],
             "games_played": [82],
@@ -172,9 +172,9 @@ class Phase1UxCommandsTest(unittest.TestCase):
                 return max_day_row
             return standings_row
 
-        with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch), \
-             patch.object(bot_messages.config, "CURRENT_SEASON", "25/26"):
-            text = bot_messages.team_table()
+        with patch.object(leaderboard_messages, "cached_fetch_all", side_effect=fake_fetch), \
+             patch.object(leaderboard_messages.config, "CURRENT_SEASON", "25/26"):
+            text = leaderboard_messages.team_table()
         self.assertIn("25/26", text)
         self.assertIn("2025-11-15", text)
         self.assertIn("Boston Bruins", text)
@@ -189,7 +189,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         self.assertIn("<b>EASTERN CONFERENCE</b>", text)
 
     def test_player_stat_leaderboard_page_points(self):
-        bot_messages = _load_bot_messages()
+        leaderboard_messages = _load_leaderboard_messages()
         fake_rows = {
             "lastname": ["Ovechkin"],
             "roster_position": ["LW"],
@@ -202,8 +202,8 @@ class Phase1UxCommandsTest(unittest.TestCase):
             "total": [1],
             "count_rows": 1,
         }
-        with patch.object(bot_messages, "cached_fetch_all", return_value=fake_rows):
-            text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+        with patch.object(leaderboard_messages, "cached_fetch_all", return_value=fake_rows):
+            text, has_prev, has_next = leaderboard_messages.player_stat_leaderboard_page(
                 "Лучшие бомбардиры", "players_season_stats", "points", 0
             )
         self.assertIn("Лучшие бомбардиры", text)
