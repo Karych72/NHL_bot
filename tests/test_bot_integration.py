@@ -93,7 +93,7 @@ async def test_standings_command_renders_divisions_with_ranked_rows_sorted_by_po
     fake_db_router(_TABLE_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     assert api.sent_messages == [], "таблица уходит rich-сообщением, не parse_mode=HTML"
     (reply,) = api.sent_rich
@@ -154,7 +154,7 @@ async def _press_stat(bot_module, make_callback, fake_bot, data):
 
 async def _open_points(bot_module, make_message, make_callback, fake_bot, api):
     """/stats и первая кнопка меню — «Очки»."""
-    await bot_module("bot").cmd_stats(make_message("/stats"), fake_bot)
+    await bot_module("bot").COMMAND_HANDLERS["stats"](make_message("/stats"), fake_bot)
     points_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
     assert points_button.text == "Очки"
     await _press_stat(bot_module, make_callback, fake_bot, points_button.callback_data)
@@ -453,7 +453,7 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: _TODAY)
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     (summary,) = api.sent_rich
     assert api.sent_messages == [], "подсказка — подвал сводки, не отдельное сообщение"
@@ -487,7 +487,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     fake_db_router(_DIGEST_ROUTES)
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: _TODAY)
 
-    await bot.cmd_today(make_message("/today"), fake_bot)
+    await bot.COMMAND_HANDLERS["today"](make_message("/today"), fake_bot)
     second_match = _flat_buttons(api.sent_rich[0].reply_markup)[1]
     match = re.match(stats_handlers.DIGEST_EXPAND_CALLBACK_PATTERN, second_match.callback_data)
     assert match
@@ -545,7 +545,7 @@ async def test_standings_command_on_empty_season_reports_season_not_started(
     fake_db_router(_EMPTY_SEASON_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert "Сезон ещё не начался" in body(reply)
@@ -574,7 +574,7 @@ async def test_today_on_empty_season_reports_no_finished_matches(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-02")
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     # Пустая ночь — пометка и откат на последний игровой день в базе; в пустом
     # сезоне нет и его.
@@ -611,7 +611,7 @@ async def _press(stats_handlers, make_callback, fake_bot, data: str) -> None:
 
 async def _open_first_advanced_metric(bot, stats_handlers, make_message, make_callback, fake_bot, api):
     """`/stats` → «Расширенная статистика» → первая кнопка подменю (SAT %)."""
-    await bot.cmd_stats(make_message("/stats"), fake_bot)
+    await bot.COMMAND_HANDLERS["stats"](make_message("/stats"), fake_bot)
     advanced = _flat_buttons(api.sent_rich[0].reply_markup)[-1]
     assert advanced.callback_data == "sa:menu"
     await _press(stats_handlers, make_callback, fake_bot, advanced.callback_data)
@@ -662,7 +662,7 @@ async def test_standings_command_on_partial_season_shows_only_teams_with_games(
     fake_db_router(_PARTIAL_TABLE_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     (reply,) = api.sent_rich
     text = body(reply)
@@ -773,7 +773,7 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-03")
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     (sent,) = api.sent_rich
     assert api.sent_messages == []
@@ -800,7 +800,7 @@ async def test_team_stats_goals_button_ranks_teams_by_goal_difference_per_game(
 ):
     cursor = fake_db_router([("COUNT(*) OVER () AS total", _leaderboard_page_route(_TEAM_GOALS))])
 
-    await bot_module("bot").cmd_team_stats(make_message("/team_stats"), fake_bot)
+    await bot_module("bot").COMMAND_HANDLERS["team_stats"](make_message("/team_stats"), fake_bot)
     goals_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
     assert goals_button.text == "Голы"
     await _press_stat(bot_module, make_callback, fake_bot, goals_button.callback_data)
@@ -954,7 +954,7 @@ async def test_team_command_lists_teams_by_division_as_clickable_commands(
     )])
     message = make_message("/team")
 
-    await bot.cmd_team(message, fake_bot)
+    await bot.COMMAND_HANDLERS["team"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert rich_html("<b>Atlantic</b>\n/BOS — Boston Bruins") in body(reply)
@@ -1222,7 +1222,7 @@ async def test_countries_command_lists_countries_with_buttons(
     fake_db_router(_COUNTRY_ROUTES)
     message = make_message("/countries")
 
-    await bot.cmd_countries(message, fake_bot)
+    await bot.COMMAND_HANDLERS["countries"](message, fake_bot)
 
     (reply,) = api.sent_rich
     text = body(reply)
@@ -1246,7 +1246,7 @@ async def test_countries_command_reports_empty_season_without_buttons(
     fake_db_router([("HAVING COUNT", [])])
     message = make_message("/countries")
 
-    await bot.cmd_countries(message, fake_bot)
+    await bot.COMMAND_HANDLERS["countries"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert "В базе нет данных по странам для этого сезона." in body(reply)

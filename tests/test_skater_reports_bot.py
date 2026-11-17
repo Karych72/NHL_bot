@@ -121,7 +121,7 @@ class Phase1UxCommandsTest(unittest.TestCase):
         for name in ("START_MESSAGE", "HELP_MESSAGE"):
             with self.subTest(message=name):
                 self.assertNotIn("<code>/", getattr(help_text, name))
-        for cmd, _desc in help_text.BOT_COMMANDS:
+        for cmd in (c.name for c in help_text.COMMANDS):
             with self.subTest(cmd=cmd):
                 self.assertIn(f"/{cmd} — ", help_text.HELP_MESSAGE)
 

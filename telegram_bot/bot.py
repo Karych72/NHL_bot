@@ -15,7 +15,7 @@ import re
 import zoneinfo
 from datetime import datetime, time as dtime, timezone
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
@@ -72,11 +72,12 @@ from nhl_scoreboard import (
     tonight_reply_intro,
 )
 from help_text import (
-    BOT_COMMANDS,
+    COMMANDS,
     HELP_MESSAGE,
     START_MESSAGE,
     STATS_COMMAND_INTRO,
     TEAM_STATS_COMMAND_INTRO,
+    CommandSpec,
     start_message_with_gift,
 )
 from keyboards import build_menu, callback_message
@@ -780,30 +781,40 @@ def _command_handler(show: _CommandScreen) -> Callable[[Message, Bot], Awaitable
     return handler
 
 
-cmd_help = _command_handler(show_help)
-cmd_tonight = _command_handler(show_tonight)
-cmd_standings = _command_handler(show_standings)
-cmd_today = _command_handler(show_today)
-cmd_team = _command_handler(show_team)
-cmd_stats = _command_handler(show_stats)
-cmd_team_stats = _command_handler(show_team_stats)
-cmd_countries = _command_handler(show_countries)
-cmd_subscriptions = _command_handler(show_subscriptions)
-
-
-# Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
-# кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
-AI_COMMANDS: Dict[str, _CommandScreen] = {
+# Функции показа команд справочника `help_text.COMMANDS` (Задача 132): из них — хендлеры команд,
+# экраны ИИ и расписаний. Команды, которым нужно само сообщение (тип чата), — в `_MESSAGE_COMMANDS`.
+_COMMAND_SCREENS: Dict[str, _CommandScreen] = {
     "today": show_today,
     "tonight": show_tonight,
     "standings": show_standings,
-    "team": show_team,
     "stats": show_stats,
     "team_stats": show_team_stats,
+    "team": show_team,
     "countries": show_countries,
     "subscriptions": show_subscriptions,
     "help": show_help,
 }
+_MESSAGE_COMMANDS = {"premium": cmd_premium, "paysupport": cmd_paysupport}
+
+
+def _command_handlers(commands: Sequence[CommandSpec]) -> Dict[str, Callable[[Message, Bot], Awaitable[None]]]:
+    """Хендлеры команд справочника по имени, в его порядке (порядок регистрации в роутере).
+
+    Зачем: команда справочника без функции показа падает `KeyError` при импорте `bot.py`, а не
+    молчит в меню. Аргументы: `commands` — справочник (`help_text.COMMANDS`).
+    """
+    return {
+        c.name: _MESSAGE_COMMANDS[c.name] if c.name in _MESSAGE_COMMANDS
+        else _command_handler(_COMMAND_SCREENS[c.name])
+        for c in commands
+    }
+
+
+COMMAND_HANDLERS = _command_handlers(COMMANDS)
+
+# Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
+# кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
+AI_COMMANDS: Dict[str, _CommandScreen] = {c.name: _COMMAND_SCREENS[c.name] for c in COMMANDS if c.ai}
 
 
 async def _ai_digest_for_date(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
@@ -1292,24 +1303,9 @@ def build_standalone_router() -> Router:
     """Команды верхнего уровня и inline-кнопки — первым в `Dispatcher`, раньше свободного текста."""
     router = Router(name="standalone")
     router.message.register(cmd_start, CommandStart(ignore_case=True))
-    for name, handler in (
-        ("help", cmd_help),
-        ("today", cmd_today),
-        ("tonight", cmd_tonight),
-        ("standings", cmd_standings),
-        ("team", cmd_team),
-    ):
+    for name, handler in COMMAND_HANDLERS.items():
         router.message.register(handler, _command(name))
     router.message.register(cmd_team_profile, F.text.regexp(TEAM_COMMAND_PATTERN).as_("match"))
-    for name, handler in (
-        ("stats", cmd_stats),
-        ("team_stats", cmd_team_stats),
-        ("countries", cmd_countries),
-        ("subscriptions", cmd_subscriptions),
-        ("premium", cmd_premium),
-        ("paysupport", cmd_paysupport),
-    ):
-        router.message.register(handler, _command(name))
     router.pre_checkout_query.register(on_pre_checkout)
     router.message.register(on_successful_payment, F.successful_payment)
     for pattern, callback in (
@@ -1339,10 +1335,10 @@ async def _publish_command_menu(bot: Bot) -> None:
 
     Зачем: без него кнопка «Меню» клиента пуста или показывает устаревший
     список — пользователь не видит, какие команды есть. Источник —
-    `help_text.BOT_COMMANDS`, тот же, что у `/help`.
+    справочник `help_text.COMMANDS`, тот же, что у `/help`.
     """
     await bot.set_my_commands(
-        [BotCommand(command=cmd, description=desc) for cmd, desc in BOT_COMMANDS]
+        [BotCommand(command=c.name, description=c.description) for c in COMMANDS]
     )
 
 

@@ -18,7 +18,7 @@ from psycopg2.extras import Json
 import premium
 from bot_messages import COUNTRY_LABELS, MSK, season_team_abbrevs
 from database import fetch_all, get_connection
-from help_text import BOT_COMMANDS
+from help_text import COMMANDS
 from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
 
 logger = logging.getLogger(__name__)
@@ -40,18 +40,15 @@ WEEK_LIMIT_TEXT = (
 FAILURE_TEXT = "Не удалось разобрать вопрос, попробуйте командой: /help"
 UNSUPPORTED_TEXT = "Это я пока не умею. Что умею — /help"
 
-# Команды без параметров, которые модель может открыть инструментом `open_command`; функции
-# экранов — `bot.AI_COMMANDS`.
-SCREEN_COMMANDS = (
-    "today", "tonight", "standings", "stats", "team_stats", "team", "countries",
-    "subscriptions", "help",
-)
+# Команды без параметров, которые модель может открыть инструментом `open_command`, — признак
+# `ai` справочника `help_text.COMMANDS`; функции экранов — `bot.AI_COMMANDS`.
+SCREEN_COMMANDS = tuple(c.name for c in COMMANDS if c.ai)
 # Категории инструмента `leaders`.
 LEADER_CATEGORIES = ("points", "goals", "assists")
-# Экраны, которые ставятся на расписание (Задача 107): `bot.SCHEDULE_SCREENS`. Не ставятся
-# дайджест за фиксированную дату (итоги ночи — `today`), меню подписок и справка — не отчёты.
+# Экраны, которые ставятся на расписание (Задача 107): `bot.SCHEDULE_SCREENS`. Не ставится
+# дайджест за фиксированную дату (итоги ночи — `today`); команды — признак `schedule` справочника.
 SCHEDULE_TOOLS = ("open_command", "team_profile", "leaders", "country_players", "advanced_metric")
-SCHEDULE_COMMANDS = tuple(c for c in SCREEN_COMMANDS if c not in ("subscriptions", "help"))
+SCHEDULE_COMMANDS = tuple(c.name for c in COMMANDS if c.schedule)
 
 # Без даты и времени: префикс (инструменты + этот текст) кэшируется, «сегодня» — в вопросе.
 SYSTEM_PROMPT = """\
@@ -90,9 +87,8 @@ schedule_screen, а не сам экран. Что пользователь не
 
 
 def _commands_description() -> str:
-    """Строки `/команда — описание` для `open_command` из того же `BOT_COMMANDS`, что `/help`."""
-    descriptions = dict(BOT_COMMANDS)
-    return "\n".join(f"{cmd} — {descriptions[cmd]}" for cmd in SCREEN_COMMANDS)
+    """Строки `команда — описание` для `open_command` из того же справочника, что `/help`."""
+    return "\n".join(f"{c.name} — {c.description}" for c in COMMANDS if c.ai)
 
 
 def tool_schema(name: str, description: str, properties: Dict[str, Any]) -> Dict[str, Any]:
