@@ -204,8 +204,10 @@ async def test_command_added_to_registry_reaches_help_router_and_menu(
     monkeypatch.setitem(bot._COMMAND_SCREENS, "probe", show_probe)
     monkeypatch.setattr(bot, "COMMANDS", commands)
     monkeypatch.setattr(bot, "COMMAND_HANDLERS", bot._command_handlers(commands))
-    monkeypatch.setattr(bot, "log_action", lambda *row: None)
-    assert "probe" in _commands(_router(bot.build_dispatcher(), "standalone"))
+    standalone = _router(bot.build_dispatcher(), "standalone")
+    assert "probe" in _commands(standalone)
+    assert bot.COMMAND_HANDLERS["probe"] in [h.callback for h in standalone.message.handlers]
+    assert bot.COMMAND_HANDLERS["probe"].__doc__ == show_probe.__doc__
     await bot._publish_command_menu(fake_bot)
     [request] = api.sent(SetMyCommands)
     assert (request.commands[-1].command, request.commands[-1].description) == ("probe", "Пробная команда")
