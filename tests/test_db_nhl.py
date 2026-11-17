@@ -1806,7 +1806,8 @@ class TestAiLimitSql(unittest.TestCase):
         """Задача 141: сумма обоих журналов за сутки МСК; бесплатный и пробный чаты получают
         BUDGET_TEXT до проверки своих лимитов, платящий — нет."""
         ai = self.ai
-        half = ai.DAILY_BUDGET_USD / 2
+        # Добор от уже накопленного за сегодня: локальная БД может хранить чужой расход.
+        half = (ai.DAILY_BUDGET_USD - ai._spent_today()) / 2
         self._spent(self.PREMIUM_CHAT, half - 0.01)
         self._spent(self.PREMIUM_CHAT, half, table="ai_stats_log")
         for chat in (self.FREE_CHAT, self.TRIAL_CHAT):
