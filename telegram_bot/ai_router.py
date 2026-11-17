@@ -25,6 +25,7 @@ from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5-5"
+EFFORT = "low"
 # Решения человека 2026-10-29 (Задача 96): премиуму — 20 вопросов в сутки по МСК; бесплатным —
 # 3 в календарную неделю МСК (пн–вс). Потолка за всё время нет (Задача 124).
 PREMIUM_DAILY_LIMIT = 20
@@ -323,9 +324,8 @@ def request_params(question: str) -> Dict[str, Any]:
 
 async def call_model(question: str) -> Any:
     """Вызов модели на вопрос; ответ `Message` SDK. Им же пользуется контрольный прогон."""
-    return await client().messages.create(
-        max_tokens=2048, output_config={"effort": "low"}, **request_params(question)
-    )
+    params: Dict[str, Any] = {"max_tokens": 2048, "output_config": {"effort": EFFORT}, **request_params(question)}
+    return await client().messages.create(**params)
 
 
 def decide(response: Any) -> Reply:

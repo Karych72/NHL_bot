@@ -378,7 +378,7 @@ cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
 - **Сбой API** (таймаут, 5xx, нет баланса) — «не удалось разобрать вопрос, попробуйте
   командой: /help» и строка журнала с `outcome = 'error'`.
 - **Контрольный набор** — `make ai-eval` (настоящий API, стоит денег, нужен ключ): фразы
-  `scripts/ai_router_eval.jsonl` с ожидаемым экраном или передачей ответам по статистике. Порог — 90% совпадений.
+  `scripts/ai_router_eval.jsonl` с ожидаемым экраном или передачей ответам по статистике. Порог — 90% совпадений. Модель и effort прогона — `make ai-eval ARGS="--model claude-haiku-5-5 --effort low"`; в боте модель не меняется.
 
 ### Вопросы по статистике (Задача 83)
 
@@ -409,7 +409,7 @@ cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
   `SELECT question, answer FROM ai_stats_log WHERE outcome IN ('no_data', 'ceiling') ORDER BY asked_at DESC`.
 - **Контрольный набор** — `make ai-stats-eval` (настоящие API и БД, стоит денег): 40+ вопросов
   `scripts/ai_stats_eval.jsonl`; порог — 90% верных и ни одной неверной цифры в ответе,
-  прошедшем ревью.
+  прошедшем ревью. Аргументы: `ARGS="--answer-model … --reviewer-model … --effort … --ids id1,id2"`.
 
 ---
 
