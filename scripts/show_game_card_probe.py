@@ -94,7 +94,7 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
         await show("2. рассылка: только страна — карточка свёрнута, под ней блок страны", russian,
                    lambda g: f"{country_block(g)}\n{footer('Россия')}", collapsed=True)
         if russian is not None:
-            goals = [(g, e) for g, e, nat in bm.night_goals(_night(russian)) if g == russian and nat == "RUS"]
+            goals = [(g, e) for g, e, nat, _player in bm.night_goals(_night(russian)) if g == russian and nat == "RUS"]
             await push_digest_job._send_goal_album(bot, chat_id, goals)
             print(f"2a. альбом голов россиян: {len(goals)} гол(ов)")
         await show("3. рассылка: команда и страна — карточка открыта, блок страны под ней", russian,
