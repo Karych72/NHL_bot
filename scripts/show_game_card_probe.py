@@ -1,7 +1,8 @@
 """Витрина карточки матча на dev-боте: все виды сообщений с карточкой — кодом из рабочей копии.
 
-Шаблон: `scripts/show_game_card.sh` вшивает сюда `telegram_bot/bot_messages.py` рабочей копии
-(в контейнере dev-стека — код `develop`) и прогоняет в контейнере; остальное — модули образа.
+Шаблон: `scripts/show_game_card.sh` вшивает сюда модули сообщений рабочей копии (`_SRCS`, в
+порядке импорта; в контейнере dev-стека — код `develop`) и прогоняет в контейнере; остальное —
+модули образа.
 БД — `nhl_dev`, токен — dev-бота. Карточки уходят настоящей отправкой `send_game_card`, как у
 подписчика: клипы не из кэша dev-бота скачиваются с NHL, и лента «Видео голов» — со всеми голами.
 Аргументы: <chat_id> [<гости> <хозяева>] — главный матч; без них — последний матч с овертаймом.
@@ -11,19 +12,22 @@ import base64
 import sys
 import types
 
-_SRC = ""  # BOT_MESSAGES_BASE64: строку заменяет show_game_card.sh
-bm = types.ModuleType("bot_messages")
-bm.__file__ = "bot_messages.py"
-sys.modules["bot_messages"] = bm
-exec(compile(base64.b64decode(_SRC), "bot_messages.py", "exec"), bm.__dict__)
+_SRCS: dict = {}  # MESSAGES_BASE64: строку заменяет show_game_card.sh
+for _name, _src in _SRCS.items():
+    _module = types.ModuleType(_name)
+    _module.__file__ = f"{_name}.py"
+    sys.modules[_name] = _module
+    exec(compile(base64.b64decode(_src), f"{_name}.py", "exec"), _module.__dict__)
 
 from aiogram import Bot  # noqa: E402
 
+import bot_messages as bm  # noqa: E402
 import config  # noqa: E402
 import push_digest_job  # noqa: E402
 import stats_handlers  # noqa: E402
 from database import fetch_all  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
+from rich_markup import rich_footer  # noqa: E402
 
 _GAMES = (
     "FROM games g "
@@ -66,7 +70,7 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
             return
         try:
             await stats_handlers.send_game_card(
-                bot, chat_id, game_id, f"{tail(game_id)}\n{bm.rich_footer('Витрина: ' + label)}", collapsed,
+                bot, chat_id, game_id, f"{tail(game_id)}\n{rich_footer('Витрина: ' + label)}", collapsed,
             )
             sent += 1
             print(f"{label}: OK (game_id={game_id})")
@@ -76,7 +80,7 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
 
     def footer(*reasons: str) -> str:
         reason = f"По подписке: {' · '.join(reasons)}\n" if reasons else ""
-        return bm.rich_footer(f"{reason}{SUBSCRIPTIONS_FOOTER}")
+        return rich_footer(f"{reason}{SUBSCRIPTIONS_FOOTER}")
 
     def country_block(game_id: int) -> str:
         block = bm.country_game_block("RUS", game_id)
@@ -100,7 +104,7 @@ async def main(chat_id: int, away: str | None, home: str | None) -> None:
         await show("5. меню / /tonight / кнопка дайджеста: карточка + блок страны подписчика", russian,
                    country_block)
         await show("6. /today, один матч за ночь: карточка + подсказка «Ещё: …»", main_game,
-                   lambda g: f"\n{bm.rich_footer(stats_handlers._DIGEST_MORE_HINT)}")
+                   lambda g: f"\n{rich_footer(stats_handlers._DIGEST_MORE_HINT)}")
         # Особые матчи.
         await show("7. матч с буллитами: «Овертайм — Голов нет», «Буллиты» без времени", shootout,
                    lambda g: "")

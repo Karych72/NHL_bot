@@ -24,6 +24,7 @@ telegram_bot/                   бот: читает БД, рисует меню
   config.py                     общая конфигурация (токен, PG_*, параметры загрузчика); импортируют все слои
   database.py                   потокобезопасный пул соединений с statement_timeout, безопасное выполнение запросов, валидация идентификаторов
   bot_messages.py               сборка текстов и HTML: карточки матчей, дайджест, лидерборды, таблицы
+  rich_markup.py                примитивы rich-сообщений без БД: _table, rich_*, форматтеры, MSK, COUNTRY_LABELS, обрезка
   template_funcs.py             рендер шаблонов messages/*.txt через Jinja2
   stats_handlers.py             пагинация и callback-хендлеры /stats, /team_stats, дайджест, /countries
   leaderboard_specs.py          заголовки и раскладка кнопок таблиц лидеров
@@ -31,7 +32,7 @@ telegram_bot/                   бот: читает БД, рисует меню
   help_text.py                  тексты /start и /help, справочник команд COMMANDS
   nhl_scoreboard.py             NHL scoreboard API: живая афиша для /tonight
   video_replay.py               видео голов: NHL Replay API -> Brightcove -> MP4, кэш клипов
-  throttle.py                   outer-middleware: троттлинг нажатий callback-кнопок
+  throttle.py                   троттлинг: outer-middleware нажатий callback-кнопок, throttled для отправок рассылки
   subscription_repo.py          подписки на рассылку (bot_subscriptions): чтение, включение, отключение
   schedule_repo.py              расписания экранов (bot_schedules): расчёт следующей отправки
   push_digest_job.py            отдельный скрипт рассылок: итоги, дайджест, превью, посты в канал

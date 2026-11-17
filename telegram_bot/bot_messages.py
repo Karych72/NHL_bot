@@ -4,63 +4,42 @@
 Часть `telegram_bot/`, которая читает БД (заполненную `pipeline/`) и
 превращает строки в готовый Telegram-текст: построчный HTML с таблицами
 `_table`, который `rich_message()` превращает в rich-сообщение (Bot API 10.1+);
-сама отправка, листание страниц и клавиатуры живут в `stats_handlers.py`.
+эти примитивы без БД — в `rich_markup.py`; сама отправка, листание страниц и клавиатуры живут в `stats_handlers.py`.
 """
 
 import html
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple, Union
 
-from aiogram.types import InputRichMessage, InputRichMessageMedia
 from psycopg2 import sql
 
 import config
-from database import cached_fetch_all, fetch_all, validate_table, validate_column
+from database import cached_fetch_all, fetch_all, validate_column, validate_table
 from leaderboard_specs import STAT_COLUMN_LABELS
+from rich_markup import (
+    _fmt_num_max2,
+    _fmt_pct,
+    _fmt_signed,
+    _format_leader_value,
+    _leaderboard_page_text,
+    _record_str,
+    _season_footer,
+    _table,
+    _telegram_cut_budget,
+    country_label,
+    country_name,
+    LEADERBOARD_PAGE_SIZE,
+    MSK,
+    playoff_label,
+    plural_word,
+    rich_details,
+    rich_footer,
+    rich_list,
+    truncation_marker,
+)
 from template_funcs import output_text
-
-# Лимит текста rich-сообщения Telegram (символов). Считается по исходному HTML: он не
-# короче видимого текста, так что сообщение в лимите заведомо проходит. Второй лимит —
-# 500 блоков (абзац, строка таблицы) — обрезкой не охраняется: самый длинный экран
-# (/standings, ~70 блоков) далёк от него, а длинные списки листаются страницами.
-RICH_MESSAGE_MAX_LENGTH = 32768
-
-
-# Subsets of columns allowed in dynamic SQL; keep in sync with ALLOWED_COLUMNS
-# in database.py for these tables (plus player_id for alias resolution).
-ADVANCED_STATS_COLUMNS = frozenset({
-    "sat_pct", "usat_pct", "goals_pct", "oz_start_pct", "dz_start_pct",
-    "nz_start_pct", "on_ice_shooting_pct", "ev_goals_for", "ev_goals_against",
-    "ev_goals_for_pct", "pp_goals_for", "pp_goals_against", "sh_goals_for",
-    "sh_goals_against", "player_id",
-})
-
-SHOT_TYPES_COLUMNS = frozenset({
-    "player_id",
-    "goals_wrist", "shots_wrist", "goals_slap", "shots_slap", "goals_snap",
-    "shots_snap", "goals_backhand", "shots_backhand", "goals_tip_in",
-    "shots_tip_in", "goals_deflected", "shots_deflected", "goals_wrap_around",
-    "shots_wrap_around",
-})
-
-
-def _format_leader_value(value: Union[int, float, Decimal, str, None]) -> str:
-    """Plain-text display for leaderboard cells (no monospace padding)."""
-    if value is None:
-        return "—"
-    if isinstance(value, Decimal):
-        value = float(value)
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (int, float)):
-        fv = float(value)
-        if abs(fv - round(fv)) < 1e-9:
-            return str(int(round(fv)))
-        s = f"{fv:.3f}".rstrip("0").rstrip(".")
-        return s
-    return str(value)
 
 
 # Колонки времени «м:сс» (varchar, пишет `optional_seconds_to_mmss` загрузчика): строкой
@@ -70,32 +49,12 @@ _MMSS_COLUMNS = frozenset({"time_on_ice_per_game"})
 _MMSS_SECONDS_SQL = "(split_part({col}, ':', 1)::int * 60 + split_part({col}, ':', 2)::int)"
 
 
-def _resolve_secondary_sort(table_name: str, secondary_sort: Optional[str]) -> str:
-    if secondary_sort is not None:
-        return secondary_sort
-    if table_name == "players_season_stats":
-        return "goals"
-    if table_name == "goalies_season_stats":
-        return "save_percentage"
-    if table_name in ("players_advanced_stats", "players_shot_types"):
-        return "goals"
-    return "goals"
-
-
-def _second_order_table_alias(table_name: str, second_order: str) -> str:
-    if table_name == "players_advanced_stats":
-        return "pl" if second_order in ADVANCED_STATS_COLUMNS else "pss"
-    if table_name == "players_shot_types":
-        return "pl" if second_order in SHOT_TYPES_COLUMNS else "pss"
-    return "pl"
-
-
 def _pss_join_sql(table_name: str) -> sql.Composable:
     """JOIN players_season_stats под алиасом `pss` — нужен вторичной сортировке
-    по колонке pss (`_second_order_table_alias`) и «хвосту» строки лидерборда
+    по `pss.goals` и «хвосту» строки лидерборда
     (games/shifts, Задача 18). Для players_advanced_stats и players_shot_types
-    join всегда присутствует (не только когда second_order сам на pss) —
-    games/shifts в хвосте нужны независимо от того, чем сортируется страница.
+    join всегда присутствует: games/shifts в хвосте нужны независимо от того,
+    чем сортируется страница.
     """
     if table_name == "players_advanced_stats":
         # Порог 20 игр отсекает шум долей на малой выборке, но в начале сезона
@@ -178,169 +137,6 @@ def _card_player_name(lastname: Optional[str], nationality: Optional[str]) -> st
     if nationality in _HIGHLIGHT_NATIONALITIES:
         return f"<b>{html.escape(name.upper())}</b>"
     return html.escape(name)
-
-
-def _table(
-    rows: Sequence[Sequence[str]],
-    align: str,
-    *,
-    playoff_line_after: Optional[int] = None,
-    bold: Collection[Tuple[int, int]] = (),
-) -> str:
-    """Таблица rich-сообщения (Bot API 10.3): первая строка `rows` — шапка, остальные — тело.
-
-    Зачем: колонки rich-таблицы Telegram раскладывает сам по ширине экрана — без
-    моноширинного `<pre>`, выравнивания пробелами и выбрасывания колонок под телефон.
-    `compact` — меньшие отступы в ячейках; `striped` (чередование строк) — только у
-    таблиц длиннее `_STRIPED_MIN_ROWS` строк.
-    Таблица — одна строка текста: `rich_message()` делает её отдельным блоком.
-
-    Аргументы:
-        rows: ячейки (сырые строки, без HTML); у всех строк одно число колонок.
-        align: по символу на колонку — `l` (влево) или `r` (вправо).
-        playoff_line_after: после стольких строк тела — пунктир `_PLAYOFF_LINE` на всю
-            ширину (турнирная таблица: топ-3 дивизиона, две путёвки Wild Card).
-        bold: ячейки тела жирным — пары (строка тела, колонка), с нуля; то, на что
-            экран отвечает (лучшее значение превью матча).
-    """
-    def row(cells: Sequence[str], tag: str, r: int = -1) -> str:
-        def cell(c: str, a: str, col: int) -> str:
-            text = f"<b>{html.escape(c)}</b>" if (r, col) in bold else html.escape(c)
-            return f'<{tag} align="right">{text}</{tag}>' if a == "r" else f"<{tag}>{text}</{tag}>"
-
-        return "<tr>" + "".join(cell(c, a, col) for col, (c, a) in enumerate(zip(cells, align))) + "</tr>"
-
-    head, *body = rows
-    parts = [row(head, "th")]
-    for i, cells in enumerate(body):
-        if i == playoff_line_after:
-            parts.append(f'<tr><td colspan="{len(align)}" align="center">{_PLAYOFF_LINE}</td></tr>')
-        parts.append(row(cells, "td", i))
-    attrs = "compact striped" if len(body) > _STRIPED_MIN_ROWS else "compact"
-    return f"<table {attrs}>" + "".join(parts) + "</table>"
-
-
-# Линия плей-офф: рамок у отдельных строк rich-таблица не знает, поэтому черта — строка
-# пунктира на всю ширину; длина — чтобы не раздвигать таблицу на телефоне.
-_PLAYOFF_LINE = "┄" * 28
-
-# Полосы — только у таблиц длиннее десятка строк: на длинной они ведут глаз по строке,
-# на короткой — лишний шум (spike Задачи 88, `docs/telegram_bot.md` §«Стиль сообщений»).
-_STRIPED_MIN_ROWS = 10
-
-# Видимый зазор между абзацами: граница `<p>` в клиентах Telegram отступа не даёт,
-# а пустой `<p></p>` схлопывается (spike Задачи 88).
-_PARAGRAPH_GAP = "<p>&nbsp;</p>"
-
-
-# Строки-блоки, которые `rich_message()` не вкладывает в абзац: таблица, свёрнутый блок,
-# список, подвал, лента видео голов — каждый собран своим хелпером в одну строку.
-_BLOCK_TAGS = ("<table", "<details", "<ul", "<footer", "<tg-slideshow")
-
-# После каких блоков пустая строка даёт видимый зазор перед абзацем: абзац и свёрнутый блок
-# («Видео голов» перед «Броски», свёрнутая карточка перед блоком страны). После таблиц зазора нет.
-_GAP_AFTER = ("<p>", "<details")
-
-
-def _rich_html(text: str) -> str:
-    """Построчный HTML → rich-HTML блоков; правила — у `rich_message()`."""
-    blocks: List[str] = []
-    paragraph: List[str] = []
-    gap = False
-
-    def flush() -> None:
-        nonlocal gap
-        if not paragraph:
-            return
-        if gap and blocks and blocks[-1].startswith(_GAP_AFTER):
-            blocks.append(_PARAGRAPH_GAP)
-        blocks.append("<p>" + "<br>".join(paragraph) + "</p>")
-        paragraph.clear()
-        gap = False
-
-    for line in text.split("\n"):
-        if line.startswith(_BLOCK_TAGS):
-            flush()
-            blocks.append(line)
-        elif line.strip():
-            paragraph.append(line)
-        else:
-            flush()
-            gap = True
-    flush()
-    return "".join(blocks)
-
-
-def rich_message(
-    text: str, media: Optional[List[InputRichMessageMedia]] = None
-) -> InputRichMessage:
-    """Текст бота → rich-сообщение (Bot API 10.1): блок строк — абзац `<p>` с переносами
-    `<br>`, пустая строка — граница абзацев с видимым зазором, строка-блок (`_table`,
-    `rich_details`, `rich_list`, `rich_footer`) — свой блок.
-
-    Зачем: в rich-HTML перевод строки — пробел, поэтому строки соединяются `<br>`;
-    пустые строки, которыми шаблоны и сборщики делят сообщение на разделы, остаются
-    зазором. Тег не должен пересекать пустую строку: блоки — законченные фрагменты
-    разметки, иначе Telegram отвергнет сообщение.
-
-    Аргументы:
-        text: построчный HTML, как его собирают функции этого модуля.
-        media: клипы голов карточки матча — по `id` из `goal_clip_media_id`, на которые
-            ссылаются её строки голов (`game_message`).
-    """
-    return InputRichMessage(html=_rich_html(text), media=media or None)
-
-
-def rich_footer(text: str) -> str:
-    """Подвал сообщения — строка-блок `<footer>` для конца текста `rich_message()`.
-
-    Зачем: служебный хвост (ссылки на настройки и соседние экраны, сезон, «данные на …»)
-    клиенты рисуют мельче и серее содержания (`docs/telegram_bot.md` §«Стиль сообщений»,
-    правило 3).
-
-    Аргументы: `text` — построчный HTML подвала; строки соединяются `<br>`. Подвал без
-    строк (превью матча, команды которого не сопоставлены) — пустая строка, не `<footer></footer>`.
-    """
-    lines = [line for line in text.split("\n") if line.strip()]
-    return "<footer>" + "<br>".join(lines) + "</footer>" if lines else ""
-
-
-def rich_details(summary: str, text: str) -> str:
-    """Свёрнутый блок `<details>` — строка-блок для текста `rich_message()`.
-
-    Зачем: легенды обозначений и расшифровки метрик нужны не при каждом открытии экрана —
-    по умолчанию свёрнуты, кто не знает — раскроет (правило 4 стиля).
-
-    Аргументы:
-        summary: подпись свёрнутого блока (уже экранированная).
-        text: построчный HTML содержимого — по тем же правилам, что у `rich_message()`.
-    """
-    return f"<details><summary>{summary}</summary>{_rich_html(text)}</details>"
-
-
-def _season_footer() -> str:
-    """Подвал справочного экрана, у которого из служебного — только сезон."""
-    return rich_footer(f"Сезон {html.escape(str(config.CURRENT_SEASON))}")
-
-
-def rich_list(items: Sequence[str]) -> str:
-    """Маркированный список `<ul>` — строка-блок для текста `rich_message()`.
-
-    Зачем: перечень команд `/help` — список с отступом у переносов длинных пунктов,
-    а не строки абзаца.
-
-    Аргументы: `items` — пункты, уже готовый инлайн-HTML.
-    """
-    return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
-
-
-def _record_str(
-    wins: Union[int, float, Decimal, None],
-    losses: Union[int, float, Decimal, None],
-    ot: Union[int, float, Decimal, None],
-) -> str:
-    """Баланс «W-L-OT» (`7-3-0`) — общий для профиля клуба, превью матча и вратарей."""
-    return "-".join(_format_leader_value(v) for v in (wins, losses, ot))
 
 
 def _format_three_star_line(
@@ -506,22 +302,6 @@ def _score_line(header: Dict[str, str]) -> str:
         f"{html.escape(header['away_score'])} : {html.escape(header['home_score'])}{header['extra']} "
         f"{home} {html.escape(header['home'].upper())} {home}</i></b>"
     )
-
-
-def playoff_label(game_id: int) -> Optional[str]:
-    """Пометка матча плей-офф «Плей-офф, раунд R, игра G» или `None` для других типов.
-
-    Зачем: карточка, сводка дайджеста и превью `/tonight` показывают, что матч —
-    плей-офф (Задача 106). Всё берётся из `game_id` (`2025030123` — тип 03, раунд 1,
-    серия 2, игра 3), без запроса к API и без колонки в базе.
-
-    Аргументы:
-        game_id: десятизначный id матча NHL.
-    """
-    digits = str(game_id)
-    if digits[4:6] != "03":
-        return None
-    return f"Плей-офф, раунд {digits[7]}, игра {digits[9]}"
 
 
 def _card_heading(header: Dict[str, str], game_id: int) -> str:
@@ -740,32 +520,6 @@ def game_exists(game_id: int) -> bool:
     return row["count_rows"] > 0
 
 
-def _fmt_num_max2(val: Union[int, float, None]) -> str:
-    if val is None:
-        return "—"
-    r = round(float(val), 2)
-    s = f"{r:.2f}"
-    return s.rstrip("0").rstrip(".")
-
-
-def _fmt_pct_points(val: Union[int, float, Decimal, None]) -> str:
-    """Доля очков в БД уже в шкале 0–100 (нормализуется в пайплайне через `optional_pct_from_ratio`)."""
-    if val is None:
-        return "—"
-    r = round(float(val), 2)
-    s = f"{r:.2f}"
-    return s.rstrip("0").rstrip(".") + "%"
-
-
-def _fmt_pct_stat(val: Union[int, float, None]) -> str:
-    """Проценты PP/PK/вбрасываний в БД уже 0–100."""
-    if val is None:
-        return "—"
-    r = round(float(val), 2)
-    s = f"{r:.2f}"
-    return s.rstrip("0").rstrip(".") + "%"
-
-
 # Команда текущего сезона по коду: `SELECT <колонка> ` + это, параметры (сезон, код в верхнем регистре).
 _TEAM_BY_ABBREV_SQL = (
     "FROM teams WHERE season_id = %s AND upper(trim(COALESCE(abbreviation, ''))) = %s LIMIT 1"
@@ -971,17 +725,6 @@ def _h2h_season_wins(tid_a: int, tid_b: int) -> Optional[Tuple[int, int]]:
     return winners.count(tid_a), winners.count(tid_b)
 
 
-def plural_word(value: Union[int, float, Decimal, None], forms: Tuple[str, str, str]) -> str:
-    """Слово, согласованное с числом (1 очко, 2 очка, 5 очков): `forms` — формы
-    для 1, 2 и 5; `None` считается нулём."""
-    n = int(value or 0)
-    if n % 10 == 1 and n % 100 != 11:
-        return forms[0]
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return forms[1]
-    return forms[2]
-
-
 def _team_record_line(
     wins: Union[int, float, Decimal, None],
     losses: Union[int, float, Decimal, None],
@@ -996,16 +739,9 @@ def _team_record_line(
     между экранами.
     """
     rec = _record_str(wins, losses, ot)
-    ppct = _fmt_pct_points(procent_points)
+    ppct = _fmt_pct(procent_points)
     word = plural_word(points, ("очко", "очка", "очков"))
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
-
-
-def _fmt_signed(val: Union[int, float, None]) -> str:
-    """Число со знаком («+1», «-0.5», «0») — разница шайб: плюс виден так же
-    явно, как минус."""
-    s = _fmt_num_max2(val)
-    return f"+{s}" if val is not None and float(val) > 0 else s
 
 
 # Метка строки пропущенных голов превью: по ней `_matchup_compare_table` выделяет
@@ -1048,7 +784,7 @@ def _matchup_compare_table(
         ("Место в дивизионе", place_a[0], place_h[0]),
         ("Место в конференции", place_a[1], place_h[1]),
         ("Очки", _format_leader_value(ra["points"]), _format_leader_value(rh["points"])),
-        ("% очков", _fmt_pct_points(ra["procent_points"]), _fmt_pct_points(rh["procent_points"])),
+        ("% очков", _fmt_pct(ra["procent_points"]), _fmt_pct(rh["procent_points"])),
         (
             "Баланс W-L-OT",
             _record_str(ra["wins"], ra["losses"], ra["ot"]),
@@ -1069,19 +805,19 @@ def _matchup_compare_table(
         ),
         (
             "Большинство",
-            _fmt_pct_stat(ra["power_play_percentage"]),
-            _fmt_pct_stat(rh["power_play_percentage"]),
+            _fmt_pct(ra["power_play_percentage"]),
+            _fmt_pct(rh["power_play_percentage"]),
         ),
         (
             "Меньшинство",
-            _fmt_pct_stat(ra["penalty_kill_percentage"]),
-            _fmt_pct_stat(rh["penalty_kill_percentage"]),
+            _fmt_pct(ra["penalty_kill_percentage"]),
+            _fmt_pct(rh["penalty_kill_percentage"]),
         ),
         ("Броски за игру", _fmt_num_max2(ra["shots_per_game"]), _fmt_num_max2(rh["shots_per_game"])),
         (
             "Вбрасывания",
-            _fmt_pct_stat(ra["face_off_win_percentage"]),
-            _fmt_pct_stat(rh["face_off_win_percentage"]),
+            _fmt_pct(ra["face_off_win_percentage"]),
+            _fmt_pct(rh["face_off_win_percentage"]),
         ),
         ("Разница шайб", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
     ]
@@ -1207,17 +943,11 @@ def matchup_season_preview(
     return "\n".join(parts), footer
 
 
-LEADERBOARD_PAGE_SIZE = 10
-
-
 def player_stats_with_count(
-    name_stats: str,
     table_name: str,
     column_name: str,
     count: int = 10,
     offset: int = 0,
-    *,
-    secondary_sort: Optional[str] = None,
 ) -> Tuple[str, int, int]:
     """Страница лидерборда игроков/вратарей (HTML) плюс размер полной выборки.
 
@@ -1227,12 +957,13 @@ def player_stats_with_count(
     отдельного похода в БД.
 
     Аргументы:
-        name_stats: заголовок блока (пусто — без заголовка).
         table_name: таблица статистики, из белого списка `validate_table`.
         column_name: колонка сортировки, из белого списка `validate_column`.
         count: сколько строк вернуть (размер страницы).
         offset: сдвиг страницы.
-        secondary_sort: вторичная сортировка при равенстве `column_name`.
+
+    При равенстве `column_name` строки упорядочены по голам (у вратарей — по % отражённых):
+    `pss.goals` для players_advanced_stats/players_shot_types, иначе колонка самой таблицы.
 
     Строки — таблица rich-сообщения (`_table`) с постоянным
     «хвостом» уже загруженных полей (Задача 18): для вратарей — игры и
@@ -1246,17 +977,17 @@ def player_stats_with_count(
     validate_column(column_name)
     if offset < 0:
         offset = 0
-    second_order = _resolve_secondary_sort(table_name, secondary_sort)
-    validate_column(second_order)
-
     join_pss = _pss_join_sql(table_name)
-    second_alias = _second_order_table_alias(table_name, second_order)
+    if table_name == "goalies_season_stats":
+        second_alias, second_order = "pl", "save_percentage"
+    elif table_name in ("players_advanced_stats", "players_shot_types"):
+        second_alias, second_order = "pss", "goals"
+    else:
+        second_alias, second_order = "pl", "goals"
+    second_col = sql.SQL(".").join([sql.Identifier(second_alias), sql.Identifier(second_order)])
     pl_col = sql.SQL(".").join([sql.Identifier("pl"), sql.Identifier(column_name)])
     order_col = (
         sql.SQL(_MMSS_SECONDS_SQL).format(col=pl_col) if column_name in _MMSS_COLUMNS else pl_col
-    )
-    second_col = sql.SQL(".").join(
-        [sql.Identifier(second_alias), sql.Identifier(second_order)]
     )
     tail_select, tail_keys = _leaderboard_tail_columns(table_name)
 
@@ -1316,46 +1047,7 @@ def player_stats_with_count(
         ])
 
     body = _table(rows, "rllrrr") if stats['count_rows'] else ""
-    if name_stats:
-        body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
-
-
-def _rank_range_label(offset: int, rows: int) -> str:
-    if rows <= 0:
-        return "нет данных"
-    lo = offset + 1
-    hi = offset + rows
-    if lo == hi:
-        return str(lo)
-    return f"{lo}–{hi}"
-
-
-def _leaderboard_page_text(
-    heading_html: str, body: str, n: int, total: int, offset: int
-) -> Tuple[str, bool, bool]:
-    """Общий каркас страницы лидерборда: заголовок, тело, подвал с сезоном и маркером
-    «Показаны N из M» и флаги перелистывания.
-
-    Аргументы:
-        heading_html: уже экранированный заголовок (без тегов).
-        body: строки страницы; при `n == 0` заменяются текстом «нет данных».
-        n: число строк на странице; total: размер полной выборки; offset: сдвиг.
-
-    Возвращает: (текст, has_prev, has_next).
-    """
-    span = _rank_range_label(offset, n)
-    if n == 0:
-        body = "<i>Нет данных в этом диапазоне.</i>"
-        marker = f"<i>{html.escape(span)}</i>"
-    else:
-        marker = truncation_marker(html.escape(span), total, item_word="строк")
-    text = f"<b>{heading_html}</b>\n{body}\n" + rich_footer(
-        f"Сезон {html.escape(str(config.CURRENT_SEASON))} · {marker}"
-    )
-    # total, а не «страница пришла полной» — иначе последняя полная страница
-    # рисует кнопку «вперёд» на пустой диапазон, противореча маркеру.
-    return text, offset > 0, offset + n < total
 
 
 def player_stat_leaderboard_page(
@@ -1363,19 +1055,15 @@ def player_stat_leaderboard_page(
     table_name: str,
     column_name: str,
     offset: int,
-    *,
-    secondary_sort: Optional[str] = None,
 ) -> Tuple[str, bool, bool]:
     """Произвольная таблица лидеров игроков/вратарей: шапка + пустая строка + список."""
     if offset < 0:
         offset = 0
     body, n, total = player_stats_with_count(
-        "",
         table_name,
         column_name,
         count=LEADERBOARD_PAGE_SIZE,
         offset=offset,
-        secondary_sort=secondary_sort,
     )
     return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
 
@@ -1769,7 +1457,7 @@ def _team_goalies_table(team_id: int) -> str:
             goalies["lastname"][i] or "Unknown",
             fmt(goalies["games"][i]),
             _record_str(goalies["wins"][i], goalies["losses"][i], goalies["ot"][i]),
-            _fmt_pct_stat(goalies["sv"][i]),
+            _fmt_pct(goalies["sv"][i]),
             _fmt_num_max2(goalies["gaa"][i]),
         ]
         for i in range(goalies["count_rows"])
@@ -1893,13 +1581,13 @@ def _team_season_context(a: str, ranked: bool) -> Union[str, Tuple[int, Dict[str
         "sf": _fmt_num_max2(me["shots_per_game"]) + place("shots_per_game"),
         "sa": _fmt_num_max2(me["shots_allowed"])
         + place("shots_allowed", higher_is_better=False),
-        "pp": _fmt_pct_stat(me["power_play_percentage"])
+        "pp": _fmt_pct(me["power_play_percentage"])
         + place("power_play_percentage", detail=pp_detail),
-        "pk": _fmt_pct_stat(me["penalty_kill_percentage"]) + place(
+        "pk": _fmt_pct(me["penalty_kill_percentage"]) + place(
             "penalty_kill_percentage",
             detail=f"пропущено {fmt(me['power_play_goals_against'])}, ",
         ),
-        "fo": _fmt_pct_stat(me["face_off_win_percentage"]) + place("face_off_win_percentage"),
+        "fo": _fmt_pct(me["face_off_win_percentage"]) + place("face_off_win_percentage"),
     }
 
 
@@ -2082,21 +1770,6 @@ def team_full_stats(abbrev: str) -> str:
             "footer": _team_footer(f"профиль клуба: /{html.escape(a)}"),
         },
     )
-
-
-# Задача 42: страна игрока — rosters.nationality (трёхбуквенный код NHL, одна на
-# игрока). Справочник покрывает все коды, встречающиеся в БД за все сезоны;
-# неизвестный код показывается как есть.
-COUNTRY_LABELS: Dict[str, str] = {
-    "CAN": "🇨🇦 Канада", "USA": "🇺🇸 США", "SWE": "🇸🇪 Швеция", "RUS": "🇷🇺 Россия",
-    "FIN": "🇫🇮 Финляндия", "CZE": "🇨🇿 Чехия", "CHE": "🇨🇭 Швейцария",
-    "DEU": "🇩🇪 Германия", "SVK": "🇸🇰 Словакия", "DNK": "🇩🇰 Дания",
-    "BLR": "🇧🇾 Беларусь", "LVA": "🇱🇻 Латвия", "AUT": "🇦🇹 Австрия",
-    "FRA": "🇫🇷 Франция", "GBR": "🇬🇧 Великобритания", "NOR": "🇳🇴 Норвегия",
-    "AUS": "🇦🇺 Австралия", "NLD": "🇳🇱 Нидерланды", "BGR": "🇧🇬 Болгария",
-    "SVN": "🇸🇮 Словения", "UZB": "🇺🇿 Узбекистан", "KAZ": "🇰🇿 Казахстан",
-    "POL": "🇵🇱 Польша", "BEL": "🇧🇪 Бельгия", "EST": "🇪🇪 Эстония",
-}
 # Страна с меньшим числом полевых игроков сезона в рейтинг и на кнопки не
 # попадает: у 1–2 игроков «сумма очков страны» — это просто их личная статистика.
 COUNTRY_MIN_PLAYERS = 3
@@ -2108,24 +1781,6 @@ _COUNTRY_FROM = (
     "JOIN rosters r ON p.player_id = r.player_id AND p.season_id = r.season_id "
     "AND p.game_type = 2 "
 )
-
-
-def country_label(code: str) -> str:
-    """Метка страны для HTML: флаг + русское название из `COUNTRY_LABELS`,
-    неизвестный код — сам код; результат экранирован. Флаг — метка в начале
-    сообщения (заголовок экрана страны)."""
-    return html.escape(COUNTRY_LABELS.get(code, code))
-
-
-def country_name(code: str) -> str:
-    """Название страны без флага, сырой строкой (в HTML — через `html.escape`): метка
-    `COUNTRY_LABELS` — всегда «флаг название», неизвестный код — сам код.
-
-    Зачем: эмодзи только как метка в начале сообщения (`docs/telegram_bot.md`
-    §«Стиль сообщений», правило 5) — в ячейках таблиц, заголовках блоков страны и
-    подвале рассылки (`push_digest_job`) флага нет.
-    """
-    return COUNTRY_LABELS[code].split(" ", 1)[1] if code in COUNTRY_LABELS else code
 
 
 def _country_ranking() -> List[Tuple[str, int, int, int]]:
@@ -2268,7 +1923,7 @@ def _player_group_table(
         stats = cached_fetch_all(_GROUP_GOALIES_SQL.format(owner=owner), params, columns=cols)
         name_header, header = "Вратарь", ["В", "%ОБ", "КН", "И", "Сух"]
         cells = [
-            [fmt(stats["wins"][i]), _fmt_pct_stat(stats["sv"][i]),
+            [fmt(stats["wins"][i]), _fmt_pct(stats["sv"][i]),
              _fmt_num_max2(stats["gaa"][i]), fmt(stats["games"][i]), fmt(stats["shutouts"][i])]
             for i in range(stats["count_rows"])
         ]
@@ -2660,11 +2315,6 @@ def team_stat_leaderboard_page(
     return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
 
 
-# Москва живёт в UTC+3 без перехода на летнее время (с 2014 года) — фиксированный
-# сдвиг вместо zoneinfo, которому в slim-образе может не хватить tzdata.
-MSK = timezone(timedelta(hours=3))
-
-
 def last_night_day(nights_back: int = 0) -> str:
     """Игровой день NHL (`games.day`, дата по Северной Америке) матчей, сыгранных
     прошедшей ночью по Москве.
@@ -2769,64 +2419,6 @@ def digest_game_button_labels(game_ids: Sequence[int]) -> List[str]:
     return [f"{n}. {matchup[gid]}" for n, gid in enumerate(game_ids, start=1)]
 
 
-def truncation_marker(
-    shown: Optional[Union[int, str]] = None,
-    total: Optional[int] = None,
-    *,
-    item_word: str = "",
-) -> str:
-    """Единственная точка, где собирается курсивная HTML-сноска об усечении.
-
-    Зачем: обрезка по лимиту Telegram (`truncate_telegram_text`) и обрезка
-    выборки (страницы лидербордов, список аббревиатур команд) не должны каждая
-    заново собирать текст сноски — иначе формат расползается по веткам
-    (Задача 11).
-
-    Экранирование: `shown` вставляется в HTML как есть — экранировать его
-    (если это строка из непроверенного источника) обязана вызывающая сторона
-    до передачи сюда, как делают лидерборды (`html.escape(span)`).
-
-    Аргументы:
-        shown: сколько показано — число или диапазон («1–10»); None — сноска
-            без чисел, для обрезки прозаического текста, где считать элементы
-            нечем (нет счётных элементов, N/M выдумывать не из чего).
-        total: всего элементов в исходной выборке; обязателен, если задан
-            `shown` — иначе неоднозначно, что означает «показаны N из ничего».
-        item_word: существительное в родительном падеже множественного числа
-            («строк», «матчей», «команд»); пусто, если числа сами по себе ясны.
-
-    Исключения:
-        ValueError: если `shown` задан, а `total` — нет.
-    """
-    if shown is None:
-        return "<i>Текст обрезан (лимит Telegram).</i>"
-    if total is None:
-        raise ValueError("truncation_marker: total обязателен, если задан shown")
-    word = f" {item_word}" if item_word else ""
-    return f"<i>Показаны {shown} из {total}{word}.</i>"
-
-
-def _telegram_cut_budget(
-    note: str, max_len: int = RICH_MESSAGE_MAX_LENGTH
-) -> int:
-    """Сколько символов исходного текста остаётся под обрезку `truncate_telegram_text`
-    при данной сноске `note`.
-
-    Зачем: `digest_shown_match_count` предсказывает результат
-    `truncate_telegram_text` заранее (чтобы посчитать N для маркера), поэтому
-    обе функции обязаны считать бюджет одной и той же формулой — раздельные
-    копии рассинхронизируются при правке одной из них и заставят маркер
-    молча врать про число показанных элементов.
-
-    Аргументы:
-        note: сноска, которая будет дописана после обрезки (с учётом
-            разделителя "\\n\\n", если он нужен).
-        max_len: лимит символов сообщения (по умолчанию
-            `RICH_MESSAGE_MAX_LENGTH`).
-    """
-    return max(max_len - len(note), 80)
-
-
 def digest_shown_match_count(header: str, lines: List[str], total: int, *, tail: str = "") -> int:
     """Сколько заголовков матчей из `lines` уместится в сводке дайджеста после
     обрезки `truncate_telegram_text` по лимиту Telegram.
@@ -2854,29 +2446,3 @@ def digest_shown_match_count(header: str, lines: List[str], total: int, *, tail:
             return shown
         shown -= 1
     return 0
-
-
-def truncate_telegram_text(
-    text: str,
-    max_len: int = RICH_MESSAGE_MAX_LENGTH,
-    *,
-    footer_note: Optional[str] = None,
-) -> str:
-    """Режет `text` под лимит Telegram (по умолчанию — rich-сообщения), добавляя сноску.
-
-    Зачем: сообщения Telegram не долетают за лимитом символов; резать нужно с
-    запасом под сноску и добавлять её саму, а не отправлять оборванный текст
-    без предупреждения. Режет по границе строки: строка — законченный фрагмент
-    разметки rich-сообщения (`rich_message`), и её обрывок оставил бы незакрытый тег.
-
-    Аргументы:
-        text: исходный текст сообщения (построчный HTML).
-        max_len: лимит символов (по умолчанию `RICH_MESSAGE_MAX_LENGTH`).
-        footer_note: сноска, дописываемая после обрезки; по умолчанию — общая
-            сноска о лимите Telegram без чисел (`truncation_marker()`).
-    """
-    if len(text) <= max_len:
-        return text
-    note = footer_note if footer_note is not None else ("\n\n" + truncation_marker())
-    cut = _telegram_cut_budget(note, max_len)
-    return text[: max(text.rfind("\n", 0, cut + 1), 0)] + note

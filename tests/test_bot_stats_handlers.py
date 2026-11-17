@@ -1036,7 +1036,7 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     sent_text = body(api.sent_rich[0])
     # Лимит rich-сообщения — на текст, а не на разметку: теги не считаются, сущность — один символ.
     plain = html.unescape(re.sub(r"<[^>]+>", "", sent_text))
-    assert len(plain) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
+    assert len(plain) <= bot_module("rich_markup").RICH_MESSAGE_MAX_LENGTH
     assert sent_text.count("<p>") <= 500, "лимит Telegram — 500 блоков"
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None

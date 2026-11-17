@@ -1,5 +1,5 @@
 """Короткие тексты для /start и /help (фаза 1 UX). Построчный HTML для rich-сообщения
-(`bot_messages.rich_message`).
+(`rich_markup.rich_message`).
 
 Команды в текстах пишутся голым `/команда`, без `<code>`: Telegram делает их
 кликабельными ссылками, а `<code>` превращает в некликабельный моноширинный текст.
@@ -11,7 +11,7 @@
 
 from typing import List, NamedTuple, Sequence
 
-from bot_messages import rich_details, rich_footer, rich_list
+from rich_markup import rich_details, rich_footer, rich_list
 
 # Последняя строка каждого сообщения рассылки (`push_digest_job.py`): способ отписаться.
 SUBSCRIPTIONS_FOOTER = "Настроить подписки: /subscriptions"

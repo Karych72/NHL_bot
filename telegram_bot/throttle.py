@@ -1,16 +1,27 @@
-"""Троттлинг callback-кнопок: outer-middleware перед всеми хендлерами нажатий.
+"""Троттлинг: входящих нажатий callback-кнопок и исходящих отправок рассылки.
+
+Нажатия — outer-middleware перед всеми хендлерами.
 
 Гасит N+1 нагрузку на PostgreSQL от спама кнопками пагинации (Задача 10,
 после Задачи 9 — кэш TTL уже снял часть нагрузки, лимит калибруется по
 остатку). Per-user скользящее окно; состояние — только в памяти процесса.
-`bot.py` лишь импортирует `enforce_callback_rate_limit` и вешает его на
+`bot.py` вешает `enforce_callback_rate_limit` на
 `Dispatcher.callback_query.outer_middleware`.
+Отправки — `throttled`: пауза между сообщениями и повтор после 429 (`push_digest_job`, `bot.py`).
 """
 
+import asyncio
+import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, TypeVar, Union
 
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import CallbackQuery, TelegramObject
+
+import config
+
+logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 # 8 нажатий за 3 секунды: ручная пагинация (человек тапает кнопку не чаще
 # нескольких раз в секунду) укладывается с запасом, а автоматический спам
@@ -75,3 +86,25 @@ async def enforce_callback_rate_limit(
     hits.append(now)
     _hits[user_id] = hits
     return await handler(event, data)
+
+
+async def throttled(call: Callable[[], Awaitable[_T]], chat_id: Union[int, str]) -> _T:
+    """Выполняет одну отправку и выдерживает паузу до следующей.
+
+    Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
+    её один раз после указанной API задержки. Второй ``TelegramRetryAfter``, как и
+    любая другая ошибка Telegram, улетает вызывающему.
+
+    Аргументы: ``call`` — отправка без аргументов (её можно вызвать повторно);
+    ``chat_id`` — получатель, для лога.
+    """
+    try:
+        result = await call()
+    except TelegramRetryAfter as exc:
+        wait = float(exc.retry_after)
+        logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
+        await asyncio.sleep(wait)
+        result = await call()
+    # Telegram лимитирует бота ~30 сообщениями в секунду.
+    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
+    return result

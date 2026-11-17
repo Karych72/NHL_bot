@@ -27,7 +27,7 @@ from psycopg2.extras import Json
 
 import ai_router
 import config
-from bot_messages import MSK
+from rich_markup import MSK
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)

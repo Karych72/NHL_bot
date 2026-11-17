@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from bot_messages import rich_footer
+from rich_markup import rich_footer
 
 NHL_API_BASE = "https://api-web.nhle.com/v1"
 

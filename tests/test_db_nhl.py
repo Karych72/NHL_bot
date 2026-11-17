@@ -1635,7 +1635,7 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
                               ("players_advanced_stats", "sat_pct"),
                               ("players_shot_types", "goals_wrist")):
             with self.subTest(table=table):
-                text, _n, total = self.messages.player_stats_with_count("Лидеры", table, column)
+                text, _n, total = self.messages.player_stats_with_count(table, column)
                 self.assertEqual(total, 1)
                 self.assertNoPlayoff(text)
 
