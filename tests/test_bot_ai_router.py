@@ -69,13 +69,16 @@ def _text(text: str) -> SimpleNamespace:
 @pytest.fixture
 def ai(bot_module, fake_db_router, monkeypatch):
     """Фабрика окружения: чат задал `asked` = (за сутки, за неделю) вопросов, `premium` —
-    у него премиум; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
+    у него премиум; `spent` — расход на ИИ за сутки, $ (общий бюджет, Задача 141); модель
+    вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
 
-    def _make(result: Any, asked: tuple = (0, 0), premium: bool = False):
+    def _make(result: Any, asked: tuple = (0, 0), premium: bool = False, spent: float = 0.0):
         bot = bot_module("bot")
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
             ("FILTER (WHERE asked_at", [asked]),
+            ("sum(cost_usd)", [(spent,)]),
+            ("FROM premium_payments", [(False,)]),
             ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=timezone.utc),)] if premium else []),
             ("INSERT INTO ai_questions", []),
             ("AS ab FROM teams", TEAMS),
@@ -393,6 +396,25 @@ async def test_limit_is_daily_for_premium_and_weekly_for_free(
         ]
     # Премиум — по чату вопроса.
     assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_budget_refuses_without_model_and_logs_budget(
+    ai, bot_module, make_message, fake_bot, api
+):
+    """Общий суточный бюджет (Задача 141): отказ без вызова модели, в журнале — `budget`."""
+    ai_router = bot_module("ai_router")
+    bot, cursor, messages = ai(
+        _response(_text("Пока не умею")), spent=ai_router.DAILY_BUDGET_USD
+    )
+    await _ask(bot, make_message, fake_bot)
+
+    assert not messages.calls
+    assert _replies(api) == [_as_reply(ai_router.BUDGET_TEXT)]
+    message = make_message("")
+    assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
+        ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", "budget"))
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -131,6 +131,8 @@ def stats(bot_module, fake_db_router, monkeypatch):
         cursor = fake_db_router([
             # Раньше журнала окна: запрос лимита тоже читает ai_stats_log.
             ("FILTER (WHERE asked_at", [asked]),
+            ("sum(cost_usd)", [(0.0,)]),
+            ("FROM premium_payments", [(False,)]),
             ("FROM premium_access", []),
             ("FROM ai_stats_log WHERE chat_id", list(history)),
             ("INSERT INTO ai_stats_log", []),
