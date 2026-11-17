@@ -75,9 +75,9 @@ def test_output_text_does_not_auto_escape_html(bot_module, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_table_renders_header_alignment_and_escapes_cells(bot_module):
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    table = bot_messages._table([["", "Команда", "Очк"], ["1.", "A&B <Team>", "10"]], "rlr")
+    table = rich_markup._table([["", "Команда", "Очк"], ["1.", "A&B <Team>", "10"]], "rlr")
 
     assert table == (
         "<table compact>"
@@ -89,11 +89,11 @@ def test_table_renders_header_alignment_and_escapes_cells(bot_module):
 
 
 def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module):
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    table = bot_messages._table([["#", "К"], ["1.", "A"], ["2.", "B"], ["3.", "C"]], "rl", playoff_line_after=2)
+    table = rich_markup._table([["#", "К"], ["1.", "A"], ["2.", "B"], ["3.", "C"]], "rl", playoff_line_after=2)
 
-    line = bot_messages._PLAYOFF_LINE
+    line = rich_markup._PLAYOFF_LINE
     assert _tables(table) == [[["#", "К"], ["1.", "A"], ["2.", "B"], [line], ["3.", "C"]]]
     assert f'<td colspan="2" align="center">{line}</td>' in table
     assert set(line) == {"┄"}, "черта — пунктир, без подписи"
@@ -101,17 +101,17 @@ def test_table_draws_playoff_line_across_all_columns_after_given_row(bot_module)
 
 def test_table_stripes_only_tables_longer_than_ten_rows(bot_module):
     """Полосы ведут глаз по длинной таблице, на короткой — шум (spike Задачи 88)."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    assert bot_messages._table([["#"]] + [["1"]] * 10, "r").startswith("<table compact><tr>")
-    assert bot_messages._table([["#"]] + [["1"]] * 11, "r").startswith("<table compact striped><tr>")
+    assert rich_markup._table([["#"]] + [["1"]] * 10, "r").startswith("<table compact><tr>")
+    assert rich_markup._table([["#"]] + [["1"]] * 11, "r").startswith("<table compact striped><tr>")
 
 
 def test_rich_message_joins_block_lines_into_one_paragraph(bot_module):
     """В rich-HTML перевод строки — пробел: строки одного блока — один абзац через `<br>`."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    message = bot_messages.rich_message("<b>Заголовок</b>\n<i>сезон</i>\nстрока")
+    message = rich_markup.rich_message("<b>Заголовок</b>\n<i>сезон</i>\nстрока")
 
     assert message.html == "<p><b>Заголовок</b><br><i>сезон</i><br>строка</p>"
     assert (message.markdown, message.blocks) == (None, None)
@@ -120,19 +120,19 @@ def test_rich_message_joins_block_lines_into_one_paragraph(bot_module):
 def test_rich_message_blank_line_splits_paragraphs_with_visible_gap(bot_module):
     """Граница `<p>` в клиентах отступа не даёт: пустая строка (и несколько подряд) — один
     зазор `<p>&nbsp;</p>` между абзацами; в начале и в конце текста зазора нет."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    message = bot_messages.rich_message("\nраздел 1\nещё\n\n\nраздел 2\n\n")
+    message = rich_markup.rich_message("\nраздел 1\nещё\n\n\nраздел 2\n\n")
 
     assert message.html == "<p>раздел 1<br>ещё</p><p>&nbsp;</p><p>раздел 2</p>"
 
 
 def test_rich_message_keeps_table_as_own_block_without_gap(bot_module):
     """Таблица — свой блок; отступ вокруг неё клиент рисует сам, зазор не добавляется."""
-    bot_messages = bot_module("bot_messages")
-    table = bot_messages._table([["A"], ["1"]], "r")
+    rich_markup = bot_module("rich_markup")
+    table = rich_markup._table([["A"], ["1"]], "r")
 
-    message = bot_messages.rich_message(f"<b>Дивизион</b>\n{table}\n\nИтог: /help\n{table}\nпосле")
+    message = rich_markup.rich_message(f"<b>Дивизион</b>\n{table}\n\nИтог: /help\n{table}\nпосле")
 
     assert message.html == f"<p><b>Дивизион</b></p>{table}<p>Итог: /help</p>{table}<p>после</p>"
 
@@ -140,12 +140,12 @@ def test_rich_message_keeps_table_as_own_block_without_gap(bot_module):
 def test_rich_message_keeps_footer_details_and_list_as_own_blocks(bot_module):
     """Подвал, свёрнутый блок и список — свои блоки, не внутри абзаца; содержимое
     `<details>` собирается по тем же правилам абзацев, строки подвала — через `<br>`."""
-    bot_messages = bot_module("bot_messages")
-    details = bot_messages.rich_details("Обозначения", "Г — голы\nО — очки\n\nИ — игры")
-    footer = bot_messages.rich_footer("Настроить: /subscriptions\n\nданные на 27.10")
-    items = bot_messages.rich_list(["/today — ночь", "/help — справка"])
+    rich_markup = bot_module("rich_markup")
+    details = rich_markup.rich_details("Обозначения", "Г — голы\nО — очки\n\nИ — игры")
+    footer = rich_markup.rich_footer("Настроить: /subscriptions\n\nданные на 27.10")
+    items = rich_markup.rich_list(["/today — ночь", "/help — справка"])
 
-    message = bot_messages.rich_message(f"Счёт\n{items}\n{details}\n\n{footer}")
+    message = rich_markup.rich_message(f"Счёт\n{items}\n{details}\n\n{footer}")
 
     assert message.html == (
         "<p>Счёт</p><ul><li>/today — ночь</li><li>/help — справка</li></ul>"
@@ -157,9 +157,9 @@ def test_rich_message_keeps_footer_details_and_list_as_own_blocks(bot_module):
 
 def test_rich_footer_without_lines_adds_no_empty_footer(bot_module):
     """Пустой подвал (превью несопоставленных команд) — без `<footer></footer>`."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
 
-    assert bot_messages.rich_message("Текст\n" + bot_messages.rich_footer("\n")).html == "<p>Текст</p>"
+    assert rich_markup.rich_message("Текст\n" + rich_markup.rich_footer("\n")).html == "<p>Текст</p>"
 
 
 # ---------------------------------------------------------------------------
@@ -255,10 +255,10 @@ def game_message_text(bot_module):
 
 def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
     """`2025030412`: тип 03, раунд 4, серия 1, игра 2; регулярка и предсезонка — без пометки."""
-    bot_messages = bot_module("bot_messages")
-    assert bot_messages.playoff_label(2025030412) == "Плей-офф, раунд 4, игра 2"
-    assert bot_messages.playoff_label(2025020412) is None
-    assert bot_messages.playoff_label(2025010012) is None
+    rich_markup = bot_module("rich_markup")
+    assert rich_markup.playoff_label(2025030412) == "Плей-офф, раунд 4, игра 2"
+    assert rich_markup.playoff_label(2025020412) is None
+    assert rich_markup.playoff_label(2025010012) is None
 
 
 def test_game_message_marks_playoff_round_under_score_line(bot_module):
@@ -310,14 +310,14 @@ def test_card_heading_puts_playoff_round_and_period_scores_under_the_score(bot_m
 def test_rich_message_keeps_gap_after_collapsed_block_and_slideshow_is_a_block(bot_module):
     """Свёрнутый блок отделён от следующего абзаца тем же зазором, что и абзацы; после
     таблицы зазора нет; лента видео — отдельный блок, не абзац."""
-    bm = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     feed = '<tg-slideshow><video src="tg://video?id=goal1"></video></tg-slideshow>'
-    block = bm.rich_details("Видео голов", f"1:0 — X\n{feed}")
+    block = rich_markup.rich_details("Видео голов", f"1:0 — X\n{feed}")
     table = "<table compact><tr><td>A</td></tr></table>"
 
     assert block == f"<details><summary>Видео голов</summary><p>1:0 — X</p>{feed}</details>"
-    assert bm.rich_message(f"{block}\n\nДалее").html == f"{block}<p>&nbsp;</p><p>Далее</p>"
-    assert bm.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
+    assert rich_markup.rich_message(f"{block}\n\nДалее").html == f"{block}<p>&nbsp;</p><p>Далее</p>"
+    assert rich_markup.rich_message(f"{table}\n\nДалее").html == f"{table}<p>Далее</p>"
 
 
 def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
@@ -601,7 +601,7 @@ def _recent_games_rows(outcomes):
 )
 def test_plural_word_agrees_with_number(bot_module, points, word):
     """Отзыв UI: «1 очков» в превью — слово согласуется с числом."""
-    assert bot_module("bot_messages").plural_word(points, ("очко", "очка", "очков")) == word
+    assert bot_module("rich_markup").plural_word(points, ("очко", "очка", "очков")) == word
 
 
 def test_current_streak_three_wins_in_a_row(bot_module):
@@ -1398,28 +1398,28 @@ def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
 # ---------------------------------------------------------------------------
 
 def test_truncation_marker_with_counts_names_shown_and_total(bot_module):
-    bot_messages = bot_module("bot_messages")
-    marker = bot_messages.truncation_marker(5, 20, item_word="строк")
+    rich_markup = bot_module("rich_markup")
+    marker = rich_markup.truncation_marker(5, 20, item_word="строк")
     assert marker == "<i>Показаны 5 из 20 строк.</i>"
 
 
 def test_truncation_marker_accepts_range_string_as_shown(bot_module):
-    bot_messages = bot_module("bot_messages")
-    marker = bot_messages.truncation_marker("11–20", 750, item_word="строк")
+    rich_markup = bot_module("rich_markup")
+    marker = rich_markup.truncation_marker("11–20", 750, item_word="строк")
     assert marker == "<i>Показаны 11–20 из 750 строк.</i>"
 
 
 def test_truncation_marker_without_counts_is_plain_telegram_limit_note(bot_module):
-    bot_messages = bot_module("bot_messages")
-    assert bot_messages.truncation_marker() == "<i>Текст обрезан (лимит Telegram).</i>"
+    rich_markup = bot_module("rich_markup")
+    assert rich_markup.truncation_marker() == "<i>Текст обрезан (лимит Telegram).</i>"
 
 
 def test_truncation_marker_rejects_shown_without_total(bot_module):
     """GC4 («падать громко»): shown без total не имеет однозначного смысла —
     тихий рендер «Показаны 5 из None.» запрещён, функция должна упасть."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     with pytest.raises(ValueError, match="total"):
-        bot_messages.truncation_marker(5)
+        rich_markup.truncation_marker(5)
 
 
 # ---------------------------------------------------------------------------
@@ -1427,14 +1427,14 @@ def test_truncation_marker_rejects_shown_without_total(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_truncate_telegram_text_leaves_short_text_untouched(bot_module):
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     text = "short message"
-    assert bot_messages.truncate_telegram_text(text) == text
+    assert rich_markup.truncate_telegram_text(text) == text
 
 
-def _lines_over_limit(bot_messages, line: str) -> str:
+def _lines_over_limit(rich_markup, line: str) -> str:
     """Построчный текст длиннее лимита rich-сообщения на несколько строк."""
-    return "\n".join([line] * (bot_messages.RICH_MESSAGE_MAX_LENGTH // len(line) + 3))
+    return "\n".join([line] * (rich_markup.RICH_MESSAGE_MAX_LENGTH // len(line) + 3))
 
 
 def test_truncate_telegram_text_cuts_whole_lines_and_appends_default_note(bot_module):
@@ -1442,35 +1442,35 @@ def test_truncate_telegram_text_cuts_whole_lines_and_appends_default_note(bot_mo
     хелпер, что и все остальные ветки усечения, а не свой строковый литерал. Режется
     целыми строками: строка — абзац или таблица rich-сообщения, обрывок оставил бы
     незакрытый тег."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     line = "<b>" + "x" * 90 + "</b>"
-    long_text = _lines_over_limit(bot_messages, line)
-    note = "\n\n" + bot_messages.truncation_marker()
+    long_text = _lines_over_limit(rich_markup, line)
+    note = "\n\n" + rich_markup.truncation_marker()
 
-    result = bot_messages.truncate_telegram_text(long_text)
+    result = rich_markup.truncate_telegram_text(long_text)
 
     assert result.endswith(note)
     kept = result[: -len(note)].split("\n")
     assert set(kept) == {line}, "только целые строки"
-    assert len(result) <= bot_messages.RICH_MESSAGE_MAX_LENGTH
+    assert len(result) <= rich_markup.RICH_MESSAGE_MAX_LENGTH
     # Ещё одна строка уже не влезла бы — режется не больше необходимого.
-    assert len("\n".join(kept + [line])) > bot_messages._telegram_cut_budget(note)
+    assert len("\n".join(kept + [line])) > rich_markup._telegram_cut_budget(note)
 
 
 def test_truncate_telegram_text_uses_custom_footer_note(bot_module):
-    bot_messages = bot_module("bot_messages")
-    long_text = _lines_over_limit(bot_messages, "y" * 100)
+    rich_markup = bot_module("rich_markup")
+    long_text = _lines_over_limit(rich_markup, "y" * 100)
     footer_note = "\n\nCUT"
-    result = bot_messages.truncate_telegram_text(long_text, footer_note=footer_note)
+    result = rich_markup.truncate_telegram_text(long_text, footer_note=footer_note)
     assert result.endswith("y\n\nCUT")
-    assert len(result) <= bot_messages.RICH_MESSAGE_MAX_LENGTH
+    assert len(result) <= rich_markup.RICH_MESSAGE_MAX_LENGTH
 
 
 def test_truncate_telegram_text_keeps_last_line_that_fits_exactly(bot_module):
     """Строка, конец которой ровно на границе бюджета, помещается — не отбрасывается."""
-    bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     text = "\n".join(["a" * 9] * 20)
-    result = bot_messages.truncate_telegram_text(text, max_len=102, footer_note="\n\nN")
+    result = rich_markup.truncate_telegram_text(text, max_len=102, footer_note="\n\nN")
     assert result == "\n".join(["a" * 9] * 10) + "\n\nN"
     assert len(result) == 102
 
@@ -1478,10 +1478,10 @@ def test_truncate_telegram_text_keeps_last_line_that_fits_exactly(bot_module):
 def test_truncate_telegram_text_keeps_a_table_line_whole(bot_module):
     """Таблица — одна строка текста: её нельзя разрезать посередине, она либо
     помещается целиком, либо уходит целиком."""
-    bot_messages = bot_module("bot_messages")
-    table = bot_messages._table([["A"]] + [["x" * 50]] * 200, "l")
+    rich_markup = bot_module("rich_markup")
+    table = rich_markup._table([["A"]] + [["x" * 50]] * 200, "l")
     text = "<b>Заголовок</b>\n" + table
-    result = bot_messages.truncate_telegram_text(text, max_len=len(text) - 10)
+    result = rich_markup.truncate_telegram_text(text, max_len=len(text) - 10)
     assert "<table" not in result
     assert result.startswith("<b>Заголовок</b>")
 
@@ -1499,6 +1499,7 @@ def test_digest_shown_match_count_returns_full_total_when_everything_fits(bot_mo
 
 def test_digest_shown_match_count_drops_lines_that_do_not_fit_budget(bot_module):
     bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     long_line = "X" * 500
     lines = [long_line] * 80  # 80 * 500 = 40000 символов, заведомо больше лимита rich
     shown = bot_messages.digest_shown_match_count("Header\n\n", lines, 80)
@@ -1506,13 +1507,13 @@ def test_digest_shown_match_count_drops_lines_that_do_not_fit_budget(bot_module)
 
     # ровно shown строк должны укладываться в бюджет truncate_telegram_text с
     # footer_note, построенным на этом же shown …
-    note = "\n\n" + bot_messages.truncation_marker(shown, 80, item_word="матчей")
-    cut = bot_messages._telegram_cut_budget(note)
+    note = "\n\n" + rich_markup.truncation_marker(shown, 80, item_word="матчей")
+    cut = rich_markup._telegram_cut_budget(note)
     assert len("Header\n\n" + "\n".join(lines[:shown])) <= cut
 
     # … а на одну строку больше — уже нет (иначе маркер солгал бы про N).
-    note_next = "\n\n" + bot_messages.truncation_marker(shown + 1, 80, item_word="матчей")
-    cut_next = bot_messages._telegram_cut_budget(note_next)
+    note_next = "\n\n" + rich_markup.truncation_marker(shown + 1, 80, item_word="матчей")
+    cut_next = rich_markup._telegram_cut_budget(note_next)
     assert len("Header\n\n" + "\n".join(lines[: shown + 1])) > cut_next
 
 
@@ -1778,6 +1779,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     """Метрополитен из шести команд: топ-3 дивизиона вне гонки, остальные три —
     WC1, WC2, затем черта плей-офф и третий претендент с обычным номером."""
     bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     # name, games_played, points, procent_points, wins, losses, ot,
     # division_name, conference_name — очки убывают с номером команды.
     rows = [
@@ -1793,7 +1795,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
     [table] = _tables(wc)
     assert [row[:2] for row in table] == [
-        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], [bot_messages._PLAYOFF_LINE], ["3.", "T5"],
+        ["", "Команда"], ["WC1", "T3"], ["WC2", "T4"], [rich_markup._PLAYOFF_LINE], ["3.", "T5"],
     ]
     assert "\n\n<b>WILD CARD" in text, "секции разделены пустой строкой"
     assert text.startswith("<b>Турнирная таблица NHL</b>\n\n")
@@ -1807,6 +1809,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
     """Дивизион из девяти команд: черта плей-офф после 3-го места; в Wild Card
     из шести оставшихся показаны пять — WC1, WC2 и три претендента."""
     bot_messages = bot_module("bot_messages")
+    rich_markup = bot_module("rich_markup")
     rows = [
         (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(9)
     ]
@@ -1824,7 +1827,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
         ["1.", "T0", "40", "20", "60.0"],
         ["2.", "T1", "39", "20", "60.0"],
         ["3.", "T2", "38", "20", "60.0"],
-        [bot_messages._PLAYOFF_LINE],
+        [rich_markup._PLAYOFF_LINE],
         ["4.", "T3", "37", "20", "60.0"],
     ]
     assert len(table) == 1 + 9 + 1, "шапка, девять команд и одна линия"

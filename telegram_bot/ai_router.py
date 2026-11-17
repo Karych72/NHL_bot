@@ -16,7 +16,8 @@ import anthropic
 from psycopg2.extras import Json
 
 import premium
-from bot_messages import COUNTRY_LABELS, MSK, season_team_abbrevs
+from bot_messages import season_team_abbrevs
+from rich_markup import COUNTRY_LABELS, MSK
 from database import fetch_all, get_connection
 from help_text import COMMANDS
 from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES

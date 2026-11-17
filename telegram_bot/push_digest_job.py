@@ -39,7 +39,7 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
-from typing import Awaitable, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
+from typing import Awaitable, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -63,9 +63,7 @@ if _HERE not in sys.path:
 
 import config  # noqa: E402
 from bot_messages import (  # noqa: E402
-    MSK,
     country_heading,
-    country_name,
     country_night_blocks,
     country_night_entries,
     country_profile,
@@ -75,11 +73,9 @@ from bot_messages import (  # noqa: E402
     player_labels,
     players_block,
     players_night_entries,
-    plural_word,
-    rich_footer,
-    rich_message,
     team_table,
 )
+from rich_markup import country_name, MSK, plural_word, rich_footer, rich_message  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402
     fetch_score,
@@ -91,6 +87,7 @@ from stats_handlers import (  # noqa: E402
     dispatch_day_digest_messages,
     send_game_card,
 )
+from throttle import throttled  # noqa: E402
 from subscription_repo import (  # noqa: E402
     channel_posted,
     channel_weekly_posted,
@@ -158,8 +155,6 @@ _CHANNEL_WEEKLY: Dict[int, Tuple[str, Callable[[str], str]]] = {
 
 # Telegram публикует в один канал ~20 сообщений в минуту: плотная ночь идёт с паузой.
 _CHANNEL_POST_INTERVAL_SEC = 3.0
-
-_T = TypeVar("_T")
 
 # Элемент альбома, как его типизирует ``Bot.send_media_group``; в альбоме рассылки — только видео.
 _AlbumMedia = Union[InputMediaAudio, InputMediaDocument, InputMediaLivePhoto, InputMediaPhoto, InputMediaVideo]
@@ -302,28 +297,6 @@ def subscribed_games(night: date) -> _SubscribedGames:
         int(game_id): own.get(int(game_id), _GameSubscriptions([], [])) for game_id in games["game_id"]
     }
     return {owner: every_game, **result} if every_game else result
-
-
-async def throttled(call: Callable[[], Awaitable[_T]], chat_id: Union[int, str]) -> _T:
-    """Выполняет одну отправку и выдерживает паузу до следующей.
-
-    Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
-    её один раз после указанной API задержки. Второй ``TelegramRetryAfter``, как и
-    любая другая ошибка Telegram, улетает вызывающему.
-
-    Аргументы: ``call`` — отправка без аргументов (её можно вызвать повторно);
-    ``chat_id`` — получатель, для лога.
-    """
-    try:
-        result = await call()
-    except TelegramRetryAfter as exc:
-        wait = float(exc.retry_after)
-        logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
-        await asyncio.sleep(wait)
-        result = await call()
-    # Telegram лимитирует бота ~30 сообщениями в секунду.
-    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
-    return result
 
 
 async def run_morning_digest_broadcast(

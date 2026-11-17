@@ -410,7 +410,7 @@ cd telegram_bot && ENABLE_PUSH_DIGEST=1 ../.venv/bin/python push_digest_job.py
 
 ## 9. Стиль сообщений (Задача 88)
 
-Экраны бота — rich-сообщения (Bot API 10.1+), их собирает `bot_messages.rich_message()` из
+Экраны бота — rich-сообщения (Bot API 10.1+), их собирает `rich_markup.rich_message()` из
 построчного HTML. Правила — для любого нового экрана и для доводки старых (Задачи 89–91).
 Одна мысль: **содержание — крупно, всё остальное — тише**. Как клиенты рисуют теги, проверено
 spike 2026-10-27 на iOS и Desktop (`plan/rich_messages/README.md` §«Spike Задачи 88»).
@@ -634,7 +634,7 @@ Outer-middleware `enforce_callback_rate_limit` на `Dispatcher.callback_query`:
   рисуют страницу таблицей `_table` с колонкой сортировки и постоянным «хвостом»
   (игры/смены, сейвы, баланс). Подписи показателей и раскладка меню — `leaderboard_specs.py`.
 - Таблицы и блоки rich-сообщений собирают `_table()`, `rich_message()`, `rich_footer()`,
-  `rich_details()`, `rich_list()` (`bot_messages.py`); лимит `RICH_MESSAGE_MAX_LENGTH`,
+  `rich_details()`, `rich_list()` (`rich_markup.py`); лимит `RICH_MESSAGE_MAX_LENGTH`,
   `truncate_telegram_text` режет целыми строками. Правила стиля — §9.
 - `players_season_stats` не хранит команду игрока: сезонные очки целиком относятся к
   `rosters.current_team_id` — обменянный игрок попадёт в профиль только последней команды, со

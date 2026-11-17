@@ -41,28 +41,22 @@ import schedule_repo
 import subscription_repo
 from database import get_connection
 from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
-from push_digest_job import throttled
-from throttle import enforce_callback_rate_limit
+from throttle import enforce_callback_rate_limit, throttled
 from bot_messages import (
-    COUNTRY_LABELS,
-    MSK,
-    ROSTER_GROUPS,
     country_profile,
     country_rankings,
     day_digest,
-    rich_footer,
-    rich_list,
-    rich_message,
     last_night_day,
     player_labels,
+    ROSTER_GROUPS,
     season_teams_by_division,
-    team_list_text,
-    team_roster_group,
     team_full_stats,
+    team_list_text,
     team_profile,
+    team_roster_group,
     team_table,
-    truncate_telegram_text,
 )
+from rich_markup import COUNTRY_LABELS, MSK, rich_footer, rich_list, rich_message, truncate_telegram_text
 from nhl_scoreboard import (
     ScoreboardFetchError,
     fetch_score,
