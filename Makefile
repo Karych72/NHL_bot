@@ -189,14 +189,16 @@ test-db-data:
 
 # Контрольный набор свободного текста (Задача 81) против настоящего Claude API: стоит денег,
 # нужен ANTHROPIC_API_KEY — поэтому вне ci-local. Порог — 90% совпадений.
+# Аргументы скрипта — через ARGS: make ai-eval ARGS="--model claude-haiku-5-5".
 ai-eval:
-	@$(PY) scripts/ai_router_eval.py
+	@$(PY) scripts/ai_router_eval.py $(ARGS)
 
 # То же для ответов на статистические вопросы (Задача 83): весь цикл ai_stats (SQL, ревью)
 # против настоящих API и БД, стоимость из usage. Порог — 90% верных, ни одной неверной цифры
 # в ответе, прошедшем ревью.
+# Аргументы — через ARGS: make ai-stats-eval ARGS="--answer-model claude-haiku-5-5 --ids a1,a2".
 ai-stats-eval:
-	@$(PY) scripts/ai_stats_eval.py
+	@$(PY) scripts/ai_stats_eval.py $(ARGS)
 
 # Полный прогон: быстрые тесты + проверки схемы БД (нужны PostgreSQL и DDL, см. README).
 all-tests: test-fast test-db
