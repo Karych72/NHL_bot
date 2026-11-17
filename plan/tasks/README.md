@@ -39,6 +39,7 @@
 | 124 | [Бесплатный ИИ: без пожизненного потолка](task_124_free_ai_no_total_limit.md) | Продукт | 🟠 |
 | 125 | [Конец пробника: сообщение вместо тишины](task_125_trial_end_message.md) | Продукт | 🟡 |
 | 126 | [Премиум без прогноза: чем наполнить](task_126_premium_content.md) | Продукт | 🟠 |
+| 141 | [Общий суточный потолок расходов на ИИ](task_141_ai_daily_budget.md) | Продукт | 🟠 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).

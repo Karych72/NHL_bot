@@ -1744,7 +1744,9 @@ class TestAiLimitSql(unittest.TestCase):
     FREE_CHAT = -999000081
     PREMIUM_CHAT = -999000082
     EXPIRED_CHAT = -999000083
-    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT]
+    TRIAL_CHAT = -999000084
+    PAID_CHAT = -999000085
+    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT, TRIAL_CHAT, PAID_CHAT]
     # Минута до начала текущих суток / недели по МСК — уже не в счёт.
     BEFORE_DAY = ("(date_trunc('day', now() AT TIME ZONE 'Europe/Moscow') - interval '1 minute') "
                   "AT TIME ZONE 'Europe/Moscow'")
@@ -1763,10 +1765,20 @@ class TestAiLimitSql(unittest.TestCase):
                 "(%s, now() + interval '1 day'), (%s, now() - interval '1 second')",
                 (self.PREMIUM_CHAT, self.EXPIRED_CHAT),
             )
+            cur.execute(
+                "INSERT INTO premium_access (chat_id, expires_at, is_trial) VALUES "
+                "(%s, now() + interval '1 day', true), (%s, now() + interval '1 day', false)",
+                (self.TRIAL_CHAT, self.PAID_CHAT),
+            )
+            cur.execute(
+                "INSERT INTO premium_payments (chat_id, telegram_payment_charge_id, amount_stars, "
+                "is_recurring, paid_until) VALUES (%s, 'charge-141', 100, false, now() + interval '1 day')",
+                (self.PAID_CHAT,),
+            )
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for table in ("ai_questions", "ai_stats_log", "premium_access"):
+            for table in ("ai_questions", "ai_stats_log", "premium_access", "premium_payments"):
                 cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
 
     def _asked(self, chat_id, n, at="now()", table="ai_questions", outcome="text"):
@@ -1779,6 +1791,37 @@ class TestAiLimitSql(unittest.TestCase):
                     f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, {at})",
                     (chat_id, outcome),
                 )
+
+    def _spent(self, chat_id, usd, at="now()", table="ai_questions"):
+        """Строка журнала ``table`` с расходом ``usd`` $ моментом ``at`` (SQL-выражение)."""
+        extra = "continuation, " if table == "ai_stats_log" else ""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {table} (chat_id, question, {extra}outcome, latency_ms, cost_usd, asked_at) "
+                f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, %s, {at})",
+                (chat_id, "answer" if extra else "text", usd),
+            )
+
+    def test_budget_refuses_unpaid_chats_when_day_spend_reaches_limit(self):
+        """Задача 141: сумма обоих журналов за сутки МСК; бесплатный и пробный чаты получают
+        BUDGET_TEXT до проверки своих лимитов, платящий — нет."""
+        ai = self.ai
+        half = ai.DAILY_BUDGET_USD / 2
+        self._spent(self.PREMIUM_CHAT, half - 0.01)
+        self._spent(self.PREMIUM_CHAT, half, table="ai_stats_log")
+        for chat in (self.FREE_CHAT, self.TRIAL_CHAT):
+            self.assertIsNone(ai.limit_refusal(chat), "расход ниже бюджета")
+        self._spent(self.PREMIUM_CHAT, 0.01)
+        for chat in (self.FREE_CHAT, self.TRIAL_CHAT, self.EXPIRED_CHAT):
+            self.assertEqual(ai.limit_refusal(chat), ai.BUDGET_TEXT)
+        self.assertIsNone(ai.limit_refusal(self.PAID_CHAT), "платящий чат бюджет не проверяет")
+
+    def test_budget_ignores_previous_day_and_null_cost(self):
+        ai = self.ai
+        self._spent(self.PREMIUM_CHAT, ai.DAILY_BUDGET_USD * 2, at=self.BEFORE_DAY)
+        self._spent(self.PREMIUM_CHAT, ai.DAILY_BUDGET_USD * 2, at=self.BEFORE_DAY, table="ai_stats_log")
+        self._asked(self.PREMIUM_CHAT, 1)  # cost_usd IS NULL
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
 
     def test_is_premium_only_until_expiry(self):
         self.assertTrue(self.premium.is_premium(self.PREMIUM_CHAT))

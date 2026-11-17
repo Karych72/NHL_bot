@@ -1151,11 +1151,13 @@ async def run_schedule_ticker(bot: Bot) -> None:
         await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
-# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя).
+# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя),
+# общий суточный бюджет на ИИ (Задача 141).
 # Строки `total` в журнале — история потолка «8 за всё время», снятого Задачей 124.
 _AI_LIMIT_KINDS = {
     ai_router.LIMIT_TEXT: "day",
     ai_router.WEEK_LIMIT_TEXT: "week",
+    ai_router.BUDGET_TEXT: "budget",
 }
 
 
@@ -1171,8 +1173,8 @@ _SCHEDULE_REQUEST = re.compile(
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
-    Лимит исчерпан (`ai_router.limit_refusal`: премиум или бесплатный, Задача 96) — отказ без
-    вызова модели, вид лимита — в журнал `bot_actions`; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
+    Лимит исчерпан (`ai_router.limit_refusal`: премиум или бесплатный, Задача 96; общий бюджет, Задача 141) — отказ без
+    вызова модели, вид лимита (`day`, `week`, `budget`) — в журнал `bot_actions`; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
     отказ, уточнение или сообщение о сбое API.
 
     Модель может передать вопрос ответам по статистике (`ai_stats.answer`, Задача 83); а если

@@ -29,6 +29,9 @@ MODEL = "claude-sonnet-5-5"
 # 3 в календарную неделю МСК (пн–вс). Потолка за всё время нет (Задача 124).
 PREMIUM_DAILY_LIMIT = 20
 FREE_WEEKLY_LIMIT = 3
+# Общий предохранитель (Задача 141): сумма `cost_usd` обоих журналов за сутки МСК, $. Достигнут —
+# неплатящие чаты (бесплатные и пробные) получают отказ до следующих суток; платящих не касается.
+DAILY_BUDGET_USD = 5.0
 # Цены Sonnet 5.5, $ за 1M токенов (2026-10-25): вход, выход, чтение и запись кэша (TTL 5 мин).
 _PRICE_INPUT, _PRICE_OUTPUT, _PRICE_CACHE_READ, _PRICE_CACHE_WRITE = 2.0, 10.0, 0.2, 2.5
 
@@ -38,6 +41,7 @@ WEEK_LIMIT_TEXT = (
     "Бесплатные вопросы на этой неделе закончились, новые — в понедельник. "
     "Больше вопросов — в премиуме: /premium. Команды работают как обычно: /help"
 )
+BUDGET_TEXT = "Сегодня ИИ перегружен, вернитесь завтра. Команды работают как обычно: /help"
 FAILURE_TEXT = "Не удалось разобрать вопрос, попробуйте командой: /help"
 UNSUPPORTED_TEXT = "Это я пока не умею. Что умею — /help"
 
@@ -245,9 +249,23 @@ def _msk_start(unit: str) -> str:
     return f"date_trunc('{unit}', now() AT TIME ZONE 'Europe/Moscow') AT TIME ZONE 'Europe/Moscow'"
 
 
+def _spent_today() -> float:
+    """Расход на ИИ за текущие сутки МСК, $: `cost_usd` по `ai_questions` и `ai_stats_log`
+    (NULL — ноль)."""
+    rows = fetch_all(
+        "SELECT coalesce(sum(cost_usd), 0) FROM ("
+        f"SELECT cost_usd FROM ai_questions WHERE asked_at >= {_msk_start('day')} "
+        f"UNION ALL SELECT cost_usd FROM ai_stats_log WHERE asked_at >= {_msk_start('day')}) q",
+        columns=["spent"],
+    )
+    return float(rows["spent"][0])
+
+
 def limit_refusal(chat_id: int) -> Optional[str]:
     """Отказ по лимиту вопросов или None, если чат ещё может спросить.
 
+    Сначала общий бюджет (Задача 141): чат без действующей оплаты (бесплатный и пробный) при
+    расходе за сутки МСК от `DAILY_BUDGET_USD` получает `BUDGET_TEXT`. Затем лимиты чата.
     Премиуму (`premium.is_premium`) — `PREMIUM_DAILY_LIMIT` за сутки МСК; бесплатному —
     `FREE_WEEKLY_LIMIT` за календарную неделю МСК. Вопрос — строка `ai_questions` (вызов
     маршрутизатора 81) или `ai_stats_log` (ответ по статистике 83, в том числе продолжение диалога мимо маршрутизатора); выбор
@@ -255,6 +273,8 @@ def limit_refusal(chat_id: int) -> Optional[str]:
     иначе он стоил бы две единицы. Сбой (`outcome = 'error'`) не списывает: пользователь не
     виноват, что модель не ответила.
     """
+    if not premium.has_paid_subscription(chat_id) and _spent_today() >= DAILY_BUDGET_USD:
+        return BUDGET_TEXT
     rows = fetch_all(
         f"SELECT count(*) FILTER (WHERE asked_at >= {_msk_start('day')}), "
         f"count(*) FILTER (WHERE asked_at >= {_msk_start('week')}) FROM ("
