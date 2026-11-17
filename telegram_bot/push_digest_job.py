@@ -545,7 +545,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         game_id, start, away, home = nxt
         if game_id not in previews:
             body, footer = matchup_season_preview(game_id, away, home, collapsed=True)
-            facts = html.unescape(re.sub(r"<[^>]+>", " ", body + "\n" + footer))
+            facts = html.unescape(_HTML_TAG.sub(" ", body + "\n" + footer))
             ai_text = await upcoming_preview_text(game_id, facts)
             if ai_text:
                 body += "\n\n" + html.escape(ai_text)

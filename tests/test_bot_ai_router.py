@@ -441,16 +441,21 @@ async def test_api_failure_tells_user_to_use_commands_and_is_logged(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("failure", [False, "timeout", "client", "truncated"])
 async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeypatch, failure):
     ai_router = bot_module("ai_router")
-    fake_db_router([
+    cursor = fake_db_router([
         ("INSERT INTO bot_upcoming_ai", [(95,)]),
         ("INSERT INTO ai_questions", []),
         ("UPDATE bot_upcoming_ai", []),
     ])
     monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
-    messages = FakeMessages(TimeoutError() if failure else _response(_text("Текст превью.")))
+    result = {
+        False: _response(_text("Текст превью.")),
+        "timeout": TimeoutError(), "client": anthropic.AnthropicError("missing key"),
+        "truncated": _response(_text("Оборванный текст"), stop_reason="max_tokens"),
+    }[failure]
+    messages = FakeMessages(result)
     monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
     result = await ai_router.upcoming_preview_text(95, "BOS: 12 побед. TOR: 10 побед.")
     assert result == ("" if failure else "Текст превью.")
@@ -458,6 +463,15 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
         {"role": "user", "content": "BOS: 12 побед. TOR: 10 побед."},
     ]
     assert "исключительно факты" in messages.calls[0]["system"]
+    logged = _logged(cursor)
+    if failure == "truncated":
+        assert logged["cost_usd"] > 0
+        assert logged["input_tokens"] == 100
+    if not failure:
+        statements = [q for q, _ in cursor.executed]
+        assert next(i for i, q in enumerate(statements) if q.startswith("UPDATE")) < next(
+            i for i, q in enumerate(statements) if q.startswith("INSERT INTO ai_questions")
+        )
     fake_db_router([
         ("INSERT INTO bot_upcoming_ai", []),
         ("SELECT body FROM bot_upcoming_ai", [(result or None,)]),
@@ -465,3 +479,11 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
     monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
     assert await ai_router.upcoming_preview_text(95, "changed") == result
     assert len(messages.calls) == 1
+
+
+def test_migration_versions_are_unique():
+    from pathlib import Path
+
+    migrations = Path(__file__).resolve().parents[1] / "data_tables/migrations"
+    versions = [f.name.split("_", 1)[0] for f in migrations.glob("*.up.sql")]
+    assert len(versions) == len(set(versions)), "db-migrate skips duplicate migration versions"
