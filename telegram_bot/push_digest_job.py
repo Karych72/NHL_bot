@@ -72,6 +72,7 @@ from country_messages import (  # noqa: E402
     players_night_entries,
 )
 from ai_router import upcoming_preview_text  # noqa: E402
+from premium import has_paid_subscription  # noqa: E402
 from game_messages import matchup_season_preview  # noqa: E402
 from leaderboard_messages import team_table  # noqa: E402
 from team_messages import player_labels  # noqa: E402
@@ -528,7 +529,8 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight``
     (сравнение команд): ближайший по началу ещё не начавшийся матч дня, которого он не
     получал (решение человека 2026-10-25). Превью собирается раз на матч, а не на
-    подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
+    подписчика. ИИ-текст добавляется только при действующей оплате Stars.
+    Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
@@ -538,19 +540,21 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         return
     sent = sent_games([game[0] for game in games])
     previews: Dict[int, Tuple[str, str]] = {}
+    ai_texts: Dict[int, str] = {}
     for subscription_id, chat_id in list_active_upcoming_rows():
         nxt = next((g for g in games if (subscription_id, g[0]) not in sent), None)
         if nxt is None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            body, footer = matchup_season_preview(game_id, away, home, collapsed=True)
-            facts = html.unescape(_HTML_TAG.sub(" ", body + "\n" + footer))
-            ai_text = await upcoming_preview_text(game_id, facts)
-            if ai_text:
-                body += "\n\n" + html.escape(ai_text)
-            previews[game_id] = body, footer
+            previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
         body, footer = previews[game_id]
+        if has_paid_subscription(chat_id):
+            if game_id not in ai_texts:
+                facts = html.unescape(_HTML_TAG.sub(" ", body + "\n" + footer))
+                ai_texts[game_id] = await upcoming_preview_text(game_id, facts)
+            if ai_texts[game_id]:
+                body += "\n\n" + html.escape(ai_texts[game_id])
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
