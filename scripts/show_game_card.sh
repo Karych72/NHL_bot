@@ -29,7 +29,7 @@ trap 'rm -f "$PROBE"' EXIT
 
 # Проба = шаблон + модули сообщений рабочей копии (base64: в контейнере dev-стека код develop).
 # Порядок — порядок импорта: модуль идёт после тех, из которых импортирует.
-MODULES="rich_markup bot_messages"
+MODULES="rich_markup leaderboard_messages team_messages game_messages country_messages bot_messages"
 python3 - "$ROOT/telegram_bot" "$ROOT/scripts/show_game_card_probe.py" "$PROBE" $MODULES <<'PY'
 import base64, sys
 src_dir, template, out, *modules = sys.argv[1:]

@@ -19,7 +19,7 @@ CREATE TABLE rosters(
 );
 
 -- Индекс на season_id не добавлен: основной паттерн запроса к rosters — JOIN по
--- (player_id, season_id) вместе (telegram_bot/bot_messages.py, telegram_bot/queries/
+-- (player_id, season_id) вместе (экранные модули telegram_bot/, telegram_bot/queries/
 -- get_goals_game.sql, get_goalies_game.sql) — его уже обслуживает
 -- PRIMARY KEY (player_id, season_id). WHERE (current_team_id, season_id) = (%s, %s)
 -- без player_id тоже есть (team_profile(), Задача 41, Фаза D) — отдельного индекса под

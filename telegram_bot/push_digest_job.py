@@ -62,19 +62,18 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
-from bot_messages import (  # noqa: E402
+from bot_messages import day_digest, night_goals  # noqa: E402
+from country_messages import (  # noqa: E402
     country_heading,
     country_night_blocks,
     country_night_entries,
     country_profile,
-    day_digest,
-    matchup_season_preview,
-    night_goals,
-    player_labels,
     players_block,
     players_night_entries,
-    team_table,
 )
+from game_messages import matchup_season_preview  # noqa: E402
+from leaderboard_messages import team_table  # noqa: E402
+from team_messages import player_labels  # noqa: E402
 from rich_markup import country_name, MSK, plural_word, rich_footer, rich_message  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402

@@ -33,22 +33,14 @@ from aiogram.types import (
 )
 
 from bot_messages import (
-    country_game_block,
-    country_page,
-    country_rankings,
     day_digest_summary_body,
     digest_game_button_labels,
     DIGEST_GAME_SEPARATOR,
     digest_shown_match_count,
-    game_exists,
-    game_goal_events,
-    game_message,
-    goal_clip_media_id,
-    matchup_season_preview,
-    PLAYER_GROUPS,
-    player_stat_leaderboard_page,
-    team_stat_leaderboard_page,
 )
+from country_messages import country_game_block, country_page, country_rankings
+from game_messages import game_exists, game_goal_events, game_message, goal_clip_media_id, matchup_season_preview
+from leaderboard_messages import PLAYER_GROUPS, player_stat_leaderboard_page, team_stat_leaderboard_page
 from rich_markup import (
     COUNTRY_LABELS,
     LEADERBOARD_PAGE_SIZE,

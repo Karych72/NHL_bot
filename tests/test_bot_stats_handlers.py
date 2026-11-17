@@ -5,9 +5,9 @@ Handlers get real aiogram objects (conftest: ``make_callback``/``make_message``
 bound to ``fake_bot``) and the arguments aiogram's
 dependency injection would pass — the regex ``match`` of the registration filter
 included; what they ask Telegram to do is read back from the recording session
-(``api``). Where a handler calls into bot_messages for DB-backed rendering, that
+(``api``). Where a handler calls into a screen module for DB-backed rendering, that
 collaborator function is patched on stats_handlers' own namespace (the same
-boundary style already used for bot_messages.fetch_all elsewhere in this
+boundary style already used for the screen modules' fetch_all elsewhere in this
 suite) so what's actually under test — callback_data parsing, offset arithmetic,
 TelegramBadRequest handling — is isolated from database access.
 """

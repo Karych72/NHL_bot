@@ -47,7 +47,7 @@ CREATE TABLE players_season_stats(
 -- Обслуживает лидерборды WHERE pl.season_id = %s ORDER BY <col> DESC LIMIT/OFFSET
 -- (table_name="players_season_stats" — см. telegram_bot/leaderboard_specs.py:7-18,48
 -- и telegram_bot/stats_handlers.py:271-292,308):
---   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
+--   telegram_bot/leaderboard_messages.py (player_stats_with_count)
 -- PRIMARY KEY(player_id, season_id, game_type) начинается с player_id и этот фильтр не
 -- обслуживает. game_type — второй колонкой: экраны читают регулярку (Задача 103).
 CREATE INDEX idx_players_season_stats_season ON players_season_stats (season_id, game_type);

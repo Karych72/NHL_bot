@@ -929,8 +929,12 @@ class TestCountryNightSql(unittest.TestCase):
 
     def setUp(self):
         import bot_messages
+        import country_messages
+        import game_messages
 
-        self.messages = bot_messages
+        self.bot_messages = bot_messages
+        self.country_messages = country_messages
+        self.game_messages = game_messages
         # Шаблон карточки (`messages/game_message.txt`) читается от каталога бота.
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(TELEGRAM_BOT)
@@ -1037,12 +1041,12 @@ class TestCountryNightSql(unittest.TestCase):
         ])
         block_game2 = "<b>ZZZ</b>\n\nГость (Away Club)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
-            self.messages.country_night_blocks("ZZZ", self.NIGHT),
+            self.country_messages.country_night_blocks("ZZZ", self.NIGHT),
             [(self.GAME, block_game), (self.GAME2, block_game2)],
         )
-        self.assertEqual(self.messages.country_game_block("ZZZ", self.GAME2), block_game2)
-        self.assertEqual(self.messages.country_night_blocks("XXX", self.NIGHT), [])
-        self.assertIsNone(self.messages.country_game_block("XXX", self.GAME))
+        self.assertEqual(self.country_messages.country_game_block("ZZZ", self.GAME2), block_game2)
+        self.assertEqual(self.country_messages.country_night_blocks("XXX", self.NIGHT), [])
+        self.assertIsNone(self.country_messages.country_game_block("XXX", self.GAME))
 
     def test_namesakes_of_the_season_get_first_name_initial(self):
         """Однофамильцы сезона различаются инициалом на всех экранах матча: авторы и
@@ -1089,7 +1093,7 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertIn("G. Стенка", goalies)
         self.assertEqual(star, "S. Скорер<")
         self.assertEqual(alone, "Тень")
-        block = self.messages.country_game_block("ZZZ", self.GAME)
+        block = self.country_messages.country_game_block("ZZZ", self.GAME)
         self.assertIn("S. Скорер&lt; (Home Club, ц)", block)
         self.assertIn("G. Стенка (Home Club)", block)
 
@@ -1124,16 +1128,16 @@ class TestCountryNightSql(unittest.TestCase):
         """Первая строка карточки — шапка (Задача 119): гости слева, `get_game_stats` отдаёт
         аббревиатуру команды; команды без маскота — шайба."""
         self.assertEqual(
-            self.messages.game_message(self.GAME).split("\n")[0],
+            self.game_messages.game_message(self.GAME).split("\n")[0],
             "<b><i>🏒 AWAY CLUB 🏒 2 : 3 🏒 HOME CLUB 🏒</i></b>",
         )
 
     def test_game_goal_events_in_game_order(self):
-        self.assertEqual(self.messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
+        self.assertEqual(self.game_messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(
-            self.messages.night_goals(self.NIGHT),
+            self.bot_messages.night_goals(self.NIGHT),
             [(self.GAME, 5, "ZZZ", -1), (self.GAME, 10, "ZZZ", -1), (self.GAME, 20, "YYY", -3),
              (self.GAME, 30, "ZZZ", -6)],
         )
@@ -1161,7 +1165,7 @@ class TestCountryNightSql(unittest.TestCase):
                 if chat in chats
             }
 
-        blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
+        blocks = dict(self.country_messages.country_night_blocks("ZZZ", self.NIGHT))
         self.assertEqual(subscribed[both], {
             self.GAME: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME])]),
             self.GAME2: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME2])]),
@@ -1363,9 +1367,13 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
 
     def setUp(self):
         import ai_stats
-        import bot_messages
+        import game_messages
+        import leaderboard_messages
+        import team_messages
 
-        self.messages = bot_messages
+        self.game_messages = game_messages
+        self.leaderboard_messages = leaderboard_messages
+        self.team_messages = team_messages
         self.ai_stats = ai_stats
         self._cleanup()
         self.addCleanup(self._cleanup)
@@ -1426,13 +1434,13 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
 
     def test_form_streak_h2h_and_standings_day_skip_playoff(self):
         # С плей-офф было бы 2-1-0, «L1», (2, 1) и 2099-04-20.
-        self.assertEqual(self.messages._last_n_form_record(self.HOME), "2-0-0")
-        self.assertEqual(self.messages._current_streak(self.HOME), "W2")
-        self.assertEqual(self.messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
-        self.assertEqual(self.messages._standings_as_of_day(), "2099-01-03")
+        self.assertEqual(self.team_messages._last_n_form_record(self.HOME), "2-0-0")
+        self.assertEqual(self.team_messages._current_streak(self.HOME), "W2")
+        self.assertEqual(self.game_messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
+        self.assertEqual(self.leaderboard_messages._standings_as_of_day(), "2099-01-03")
 
     def test_team_full_games_skip_playoff(self):
-        context = self.messages._team_games_context(self.HOME)
+        context = self.team_messages._team_games_context(self.HOME)
         self.assertIn("Дома: 1-0-0 · в гостях: 1-0-0", context["season_extra"])
         self.assertEqual(
             context["recent_games"].splitlines(),
@@ -1549,9 +1557,15 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
 
     def setUp(self):
         import ai_stats
-        import bot_messages
+        import country_messages
+        import game_messages
+        import leaderboard_messages
+        import team_messages
 
-        self.messages = bot_messages
+        self.country_messages = country_messages
+        self.game_messages = game_messages
+        self.leaderboard_messages = leaderboard_messages
+        self.team_messages = team_messages
         self.ai_stats = ai_stats
         # Шаблоны экранов (`messages/*.txt`) читаются относительно telegram_bot/.
         self.addCleanup(os.chdir, os.getcwd())
@@ -1635,17 +1649,17 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
                               ("players_advanced_stats", "sat_pct"),
                               ("players_shot_types", "goals_wrist")):
             with self.subTest(table=table):
-                text, _n, total = self.messages.player_stats_with_count(table, column)
+                text, _n, total = self.leaderboard_messages.player_stats_with_count(table, column)
                 self.assertEqual(total, 1)
                 self.assertNoPlayoff(text)
 
     def test_team_screens_read_regular_totals(self):
-        text, _n, total = self.messages.team_stats_with_count(["points"])
+        text, _n, total = self.leaderboard_messages.team_stats_with_count(["points"])
         self.assertEqual(total, 2)
         self.assertNoPlayoff(text)
-        self.assertNoPlayoff(self.messages.team_table())
-        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview(2099020001, "AWY", "HOM")))
-        for screen in (self.messages.team_profile, self.messages.team_full_stats):
+        self.assertNoPlayoff(self.leaderboard_messages.team_table())
+        self.assertNoPlayoff("\n".join(self.game_messages.matchup_season_preview(2099020001, "AWY", "HOM")))
+        for screen in (self.team_messages.team_profile, self.team_messages.team_full_stats):
             with self.subTest(screen=screen.__name__):
                 text = screen("HOM")
                 self.assertIn("Skater", text)
@@ -1653,12 +1667,12 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
                 self.assertNoPlayoff(text)
 
     def test_country_screens_read_regular_totals(self):
-        with patch.object(self.messages, "COUNTRY_MIN_PLAYERS", 1):
-            self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
+        with patch.object(self.country_messages, "COUNTRY_MIN_PLAYERS", 1):
+            self.assertEqual(self.country_messages._country_ranking(), [("ZZZ", 1, 17, 11)])
         for group in ("F", "G"):
             with self.subTest(group=group):
-                table, _n, total, _first = self.messages._player_group_table(
-                    self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
+                table, _n, total, _first = self.leaderboard_messages._player_group_table(
+                    self.leaderboard_messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
                 )
                 self.assertEqual(total, 1)
                 self.assertNoPlayoff(table)

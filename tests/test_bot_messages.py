@@ -1,6 +1,7 @@
 """Unit tests for message assembly: telegram_bot/template_funcs.py and the
-HTML-rendering paths of telegram_bot/bot_messages.py. No DB, no network —
-bot_messages.fetch_all and bot_messages.cached_fetch_all are patched at the
+HTML-rendering paths of the screen modules (rich_markup, game_messages,
+team_messages, leaderboard_messages, country_messages, bot_messages). No DB, no
+network — each module's fetch_all and cached_fetch_all are patched at the
 module boundary; template_funcs is exercised directly against real template
 files under telegram_bot/messages/.
 
@@ -57,7 +58,7 @@ def test_output_text_substitutes_jinja_variables(bot_module, tmp_path):
 
 
 def test_output_text_does_not_auto_escape_html(bot_module, tmp_path):
-    """bot_messages.py hand-escapes every DB-sourced value with html.escape()
+    """The screen modules hand-escape every DB-sourced value with html.escape()
     before it reaches a template. If Template() rendering ever gained
     autoescape=True, every one of those values would be double-escaped
     (`&amp;lt;` instead of `&lt;`) — lock down that it stays raw substitution."""
@@ -247,10 +248,10 @@ def game_message_text(bot_module):
     same stub too, so a query that sneaks in through the cache fails loudly
     (the stub's terminal AssertionError) instead of silently escaping to the
     real database.get_connection(). Клипы — у первого и третьего голов."""
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
-            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
-        return bot_messages.game_message(555, clips={10, 12})
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(game_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
+        return game_messages.game_message(555, clips={10, 12})
 
 
 def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
@@ -264,10 +265,10 @@ def test_playoff_label_reads_round_and_game_from_game_id(bot_module):
 def test_game_message_marks_playoff_round_under_score_line(bot_module):
     """Карточка матча плей-офф (Задача 106): шапка со счётом — первой строкой (её видно в
     уведомлении), пометка раунда — курсивом строкой ниже."""
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
-            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
-        text = bot_messages.game_message(2025030123)
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(game_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
+        text = game_messages.game_message(2025030123)
     first, second, _rest = text.split("\n", 2)
     assert first.startswith("<b><i>🍁 ")
     assert second == "<i>Плей-офф, раунд 1, игра 3</i>"
@@ -286,25 +287,25 @@ def test_game_message_heading_is_bold_italic_caps_with_mascots_on_both_sides(gam
 
 def test_score_line_marks_overtime_and_unknown_team(bot_module):
     """ОТ/Б — после счёта в шапке (кириллицей); команда без маскота — шайба 🏒."""
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     header = {"away": "Buffalo Sabres", "home": "Chicago Blackhawks", "away_abbr": "BUF",
               "home_abbr": "XXX", "away_score": "2", "home_score": "3", "extra": " (ОТ)"}
-    assert bot_messages._score_line(header) == (
+    assert game_messages._score_line(header) == (
         "<b><i>⚔️ BUFFALO SABRES ⚔️ 2 : 3 (ОТ) 🏒 CHICAGO BLACKHAWKS 🏒</i></b>"
     )
-    assert "(Б)" in bot_messages._score_line({**header, "extra": " (Б)"})
+    assert "(Б)" in game_messages._score_line({**header, "extra": " (Б)"})
 
 
 def test_card_heading_puts_playoff_round_and_period_scores_under_the_score(bot_module):
     """Под строкой счёта — раунд плей-офф (если плей-офф) и счёт по периодам: шапка видна и
     над свёрнутой карточкой."""
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     header = {"away": "A", "home": "H", "away_abbr": "", "home_abbr": "", "away_score": "1",
               "home_score": "2", "extra": "", "period_scores": "1:0, 0:1, 0:1"}
-    assert bot_messages._card_heading(header, 2025030123).split("\n")[1:] == [
+    assert game_messages._card_heading(header, 2025030123).split("\n")[1:] == [
         "<i>Плей-офф, раунд 1, игра 3</i>", "<i>Периоды: 1:0, 0:1, 0:1</i>",
     ]
-    assert bot_messages._card_heading(header, 2025020123).split("\n")[1:] == ["<i>Периоды: 1:0, 0:1, 0:1</i>"]
+    assert game_messages._card_heading(header, 2025020123).split("\n")[1:] == ["<i>Периоды: 1:0, 0:1, 0:1</i>"]
 
 
 def test_rich_message_keeps_gap_after_collapsed_block_and_slideshow_is_a_block(bot_module):
@@ -323,10 +324,10 @@ def test_rich_message_keeps_gap_after_collapsed_block_and_slideshow_is_a_block(b
 def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
     """Подписка только на страну: под шапкой со счётом по периодам вся карточка — свёрнутый
     блок «Голы и статистика», видео голов — вложенный свёрнутый блок в нём."""
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all), \
-            patch.object(bot_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
-        text = bot_messages.game_message(555, clips={10}, collapsed=True)
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", side_effect=_game_message_fetch_all), \
+            patch.object(game_messages, "cached_fetch_all", side_effect=_game_message_fetch_all):
+        text = game_messages.game_message(555, clips={10}, collapsed=True)
     first, periods, rest = text.split("\n", 2)
     assert first.startswith("<b><i>")
     assert periods == "<i>Периоды: 0:2, 0:1, 0:0</i>"
@@ -336,9 +337,9 @@ def test_game_message_collapsed_keeps_only_heading_in_sight(bot_module):
 
 
 def test_game_goal_events_skips_goals_without_event(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=_game_message_fetch_all):
-        assert bot_messages.game_goal_events(555) == [10, 12]
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", side_effect=_game_message_fetch_all):
+        assert game_messages.game_goal_events(555) == [10, 12]
 
 
 def test_game_message_has_no_playoff_mark_for_regular_game(game_message_text):
@@ -465,11 +466,11 @@ def _overtime_fetch_all(shootout: bool):
 def test_game_message_titles_overtime_and_shootout_goal(
     bot_module, shootout, expected_block, expected_mark
 ):
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     stub = _overtime_fetch_all(shootout)
-    with patch.object(bot_messages, "fetch_all", side_effect=stub), \
-            patch.object(bot_messages, "cached_fetch_all", side_effect=stub):
-        text = bot_messages.game_message(555)
+    with patch.object(game_messages, "fetch_all", side_effect=stub), \
+            patch.object(game_messages, "cached_fetch_all", side_effect=stub):
+        text = game_messages.game_message(555)
 
     assert "<b>2-й период</b>\nГолов нет\n" in text
     assert "<b>3-й период</b>\n59:39 · 1:1 — Hughes [C]\n&nbsp;\n" in text
@@ -483,11 +484,11 @@ def test_game_message_titles_overtime_and_shootout_goal(
 
 def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):
     """Плей-офф (Задача 37C): период 5 без буллитов — второй овертайм, а не «Буллиты»."""
-    bot_messages = bot_module("bot_messages")
-    assert bot_messages._period_name(4, False) == "Овертайм"
-    assert bot_messages._period_name(5, False) == "2-й овертайм"
-    assert bot_messages._period_name(6, False) == "3-й овертайм"
-    assert bot_messages._period_name(5, True) == "Буллиты"
+    game_messages = bot_module("game_messages")
+    assert game_messages._period_name(4, False) == "Овертайм"
+    assert game_messages._period_name(5, False) == "2-й овертайм"
+    assert game_messages._period_name(6, False) == "3-й овертайм"
+    assert game_messages._period_name(5, True) == "Буллиты"
 
 
 @pytest.mark.parametrize(
@@ -497,7 +498,7 @@ def test_period_name_counts_playoff_overtimes_from_period_number(bot_module):
 )
 def test_game_clock_counts_from_game_start(bot_module, period, time_in_period, expected):
     """Время гола — от начала матча; овертаймы плей-офф по 20 минут (6-й период — 3-й ОТ)."""
-    assert bot_module("bot_messages").game_clock(period, time_in_period) == expected
+    assert bot_module("game_messages").game_clock(period, time_in_period) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -549,10 +550,10 @@ def test_game_message_omits_three_stars_block_when_no_rows(bot_module):
             return {"count_rows": 0}
         return _game_message_fetch_all(query, params, columns)
 
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", side_effect=fetch_all_no_stars), \
-            patch.object(bot_messages, "cached_fetch_all", side_effect=fetch_all_no_stars):
-        text = bot_messages.game_message(555)
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", side_effect=fetch_all_no_stars), \
+            patch.object(game_messages, "cached_fetch_all", side_effect=fetch_all_no_stars):
+        text = game_messages.game_message(555)
 
     assert "Звёзды матча" not in text
     assert "Kaprizov" not in text and "Thompson" not in text
@@ -563,11 +564,11 @@ def test_game_message_omits_three_stars_block_when_no_rows(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_game_exists_true_only_when_a_row_is_found(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "fetch_all", return_value={"count_rows": 0, "o": []}):
-        assert bot_messages.game_exists(1) is False
-    with patch.object(bot_messages, "fetch_all", return_value={"count_rows": 1, "o": [1]}):
-        assert bot_messages.game_exists(1) is True
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "fetch_all", return_value={"count_rows": 0, "o": []}):
+        assert game_messages.game_exists(1) is False
+    with patch.object(game_messages, "fetch_all", return_value={"count_rows": 1, "o": [1]}):
+        assert game_messages.game_exists(1) is True
 
 
 # ---------------------------------------------------------------------------
@@ -605,78 +606,78 @@ def test_plural_word_agrees_with_number(bot_module, points, word):
 
 
 def test_current_streak_three_wins_in_a_row(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([
         (_STREAK_TEAM_ID, False, False, False),
         (_STREAK_TEAM_ID, False, False, False),
         (_STREAK_TEAM_ID, False, False, False),
         (_STREAK_OPP_ID, False, False, False),
     ])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "W3"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "W3"
 
 
 def test_current_streak_two_losses_in_a_row(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([
         (_STREAK_OPP_ID, False, False, False),
         (_STREAK_OPP_ID, False, False, False),
         (_STREAK_TEAM_ID, False, False, False),
     ])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "L2"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "L2"
 
 
 def test_current_streak_one_shootout_loss(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([
         (_STREAK_OPP_ID, True, True, False),
         (_STREAK_TEAM_ID, False, False, False),
     ])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "OTL1"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "OTL1"
 
 
 def test_current_streak_stops_at_first_different_outcome(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([
         (_STREAK_TEAM_ID, False, False, False),   # W
         (_STREAK_TEAM_ID, False, False, False),   # W
         (_STREAK_OPP_ID, True, False, False),      # OTL — обрывает серию
         (_STREAK_TEAM_ID, False, False, False),   # W (старее, в серию не входит)
     ])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "W2"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "W2"
 
 
 def test_current_streak_no_games_returns_dash(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_recent_games_rows([])):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "—"
+    team_messages = bot_module("team_messages")
+    with patch.object(team_messages, "cached_fetch_all", return_value=_recent_games_rows([])):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "—"
 
 
 def test_current_streak_rule_84_2_ot_empty_net_goal_is_loss_not_otl(bot_module):
     """Правило NHL 84.2: is_overtime=True, без буллитов, но с победным голом в
     пустые ворота в периоде >= 4 (`ot_empty_net_win=True`) — для проигравшей
     команды это L, а не OTL, поэтому серия здесь L2, а не OTL2."""
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([
         (_STREAK_OPP_ID, True, False, True),
         (_STREAK_OPP_ID, True, False, True),
         (_STREAK_TEAM_ID, False, False, False),
     ])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._current_streak(_STREAK_TEAM_ID) == "L2"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._current_streak(_STREAK_TEAM_ID) == "L2"
 
 
 def test_last_n_form_record_rule_84_2_ot_empty_net_goal_counts_as_loss(bot_module):
     """Тот же случай 84.2 для записи формы W-L-OTL: случай из брифа Задачи 24
     (game_id 2023021166, MIN 1 – VGK 2) — 0-1-0 для проигравшей команды,
     а не 0-0-1."""
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = _recent_games_rows([(_STREAK_OPP_ID, True, False, True)])
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        assert bot_messages._last_n_form_record(_STREAK_TEAM_ID, 5) == "0-1-0"
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        assert team_messages._last_n_form_record(_STREAK_TEAM_ID, 5) == "0-1-0"
 
 
 # ---------------------------------------------------------------------------
@@ -688,25 +689,25 @@ _REGULAR_GAME = 2025020555
 
 
 def test_matchup_season_preview_rejects_blank_or_placeholder_abbrev(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"", "NYR")
+    game_messages = bot_module("game_messages")
+    with patch.object(game_messages, "cached_fetch_all") as mock_fetch:
+        text, footer = game_messages.matchup_season_preview(_REGULAR_GAME,"", "NYR")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
 
-    with patch.object(bot_messages, "cached_fetch_all") as mock_fetch:
-        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"?", "?")
+    with patch.object(game_messages, "cached_fetch_all") as mock_fetch:
+        text, footer = game_messages.matchup_season_preview(_REGULAR_GAME,"?", "?")
     assert "Не удалось сопоставить" in text
     assert footer == ""
     mock_fetch.assert_not_called()
 
 
 def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     empty = {"count_rows": 0}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
+    with patch.object(game_messages, "cached_fetch_all", return_value=empty):
+        text, footer = game_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
     assert text.startswith("<b>AAA @ BBB</b>\n")
     assert "нет в базе бота" in text
     assert "<b>AAA</b>" not in text and "<b>BBB</b>" not in text, "аббревиатуры в тексте — без <b>"
@@ -714,10 +715,10 @@ def test_matchup_season_preview_reports_when_neither_team_in_db(bot_module):
 
 
 def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     empty = {"count_rows": 0}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"<i>AB", "CD&EF")
+    with patch.object(game_messages, "cached_fetch_all", return_value=empty):
+        text, _footer = game_messages.matchup_season_preview(_REGULAR_GAME,"<i>AB", "CD&EF")
     assert "&lt;i&gt;AB" in text
     assert "CD&amp;EF" in text
     assert "<i>AB" not in text
@@ -726,11 +727,11 @@ def test_matchup_season_preview_escapes_html_in_abbreviations(bot_module):
 def test_matchup_season_preview_marks_playoff_round_under_heading(bot_module):
     """Превью матча плей-офф (`/tonight`, рассылка перед матчем): пометка раунда из `game_id`
     строкой под заголовком; у регулярки её нет (Задача 106)."""
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
     empty = {"count_rows": 0}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=empty):
-        playoff, _ = bot_messages.matchup_season_preview(2025030123, "AAA", "BBB")
-        regular, _ = bot_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB")
+    with patch.object(game_messages, "cached_fetch_all", return_value=empty):
+        playoff, _ = game_messages.matchup_season_preview(2025030123, "AAA", "BBB")
+        regular, _ = game_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB")
     assert playoff.startswith("<b>AAA @ BBB</b>\n<i>Плей-офф, раунд 1, игра 3</i>\n")
     assert "Плей-офф" not in regular
 
@@ -756,8 +757,10 @@ def _preview_stats_row(home="BBB"):
     }
 
 
-def _render_preview(bot_messages, home="BBB"):
+def _render_preview(bot_module, home="BBB"):
     """Превью AAA @ home: (тело, подвал); все запросы превью — кэшированные."""
+    game_messages = bot_module("game_messages")
+    team_messages = bot_module("team_messages")
     stats_row = _preview_stats_row(home)
 
     def fake_cached(query, params=None, columns=None):
@@ -769,14 +772,16 @@ def _render_preview(bot_messages, home="BBB"):
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached), \
-            patch.object(bot_messages, "fetch_all", side_effect=AssertionError("некэшированный запрос")):
-        return bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", home)
+    with patch.object(game_messages, "cached_fetch_all", side_effect=fake_cached), \
+            patch.object(team_messages, "cached_fetch_all", side_effect=fake_cached), \
+            patch.object(game_messages, "fetch_all", side_effect=AssertionError("некэшированный запрос")), \
+            patch.object(team_messages, "fetch_all", side_effect=AssertionError("некэшированный запрос")):
+        return game_messages.matchup_season_preview(_REGULAR_GAME,"AAA", home)
 
 
 def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module):
-    bot_messages = bot_module("bot_messages")
-    text, footer = _render_preview(bot_messages)
+    game_messages = bot_module("game_messages")
+    text, footer = _render_preview(bot_module)
 
     # Тело открывает матч полными названиями (Задача 98), без «— сезон …»: сезон ушёл в подвал.
     assert text.startswith("<b>Aaa Club @ BBB Club</b>")
@@ -794,15 +799,14 @@ def test_matchup_season_preview_full_comparison_when_both_teams_known(bot_module
         ["Баланс W-L-OT", "7-3-0", "3-7-0"],
     ]
     assert table[-1] == ["Разница шайб", "+1.5", "-0.9"]
-    assert footer == f"Сезон {bot_messages.config.CURRENT_SEASON}"
+    assert footer == f"Сезон {game_messages.config.CURRENT_SEASON}"
     assert "н/д" not in text
 
 
 def test_matchup_season_preview_bolds_best_value_per_metric(bot_module):
     """Лучшее значение метрики — `<b>` внутри ячейки; у «Пропущено/игра» лучшее — меньшее;
     равные значения и строки баланса/формы/серии без выделения."""
-    bot_messages = bot_module("bot_messages")
-    text, _footer = _render_preview(bot_messages)
+    text, _footer = _render_preview(bot_module)
 
     rows = {
         re.sub(r"<[^>]+>", "", cells[0]): cells[1:]
@@ -816,7 +820,8 @@ def test_matchup_season_preview_bolds_best_value_per_metric(bot_module):
 
 
 def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
+    team_messages = bot_module("team_messages")
     stats_row = {**_preview_stats_row(), "points": [10, 10]}
 
     def fake_cached(query, params=None, columns=None):
@@ -827,8 +832,9 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
             return {"count_rows": 0, "team_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_cached):
-        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
+    with patch.object(game_messages, "cached_fetch_all", side_effect=fake_cached), \
+            patch.object(team_messages, "cached_fetch_all", side_effect=fake_cached):
+        text, _footer = game_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
 
     [points] = [r for r in re.findall(r"<tr>(.*?)</tr>", text) if ">Очки<" in r]
     assert "<b>" not in points
@@ -837,21 +843,22 @@ def test_matchup_season_preview_does_not_bold_equal_values(bot_module):
 def test_team_name_for_abbrev_normalizes_code_and_fails_loudly_without_team(bot_module):
     """Код — параметром, в верхнем регистре без пробелов; команды нет в `teams` — LookupError,
     а не код вместо названия (Задача 98)."""
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     found = {"count_rows": 1, "name": ["Washington Capitals"]}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=found) as mock_fetch:
-        assert bot_messages.team_name_for_abbrev(" wsh ") == "Washington Capitals"
-    assert mock_fetch.call_args.args[1] == (bot_messages.config.SEASON_ID, "WSH")
+    with patch.object(team_messages, "cached_fetch_all", return_value=found) as mock_fetch:
+        assert team_messages.team_name_for_abbrev(" wsh ") == "Washington Capitals"
+    assert mock_fetch.call_args.args[1] == (team_messages.config.SEASON_ID, "WSH")
 
-    with patch.object(bot_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
+    with patch.object(team_messages, "cached_fetch_all", return_value={"count_rows": 0, "name": []}), \
             pytest.raises(LookupError, match="ZZZ"):
-        bot_messages.team_name_for_abbrev("ZZZ")
+        team_messages.team_name_for_abbrev("ZZZ")
 
 
 def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_module):
     """Задача 24: форма и серия — строками таблицы сравнения; у команды без
     игр форма 0-0-0, а серии нет («—»). Личные встречи — строка с победами."""
-    bot_messages = bot_module("bot_messages")
+    game_messages = bot_module("game_messages")
+    team_messages = bot_module("team_messages")
     stats_row = _preview_stats_row()
     team_ids = {"AAA": 111, "BBB": 222}
     # AAA: 2 победы подряд, затем поражение -> форма 2-1-0, серия W2.
@@ -863,7 +870,7 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
     # BBB: в сезоне пока нет завершённых игр -> форма 0-0-0, серия "—".
     bbb_games = _recent_games_rows([])
 
-    league = {col: [None, None] for col in bot_messages._TEAM_PROFILE_STATS_COLUMNS}
+    league = {col: [None, None] for col in team_messages._TEAM_PROFILE_STATS_COLUMNS}
     league.update(count_rows=2, team_id=[111, 222])
 
     def fake_fetch(query, params=None, columns=None):
@@ -881,8 +888,9 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
             return {"count_rows": 1, "winner_id": [222]}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
-        text, _footer = bot_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
+    with patch.object(game_messages, "cached_fetch_all", side_effect=fake_fetch), \
+            patch.object(team_messages, "cached_fetch_all", side_effect=fake_fetch):
+        text, _footer = game_messages.matchup_season_preview(_REGULAR_GAME,"AAA", "BBB")
 
     [table] = _tables(text)
     assert ["Форма (5 игр)", "2-1-0", "0-0-0"] in table
@@ -890,14 +898,16 @@ def test_matchup_season_preview_shows_form_streak_and_head_to_head_rows(bot_modu
     assert ["Личные встречи", "0", "1"] in table
 
 
-def _render_preview_with_places(bot_messages, collapsed=False):
+def _render_preview_with_places(bot_module, collapsed=False):
     """Превью AAA @ BBB, где команды — из разных дивизионов одной конференции: лига из
     трёх команд, AAA (111) вторая в конференции и первая в дивизионе, BBB (222) — третья
     и вторая, CCC (333) — выше обеих."""
+    game_messages = bot_module("game_messages")
+    team_messages = bot_module("team_messages")
     stats_row = _preview_stats_row()
     teams = [(111, "Aaa Club", "Pacific", 14), (222, "BBB Club", "Central", 6),
              (333, "Ccc Club", "Central", 20)]
-    league = {col: [None] * 3 for col in bot_messages._TEAM_PROFILE_STATS_COLUMNS}
+    league = {col: [None] * 3 for col in team_messages._TEAM_PROFILE_STATS_COLUMNS}
     league.update(
         count_rows=3,
         team_id=[t[0] for t in teams],
@@ -922,14 +932,15 @@ def _render_preview_with_places(bot_messages, collapsed=False):
             return {"count_rows": 0, "winner_id": []}
         raise AssertionError(f"unexpected query: {q}")
 
-    with patch.object(bot_messages, "cached_fetch_all", side_effect=fake_fetch):
-        return bot_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB", collapsed=collapsed)
+    with patch.object(game_messages, "cached_fetch_all", side_effect=fake_fetch), \
+            patch.object(team_messages, "cached_fetch_all", side_effect=fake_fetch):
+        return game_messages.matchup_season_preview(_REGULAR_GAME, "AAA", "BBB", collapsed=collapsed)
 
 
 def test_matchup_season_preview_shows_standings_places(bot_module):
     """Места в дивизионе и конференции — первыми строками, без жирного: команды могут быть
     из разных групп, и сравнивать их номера нельзя."""
-    text, _footer = _render_preview_with_places(bot_module("bot_messages"))
+    text, _footer = _render_preview_with_places(bot_module)
 
     [table] = _tables(text)
     assert table[1:3] == [["Место в дивизионе", "1-е", "2-е"], ["Место в конференции", "2-е", "3-е"]]
@@ -938,7 +949,7 @@ def test_matchup_season_preview_shows_standings_places(bot_module):
 
 def test_matchup_season_preview_collapsed_hides_table_under_details(bot_module):
     """Рассылка: заголовок виден, таблица — в свёрнутом блоке."""
-    text, _footer = _render_preview_with_places(bot_module("bot_messages"), collapsed=True)
+    text, _footer = _render_preview_with_places(bot_module, collapsed=True)
 
     heading, details = text.split("\n")
     assert heading == "<b>Aaa Club @ BBB Club</b>"
@@ -971,11 +982,11 @@ def _leader_rows(n: int, total: int | None = None):
 
 
 def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with patch.object(
-        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
+        leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
     ):
-        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+        text, has_prev, has_next = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
     assert has_prev is False
@@ -988,11 +999,11 @@ def test_player_stat_leaderboard_page_full_page_has_next_no_prev(bot_module):
 
 
 def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with patch.object(
-        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
+        leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(10, total=25)
     ):
-        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+        text, has_prev, has_next = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
     assert has_prev is True
@@ -1002,11 +1013,11 @@ def test_player_stat_leaderboard_page_middle_page_has_prev_and_next(bot_module):
 
 
 def test_player_stat_leaderboard_page_last_partial_page_has_no_next(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with patch.object(
-        bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=13)
+        leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(3, total=13)
     ):
-        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+        text, has_prev, has_next = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 10
         )
     assert has_prev is True
@@ -1019,11 +1030,11 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
     """`has_next` смотрит на total, а не на «страница пришла полной»: последняя
     полная страница (offset + n == total) не должна рисовать кнопку «вперёд»
     на пустой диапазон — маркер тут же говорит «показаны 741–750 из 750»."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with patch.object(
-        bot_messages, "cached_fetch_all", return_value=_leader_rows(10, total=10)
+        leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(10, total=10)
     ):
-        text, _, has_next = bot_messages.player_stat_leaderboard_page(
+        text, _, has_next = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
     assert has_next is False
@@ -1032,9 +1043,9 @@ def test_player_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
 
 
 def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(0)):
-        text, has_prev, has_next = bot_messages.player_stat_leaderboard_page(
+    leaderboard_messages = bot_module("leaderboard_messages")
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(0)):
+        text, has_prev, has_next = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 50
         )
     assert "Нет данных в этом диапазоне." in text
@@ -1043,7 +1054,7 @@ def test_player_stat_leaderboard_page_empty_range_shows_placeholder(bot_module):
 
 
 def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": ["BOS"], "v0": [55.5], "sort": [55.5], "games_played": [40],
         # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
@@ -1051,8 +1062,8 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [12], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, has_prev, has_next = leaderboard_messages.team_stat_leaderboard_page(
             "Статистика большинства", ("power_play_percentage",), 0
         )
     assert "Статистика большинства" in text
@@ -1063,7 +1074,7 @@ def test_team_stat_leaderboard_page_renders_heading_and_rows(bot_module):
 
 
 def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": [f"T{i}" for i in range(10)],
         "v0": [float(i) for i in range(10)],
@@ -1076,8 +1087,8 @@ def test_team_stat_leaderboard_page_full_last_page_has_no_next(bot_module):
         "total": [10] * 10,
         "count_rows": 10,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, has_next = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, has_next = leaderboard_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert has_next is False
     assert "Показаны 1–10 из 10" in text
     assert _tables(text)[0][1] == ["1.", "T0", "0", "40", "10-5-1", "0"]
@@ -1097,14 +1108,14 @@ def test_team_stat_leaderboard_page_for_against_pair_shows_both_difference_and_g
     """Пара колонок «за/против» (`/team_stats` → «Голы», «Броски»): средние за игру,
     разница со знаком, игры; без хвоста баланса — шире строка на
     телефоне не помещается."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": ["WSH", "BOS"], "v0": [3.4, 2.9], "v1": [2.5, None], "sort": [0.9, None],
         "games_played": [17, 20], "wins": [10, 12], "losses": [5, 6], "ot": [2, 1],
         "record_points": [22, 25], "total": [32, 32], "count_rows": 2,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, has_prev, has_next = bot_messages.team_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, has_prev, has_next = leaderboard_messages.team_stat_leaderboard_page(
             "Голы", ("goals_per_game", "goals_against_per_game"), 10
         )
     assert _tables(text) == [[
@@ -1117,9 +1128,9 @@ def test_team_stat_leaderboard_page_for_against_pair_shows_both_difference_and_g
 
 def test_team_stats_with_count_rejects_column_outside_allowlist(bot_module):
     """Колонки идут в SQL идентификаторами — только из белого списка, в паре тоже."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with pytest.raises(ValueError, match="Column not allowed"):
-        bot_messages.team_stats_with_count(("goals_per_game", "goals; DROP TABLE teams"))
+        leaderboard_messages.team_stats_with_count(("goals_per_game", "goals; DROP TABLE teams"))
 
 
 # ---------------------------------------------------------------------------
@@ -1131,14 +1142,14 @@ def test_team_stats_with_count_rejects_column_outside_allowlist(bot_module):
 
 def test_team_stat_leaderboard_page_shows_record_tail(bot_module):
     """(A) Лидерборд команд: хвост игр:/W-L-OT/очков поверх текущей строки."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": ["BOS"], "v0": [55], "sort": [55], "games_played": [40],
         "wins": [25], "losses": [10], "ot": [5], "record_points": [55],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert _tables(text)[0][1] == ["1.", "BOS", "55", "40", "25-10-5", "55"]
 
 
@@ -1146,15 +1157,15 @@ def test_team_stat_leaderboard_page_null_record_fields_render_dash(
     bot_module, monkeypatch: pytest.MonkeyPatch
 ):
     """Хвост обязан переживать NULL (Задача 18: «не заполнены везде»)."""
-    bot_messages = bot_module("bot_messages")
-    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    leaderboard_messages = bot_module("leaderboard_messages")
+    monkeypatch.setattr(leaderboard_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "team": ["BOS"], "v0": [None], "sort": [None], "games_played": [40],
         "wins": [None], "losses": [None], "ot": [None], "record_points": [None],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.team_stat_leaderboard_page("Топ", ("power_play_percentage",), 0)
     assert _tables(text)[0][1] == ["1.", "BOS", "—", "40", "—-—-—", "—"]
     assert "None" not in text
 
@@ -1163,15 +1174,15 @@ def test_player_stat_leaderboard_page_season_end_goalie_keeps_every_column(bot_m
     """Конец сезона, 10-е место: в rich-таблице колонки раскладывает Telegram — сейвы
     и полная фамилия остаются (в `<pre>` строка шире телефона теряла сейвы, фамилия
     обрезалась до «Vasilevsk…»)."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "lastname": ["Vasilevskiy"], "roster_position": ["G"],
         "points": [92.52], "team": ["TBL"],
         "tail_games": [58], "tail_saves": [1353], "tail_shots_against": [1483],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 9
         )
     assert _tables(text) == [[
@@ -1182,15 +1193,15 @@ def test_player_stat_leaderboard_page_season_end_goalie_keeps_every_column(bot_m
 
 def test_player_stat_leaderboard_page_shows_games_and_shifts_tail(bot_module):
     """(B) Лидерборд полевых игроков (players_season_stats): игр/смен."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "lastname": ["McDavid"], "roster_position": ["C"],
         "points": [153], "team": ["EDM"],
         "tail_games": [82], "tail_shifts": [1800],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
     assert _tables(text)[0][1] == ["1.", "McDavid [C]", "EDM", "153", "82", "1800"]
@@ -1201,16 +1212,16 @@ def test_player_stat_leaderboard_page_null_shifts_renders_dash_not_none(
 ):
     """Реальный сценарий из БД (Задача 18): shifts NULL в 7 строках на 2
     сезона — рендер обязан отдать «—», а не «None» и не упасть."""
-    bot_messages = bot_module("bot_messages")
-    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    leaderboard_messages = bot_module("leaderboard_messages")
+    monkeypatch.setattr(leaderboard_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "lastname": ["Rookie"], "roster_position": ["C"],
         "points": [10], "team": ["CHI"],
         "tail_games": [5], "tail_shifts": [None],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "players_season_stats", "points", 0
         )
     assert _tables(text)[0][1] == ["1.", "Rookie [C]", "CHI", "10", "5", "—"]
@@ -1221,15 +1232,15 @@ def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot
     """(B) Лидерборд players_advanced_stats («Расширенная статистика») тоже
     отдаёт игр/смен — через LEFT/INNER JOIN players_season_stats, не только
     для players_season_stats напрямую."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "lastname": ["Makar"], "roster_position": ["D"],
         "points": [58.2], "team": ["COL"],
         "tail_games": [70], "tail_shifts": [1600],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
         )
     assert _tables(text) == [[["", "Игрок", "Ком", "SAT%", "И", "Смен"], ["1.", "Makar [D]", "COL", "58.2", "70", "1600"]]]
@@ -1237,15 +1248,15 @@ def test_player_stat_leaderboard_page_advanced_stats_also_shows_games_shifts(bot
 
 def test_player_stat_leaderboard_page_shot_types_also_shows_games_shifts(bot_module):
     """(B) Лидерборд players_shot_types тоже отдаёт игр/смен через JOIN."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "lastname": ["Kucherov"], "roster_position": ["RW"],
         "points": [12], "team": ["TBL"],
         "tail_games": [78], "tail_shifts": [1700],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Голы с кистевого", "players_shot_types", "goals_wrist", 0
         )
     assert _tables(text) == [[
@@ -1270,12 +1281,12 @@ def test_player_stat_leaderboard_page_advanced_stats_joins_pss_for_tail(
     """(B) players_advanced_stats: хвост игр/смен реально приходит через
     INNER JOIN players_season_stats pss, колонки хвоста qualified алиасом
     `pss`, а не `pl`."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     # lastname, roster_position, points(pl.sat_pct), team, tail_games, tail_shifts, total
     row = ("Makar", "D", 58.2, "COL", 70, 1600, 1)
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
 
-    bot_messages.player_stat_leaderboard_page(
+    leaderboard_messages.player_stat_leaderboard_page(
         "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
     )
 
@@ -1294,11 +1305,11 @@ def test_player_stat_leaderboard_page_sorts_mmss_time_by_seconds(
 ):
     """Задача 44: «м:сс» строкой сортируется неверно («9:57» > «25:00») — для
     колонки времени ORDER BY идёт по секундам, числовые колонки не меняются."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     row = ("Hughes", "D", "27:44", "NJD", 17, 400, 1)
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
 
-    bot_messages.player_stat_leaderboard_page("x", "players_season_stats", column, 0)
+    leaderboard_messages.player_stat_leaderboard_page("x", "players_season_stats", column, 0)
 
     query_text, _params = cursor.executed[-1]
     order_by = query_text.split("ORDER BY", 1)[1]
@@ -1318,11 +1329,11 @@ def test_player_stat_leaderboard_page_shot_types_joins_pss_for_tail(
     """(B) players_shot_types: хвост игр/смен реально приходит через
     LEFT JOIN players_season_stats pss, колонки хвоста qualified алиасом
     `pss`, а не `pl`."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     row = ("Kucherov", "RW", 12, "TBL", 78, 1700, 1)
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
 
-    bot_messages.player_stat_leaderboard_page(
+    leaderboard_messages.player_stat_leaderboard_page(
         "Голы с кистевого", "players_shot_types", "goals_wrist", 0
     )
 
@@ -1337,13 +1348,13 @@ def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
 ):
     """(C) goalies_season_stats: все поля хвоста уже в самой таблице — нет
     JOIN на players_season_stats, хвост qualified алиасом `pl`."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     # lastname, roster_position, points(pl.wins), team,
     # tail_games, tail_saves, tail_shots_against, total
     row = ("Vasilevskiy", "G", 39, "TBL", 58, 1353, 1483, 1)
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [row])])
 
-    bot_messages.player_stat_leaderboard_page(
+    leaderboard_messages.player_stat_leaderboard_page(
         "Топ", "goalies_season_stats", "wins", 0
     )
 
@@ -1356,15 +1367,15 @@ def test_player_stat_leaderboard_page_goalies_no_join_pl_qualified_tail(
 
 def test_player_stat_leaderboard_page_shows_goalie_tail(bot_module):
     """(C) Лидерборд вратарей: игры и сейвы/броски; позиции [G] и времени нет."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "lastname": ["Shesterkin"], "roster_position": ["G"],
         "points": [0.925], "team": ["NYR"],
         "tail_games": [55], "tail_saves": [1500], "tail_shots_against": [1620],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert _tables(text) == [[
@@ -1377,16 +1388,16 @@ def test_player_stat_leaderboard_page_goalie_null_tail_fields_render_dash(
 ):
     """Рендер не должен полагаться на заполненность хвоста вратаря и обязан
     пережить NULL в любом его поле."""
-    bot_messages = bot_module("bot_messages")
-    monkeypatch.setattr(bot_messages.config, "CURRENT_SEASON", "25/26")
+    leaderboard_messages = bot_module("leaderboard_messages")
+    monkeypatch.setattr(leaderboard_messages.config, "CURRENT_SEASON", "25/26")
     rows = {
         "lastname": ["Backup"], "roster_position": ["G"],
         "points": [0.0], "team": ["CHI"],
         "tail_games": [1], "tail_saves": [None], "tail_shots_against": [None],
         "total": [1], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text, _, _ = bot_messages.player_stat_leaderboard_page(
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        text, _, _ = leaderboard_messages.player_stat_leaderboard_page(
             "Топ", "goalies_season_stats", "save_percentage", 0
         )
     assert _tables(text)[0][1] == ["1.", "Backup", "CHI", "0", "1", "—/—"]
@@ -1682,17 +1693,17 @@ def test_day_digest_returns_game_ids_of_the_day(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_player_stats_with_count_rejects_unwhitelisted_table(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with pytest.raises(ValueError, match="Table not allowed"):
-        bot_messages.player_stats_with_count("users_secret", "points")
+        leaderboard_messages.player_stats_with_count("users_secret", "points")
 
 
 def test_player_stats_with_count_returns_total_from_window_function(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     with patch.object(
-        bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
+        leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
     ):
-        _, n, total = bot_messages.player_stats_with_count(
+        _, n, total = leaderboard_messages.player_stats_with_count(
             "players_season_stats", "points"
         )
     assert n == 3
@@ -1700,9 +1711,9 @@ def test_player_stats_with_count_returns_total_from_window_function(bot_module):
 
 
 def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
-    bot_messages = bot_module("bot_messages")
-    with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(0)):
-        _, n, total = bot_messages.player_stats_with_count(
+    leaderboard_messages = bot_module("leaderboard_messages")
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=_leader_rows(0)):
+        _, n, total = leaderboard_messages.player_stats_with_count(
             "players_season_stats", "points", offset=500
         )
     assert n == 0
@@ -1714,7 +1725,7 @@ def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_team_stats_with_count_returns_total_from_window_function(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": ["BOS"], "v0": [55.5], "sort": [55.5], "games_played": [40],
         # Задача 18 — хвост wins-losses-ot/points, обязателен в фикстуре:
@@ -1722,21 +1733,21 @@ def test_team_stats_with_count_returns_total_from_window_function(bot_module):
         "wins": [30], "losses": [8], "ot": [2], "record_points": [62],
         "total": [7], "count_rows": 1,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        _, n, total = leaderboard_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 1
     assert total == 7
 
 
 def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rows = {
         "team": [], "v0": [], "sort": [], "games_played": [],
         "wins": [], "losses": [], "ot": [], "record_points": [],
         "total": [], "count_rows": 0,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        _, n, total = bot_messages.team_stats_with_count(("power_play_percentage",))
+    with patch.object(leaderboard_messages, "cached_fetch_all", return_value=rows):
+        _, n, total = leaderboard_messages.team_stats_with_count(("power_play_percentage",))
     assert n == 0
     assert total == 0
 
@@ -1746,15 +1757,15 @@ def test_team_stats_with_count_total_is_zero_for_empty_page(bot_module):
 # ---------------------------------------------------------------------------
 
 def test_team_list_text_groups_teams_by_division_as_clickable_commands(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = {
         "abbr": ["BOS", "TOR", "NYR"],
         "name": ["Boston Bruins", "Toronto Maple Leafs", "New York Rangers"],
         "division": ["Atlantic", "Atlantic", "Metropolitan"],
         "count_rows": 3,
     }
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text = bot_messages.team_list_text()
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        text = team_messages.team_list_text()
     assert "/BOS — Boston Bruins\n/TOR — Toronto Maple Leafs" in text
     assert text.index("<b>Atlantic</b>") < text.index("/BOS") < text.index("<b>Metropolitan</b>")
     assert "<b>Metropolitan</b>\n/NYR — New York Rangers" in text
@@ -1762,10 +1773,10 @@ def test_team_list_text_groups_teams_by_division_as_clickable_commands(bot_modul
 
 
 def test_team_list_text_reports_empty_season(bot_module):
-    bot_messages = bot_module("bot_messages")
+    team_messages = bot_module("team_messages")
     rows = {"abbr": [], "name": [], "division": [], "count_rows": 0}
-    with patch.object(bot_messages, "cached_fetch_all", return_value=rows):
-        text = bot_messages.team_list_text()
+    with patch.object(team_messages, "cached_fetch_all", return_value=rows):
+        text = team_messages.team_list_text()
     assert "В базе пока нет списка команд для этого сезона." in text
 
 
@@ -1778,7 +1789,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
 ):
     """Метрополитен из шести команд: топ-3 дивизиона вне гонки, остальные три —
     WC1, WC2, затем черта плей-офф и третий претендент с обычным номером."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rich_markup = bot_module("rich_markup")
     # name, games_played, points, procent_points, wins, losses, ot,
     # division_name, conference_name — очки убывают с номером команды.
@@ -1790,7 +1801,7 @@ def test_wild_card_block_draws_cut_line_after_second_wild_card_team(
         ("SELECT max(day)::text AS d", [("2026-04-01",)]),
     ])
 
-    text = bot_messages.team_table()
+    text = leaderboard_messages.team_table()
 
     wc = text.split("WILD CARD — EASTERN", 1)[1].split("WILD CARD — WESTERN", 1)[0]
     [table] = _tables(wc)
@@ -1808,7 +1819,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
 ):
     """Дивизион из девяти команд: черта плей-офф после 3-го места; в Wild Card
     из шести оставшихся показаны пять — WC1, WC2 и три претендента."""
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     rich_markup = bot_module("rich_markup")
     rows = [
         (f"T{i}", 20, 40 - i, 60.0, 15 - i, 5, 0, "Metropolitan", "Eastern") for i in range(9)
@@ -1818,7 +1829,7 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
         ("SELECT max(day)::text AS d", [("2026-04-01",)]),
     ])
 
-    text = bot_messages.team_table()
+    text = leaderboard_messages.team_table()
 
     div = text.split("METROPOLITAN DIVISION", 1)[1].split("WILD CARD — EASTERN", 1)[0]
     [table] = _tables(div)
@@ -1842,10 +1853,10 @@ def test_division_block_draws_cut_line_after_top_three_and_wild_card_shows_five(
 def test_advanced_stats_join_threshold_is_least_of_20_and_half_of_leader_games(
     bot_module, fake_db_router
 ):
-    bot_messages = bot_module("bot_messages")
+    leaderboard_messages = bot_module("leaderboard_messages")
     cursor = fake_db_router([("COUNT(*) OVER () AS total", [("Makar", "D", 58.2, "COL", 5, 120, 1)])])
 
-    bot_messages.player_stat_leaderboard_page(
+    leaderboard_messages.player_stat_leaderboard_page(
         "Лидеры по Corsi", "players_advanced_stats", "sat_pct", 0
     )
 
@@ -1867,10 +1878,10 @@ _COUNTRY_RANKING = ("GROUP BY r.nationality", [("CAN", 4, 100, 40), ("XXX", 3, 3
 def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footnote(
     bot_module, fake_db_router
 ):
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     cursor = fake_db_router([_COUNTRY_RANKING, ("r.nationality IS NULL", [(7,)])])
 
-    text, codes = bot_messages.country_rankings()
+    text, codes = country_messages.country_rankings()
 
     assert codes == ["CAN", "XXX"]
     # Неизвестный код показывается как есть, без исключения.
@@ -1882,16 +1893,16 @@ def test_country_rankings_lists_countries_with_label_unknown_code_and_null_footn
     assert "Страна не указана в данных NHL у игроков: 7 (не учтены)." in text
     # Порог уходит в SQL параметром, вратари исключены.
     query, params = cursor.executed[0]
-    assert params[1] == bot_messages.COUNTRY_MIN_PLAYERS
+    assert params[1] == country_messages.COUNTRY_MIN_PLAYERS
     assert "r.position <> 'G'" in query
 
 
 def test_country_rankings_empty_season_returns_reason_and_no_codes(bot_module, fake_db_router):
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     fake_db_router([("GROUP BY r.nationality", [])])
 
     # Простой текст без разметки: причину показывает и экран подписок, а он не rich.
-    assert bot_messages.country_rankings() == (
+    assert country_messages.country_rankings() == (
         "В базе нет данных по странам для этого сезона.",
         [],
     )
@@ -1910,13 +1921,13 @@ def test_country_page_skaters_show_group_stats_and_has_next(
     bot_module, fake_db_router, group, position_sql, extra_header
 ):
     """Нападающие — броски, защитники — блоки; группа уходит в SQL условием."""
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     cursor = fake_db_router([
         _COUNTRY_RANKING,
         ("OVER ()", [_country_skater_row("McDavid", 4, 8, 7, 5, 20, 2)]),
     ])
 
-    text, has_prev, has_next = bot_messages.country_page("CAN", group, 10)
+    text, has_prev, has_next = country_messages.country_page("CAN", group, 10)
 
     assert "🇨🇦 Канада" in text
     assert "Показаны 11 из 25 строк." in text
@@ -1935,13 +1946,13 @@ def test_country_page_keeps_every_column_and_full_last_name(
 ):
     """Rich-таблицу раскладывает Telegram: длинная фамилия и все колонки остаются
     (в `<pre>` строка шире телефона теряла броски и силовые, фамилия обрезалась)."""
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     fake_db_router([
         _COUNTRY_RANKING,
         ("OVER ()", [_country_skater_row("Nugent-Hopkins", 64, 153, 82, 150, 300, 20)]),
     ])
 
-    text, _, _ = bot_messages.country_page("CAN", "F", 0)
+    text, _, _ = country_messages.country_page("CAN", "F", 0)
 
     assert _tables(text) == [[
         ["", "Игрок", "Ком", "Г", "О", "И", "ВП", "Хит", "Бр"],
@@ -1952,38 +1963,38 @@ def test_country_page_keeps_every_column_and_full_last_name(
 def test_country_pages_reject_code_outside_ranking_without_touching_sql(
     bot_module, fake_db_router
 ):
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     cursor = fake_db_router([_COUNTRY_RANKING])
 
     for group in ("F", "G"):
-        assert bot_messages.country_page("'; DROP", group, 0) == (
+        assert country_messages.country_page("'; DROP", group, 0) == (
             "Страна не найдена в рейтинге этого сезона.", False, False,
         )
     assert len(cursor.executed) == 1  # только запрос рейтинга (кэш), без страницы
 
 
 def test_country_page_goalies_formats_rows_and_reports_empty(bot_module, fake_db_router):
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     fake_db_router([
         _COUNTRY_RANKING,
         # lastname, team, wins, save_pct, gaa, games, shutouts, total
         ("FROM goalies_season_stats", [("Vejmelka", "UTA", 38, 89.67, 2.74592, 64, 3, 1)]),
     ])
-    text, _, _ = bot_messages.country_page("CAN", "G", 0)
+    text, _, _ = country_messages.country_page("CAN", "G", 0)
     assert _tables(text) == [[
         ["", "Вратарь", "Ком", "В", "%ОБ", "КН", "И", "Сух"],
         ["1.", "Vejmelka", "UTA", "38", "89.67%", "2.75", "64", "3"],
     ]]
 
     fake_db_router([_COUNTRY_RANKING, ("FROM goalies_season_stats", [])])
-    text, _, _ = bot_messages.country_page("CAN", "G", 0)
+    text, _, _ = country_messages.country_page("CAN", "G", 0)
     assert "Нет данных в этом диапазоне." in text
 
 
 def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fake_db_router):
     """`/CAN`: топ-10 нападающих, топ-8 защитников, топ-5 вратарей — лимит уходит в SQL;
     группа без игроков пропускается в перечне, таблицах и обозначениях."""
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     cursor = fake_db_router([
         _COUNTRY_RANKING,
         ("FROM goalies_season_stats", []),
@@ -1991,7 +2002,7 @@ def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fak
         ("OVER ()", [_country_skater_row("McDavid", 4, 8, 7, 5, 20, 2)]),
     ])
 
-    text = bot_messages.country_profile("CAN")
+    text = country_messages.country_profile("CAN")
 
     season = bot_module("config").SEASON_ID
     assert [params for _q, params in cursor.executed[1:]] == [
@@ -2019,8 +2030,8 @@ def test_country_profile_shows_top_of_each_group_and_skips_empty(bot_module, fak
 def test_country_profile_rejects_code_outside_ranking_without_touching_sql(
     bot_module, fake_db_router
 ):
-    bot_messages = bot_module("bot_messages")
+    country_messages = bot_module("country_messages")
     cursor = fake_db_router([_COUNTRY_RANKING])
 
-    assert bot_messages.country_profile("RUS") == "Страна не найдена в рейтинге этого сезона."
+    assert country_messages.country_profile("RUS") == "Страна не найдена в рейтинге этого сезона."
     assert len(cursor.executed) == 1

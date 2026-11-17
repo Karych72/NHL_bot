@@ -42,11 +42,10 @@ import subscription_repo
 from database import get_connection
 from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
 from throttle import enforce_callback_rate_limit, throttled
-from bot_messages import (
-    country_profile,
-    country_rankings,
-    day_digest,
-    last_night_day,
+from bot_messages import day_digest, last_night_day
+from country_messages import country_profile, country_rankings
+from leaderboard_messages import team_table
+from team_messages import (
     player_labels,
     ROSTER_GROUPS,
     season_teams_by_division,
@@ -54,7 +53,6 @@ from bot_messages import (
     team_list_text,
     team_profile,
     team_roster_group,
-    team_table,
 )
 from rich_markup import COUNTRY_LABELS, MSK, rich_footer, rich_list, rich_message, truncate_telegram_text
 from nhl_scoreboard import (

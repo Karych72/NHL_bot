@@ -194,7 +194,7 @@ def test_cached_fetch_all_distinguishes_different_query_text(cleared_cache, fake
 
 def test_cached_fetch_all_distinguishes_different_composable_queries_by_content(cleared_cache, fake_db_connection):
     """Composable's default identity (id()) would make every call a cache miss
-    (a fresh sql.SQL(...).format(...) object is built per bot_messages.py call
+    (a fresh sql.SQL(...).format(...) object is built per screen-module call
     site); its default repr must instead reflect the wrapped SQL content, so
     that two *different* queries get different keys and the *same* query
     (rebuilt with the same arguments) reuses the cached entry."""
@@ -217,7 +217,7 @@ def test_cached_fetch_all_distinguishes_different_composable_queries_by_content(
 
 def test_cached_fetch_all_returns_independent_copies_not_shared_mutable_state(cleared_cache, fake_db_connection):
     """The dict fetch_all()/cached_fetch_all() returns holds plain lists;
-    bot_messages.py never mutates them today, but the cache must not rely on
+    the screen modules never mutate them today, but the cache must not rely on
     that — mutating one caller's result must not corrupt what the next caller
     (or the cache entry itself) sees."""
     database = cleared_cache

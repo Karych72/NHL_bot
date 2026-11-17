@@ -36,5 +36,5 @@ CREATE TABLE goalies_season_stats(
 -- Обслуживает лидерборды вратарей WHERE pl.season_id = %s
 -- (table_name="goalies_season_stats" — см. telegram_bot/leaderboard_specs.py:30-32 и
 -- telegram_bot/stats_handlers.py:314-320):
---   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
+--   telegram_bot/leaderboard_messages.py (player_stats_with_count)
 CREATE INDEX idx_goalies_season_stats_season ON goalies_season_stats (season_id, game_type);
