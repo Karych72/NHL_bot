@@ -28,24 +28,6 @@ from template_funcs import output_text
 RICH_MESSAGE_MAX_LENGTH = 32768
 
 
-# Subsets of columns allowed in dynamic SQL; keep in sync with ALLOWED_COLUMNS
-# in database.py for these tables (plus player_id for alias resolution).
-ADVANCED_STATS_COLUMNS = frozenset({
-    "sat_pct", "usat_pct", "goals_pct", "oz_start_pct", "dz_start_pct",
-    "nz_start_pct", "on_ice_shooting_pct", "ev_goals_for", "ev_goals_against",
-    "ev_goals_for_pct", "pp_goals_for", "pp_goals_against", "sh_goals_for",
-    "sh_goals_against", "player_id",
-})
-
-SHOT_TYPES_COLUMNS = frozenset({
-    "player_id",
-    "goals_wrist", "shots_wrist", "goals_slap", "shots_slap", "goals_snap",
-    "shots_snap", "goals_backhand", "shots_backhand", "goals_tip_in",
-    "shots_tip_in", "goals_deflected", "shots_deflected", "goals_wrap_around",
-    "shots_wrap_around",
-})
-
-
 def _format_leader_value(value: Union[int, float, Decimal, str, None]) -> str:
     """Plain-text display for leaderboard cells (no monospace padding)."""
     if value is None:
@@ -70,32 +52,12 @@ _MMSS_COLUMNS = frozenset({"time_on_ice_per_game"})
 _MMSS_SECONDS_SQL = "(split_part({col}, ':', 1)::int * 60 + split_part({col}, ':', 2)::int)"
 
 
-def _resolve_secondary_sort(table_name: str, secondary_sort: Optional[str]) -> str:
-    if secondary_sort is not None:
-        return secondary_sort
-    if table_name == "players_season_stats":
-        return "goals"
-    if table_name == "goalies_season_stats":
-        return "save_percentage"
-    if table_name in ("players_advanced_stats", "players_shot_types"):
-        return "goals"
-    return "goals"
-
-
-def _second_order_table_alias(table_name: str, second_order: str) -> str:
-    if table_name == "players_advanced_stats":
-        return "pl" if second_order in ADVANCED_STATS_COLUMNS else "pss"
-    if table_name == "players_shot_types":
-        return "pl" if second_order in SHOT_TYPES_COLUMNS else "pss"
-    return "pl"
-
-
 def _pss_join_sql(table_name: str) -> sql.Composable:
     """JOIN players_season_stats под алиасом `pss` — нужен вторичной сортировке
-    по колонке pss (`_second_order_table_alias`) и «хвосту» строки лидерборда
+    по `pss.goals` и «хвосту» строки лидерборда
     (games/shifts, Задача 18). Для players_advanced_stats и players_shot_types
-    join всегда присутствует (не только когда second_order сам на pss) —
-    games/shifts в хвосте нужны независимо от того, чем сортируется страница.
+    join всегда присутствует: games/shifts в хвосте нужны независимо от того,
+    чем сортируется страница.
     """
     if table_name == "players_advanced_stats":
         # Порог 20 игр отсекает шум долей на малой выборке, но в начале сезона
@@ -748,17 +710,9 @@ def _fmt_num_max2(val: Union[int, float, None]) -> str:
     return s.rstrip("0").rstrip(".")
 
 
-def _fmt_pct_points(val: Union[int, float, Decimal, None]) -> str:
-    """Доля очков в БД уже в шкале 0–100 (нормализуется в пайплайне через `optional_pct_from_ratio`)."""
-    if val is None:
-        return "—"
-    r = round(float(val), 2)
-    s = f"{r:.2f}"
-    return s.rstrip("0").rstrip(".") + "%"
-
-
-def _fmt_pct_stat(val: Union[int, float, None]) -> str:
-    """Проценты PP/PK/вбрасываний в БД уже 0–100."""
+def _fmt_pct(val: Union[int, float, Decimal, None]) -> str:
+    """Проценты (доля очков, PP/PK, вбрасывания, % отражённых) — в БД уже в шкале 0–100
+    (нормализует пайплайн, `optional_pct_from_ratio`)."""
     if val is None:
         return "—"
     r = round(float(val), 2)
@@ -996,7 +950,7 @@ def _team_record_line(
     между экранами.
     """
     rec = _record_str(wins, losses, ot)
-    ppct = _fmt_pct_points(procent_points)
+    ppct = _fmt_pct(procent_points)
     word = plural_word(points, ("очко", "очка", "очков"))
     return f"{rec}, {_format_leader_value(points)} {word} ({ppct})"
 
@@ -1048,7 +1002,7 @@ def _matchup_compare_table(
         ("Место в дивизионе", place_a[0], place_h[0]),
         ("Место в конференции", place_a[1], place_h[1]),
         ("Очки", _format_leader_value(ra["points"]), _format_leader_value(rh["points"])),
-        ("% очков", _fmt_pct_points(ra["procent_points"]), _fmt_pct_points(rh["procent_points"])),
+        ("% очков", _fmt_pct(ra["procent_points"]), _fmt_pct(rh["procent_points"])),
         (
             "Баланс W-L-OT",
             _record_str(ra["wins"], ra["losses"], ra["ot"]),
@@ -1069,19 +1023,19 @@ def _matchup_compare_table(
         ),
         (
             "Большинство",
-            _fmt_pct_stat(ra["power_play_percentage"]),
-            _fmt_pct_stat(rh["power_play_percentage"]),
+            _fmt_pct(ra["power_play_percentage"]),
+            _fmt_pct(rh["power_play_percentage"]),
         ),
         (
             "Меньшинство",
-            _fmt_pct_stat(ra["penalty_kill_percentage"]),
-            _fmt_pct_stat(rh["penalty_kill_percentage"]),
+            _fmt_pct(ra["penalty_kill_percentage"]),
+            _fmt_pct(rh["penalty_kill_percentage"]),
         ),
         ("Броски за игру", _fmt_num_max2(ra["shots_per_game"]), _fmt_num_max2(rh["shots_per_game"])),
         (
             "Вбрасывания",
-            _fmt_pct_stat(ra["face_off_win_percentage"]),
-            _fmt_pct_stat(rh["face_off_win_percentage"]),
+            _fmt_pct(ra["face_off_win_percentage"]),
+            _fmt_pct(rh["face_off_win_percentage"]),
         ),
         ("Разница шайб", _fmt_signed(diff(ra)), _fmt_signed(diff(rh))),
     ]
@@ -1211,13 +1165,10 @@ LEADERBOARD_PAGE_SIZE = 10
 
 
 def player_stats_with_count(
-    name_stats: str,
     table_name: str,
     column_name: str,
     count: int = 10,
     offset: int = 0,
-    *,
-    secondary_sort: Optional[str] = None,
 ) -> Tuple[str, int, int]:
     """Страница лидерборда игроков/вратарей (HTML) плюс размер полной выборки.
 
@@ -1227,12 +1178,13 @@ def player_stats_with_count(
     отдельного похода в БД.
 
     Аргументы:
-        name_stats: заголовок блока (пусто — без заголовка).
         table_name: таблица статистики, из белого списка `validate_table`.
         column_name: колонка сортировки, из белого списка `validate_column`.
         count: сколько строк вернуть (размер страницы).
         offset: сдвиг страницы.
-        secondary_sort: вторичная сортировка при равенстве `column_name`.
+
+    При равенстве `column_name` строки упорядочены по голам (у вратарей — по % отражённых):
+    `pss.goals` для players_advanced_stats/players_shot_types, иначе колонка самой таблицы.
 
     Строки — таблица rich-сообщения (`_table`) с постоянным
     «хвостом» уже загруженных полей (Задача 18): для вратарей — игры и
@@ -1246,17 +1198,17 @@ def player_stats_with_count(
     validate_column(column_name)
     if offset < 0:
         offset = 0
-    second_order = _resolve_secondary_sort(table_name, secondary_sort)
-    validate_column(second_order)
-
     join_pss = _pss_join_sql(table_name)
-    second_alias = _second_order_table_alias(table_name, second_order)
+    if table_name == "goalies_season_stats":
+        second_alias, second_order = "pl", "save_percentage"
+    elif table_name in ("players_advanced_stats", "players_shot_types"):
+        second_alias, second_order = "pss", "goals"
+    else:
+        second_alias, second_order = "pl", "goals"
+    second_col = sql.SQL(".").join([sql.Identifier(second_alias), sql.Identifier(second_order)])
     pl_col = sql.SQL(".").join([sql.Identifier("pl"), sql.Identifier(column_name)])
     order_col = (
         sql.SQL(_MMSS_SECONDS_SQL).format(col=pl_col) if column_name in _MMSS_COLUMNS else pl_col
-    )
-    second_col = sql.SQL(".").join(
-        [sql.Identifier(second_alias), sql.Identifier(second_order)]
     )
     tail_select, tail_keys = _leaderboard_tail_columns(table_name)
 
@@ -1316,8 +1268,6 @@ def player_stats_with_count(
         ])
 
     body = _table(rows, "rllrrr") if stats['count_rows'] else ""
-    if name_stats:
-        body = f"<b>{html.escape(name_stats)}</b>\n\n{body}"
     return body, stats["count_rows"], total
 
 
@@ -1363,19 +1313,15 @@ def player_stat_leaderboard_page(
     table_name: str,
     column_name: str,
     offset: int,
-    *,
-    secondary_sort: Optional[str] = None,
 ) -> Tuple[str, bool, bool]:
     """Произвольная таблица лидеров игроков/вратарей: шапка + пустая строка + список."""
     if offset < 0:
         offset = 0
     body, n, total = player_stats_with_count(
-        "",
         table_name,
         column_name,
         count=LEADERBOARD_PAGE_SIZE,
         offset=offset,
-        secondary_sort=secondary_sort,
     )
     return _leaderboard_page_text(html.escape(heading), body, n, total, offset)
 
@@ -1769,7 +1715,7 @@ def _team_goalies_table(team_id: int) -> str:
             goalies["lastname"][i] or "Unknown",
             fmt(goalies["games"][i]),
             _record_str(goalies["wins"][i], goalies["losses"][i], goalies["ot"][i]),
-            _fmt_pct_stat(goalies["sv"][i]),
+            _fmt_pct(goalies["sv"][i]),
             _fmt_num_max2(goalies["gaa"][i]),
         ]
         for i in range(goalies["count_rows"])
@@ -1893,13 +1839,13 @@ def _team_season_context(a: str, ranked: bool) -> Union[str, Tuple[int, Dict[str
         "sf": _fmt_num_max2(me["shots_per_game"]) + place("shots_per_game"),
         "sa": _fmt_num_max2(me["shots_allowed"])
         + place("shots_allowed", higher_is_better=False),
-        "pp": _fmt_pct_stat(me["power_play_percentage"])
+        "pp": _fmt_pct(me["power_play_percentage"])
         + place("power_play_percentage", detail=pp_detail),
-        "pk": _fmt_pct_stat(me["penalty_kill_percentage"]) + place(
+        "pk": _fmt_pct(me["penalty_kill_percentage"]) + place(
             "penalty_kill_percentage",
             detail=f"пропущено {fmt(me['power_play_goals_against'])}, ",
         ),
-        "fo": _fmt_pct_stat(me["face_off_win_percentage"]) + place("face_off_win_percentage"),
+        "fo": _fmt_pct(me["face_off_win_percentage"]) + place("face_off_win_percentage"),
     }
 
 
@@ -2268,7 +2214,7 @@ def _player_group_table(
         stats = cached_fetch_all(_GROUP_GOALIES_SQL.format(owner=owner), params, columns=cols)
         name_header, header = "Вратарь", ["В", "%ОБ", "КН", "И", "Сух"]
         cells = [
-            [fmt(stats["wins"][i]), _fmt_pct_stat(stats["sv"][i]),
+            [fmt(stats["wins"][i]), _fmt_pct(stats["sv"][i]),
              _fmt_num_max2(stats["gaa"][i]), fmt(stats["games"][i]), fmt(stats["shutouts"][i])]
             for i in range(stats["count_rows"])
         ]

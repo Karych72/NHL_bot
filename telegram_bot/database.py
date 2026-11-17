@@ -34,8 +34,6 @@ STATEMENT_TIMEOUT_MS = 5000
 
 # ---------------------------------------------------------------------------
 # Whitelists — only identifiers listed here may be used in dynamic queries.
-# Skater advanced / shot-type column names should match ADVANCED_STATS_COLUMNS /
-# SHOT_TYPES_COLUMNS in bot_messages.py (used for JOIN / secondary sort).
 # ---------------------------------------------------------------------------
 
 ALLOWED_TABLES = frozenset({

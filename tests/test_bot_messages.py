@@ -1683,7 +1683,7 @@ def test_day_digest_returns_game_ids_of_the_day(bot_module):
 def test_player_stats_with_count_rejects_unwhitelisted_table(bot_module):
     bot_messages = bot_module("bot_messages")
     with pytest.raises(ValueError, match="Table not allowed"):
-        bot_messages.player_stats_with_count("Title", "users_secret", "points")
+        bot_messages.player_stats_with_count("users_secret", "points")
 
 
 def test_player_stats_with_count_returns_total_from_window_function(bot_module):
@@ -1692,7 +1692,7 @@ def test_player_stats_with_count_returns_total_from_window_function(bot_module):
         bot_messages, "cached_fetch_all", return_value=_leader_rows(3, total=42)
     ):
         _, n, total = bot_messages.player_stats_with_count(
-            "Title", "players_season_stats", "points"
+            "players_season_stats", "points"
         )
     assert n == 3
     assert total == 42
@@ -1702,7 +1702,7 @@ def test_player_stats_with_count_total_is_zero_for_empty_page(bot_module):
     bot_messages = bot_module("bot_messages")
     with patch.object(bot_messages, "cached_fetch_all", return_value=_leader_rows(0)):
         _, n, total = bot_messages.player_stats_with_count(
-            "Title", "players_season_stats", "points", offset=500
+            "players_season_stats", "points", offset=500
         )
     assert n == 0
     assert total == 0
