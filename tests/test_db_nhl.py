@@ -127,6 +127,27 @@ class TestNhlSchema(unittest.TestCase):
         if hasattr(cls, "conn") and cls.conn:
             cls.conn.close()
 
+    def test_upcoming_ai_cache_claim_and_reuse(self):
+        """Проверяет миграцию и атомарную резервацию на настоящей БД без изменения схемы."""
+        migration = Path(REPO_ROOT, "data_tables/migrations/0028_upcoming_ai.up.sql")
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("CREATE SCHEMA task95_cache_test")
+                cur.execute("SET LOCAL search_path TO task95_cache_test")
+                cur.execute(migration.read_text())
+                claim = ("INSERT INTO bot_upcoming_ai (game_id) VALUES (95) "
+                         "ON CONFLICT DO NOTHING RETURNING game_id")
+                cur.execute(claim)
+                self.assertEqual(cur.fetchone(), (95,))
+                cur.execute(claim)
+                self.assertIsNone(cur.fetchone())
+                cur.execute("UPDATE bot_upcoming_ai SET body = 'preview' WHERE game_id = 95")
+                cur.execute("SELECT body FROM bot_upcoming_ai WHERE game_id = 95")
+                self.assertEqual(cur.fetchone(), ('preview',))
+                cur.execute(Path(str(migration).replace('.up.sql', '.down.sql')).read_text())
+        finally:
+            self.conn.rollback()
+
     def test_primary_keys(self):
         with self.conn.cursor() as cur:
             if not _base_table_exists(cur, "teams"):

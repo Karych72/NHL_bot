@@ -16,7 +16,7 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiogram import Bot
@@ -1036,6 +1036,7 @@ def upcoming_env(push_job, monkeypatch):
         env.read_subs += 1
         return env.chats
 
+    monkeypatch.setattr(push_job, "upcoming_preview_text", AsyncMock(return_value=""))
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
     monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
@@ -1521,3 +1522,15 @@ async def test_channel_weekly_failure_is_retried_the_same_day(push_job, weekly_e
     [post] = api.sent_rich
     assert "Турнирная таблица NHL" in post.rich_message.html
     assert weekly_env.posted == {(SATURDAY, "standings")}
+
+
+@pytest.mark.asyncio
+async def test_upcoming_ai_shared_and_escaped(push_job, upcoming_env, fake_bot, api, monkeypatch):
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    generate = AsyncMock(return_value="Смотрите на <атаку> & оборону.")
+    monkeypatch.setattr(push_job, "upcoming_preview_text", generate)
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    generate.assert_awaited_once()
+    assert generate.call_args.args[1] == "PREVIEW BOS @ TOR\nСезон 2026/27"
+    assert len(api.sent_rich) == 2
+    assert all("&lt;атаку&gt; &amp;" in m.rich_message.html for m in api.sent_rich)

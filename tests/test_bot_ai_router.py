@@ -438,3 +438,30 @@ async def test_api_failure_tells_user_to_use_commands_and_is_logged(
     row = _logged(cursor)
     assert (row["outcome"], row["request_id"]) == ("error", "req_500")
     assert row["error"].startswith("InternalServerError")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeypatch, failure):
+    ai_router = bot_module("ai_router")
+    fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", [(95,)]),
+        ("INSERT INTO ai_questions", []),
+        ("UPDATE bot_upcoming_ai", []),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    messages = FakeMessages(TimeoutError() if failure else _response(_text("Текст превью.")))
+    monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
+    result = await ai_router.upcoming_preview_text(95, "BOS: 12 побед. TOR: 10 побед.")
+    assert result == ("" if failure else "Текст превью.")
+    assert messages.calls[0]["messages"] == [
+        {"role": "user", "content": "BOS: 12 побед. TOR: 10 побед."},
+    ]
+    assert "исключительно факты" in messages.calls[0]["system"]
+    fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", []),
+        ("SELECT body FROM bot_upcoming_ai", [(result or None,)]),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    assert await ai_router.upcoming_preview_text(95, "changed") == result
+    assert len(messages.calls) == 1

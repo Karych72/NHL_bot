@@ -71,6 +71,7 @@ from country_messages import (  # noqa: E402
     players_block,
     players_night_entries,
 )
+from ai_router import upcoming_preview_text  # noqa: E402
 from game_messages import matchup_season_preview  # noqa: E402
 from leaderboard_messages import team_table  # noqa: E402
 from team_messages import player_labels  # noqa: E402
@@ -543,7 +544,12 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
             continue
         game_id, start, away, home = nxt
         if game_id not in previews:
-            previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
+            body, footer = matchup_season_preview(game_id, away, home, collapsed=True)
+            facts = html.unescape(re.sub(r"<[^>]+>", " ", body + "\n" + footer))
+            ai_text = await upcoming_preview_text(game_id, facts)
+            if ai_text:
+                body += "\n\n" + html.escape(ai_text)
+            previews[game_id] = body, footer
         body, footer = previews[game_id]
         # Первая строка — время начала: её видно в уведомлении.
         text = (
