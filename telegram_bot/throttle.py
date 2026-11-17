@@ -5,7 +5,7 @@
 Гасит N+1 нагрузку на PostgreSQL от спама кнопками пагинации (Задача 10,
 после Задачи 9 — кэш TTL уже снял часть нагрузки, лимит калибруется по
 остатку). Per-user скользящее окно; состояние — только в памяти процесса.
-`bot.py` лишь импортирует `enforce_callback_rate_limit` и вешает его на
+`bot.py` вешает `enforce_callback_rate_limit` на
 `Dispatcher.callback_query.outer_middleware`.
 Отправки — `throttled`: пауза между сообщениями и повтор после 429 (`push_digest_job`, `bot.py`).
 """

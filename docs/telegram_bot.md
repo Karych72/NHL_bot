@@ -184,7 +184,7 @@ make db-migrate
 
 Рассылка: [`push_digest_job.py`](../telegram_bot/push_digest_job.py),
 та же логика что `day_digest` / `dispatch_day_digest_messages`, как у `/today`. Включение: `ENABLE_PUSH_DIGEST=1`, паузы
-`PUSH_SEND_INTERVAL_SEC`, обработка `429` и блокировки бота — см. исходники скрипта.
+`PUSH_SEND_INTERVAL_SEC`, обработка `429` — `throttle.throttled`, блокировки бота — см. исходники скрипта.
 
 **Видео голов — в карточке** (Задача 119): кнопок видео под сообщением нет. Голы идут
 плотным абзацем по периодам, как звёзды; под ними — один свёрнутый блок «Видео голов», в нём
