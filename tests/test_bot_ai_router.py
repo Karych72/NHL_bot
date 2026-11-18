@@ -45,7 +45,7 @@ class FakeMessages:
 
 
 def _response(*content: Any, stop_reason: str = "") -> SimpleNamespace:
-    """Ответ модели; перед содержимым — пустой блок мышления, как у Sonnet 5.5 на effort low."""
+    """Ответ модели; перед содержимым — пустой блок мышления, как у Claude 5.5 на effort low."""
     tool = any(b.type == "tool_use" for b in content)
     return SimpleNamespace(
         content=[SimpleNamespace(type="thinking", thinking=""), *content],
@@ -335,9 +335,9 @@ async def test_text_answer_goes_to_user_and_to_log(ai, make_message, fake_bot, a
     assert (row["outcome"], row["answer"], row["question"]) == (
         "text", "Рейнджерс или Айлендерс? <уточните>", "как сыграл Нью-Йорк",
     )
-    assert row["cost_usd"] == pytest.approx((100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
+    assert row["cost_usd"] == pytest.approx((100 * 0.10 + 50 * 0.50 + 3000 * 0.01) / 1e6)
     (call,) = messages.calls
-    assert call["model"] == "claude-sonnet-5-5"
+    assert call["model"] == "claude-haiku-5-5"
     assert call["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert "как сыграл Нью-Йорк" in call["messages"][0]["content"]
 

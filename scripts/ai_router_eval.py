@@ -36,7 +36,7 @@ import ai_router  # noqa: E402
 EVAL_SET = Path(__file__).with_suffix(".jsonl")
 MIN_ACCURACY = 0.9
 # Цены моделей, $ за 1M токенов: вход, выход, чтение кэша, запись кэша (5 мин). Множители кэша
-# у Haiku те же, что у Sonnet: чтение 0.1x, запись 1.25x от входа.
+# у обеих моделей чтение 0.1x, запись 1.25x от входа (у Haiku сверено с прайсом API 2026-11-18).
 PRICES = {"claude-sonnet-5-5": (2.0, 10.0, 0.2, 2.5), "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125)}
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 
