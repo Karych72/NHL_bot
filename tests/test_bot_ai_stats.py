@@ -626,7 +626,7 @@ def test_system_prompt_is_stable_cached_and_has_only_data_tables(bot_module):
     for private in ("bot_subscriptions", "ai_questions", "ai_stats_log", "prediction_log", "game_predictions"):
         assert private not in text
     assert "ai_stats" not in ai_stats._system("stats_reviewer.md")[0]["text"].split("## Схема таблиц")[1]
-    assert "2021/22" in text and "плей-офф" in text
+    assert "2009/10" in text and "плей-офф" in text
 
 
 def test_every_tool_is_strict(bot_module):
