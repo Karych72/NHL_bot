@@ -1902,18 +1902,62 @@ class TestAiLimitSql(unittest.TestCase):
         self._asked(self.FREE_CHAT, 4, at="now() - interval '30 days'")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
 
+    def test_clarification_context_is_the_latest_fresh_text_answer(self):
+        """Задача 114: контекст уточнения — последний вызов чата, если он текстовый и моложе окна."""
+        ai = self.ai
+        self.assertIsNone(ai._clarified(self.FREE_CHAT))
+        ai._log_question(self.FREE_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        self.assertEqual(ai._clarified(self.FREE_CHAT),
+                         {"question": "как отключить?", "answer": "Что отключить?", "tool": None})
+        ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"})
+        self.assertIsNone(ai._clarified(self.FREE_CHAT), "после экрана уточнения нет")
+        ai._log_question(self.PREMIUM_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("UPDATE ai_questions SET asked_at = now() - make_interval(mins => %s) "
+                        "WHERE chat_id = %s", (ai.CLARIFY_WINDOW_MINUTES + 1, self.PREMIUM_CHAT))
+        self.assertIsNone(ai._clarified(self.PREMIUM_CHAT), "вне окна")
+
+    def test_free_answers_over_the_daily_cap_count(self):
+        """Задача 114: первые FREE_DAILY_CALLS ответов о боте за сутки МСК вне счёта, следующие —
+        обычные вопросы; вчерашние бесплатные потолок не занимают."""
+        ai = self.ai
+        for _ in range(3):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE ai_questions SET asked_at = {self.BEFORE_DAY} WHERE chat_id = %s",
+                        (self.PREMIUM_CHAT,))
+        for _ in range(ai.FREE_DAILY_CALLS + 2):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        asked = ai._asked(self.PREMIUM_CHAT)
+        self.assertEqual((asked["day"], asked["free_day"]), (2, ai.FREE_DAILY_CALLS))
+        self.assertFalse(ai.free_calls_left(self.PREMIUM_CHAT))
+
     def test_each_question_counts_once_and_failures_do_not(self):
         """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
         ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``
-        маршрутизатором и сбои (``error``) в счёт не идут."""
+        маршрутизатором, ответы о самом боте (Задача 114) и сбои (``error``) в счёт не идут."""
         ai = self.ai
         ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
                          tool_input={"category": "goals"}, cost_usd=0.004)
         ai._log_question(self.FREE_CHAT, "погода", "error", 30000, error="APITimeoutError")
         ai._log_question(self.FREE_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        # Ответы о самом боте и вызовы сверх лимита (Задача 114) лимит не списывают.
+        ai._log_question(self.FREE_CHAT, "цена", "text", 900, tool="bot_answer", tool_input={},
+                         answer="100 ⭐")
+        ai._log_question(self.FREE_CHAT, "остаток", "screen", 900, tool="my_status", tool_input={})
+        ai._log_question(self.FREE_CHAT, "хочу премиум", "screen", 900, tool="open_command",
+                         tool_input={"command": "premium"})
+        ai._log_question(self.FREE_CHAT, "таблица", "limited", 900, tool="open_command",
+                         tool_input={"command": "standings"})
+        ai._log_question(self.FREE_CHAT, "а в прошлом?", "limited", 900, tool="stats_question",
+                         tool_input={})
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")
+        self.assertEqual(ai._asked(self.FREE_CHAT)["free_day"], 5)
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="clarify")
         self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.WEEK_LIMIT_TEXT)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:

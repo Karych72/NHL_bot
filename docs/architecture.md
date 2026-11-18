@@ -45,7 +45,7 @@ telegram_bot/                   бот: читает БД, рисует меню
   ai_router.py                  кэшированный ИИ-текст превью рассылки; свободный текст в личке: Claude выбирает экран или отвечает; лимит ИИ
   ai_stats.py                   ИИ-ответы на статистические вопросы: SQL под ролью nhl_ai_reader
   messages/                     шаблоны сообщений (*.txt, Jinja2)
-  prompts/                      промпты ai_stats (*.md)
+  prompts/                      промпты ai_stats (*.md) и справка правил НХЛ для ai_router (nhl_rules.md)
   queries/                      SQL-функции БД (*.sql, ставит `make db-functions`)
 modeling/                       датасеты и модели (БД читает dataset_builder, пишет publish_predictions)
   cli.py                        единая CLI: build-dataset, train, evaluate-goals, fit-goals, evaluate-xg,

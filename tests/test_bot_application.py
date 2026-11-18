@@ -178,7 +178,7 @@ async def test_command_added_to_registry_reaches_help_router_and_menu(
     async def show_probe(_bot: Any, _chat_id: int) -> None:
         """Пробный экран."""
 
-    assert "/probe — Пробная команда" in help_text._command_items(commands)
+    assert "/probe — Пробная команда" in help_text.command_items(commands)
     # Команда без функции показа — ошибка при сборке хендлеров (её зовёт импорт `bot.py`).
     with pytest.raises(KeyError, match="probe"):
         bot._command_handlers(commands)
@@ -342,7 +342,7 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     bot = bot_module("bot")
     asked: List[str] = []
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         asked.append(text)
         return bot.ai_router.Reply(text="ответ модели", tool=None, params={})
 
@@ -437,7 +437,7 @@ async def test_free_text_is_not_logged(bot_module, dispatcher, fake_bot, actions
     """Вопрос к ИИ уже в `ai_questions` / `ai_stats_log` — журнал его не дублирует."""
     bot = bot_module("bot")
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         return bot.ai_router.Reply(text="ответ", tool=None, params={})
 
     monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)

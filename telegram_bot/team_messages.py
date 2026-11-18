@@ -264,6 +264,26 @@ def season_team_abbrevs() -> List[str]:
     return abbrevs
 
 
+def season_divisions_text() -> str:
+    """Строки «конференция · дивизион: клубы» текущего сезона (`config.SEASON_ID`) из `teams`.
+
+    Зачем: справка ИИ о структуре лиги (`ai_router.reference_text`, Задача 114) берёт состав
+    дивизионов из БД, а не из текста: перестановка клубов не требует правки справки.
+    """
+    stats = cached_fetch_all(
+        "SELECT conference_name, division_name, "
+        "string_agg(trim(COALESCE(NULLIF(trim(abbreviation), ''), short_name)), ', ' "
+        "ORDER BY abbreviation) AS clubs "
+        "FROM teams WHERE season_id = %s GROUP BY 1, 2 ORDER BY 1, 2",
+        (config.SEASON_ID,),
+        columns=["conference", "division", "clubs"],
+    )
+    return "\n".join(
+        f"{conference} · {division}: {clubs}"
+        for conference, division, clubs in zip(stats["conference"], stats["division"], stats["clubs"])
+    )
+
+
 def team_list_text() -> str:
     """Ответ `/team`: команды сезона по дивизионам, каждая — кликабельная
     команда `/ABBR` (её разбирает `cmd_team_profile` в `bot.py`), открывающая
