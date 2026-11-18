@@ -72,7 +72,7 @@ from country_messages import (  # noqa: E402
     players_night_entries,
 )
 from ai_router import upcoming_preview_text  # noqa: E402
-from premium import has_paid_subscription  # noqa: E402
+from premium import is_premium  # noqa: E402
 from game_messages import matchup_season_preview  # noqa: E402
 from leaderboard_messages import team_table  # noqa: E402
 from team_messages import player_labels  # noqa: E402
@@ -529,7 +529,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight``
     (сравнение команд): ближайший по началу ещё не начавшийся матч дня, которого он не
     получал (решение человека 2026-10-25). Превью собирается раз на матч, а не на
-    подписчика. ИИ-текст добавляется только при действующей оплате Stars.
+    подписчика. ИИ-текст добавляется только при действующем премиуме.
     Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
@@ -549,7 +549,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         if game_id not in previews:
             previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
         body, footer = previews[game_id]
-        if has_paid_subscription(chat_id):
+        if is_premium(chat_id):
             if game_id not in ai_texts:
                 facts = html.unescape(_HTML_TAG.sub(" ", body + "\n" + footer))
                 ai_texts[game_id] = await upcoming_preview_text(game_id, facts)

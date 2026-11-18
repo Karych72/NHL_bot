@@ -1035,7 +1035,7 @@ def upcoming_env(push_job, monkeypatch):
         env.read_subs += 1
         return env.chats
 
-    monkeypatch.setattr(push_job, "has_paid_subscription", lambda chat_id: False)
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: False)
     monkeypatch.setattr(push_job, "upcoming_preview_text", AsyncMock(return_value=""))
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
@@ -1527,7 +1527,7 @@ async def test_channel_weekly_failure_is_retried_the_same_day(push_job, weekly_e
 @pytest.mark.asyncio
 async def test_upcoming_ai_shared_and_escaped(push_job, upcoming_env, fake_bot, api, monkeypatch):
     upcoming_env.chats = [(10, 111), (20, 222)]
-    monkeypatch.setattr(push_job, "has_paid_subscription", lambda chat_id: True)
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: True)
     generate = AsyncMock(return_value="Смотрите на <атаку> & оборону.")
     monkeypatch.setattr(push_job, "upcoming_preview_text", generate)
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
@@ -1538,15 +1538,15 @@ async def test_upcoming_ai_shared_and_escaped(push_job, upcoming_env, fake_bot, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("paid_first", [False, True])
-async def test_upcoming_ai_only_for_paid_chats(
-    push_job, upcoming_env, fake_bot, api, monkeypatch, paid_first
+@pytest.mark.parametrize("premium_first", [False, True])
+async def test_upcoming_ai_only_for_premium_chats(
+    push_job, upcoming_env, fake_bot, api, monkeypatch, premium_first
 ):
     upcoming_env.chats = [(10, 111), (20, 222)]
-    if paid_first:
+    if premium_first:
         upcoming_env.chats.reverse()
-    monkeypatch.setattr(push_job, "has_paid_subscription", lambda chat_id: chat_id == 222)
-    generate = AsyncMock(return_value="ИИ-текст для платного чата.")
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: chat_id == 222)
+    generate = AsyncMock(return_value="ИИ-текст для премиум-чата.")
     monkeypatch.setattr(push_job, "upcoming_preview_text", generate)
     await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
     generate.assert_awaited_once()

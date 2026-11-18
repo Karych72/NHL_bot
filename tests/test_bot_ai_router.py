@@ -465,6 +465,7 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
         {"role": "user", "content": "BOS: 12 побед. TOR: 10 побед."},
     ]
     assert "исключительно факты" in messages.calls[0]["system"]
+    assert "Прогноз модели не используй" in messages.calls[0]["system"]
     logged = _logged(cursor)
     if failure == "truncated":
         assert logged["cost_usd"] > 0
