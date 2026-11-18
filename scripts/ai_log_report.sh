@@ -23,7 +23,7 @@ SQL=$(cat <<'EOF'
 \echo '--- 0. объём журналов за период: строк, первая и последняя запись'
 SELECT 'ai_questions' AS journal, count(*) AS rows, min(asked_at)::timestamp(0) AS first,
        max(asked_at)::timestamp(0) AS last
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day'
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day'
 UNION ALL
 SELECT 'ai_stats_log', count(*), min(asked_at)::timestamp(0), max(asked_at)::timestamp(0)
 FROM ai_stats_log WHERE asked_at > now() - :days * interval '1 day';
@@ -31,12 +31,12 @@ FROM ai_stats_log WHERE asked_at > now() - :days * interval '1 day';
 \echo '--- 1. маршрутизатор по исходам (screen — экран, в т.ч. stats_question; text — отказ или уточнение, error — сбой API); стоимость вызова, $'
 SELECT outcome, count(*) AS n, round(avg(cost_usd), 5) AS avg_usd, max(cost_usd) AS max_usd,
        round(sum(cost_usd), 4) AS sum_usd, round(avg(latency_ms)) AS avg_ms
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day'
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day'
 GROUP BY ROLLUP (outcome) ORDER BY outcome NULLS LAST;
 
 \echo '--- 2. маршрутизатор по экранам (open_command — с командой); stats_question уходит в ai_stats_log'
 SELECT tool || coalesce(' ' || (tool_input ->> 'command'), '') AS screen, count(*) AS n
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day' AND outcome = 'screen'
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day' AND outcome = 'screen'
 GROUP BY 1 ORDER BY n DESC, screen;
 
 \echo '--- 3. маршрутизатор: кэш промпта — вызовы с чтением кэша / только с записью / без кэша; токены (в $ — по ценам ai_router._PRICE_*)'
@@ -46,7 +46,7 @@ SELECT count(*) FILTER (WHERE cache_read_tokens > 0) AS calls_read,
        sum(input_tokens) AS input_tok, sum(output_tokens) AS output_tok,
        sum(cache_read_tokens) AS cache_read_tok, sum(cache_write_tokens) AS cache_write_tok,
        round(sum(cost_usd), 4) AS sum_usd
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day' AND outcome <> 'error';
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day' AND outcome <> 'error';
 
 \echo '--- 4. ответы по статистике по исходам (answer, clarify, no_data, off_topic, ceiling, rejected, error); стоимость вопроса без маршрутизатора, $'
 SELECT outcome, count(*) AS n, count(*) FILTER (WHERE continuation) AS continuation,
@@ -113,7 +113,7 @@ GROUP BY 1 ORDER BY n DESC LIMIT 30;
 \echo '--- 9. расход по дням МСК: вопросы и $ по журналам (error не в счёт вопросов)'
 WITH d AS (
     SELECT (asked_at AT TIME ZONE 'Europe/Moscow')::date AS day, 'router' AS j, outcome, cost_usd
-    FROM ai_questions WHERE asked_at > now() - :days * interval '1 day'
+    FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day'
     UNION ALL
     SELECT (asked_at AT TIME ZONE 'Europe/Moscow')::date, 'stats', outcome, cost_usd
     FROM ai_stats_log WHERE asked_at > now() - :days * interval '1 day'
@@ -129,7 +129,7 @@ FROM d GROUP BY ROLLUP (day) ORDER BY day NULLS LAST;
 \echo '--- 10. тексты: маршрутизатор ответил текстом (отказ или уточнение) — вопрос и ответ'
 SELECT asked_at::timestamp(0) AS at, left(regexp_replace(question, '\s+', ' ', 'g'), 200) AS question,
        left(regexp_replace(answer, '\s+', ' ', 'g'), 200) AS answer
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day' AND outcome = 'text'
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day' AND outcome = 'text'
 ORDER BY asked_at;
 
 \echo '--- 11. тексты: статистика без ответа (clarify, no_data, off_topic, ceiling, rejected, error) — вопрос, ответ, причина ревьюера или ошибка'
@@ -150,14 +150,14 @@ ORDER BY l.asked_at;
 \echo '--- 13. тексты: маршрутизатор выбрал экран (кроме stats_question — они в 11–12) — вопрос и параметры экрана'
 SELECT asked_at::timestamp(0) AS at, left(regexp_replace(question, '\s+', ' ', 'g'), 200) AS question,
        tool, tool_input
-FROM ai_questions WHERE asked_at > now() - :days * interval '1 day' AND outcome = 'screen'
+FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day' AND outcome = 'screen'
   AND tool <> 'stats_question'
 ORDER BY asked_at;
 
 \echo '--- 14. повторяющиеся вопросы (без учёта регистра и пробелов) — кандидаты на готовые выборки'
 WITH q AS (
     SELECT lower(regexp_replace(trim(question), '\s+', ' ', 'g')) AS question, 'router' AS j
-    FROM ai_questions WHERE asked_at > now() - :days * interval '1 day' AND outcome <> 'error'
+    FROM ai_questions WHERE chat_id <> 0 AND asked_at > now() - :days * interval '1 day' AND outcome <> 'error'
     UNION ALL
     SELECT lower(regexp_replace(trim(question), '\s+', ' ', 'g')), 'stats'
     FROM ai_stats_log WHERE asked_at > now() - :days * interval '1 day' AND outcome <> 'error'

@@ -70,7 +70,7 @@ def bot_module(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Any]:
 
 # config.validate_env() checks the raw environment (os.environ), not the
 # already-defaulted config.PG_*, so any test that drives bot.main() /
-# push_digest_job.main() end-to-end must set all six required variables
+# push_digest_job.main() end-to-end must set all required variables
 # itself — it cannot rely on whatever `make` happened to supply.
 _REQUIRED_BOT_ENV = {
     "TELEGRAM_BOT_TOKEN": "123456789:TEST-TOKEN-NOT-A-REAL-SECRET",
@@ -79,7 +79,7 @@ _REQUIRED_BOT_ENV = {
     "PG_USER": "nhl_bot_test",
     "PG_DATABASE": "nhl_bot_test",
     "SEASON_ID": "20262027",
-    # Только бот (`validate_env("ANTHROPIC_API_KEY")`, Задача 81); рассылке не нужен.
+    # Бот и рассылка вызывают validate_env("ANTHROPIC_API_KEY").
     "ANTHROPIC_API_KEY": "sk-ant-TEST-NOT-A-REAL-KEY",
 }
 
