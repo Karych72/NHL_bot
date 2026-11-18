@@ -13,13 +13,14 @@ import html
 import logging
 import re
 import zoneinfo
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, time as dtime, timezone
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import (
@@ -1170,6 +1171,45 @@ _SCHEDULE_REQUEST = re.compile(
 )
 
 
+_AI_WAIT_TEXT = "🏒 Разбираю эпизод — готовлю ответ…"
+_AI_LONG_WAIT_TEXT = "🏒 Нужен видеопросмотр: ещё разбираюсь с вопросом…"
+_AI_PROGRESS_DELAY = 5.0
+
+
+@asynccontextmanager
+async def _ai_progress(message: Message, bot: Bot) -> AsyncIterator[None]:
+    """Показывает ожидание ИИ и убирает статус после ответа, ошибки или отмены."""
+    status = None
+    try:
+        status = await message.answer_rich(rich_message(_AI_WAIT_TEXT))
+    except TelegramAPIError:
+        logger.exception("AI progress send failed chat_id=%s", message.chat.id)
+
+    async def update() -> None:
+        await asyncio.sleep(_AI_PROGRESS_DELAY)
+        if status is not None:
+            try:
+                await bot.edit_message_text(
+                    chat_id=status.chat.id, message_id=status.message_id,
+                    rich_message=rich_message(_AI_LONG_WAIT_TEXT),
+                )
+            except TelegramAPIError:
+                logger.exception("AI progress edit failed chat_id=%s", message.chat.id)
+
+    pending = asyncio.create_task(update())
+    try:
+        yield
+    finally:
+        pending.cancel()
+        with suppress(asyncio.CancelledError):
+            await pending
+        if status is not None:
+            try:
+                await bot.delete_message(chat_id=status.chat.id, message_id=status.message_id)
+            except TelegramAPIError:
+                logger.exception("AI progress delete failed chat_id=%s", message.chat.id)
+
+
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
@@ -1192,27 +1232,28 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         )
         await message.answer_rich(rich_message(refusal))
         return
-    history = [] if _SCHEDULE_REQUEST.search(text) else ai_stats.recent_pairs(chat_id)
-    if history:
-        await _answer_stats(message, text, history)
-        return
-    reply = await ai_router.ask(chat_id, text)
-    if reply.tool == "stats_question":
-        await _answer_stats(message, text, history)
-        return
-    if reply.tool is None:
-        # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
-        await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
-        return
-    if reply.tool == "schedule_screen":
-        draft = schedule_draft(chat_id, reply.params)
-        if draft is None:
-            await message.answer_rich(rich_message(_UNKNOWN_SCREEN_TEXT))
+    async with _ai_progress(message, bot):
+        history = [] if _SCHEDULE_REQUEST.search(text) else ai_stats.recent_pairs(chat_id)
+        if history:
+            await _answer_stats(message, text, history)
             return
-        card, markup = _schedule_card(draft)
-        await message.answer_rich(rich_message(card), reply_markup=markup)
-        return
-    await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
+        reply = await ai_router.ask(chat_id, text)
+        if reply.tool == "stats_question":
+            await _answer_stats(message, text, history)
+            return
+        if reply.tool is None:
+            # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
+            await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
+            return
+        if reply.tool == "schedule_screen":
+            draft = schedule_draft(chat_id, reply.params)
+            if draft is None:
+                await message.answer_rich(rich_message(_UNKNOWN_SCREEN_TEXT))
+                return
+            card, markup = _schedule_card(draft)
+            await message.answer_rich(rich_message(card), reply_markup=markup)
+            return
+        await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
 
 
 async def _answer_stats(message: Message, question: str, history: List[Dict[str, Any]]) -> None:
