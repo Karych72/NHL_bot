@@ -81,10 +81,9 @@ SCHEDULE_COMMANDS = tuple(c.name for c in COMMANDS if c.schedule)
 FREE_TOOLS = ("bot_answer", "my_status")
 FREE_COMMANDS = ("premium",)
 # Предохранитель лазейки: вызовы вне счёта (бесплатные ответы и 'limited') тратят общий бюджет,
-# поэтому их за сутки МСК — не больше `FREE_DAILY_CALLS`. Дальше ответ о боте заменяется
-# `FREE_CAP_TEXT`, а сверх лимита чата модель не спрашивается.
+# поэтому вне счёта за сутки МСК — не больше `FREE_DAILY_CALLS` бесплатных ответов: следующие
+# списываются как обычный вопрос, а сверх лимита чата модель не спрашивается.
 FREE_DAILY_CALLS = 10
-FREE_CAP_TEXT = "На сегодня вопросы о боте закончились. Что умею — /help"
 # Окно, в котором текстовый ответ маршрутизатора (уточнение) — контекст следующего вопроса.
 CLARIFY_WINDOW_MINUTES = 10
 _RULES = (Path(__file__).parent / "prompts" / "nhl_rules.md").read_text(encoding="utf-8")
@@ -366,20 +365,23 @@ def _asked(chat_id: int) -> Dict[str, int]:
     Вопрос — строка `ai_questions` (вызов маршрутизатора 81) или `ai_stats_log` (ответ по
     статистике 83, в том числе продолжение диалога мимо маршрутизатора). Выбор `stats_question`
     в `ai_questions` не считается — вопрос списывает строка `ai_stats_log`, иначе он стоил бы две
-    единицы; ответы о боте (`FREE_TOOLS`, `open_command` из `FREE_COMMANDS`, Задача 114) — тоже.
-    Сбой (`outcome = 'error'`) не списывает: пользователь не виноват, что модель не ответила;
+    единицы; ответы о боте (`FREE_TOOLS`, `open_command` из `FREE_COMMANDS`, Задача 114) — тоже,
+    но только первые `FREE_DAILY_CALLS` за сутки МСК, следующие списываются. Сбой (`outcome = 'error'`) не списывает: пользователь не виноват, что модель не ответила;
     вызов сверх лимита (`'limited'`) — тоже: пользователь уже получил отказ.
     """
     rows = fetch_all(
         f"SELECT count(*) FILTER (WHERE counted AND asked_at >= {_msk_start('day')}), "
         f"count(*) FILTER (WHERE counted AND asked_at >= {_msk_start('week')}), "
         f"count(*) FILTER (WHERE NOT counted AND asked_at >= {_msk_start('day')}) FROM ("
-        "SELECT asked_at, outcome <> 'limited' AND NOT coalesce(tool = ANY(%s) "
-        "OR (tool = 'open_command' AND tool_input->>'command' = ANY(%s)), false) AS counted "
+        "SELECT asked_at, outcome <> 'limited' AND (NOT free OR row_number() OVER (PARTITION BY "
+        "free AND outcome <> 'limited', (asked_at AT TIME ZONE 'Europe/Moscow')::date "
+        "ORDER BY asked_at) > %s) AS counted FROM ("
+        "SELECT asked_at, outcome, coalesce(tool = ANY(%s) OR (tool = 'open_command' "
+        "AND tool_input->>'command' = ANY(%s)), false) AS free "
         "FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' "
-        "AND (tool IS DISTINCT FROM 'stats_question' OR outcome = 'limited') "
+        "AND (tool IS DISTINCT FROM 'stats_question' OR outcome = 'limited')) f "
         "UNION ALL SELECT asked_at, true FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error') q",
-        (list(FREE_TOOLS), list(FREE_COMMANDS), chat_id, chat_id),
+        (FREE_DAILY_CALLS, list(FREE_TOOLS), list(FREE_COMMANDS), chat_id, chat_id),
         columns=["day", "week", "free_day"],
     )
     return {key: int(rows[key][0]) for key in ("day", "week", "free_day")}
@@ -402,8 +404,9 @@ def limit_refusal(chat_id: int) -> Optional[str]:
 
 
 def free_calls_left(chat_id: int) -> bool:
-    """Остались ли у чата вызовы вне счёта на сутки МСК (меньше `FREE_DAILY_CALLS`). Зачем: иначе
-    флуд вопросами о боте или сверх лимита тратил бы общий бюджет (Задача 141)."""
+    """Можно ли спросить модель сверх лимита чата: вызовов вне счёта за сутки МСК меньше
+    `FREE_DAILY_CALLS`. Зачем: иначе флуд сверх лимита тратил бы общий бюджет (Задача 141); в
+    пределах лимита флуд ограничен тем, что ответы сверх потолка списываются (`_asked`)."""
     return _asked(chat_id)["free_day"] < FREE_DAILY_CALLS
 
 
@@ -560,7 +563,7 @@ def cost_usd(usage: Any) -> float:
     ) / 1_000_000
 
 
-async def ask(chat_id: int, question: str, limited: bool = False, free_left: bool = True) -> Reply:
+async def ask(chat_id: int, question: str, limited: bool = False) -> Reply:
     """Один вызов модели на вопрос пользователя; результат и расход — в `ai_questions`.
 
     Зачем: модель только выбирает экран или пишет короткий ответ по справке, отказ или
@@ -573,8 +576,6 @@ async def ask(chat_id: int, question: str, limited: bool = False, free_left: boo
         question: текст сообщения как есть.
         limited: лимит чата исчерпан — ответ не о боте (`is_free`) пользователь не получит, в
             журнал он пишется исходом 'limited'.
-        free_left: `free_calls_left` — нет, ответ о боте пользователь не получит (`FREE_CAP_TEXT`),
-            в журнал он пишется исходом 'limited'.
     """
     started = time.monotonic()
     try:
@@ -592,8 +593,7 @@ async def ask(chat_id: int, question: str, limited: bool = False, free_left: boo
     usage = response.usage
     _log_question(
         chat_id, question,
-        "limited" if (limited and not is_free(reply)) or (not free_left and is_free(reply))
-        else "text" if reply.text is not None else "screen",
+        "limited" if limited and not is_free(reply) else "text" if reply.text is not None else "screen",
         latency_ms,
         tool=reply.tool, tool_input=reply.params if reply.tool else None,
         answer=reply.text, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,

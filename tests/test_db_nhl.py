@@ -1918,6 +1918,23 @@ class TestAiLimitSql(unittest.TestCase):
                         "WHERE chat_id = %s", (ai.CLARIFY_WINDOW_MINUTES + 1, self.PREMIUM_CHAT))
         self.assertIsNone(ai._clarified(self.PREMIUM_CHAT), "вне окна")
 
+    def test_free_answers_over_the_daily_cap_count(self):
+        """Задача 114: первые FREE_DAILY_CALLS ответов о боте за сутки МСК вне счёта, следующие —
+        обычные вопросы; вчерашние бесплатные потолок не занимают."""
+        ai = self.ai
+        for _ in range(3):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE ai_questions SET asked_at = {self.BEFORE_DAY} WHERE chat_id = %s",
+                        (self.PREMIUM_CHAT,))
+        for _ in range(ai.FREE_DAILY_CALLS + 2):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        asked = ai._asked(self.PREMIUM_CHAT)
+        self.assertEqual((asked["day"], asked["free_day"]), (2, ai.FREE_DAILY_CALLS))
+        self.assertFalse(ai.free_calls_left(self.PREMIUM_CHAT))
+
     def test_each_question_counts_once_and_failures_do_not(self):
         """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
         ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``

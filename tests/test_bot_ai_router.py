@@ -710,27 +710,6 @@ async def test_over_limit_calls_are_capped_per_day(ai, bot_module, make_message,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("result", "reply", "outcome"),
-    [
-        (_response(_tool_use("bot_answer", answer="Овертайм — 5 минут")), "FREE_CAP_TEXT", "limited"),
-        (_response(_text("Рейнджерс или Айлендерс?")), None, "text"),
-    ],
-)
-async def test_free_answers_are_capped_within_the_limit(
-    ai, bot_module, make_message, fake_bot, api, result, reply, outcome
-):
-    """В пределах лимита на потолке ответ о боте заменяется FREE_CAP_TEXT, остальное — как обычно."""
-    ai_router = bot_module("ai_router")
-    bot, cursor, _ = ai(result, free_day=ai_router.FREE_DAILY_CALLS)
-    await _ask(bot, make_message, fake_bot)
-
-    expected = getattr(ai_router, reply) if reply else "Рейнджерс или Айлендерс?"
-    assert body(api.sent_rich[-1]) == _as_reply(expected)
-    assert _logged(cursor)["outcome"] == outcome
-
-
-@pytest.mark.asyncio
 async def test_clarification_is_context_for_the_next_question(ai, make_message, fake_bot, api):
     """Уточнение о клубе — текстом; уточнение `bot_answer` — тем же вызовом инструмента."""
     bot, _, messages = ai(
