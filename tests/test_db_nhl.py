@@ -110,6 +110,16 @@ def _unique_partial_index_predicate_row(cur, table: str, index_name: str):
     return cur.fetchone()
 
 
+class TestMigrationFiles(unittest.TestCase):
+    """Проверки файлов миграций без подключения к PostgreSQL."""
+
+    def test_versions_are_unique(self):
+        migrations = Path(REPO_ROOT, "data_tables/migrations")
+        versions = [f.name.split("_", 1)[0] for f in migrations.glob("*.up.sql")]
+        self.assertEqual(len(versions), len(set(versions)),
+                         "db-migrate skips duplicate migration versions")
+
+
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),

@@ -232,15 +232,14 @@ class _ForbiddenBot:
 
 
 @pytest.mark.asyncio
-async def test_main_raises_and_never_creates_bot_without_token(
-    push_job, monkeypatch, set_required_bot_env
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"])
+async def test_main_requires_credentials_before_creating_bot(
+    push_job, monkeypatch, set_required_bot_env, missing
 ):
-    """``main()`` падает на ``validate_env()`` до создания ``Bot``, если токена нет —
-    раньше это было мягкое ``sys.exit(1)`` внутри самого скрипта."""
-    set_required_bot_env(TELEGRAM_BOT_TOKEN="")
+    """Ошибки конфигурации останавливают процесс до создания Bot и резервации кэша."""
+    set_required_bot_env(**{missing: ""})
     monkeypatch.setattr(push_job, "Bot", _ForbiddenBot)
-
-    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
+    with pytest.raises(RuntimeError, match=missing):
         await push_job.main(False)
 
 

@@ -823,7 +823,7 @@ async def main(upcoming_only: bool, previews: bool = True) -> None:
     ``async with`` закрывает HTTP-сессию бота после рассылки. Таймаут запроса — 300 с:
     карточка с клипами голов (до 45 МБ загрузки) не уйдёт за 60 с по умолчанию.
     """
-    config.validate_env()
+    config.validate_env("ANTHROPIC_API_KEY")
     if not config.ENABLE_PUSH_DIGEST:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return

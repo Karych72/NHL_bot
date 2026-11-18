@@ -452,7 +452,9 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
     monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
     result = {
         False: _response(_text("Текст превью.")),
-        "timeout": TimeoutError(), "client": anthropic.AnthropicError("missing key"),
+        "timeout": TimeoutError(), "client": anthropic.APIConnectionError(
+            request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
         "truncated": _response(_text("Оборванный текст"), stop_reason="max_tokens"),
     }[failure]
     messages = FakeMessages(result)
@@ -479,11 +481,3 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
     monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
     assert await ai_router.upcoming_preview_text(95, "changed") == result
     assert len(messages.calls) == 1
-
-
-def test_migration_versions_are_unique():
-    from pathlib import Path
-
-    migrations = Path(__file__).resolve().parents[1] / "data_tables/migrations"
-    versions = [f.name.split("_", 1)[0] for f in migrations.glob("*.up.sql")]
-    assert len(versions) == len(set(versions)), "db-migrate skips duplicate migration versions"
