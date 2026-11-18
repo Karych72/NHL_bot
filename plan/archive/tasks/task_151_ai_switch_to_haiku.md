@@ -8,7 +8,7 @@
 отсчёта по стоимости.
 **Источник:** решение человека 2026-11-17 по Задаче 126
 ([`../premium_open_questions.md`](../premium_open_questions.md), ответы 3, 8, 9); реестр —
-[`../open_tasks.md`](../open_tasks.md).
+[`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

@@ -7,7 +7,7 @@
 `docs/premium.md`, `docs/telegram_bot.md`, `docs/architecture.md`.
 **Зависит от:** ничего.
 **Источник:** решение человека 2026-11-16: «прогноз модели пока вообще уберём, пока всерьёз не
-улучшим»; реестр — [`../open_tasks.md`](../open_tasks.md).
+улучшим»; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

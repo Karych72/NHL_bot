@@ -4,7 +4,7 @@
 **Область:** `telegram_bot/ai_router.py` (промпт, инструменты), `telegram_bot/help_text.py` (источник
 справки), `scripts/ai_router_eval.jsonl`, `docs/ai_capabilities.md`, `docs/telegram_bot.md` §8.
 **Зависит от:** 107 🟨, 108 🟨 (расписания — часть того, о чём спрашивают).
-**Источник:** просьба человека 2026-11-02; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-11-02; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
