@@ -1935,10 +1935,12 @@ class TestAiLimitSql(unittest.TestCase):
                          tool_input={"command": "premium"})
         ai._log_question(self.FREE_CHAT, "таблица", "limited", 900, tool="open_command",
                          tool_input={"command": "standings"})
+        ai._log_question(self.FREE_CHAT, "а в прошлом?", "limited", 900, tool="stats_question",
+                         tool_input={})
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")
-        self.assertEqual(ai._asked(self.FREE_CHAT)["free_day"], 4)
+        self.assertEqual(ai._asked(self.FREE_CHAT)["free_day"], 5)
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="clarify")
         self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.WEEK_LIMIT_TEXT)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:

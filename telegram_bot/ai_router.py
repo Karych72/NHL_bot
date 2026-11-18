@@ -80,9 +80,11 @@ SCHEDULE_COMMANDS = tuple(c.name for c in COMMANDS if c.schedule)
 # списывают и проходят при исчерпанном лимите: справка, цифры чата и экран оплаты.
 FREE_TOOLS = ("bot_answer", "my_status")
 FREE_COMMANDS = ("premium",)
-# Предохранитель лазейки: сверх лимита модель спрашивается на каждое сообщение, поэтому таких
-# вызовов за сутки МСК — не больше `OVER_LIMIT_DAILY_CALLS` (строки 'limited' и бесплатные ответы).
-OVER_LIMIT_DAILY_CALLS = 10
+# Предохранитель лазейки: вызовы вне счёта (бесплатные ответы и 'limited') тратят общий бюджет,
+# поэтому их за сутки МСК — не больше `FREE_DAILY_CALLS`. Дальше ответ о боте заменяется
+# `FREE_CAP_TEXT`, а сверх лимита чата модель не спрашивается.
+FREE_DAILY_CALLS = 10
+FREE_CAP_TEXT = "На сегодня вопросы о боте закончились. Что умею — /help"
 # Окно, в котором текстовый ответ маршрутизатора (уточнение) — контекст следующего вопроса.
 CLARIFY_WINDOW_MINUTES = 10
 _RULES = (Path(__file__).parent / "prompts" / "nhl_rules.md").read_text(encoding="utf-8")
@@ -374,8 +376,8 @@ def _asked(chat_id: int) -> Dict[str, int]:
         f"count(*) FILTER (WHERE NOT counted AND asked_at >= {_msk_start('day')}) FROM ("
         "SELECT asked_at, outcome <> 'limited' AND NOT coalesce(tool = ANY(%s) "
         "OR (tool = 'open_command' AND tool_input->>'command' = ANY(%s)), false) AS counted "
-        "FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' AND tool IS DISTINCT FROM "
-        "'stats_question' "
+        "FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' "
+        "AND (tool IS DISTINCT FROM 'stats_question' OR outcome = 'limited') "
         "UNION ALL SELECT asked_at, true FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error') q",
         (list(FREE_TOOLS), list(FREE_COMMANDS), chat_id, chat_id),
         columns=["day", "week", "free_day"],
@@ -399,10 +401,10 @@ def limit_refusal(chat_id: int) -> Optional[str]:
     return WEEK_LIMIT_TEXT if asked["week"] >= FREE_WEEKLY_LIMIT else None
 
 
-def over_limit_calls_left(chat_id: int) -> bool:
-    """Можно ли спросить модель сверх лимита чата: вызовов вне счёта за сутки МСК меньше
-    `OVER_LIMIT_DAILY_CALLS`. Зачем: иначе флуд сверх лимита тратил бы общий бюджет (Задача 141)."""
-    return _asked(chat_id)["free_day"] < OVER_LIMIT_DAILY_CALLS
+def free_calls_left(chat_id: int) -> bool:
+    """Остались ли у чата вызовы вне счёта на сутки МСК (меньше `FREE_DAILY_CALLS`). Зачем: иначе
+    флуд вопросами о боте или сверх лимита тратил бы общий бюджет (Задача 141)."""
+    return _asked(chat_id)["free_day"] < FREE_DAILY_CALLS
 
 
 def is_free(reply: Reply) -> bool:
@@ -558,7 +560,7 @@ def cost_usd(usage: Any) -> float:
     ) / 1_000_000
 
 
-async def ask(chat_id: int, question: str, limited: bool = False) -> Reply:
+async def ask(chat_id: int, question: str, limited: bool = False, free_left: bool = True) -> Reply:
     """Один вызов модели на вопрос пользователя; результат и расход — в `ai_questions`.
 
     Зачем: модель только выбирает экран или пишет короткий ответ по справке, отказ или
@@ -571,6 +573,8 @@ async def ask(chat_id: int, question: str, limited: bool = False) -> Reply:
         question: текст сообщения как есть.
         limited: лимит чата исчерпан — ответ не о боте (`is_free`) пользователь не получит, в
             журнал он пишется исходом 'limited'.
+        free_left: `free_calls_left` — нет, ответ о боте пользователь не получит (`FREE_CAP_TEXT`),
+            в журнал он пишется исходом 'limited'.
     """
     started = time.monotonic()
     try:
@@ -588,7 +592,8 @@ async def ask(chat_id: int, question: str, limited: bool = False) -> Reply:
     usage = response.usage
     _log_question(
         chat_id, question,
-        "limited" if limited and not is_free(reply) else "text" if reply.text is not None else "screen",
+        "limited" if (limited and not is_free(reply)) or (not free_left and is_free(reply))
+        else "text" if reply.text is not None else "screen",
         latency_ms,
         tool=reply.tool, tool_input=reply.params if reply.tool else None,
         answer=reply.text, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,

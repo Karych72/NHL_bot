@@ -1213,9 +1213,10 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
     Общий бюджет исчерпан (`ai_router.limit_refusal`, Задача 141) — отказ без вызова модели.
-    Исчерпан лимит чата (премиум или бесплатный, Задача 96) — модель всё равно спрашивается (не
-    больше `ai_router.OVER_LIMIT_DAILY_CALLS` раз в сутки), но проходит только ответ вне лимита
-    (`ai_router.is_free`: справка, цифры чата, экран оплаты, Задача 114), иначе — отказ. Вид лимита (`day`, `week`, `budget`) отказа — в журнал
+    Исчерпан лимит чата (премиум или бесплатный, Задача 96) — модель всё равно спрашивается, но
+    проходит только ответ вне лимита (`ai_router.is_free`: справка, цифры чата, экран оплаты,
+    Задача 114), иначе — отказ. Вызовов вне счёта — не больше `ai_router.FREE_DAILY_CALLS` в сутки:
+    дальше ответ о боте — `FREE_CAP_TEXT`, а сверх лимита чата — отказ без модели. Вид лимита (`day`, `week`, `budget`) отказа — в журнал
     `bot_actions`. Модель выбрала экран — бот показывает его (`AI_SCREENS`); `my_status` — цифры
     чата (`ai_router.chat_status`); иначе — её текст: ответ по справке, отказ, уточнение или
     сообщение о сбое API.
@@ -1228,9 +1229,8 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     chat_id = message.chat.id
     text = message.text or ""
     refusal = ai_router.limit_refusal(chat_id)
-    if refusal is not None and (
-        refusal == ai_router.BUDGET_TEXT or not ai_router.over_limit_calls_left(chat_id)
-    ):
+    free_left = refusal != ai_router.BUDGET_TEXT and ai_router.free_calls_left(chat_id)
+    if refusal is not None and not free_left:
         await _refuse_by_limit(message, refusal)
         return
     async with _ai_progress(message, bot):
@@ -1238,9 +1238,12 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         if history:
             await _answer_stats(message, text, history)
             return
-        reply = await ai_router.ask(chat_id, text, limited=refusal is not None)
+        reply = await ai_router.ask(chat_id, text, limited=refusal is not None, free_left=free_left)
         if refusal is not None and not ai_router.is_free(reply):
             await _refuse_by_limit(message, refusal)
+            return
+        if not free_left and ai_router.is_free(reply):
+            await message.answer_rich(rich_message(ai_router.FREE_CAP_TEXT))
             return
         if reply.tool == "my_status":
             await message.answer_rich(rich_message(html.escape(ai_router.chat_status(chat_id))))
