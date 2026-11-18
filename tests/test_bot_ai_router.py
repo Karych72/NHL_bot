@@ -108,16 +108,9 @@ def _logged(cursor) -> dict:
 
 
 async def _ask(bot, make_message, fake_bot, text: str = "вопрос") -> None:
-    from aiogram.methods import DeleteMessage, SendRichMessage
-
     start = len(fake_bot.session.requests)
     await bot.on_free_text(make_message(text), fake_bot)
-    # Сравнения экранов ниже исключают временный статус; его жизненный цикл проверен отдельно.
-    fake_bot.session.requests[start:] = [
-        r for r in fake_bot.session.requests[start:]
-        if not isinstance(r, DeleteMessage)
-        and not (isinstance(r, SendRichMessage) and body(r) == rich_html(bot._AI_WAIT_TEXT))
-    ]
+    fake_bot.session.remove_ai_progress(start, bot._AI_WAIT_TEXT, list(bot._AI_LIMIT_KINDS))
 
 
 def _replies(api) -> list:
@@ -550,7 +543,7 @@ async def test_ai_progress_cleans_up_on_error_or_cancellation(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method_name", ["send", "edit", "delete"])
 async def test_ai_progress_telegram_failure_preserves_answer(
-    ai, make_message, fake_bot, api, monkeypatch, method_name
+    ai, make_message, fake_bot, api, monkeypatch, caplog, method_name
 ):
     import asyncio
     from aiogram.exceptions import TelegramBadRequest
@@ -569,3 +562,63 @@ async def test_ai_progress_telegram_failure_preserves_answer(
     monkeypatch.setattr(messages, "create", create)
     await bot.on_free_text(make_message("вопрос"), fake_bot)
     assert body(api.sent_rich[-1]) == _as_reply("Готово")
+    failures = [r for r in caplog.records if f"AI progress {method_name} failed" in r.message]
+    assert len(failures) == 1
+    assert failures[0].exc_info is None
+    assert not api._errors, "ожидаемая ошибка Telegram должна сработать"
+    if method_name == "send":
+        assert not api.sent(EditMessageText)
+        assert not api.sent(DeleteMessage)
+
+
+@pytest.mark.asyncio
+async def test_ai_progress_preserves_cancellation_during_timer_cleanup(
+    bot_module, make_message, fake_bot, api, monkeypatch
+):
+    """Отмена текущего обработчика при ожидании таймера доходит до вызывающего кода."""
+    import asyncio
+    from aiogram.methods import DeleteMessage
+
+    bot = bot_module("bot")
+    original_wait = asyncio.wait
+
+    async def cancel_during_wait(tasks):
+        asyncio.current_task().cancel()
+        return await original_wait(tasks)
+
+    monkeypatch.setattr(bot.asyncio, "wait", cancel_during_wait)
+
+    async def handler():
+        async with bot._ai_progress(make_message("вопрос"), fake_bot):
+            pass
+
+    task = asyncio.create_task(handler())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert len(api.sent(DeleteMessage)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", ["other_delete", "double_delete", "double_status"])
+async def test_progress_filter_does_not_hide_unexpected_messages(fake_bot, api, extra):
+    """Общий фильтр сохраняет посторонние удаления и отвергает повторный статус/удаление."""
+    from aiogram.methods import DeleteMessage
+    from rich_markup import rich_message
+
+    status = await fake_bot.send_rich_message(chat_id=100, rich_message=rich_message("ожидание"))
+    await fake_bot.delete_message(chat_id=100, message_id=status.message_id)
+    if extra == "double_status":
+        await fake_bot.send_rich_message(chat_id=100, rich_message=rich_message("ожидание"))
+    else:
+        await fake_bot.delete_message(
+            chat_id=100, message_id=status.message_id if extra == "double_delete" else 999
+        )
+    if extra == "other_delete":
+        api.remove_ai_progress(0, "ожидание")
+        assert len(api.requests) == 1
+        assert isinstance(api.requests[0], DeleteMessage)
+        assert api.requests[0].message_id == 999
+    else:
+        with pytest.raises(AssertionError, match="ровно один раз"):
+            api.remove_ai_progress(0, "ожидание")

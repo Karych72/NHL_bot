@@ -13,7 +13,7 @@ import html
 import logging
 import re
 import zoneinfo
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import datetime, time as dtime, timezone
 from functools import partial
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
@@ -1179,35 +1179,35 @@ _AI_PROGRESS_DELAY = 5.0
 @asynccontextmanager
 async def _ai_progress(message: Message, bot: Bot) -> AsyncIterator[None]:
     """Показывает ожидание ИИ и убирает статус после ответа, ошибки или отмены."""
-    status = None
     try:
         status = await message.answer_rich(rich_message(_AI_WAIT_TEXT))
-    except TelegramAPIError:
-        logger.exception("AI progress send failed chat_id=%s", message.chat.id)
+    except TelegramAPIError as exc:
+        logger.warning("AI progress send failed chat_id=%s: %s", message.chat.id, exc)
+        yield
+        return
 
     async def update() -> None:
         await asyncio.sleep(_AI_PROGRESS_DELAY)
-        if status is not None:
-            try:
-                await bot.edit_message_text(
-                    chat_id=status.chat.id, message_id=status.message_id,
-                    rich_message=rich_message(_AI_LONG_WAIT_TEXT),
-                )
-            except TelegramAPIError:
-                logger.exception("AI progress edit failed chat_id=%s", message.chat.id)
+        try:
+            await bot.edit_message_text(
+                chat_id=status.chat.id, message_id=status.message_id,
+                rich_message=rich_message(_AI_LONG_WAIT_TEXT),
+            )
+        except TelegramAPIError as exc:
+            logger.warning("AI progress edit failed chat_id=%s: %s", message.chat.id, exc)
 
     pending = asyncio.create_task(update())
     try:
         yield
     finally:
         pending.cancel()
-        with suppress(asyncio.CancelledError):
-            await pending
-        if status is not None:
+        try:
+            await asyncio.wait([pending])
+        finally:
             try:
                 await bot.delete_message(chat_id=status.chat.id, message_id=status.message_id)
-            except TelegramAPIError:
-                logger.exception("AI progress delete failed chat_id=%s", message.chat.id)
+            except TelegramAPIError as exc:
+                logger.warning("AI progress delete failed chat_id=%s: %s", message.chat.id, exc)
 
 
 async def on_free_text(message: Message, bot: Bot) -> None:
