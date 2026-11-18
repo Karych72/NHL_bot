@@ -227,7 +227,7 @@ async def test_reviewed_ok_draft_goes_to_user_and_is_logged(stats, make_message,
         {"tool": "review", "draft": "Овечкин: 42 гола", "verdict": "ok", "reason": "сходится"},
     ]
     assert [c["role"] for c in row["calls"]] == ["answer", "answer", "review"]
-    assert row["cost_usd"] == pytest.approx(3 * (100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
+    assert row["cost_usd"] == pytest.approx(3 * (100 * 0.10 + 50 * 0.50 + 3000 * 0.01) / 1e6)
     review = s.model.calls[-1]
     content = review["messages"][0]["content"]
     assert "SELECT goals FROM players_season_stats" in content and "[[42]]" in content.replace(" ", "")
@@ -347,14 +347,14 @@ async def test_fifth_sql_attempt_hits_ceiling(stats, make_message, fake_bot, api
 
 @pytest.mark.asyncio
 async def test_cost_ceiling_stops_before_tool_runs(stats, make_message, fake_bot, api):
-    # 60 000 входных токенов по $2/1M — $0.12 одним вызовом, выше потолка $0.10.
-    s = stats([_response(_use("run_sql", sql="SELECT 1"), tokens=60_000)])
+    # 120 000 входных токенов по $0.10/1M — $0.012 одним вызовом, выше потолка $0.01.
+    s = stats([_response(_use("run_sql", sql="SELECT 1"), tokens=120_000)])
     replies = await _ask(s, make_message, fake_bot, api)
 
     assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
     assert s.sql == [] and len(s.model.calls) == 1
     row = _logged(s.cursor)
-    assert row["outcome"] == "ceiling" and row["cost_usd"] > 0.10
+    assert row["outcome"] == "ceiling" and row["cost_usd"] > 0.01
 
 
 @pytest.mark.asyncio
@@ -662,20 +662,20 @@ async def test_calls_use_long_timeout_and_room_for_thinking(stats, make_message,
 
 @pytest.mark.asyncio
 async def test_projected_cost_stops_before_a_call_that_would_break_ceiling(stats, make_message, fake_bot, api):
-    # Первый вызов $0.06 (30 000 входных токенов): ещё один такой же пробил бы $0.10.
-    s = stats([_response(_use("run_sql", sql="SELECT 1"), tokens=30_000), _finish("off_topic", "x")],
+    # Первый вызов $0.006 (60 000 входных токенов): ещё один такой же пробил бы $0.01.
+    s = stats([_response(_use("run_sql", sql="SELECT 1"), tokens=60_000), _finish("off_topic", "x")],
               reader={"SELECT 1": (["x"], [(1,)])})
     replies = await _ask(s, make_message, fake_bot, api)
 
     assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
     assert len(s.model.calls) == 1 and len(s.sql) == 1
     row = _logged(s.cursor)
-    assert row["outcome"] == "ceiling" and row["cost_usd"] < 0.10
+    assert row["outcome"] == "ceiling" and row["cost_usd"] < 0.01
 
 
 @pytest.mark.asyncio
 async def test_ready_finish_is_not_thrown_away_when_it_crosses_the_ceiling(stats, make_message, fake_bot, api):
-    s = stats([_response(_use("finish", kind="no_data", continuation=False, text="Нет"), tokens=60_000)])
+    s = stats([_response(_use("finish", kind="no_data", continuation=False, text="Нет"), tokens=120_000)])
     replies = await _ask(s, make_message, fake_bot, api)
 
     assert replies == [_as_reply("Нет")]
@@ -684,7 +684,7 @@ async def test_ready_finish_is_not_thrown_away_when_it_crosses_the_ceiling(stats
 
 @pytest.mark.asyncio
 async def test_draft_is_logged_when_review_hits_the_ceiling(stats, make_message, fake_bot, api):
-    s = stats([_response(_use("finish", kind="answer", continuation=False, text="Черновик 42"), tokens=60_000)])
+    s = stats([_response(_use("finish", kind="answer", continuation=False, text="Черновик 42"), tokens=120_000)])
     replies = await _ask(s, make_message, fake_bot, api)
 
     assert replies == [_as_reply(s.ai_stats.CEILING_TEXT)]
