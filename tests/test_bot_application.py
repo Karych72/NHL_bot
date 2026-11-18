@@ -354,7 +354,9 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     await _feed(dispatcher, fake_bot, make_update("таблица Востока", chat_id=-5, chat_type="group"))
 
     assert asked == ["как сыграл Колорадо"]
-    assert [body(m) for m in api.outgoing] == [rich_html("ответ модели")]
+    assert [body(m) for m in api.outgoing] == [
+        rich_html(bot._AI_WAIT_TEXT), rich_html("ответ модели")
+    ]
 
 
 @pytest.mark.asyncio

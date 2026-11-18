@@ -108,7 +108,16 @@ def _logged(cursor) -> dict:
 
 
 async def _ask(bot, make_message, fake_bot, text: str = "вопрос") -> None:
+    from aiogram.methods import DeleteMessage, SendRichMessage
+
+    start = len(fake_bot.session.requests)
     await bot.on_free_text(make_message(text), fake_bot)
+    # Сравнения экранов ниже исключают временный статус; его жизненный цикл проверен отдельно.
+    fake_bot.session.requests[start:] = [
+        r for r in fake_bot.session.requests[start:]
+        if not isinstance(r, DeleteMessage)
+        and not (isinstance(r, SendRichMessage) and body(r) == rich_html(bot._AI_WAIT_TEXT))
+    ]
 
 
 def _replies(api) -> list:
@@ -482,3 +491,81 @@ async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeyp
     monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
     assert await ai_router.upcoming_preview_text(95, "changed") == result
     assert len(messages.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow", [False, True])
+async def test_ai_progress_surrounds_model_and_answer(
+    ai, make_message, fake_bot, api, monkeypatch, slow
+):
+    """Статус уже в чате во время API; долгий запрос правит его один раз до ответа."""
+    import asyncio
+    from aiogram.methods import DeleteMessage, EditMessageText, SendRichMessage
+
+    bot, _, messages = ai(_response(_text("Готово")))
+    original = messages.create
+    monkeypatch.setattr(bot, "_AI_PROGRESS_DELAY", 0.01 if slow else 60)
+
+    async def create(**kwargs):
+        assert [body(r) for r in api.sent_rich] == [rich_html(bot._AI_WAIT_TEXT)]
+        if slow:
+            await asyncio.sleep(0.03)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(messages, "create", create)
+    await bot.on_free_text(make_message("вопрос"), fake_bot)
+    assert [body(r) for r in api.sent_rich] == [rich_html(bot._AI_WAIT_TEXT), _as_reply("Готово")]
+    edits = api.sent(EditMessageText)
+    assert len(edits) == int(slow)
+    if slow:
+        assert body(edits[0]) == rich_html(bot._AI_LONG_WAIT_TEXT)
+        assert edits[0].message_id == 1
+    assert isinstance(api.requests[-2], SendRichMessage)
+    assert isinstance(api.requests[-1], DeleteMessage)
+    assert api.requests[-1].message_id == 1
+    count = len(api.requests)
+    await asyncio.sleep(0.03)
+    assert len(api.requests) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_ai_progress_cleans_up_on_error_or_cancellation(
+    bot_module, make_message, fake_bot, api, cancel
+):
+    import asyncio
+    from aiogram.methods import DeleteMessage
+
+    bot = bot_module("bot")
+    error = asyncio.CancelledError if cancel else RuntimeError
+    with pytest.raises(error):
+        async with bot._ai_progress(make_message("вопрос"), fake_bot):
+            raise error()
+    assert len(api.sent(DeleteMessage)) == 1
+    count = len(api.requests)
+    await asyncio.sleep(0.01)
+    assert len(api.requests) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["send", "edit", "delete"])
+async def test_ai_progress_telegram_failure_preserves_answer(
+    ai, make_message, fake_bot, api, monkeypatch, method_name
+):
+    import asyncio
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import DeleteMessage, EditMessageText, SendRichMessage
+
+    bot, _, messages = ai(_response(_text("Готово")))
+    method = {"send": SendRichMessage, "edit": EditMessageText, "delete": DeleteMessage}[method_name]
+    api.fail_next(method, TelegramBadRequest(method=method.model_construct(), message="unavailable"))
+    monkeypatch.setattr(bot, "_AI_PROGRESS_DELAY", 0)
+    original = messages.create
+
+    async def create(**kwargs):
+        await asyncio.sleep(0.01)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(messages, "create", create)
+    await bot.on_free_text(make_message("вопрос"), fake_bot)
+    assert body(api.sent_rich[-1]) == _as_reply("Готово")

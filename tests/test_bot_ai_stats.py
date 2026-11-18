@@ -198,7 +198,7 @@ def _tool_results(call: Dict[str, Any]) -> List[Dict[str, Any]]:
 async def _ask(s, make_message, fake_bot, api, text: str = "сколько голов") -> List[str]:
     await s.bot.on_free_text(make_message(text), fake_bot)
     assert not api.sent_messages
-    return [body(m) for m in api.sent_rich]
+    return [body(m) for m in api.sent_rich if body(m) != rich_html(s.bot._AI_WAIT_TEXT)]
 
 
 def _as_reply(text: str) -> str:
