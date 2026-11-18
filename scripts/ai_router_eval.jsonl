@@ -14,7 +14,7 @@
 {"q": "хочу получать дайджест каждое утро", "tool": "open_command", "params": {"command": "subscriptions"}}
 {"q": "как подписаться на Вашингтон", "tool": "open_command", "params": {"command": "subscriptions"}}
 {"q": "статистика по странам", "tool": "open_command", "params": {"command": "countries"}}
-{"q": "расширенная статистика", "tool": "open_command", "params": {"command": "advanced"}}
+{"q": "расширенная статистика", "tool": "open_command", "params": {"command": "stats"}}
 {"q": "кто лидирует по голам", "tool": "leaders", "params": {"category": "goals"}}
 {"q": "лидеры по голлам", "tool": "leaders", "params": {"category": "goals"}}
 {"q": "лучшие бомбардиры", "tool": "leaders", "params": {"category": "points"}}
@@ -69,3 +69,21 @@
 {"q": "по воскресеньям в 21:00 по нью-йоркскому времени лидеров по очкам", "tool": "schedule_screen", "params": {"screen": {"tool": "leaders", "category": "points"}, "freq": "week", "weekday": 7, "time": "21:00", "timezone": "America/New_York"}}
 {"q": "присылай мне что-нибудь интересное каждый день", "tool": "schedule_screen", "params": {"screen": null}}
 {"q": "покажи лидеров по голам", "tool": "leaders", "params": {"category": "goals"}}
+{"q": "сколько стоит премиум", "tool": "bot_answer", "expect": ["100"]}
+{"q": "что даёт премиум", "tool": "bot_answer", "expect": ["20"]}
+{"q": "как вернуть деньги за премиум", "tool": "bot_answer", "expect": ["@karych_72|/paysupport"]}
+{"q": "как удалить расписание", "tool": "bot_answer", "expect": ["/subscriptions"]}
+{"q": "сколько вопросов можно задать бесплатно", "tool": "bot_answer", "expect": ["3"]}
+{"q": "что такое Corsi", "tool": "bot_answer", "expect": ["sat"]}
+{"q": "когда обновляются результаты матчей", "tool": "bot_answer", "expect": ["11:00"]}
+{"q": "сколько вопросов у меня осталось", "tool": "my_status"}
+{"q": "до какого числа у меня премиум", "tool": "my_status"}
+{"q": "хочу купить премиум", "tool": "open_command", "params": {"command": "premium"}}
+{"q": "сколько длится овертайм", "tool": "bot_answer", "expect": ["5 минут"]}
+{"q": "сколько команд выходит в плей-офф", "tool": "bot_answer", "expect": ["16"]}
+{"q": "в каком дивизионе играет Вашингтон", "tool": "bot_answer", "expect": ["metropolitan"]}
+{"q": "сколько очков дают за победу в овертайме", "tool": "bot_answer", "expect": ["2"]}
+{"q": "какой потолок зарплат в НХЛ", "tool": "bot_answer", "expect": ["104"]}
+{"q": "какого размера хоккейные ворота", "tool": "bot_answer", "expect": ["справк"]}
+{"q": "как отключить?", "tool": "bot_answer", "expect": ["уточн|?"]}
+{"q": "как поменять время?", "tool": "bot_answer", "expect": ["уточн|?"]}

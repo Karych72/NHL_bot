@@ -1902,15 +1902,37 @@ class TestAiLimitSql(unittest.TestCase):
         self._asked(self.FREE_CHAT, 4, at="now() - interval '30 days'")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
 
+    def test_clarification_context_is_the_latest_fresh_text_answer(self):
+        """Задача 114: контекст уточнения — последний вызов чата, если он текстовый и моложе окна."""
+        ai = self.ai
+        self.assertIsNone(ai._clarified(self.FREE_CHAT))
+        ai._log_question(self.FREE_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        self.assertEqual(ai._clarified(self.FREE_CHAT),
+                         {"question": "как отключить?", "answer": "Что отключить?"})
+        ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"})
+        self.assertIsNone(ai._clarified(self.FREE_CHAT), "после экрана уточнения нет")
+        ai._log_question(self.PREMIUM_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("UPDATE ai_questions SET asked_at = now() - make_interval(mins => %s) "
+                        "WHERE chat_id = %s", (ai.CLARIFY_WINDOW_MINUTES + 1, self.PREMIUM_CHAT))
+        self.assertIsNone(ai._clarified(self.PREMIUM_CHAT), "вне окна")
+
     def test_each_question_counts_once_and_failures_do_not(self):
         """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
         ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``
-        маршрутизатором и сбои (``error``) в счёт не идут."""
+        маршрутизатором, ответы о самом боте (Задача 114) и сбои (``error``) в счёт не идут."""
         ai = self.ai
         ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
                          tool_input={"category": "goals"}, cost_usd=0.004)
         ai._log_question(self.FREE_CHAT, "погода", "error", 30000, error="APITimeoutError")
         ai._log_question(self.FREE_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        # Ответы о самом боте (Задача 114) лимит не списывают.
+        ai._log_question(self.FREE_CHAT, "цена", "text", 900, tool="bot_answer", tool_input={},
+                         answer="100 ⭐")
+        ai._log_question(self.FREE_CHAT, "остаток", "screen", 900, tool="my_status", tool_input={})
+        ai._log_question(self.FREE_CHAT, "хочу премиум", "screen", 900, tool="open_command",
+                         tool_input={"command": "premium"})
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")

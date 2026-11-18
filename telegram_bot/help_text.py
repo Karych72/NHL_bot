@@ -16,7 +16,14 @@ from rich_markup import rich_details, rich_footer, rich_list
 # Последняя строка каждого сообщения рассылки (`push_digest_job.py`): способ отписаться.
 SUBSCRIPTIONS_FOOTER = "Настроить подписки: /subscriptions"
 
-_SEASON_SCOPE = (
+# Оплата премиума: `/premium`, `/paysupport` (`bot.py`) и справка ИИ (`ai_router.reference_text`).
+PREMIUM_CANCEL_HINT = (
+    "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
+    "Настройки → Stars → Подписки. Доступ остаётся до конца оплаченного срока."
+)
+PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
+
+SEASON_SCOPE = (
     "Таблица, лидеры и экраны команд считают регулярный чемпионат; матчи дня, карточки "
     "матчей и ответы на вопросы включают плей-офф."
 )
@@ -71,7 +78,7 @@ class CommandSpec(NamedTuple):
 # Справочник команд — один источник для /help, меню команд Telegram (`bot.py`, `set_my_commands`;
 # порядок — порядок меню), команд ИИ (`ai_router.SCREEN_COMMANDS`, `SCHEDULE_COMMANDS`) и
 # регистрации хендлеров (`bot.COMMAND_HANDLERS`). Меню подписок и справка — не отчёты, на
-# расписание не ставятся; /premium и /paysupport ИИ не открывает.
+# расписание не ставятся; /premium ИИ открывает (Задача 114), /paysupport — нет.
 COMMANDS = (
     CommandSpec("today", "Матчи прошедшей ночи (по Москве)", ai=True, schedule=True),
     CommandSpec("tonight", "Расписание NHL на сегодня", ai=True, schedule=True),
@@ -81,7 +88,7 @@ COMMANDS = (
     CommandSpec("team", "Команды: статистика по клубу", ai=True, schedule=True),
     CommandSpec("countries", "Статистика по странам", ai=True, schedule=True),
     CommandSpec("subscriptions", "Подписки: дайджест, команды, страны, игроки", ai=True),
-    CommandSpec("premium", "Премиум: больше вопросов ИИ, оплата Stars"),
+    CommandSpec("premium", "Премиум: больше вопросов ИИ, оплата Stars", ai=True),
     CommandSpec("paysupport", "Вопросы по оплате и возвраты"),
     CommandSpec("help", "Справка", ai=True),
 )
@@ -100,8 +107,8 @@ _COMMAND_DETAILS = {
 }
 
 
-def _command_items(commands: Sequence[CommandSpec]) -> List[str]:
-    """Строки `/команда — описание (уточнение)` списка команд в `/help`."""
+def command_items(commands: Sequence[CommandSpec]) -> List[str]:
+    """Строки `/команда — описание (уточнение)` списка команд в `/help` и справке ИИ."""
     return [
         f"/{c.name} — {c.description}"
         + (f" ({_COMMAND_DETAILS[c.name]})" if c.name in _COMMAND_DETAILS else "")
@@ -109,7 +116,7 @@ def _command_items(commands: Sequence[CommandSpec]) -> List[str]:
     ]
 
 
-_LEGEND_NOTE = (
+LEGEND_NOTE = (
     "Голы в карточке матча: ББ — в большинстве, МБ — в меньшинстве, ПВ — в пустые ворота, "
     "ПШ — победная шайба. Фамилии игроков из России и Беларуси — жирным капсом.\n"
     "Форма до матча — последние 5 игр команды в сезоне: W–L–OTL (победы, поражения, "
@@ -157,10 +164,10 @@ TEAM_STATS_COMMAND_INTRO = (
 
 HELP_MESSAGE = (
     "<b>Справка</b>\n"
-    f"{_SEASON_SCOPE}\n"
+    f"{SEASON_SCOPE}\n"
     f"{_FREE_TEXT_HINT}\n\n"
     "<b>Команды</b>\n"
-    + rich_list(_command_items(COMMANDS))
+    + rich_list(command_items(COMMANDS))
     + "\n"
-    + rich_details("Обозначения", _LEGEND_NOTE)
+    + rich_details("Обозначения", LEGEND_NOTE)
 )

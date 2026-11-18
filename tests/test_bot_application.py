@@ -178,7 +178,7 @@ async def test_command_added_to_registry_reaches_help_router_and_menu(
     async def show_probe(_bot: Any, _chat_id: int) -> None:
         """Пробный экран."""
 
-    assert "/probe — Пробная команда" in help_text._command_items(commands)
+    assert "/probe — Пробная команда" in help_text.command_items(commands)
     # Команда без функции показа — ошибка при сборке хендлеров (её зовёт импорт `bot.py`).
     with pytest.raises(KeyError, match="probe"):
         bot._command_handlers(commands)

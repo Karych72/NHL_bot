@@ -5,6 +5,8 @@
 (`ai_router.call_model`, без записи в журнал `ai_questions`), и сверяется с ожидаемым
 инструментом и параметрами (проверяются только перечисленные в наборе) или с текстовым
 ответом (`"tool": null`); `stats_question` — передача ответам по статистике (Задача 83).
+Ответ по справке (`bot_answer`, Задача 114) сверяется по `expect`: каждое слово (варианты через
+`|`) должно встретиться в тексте без учёта регистра.
 Текстовые ответы печатаются целиком — их
 проверяют глазами на выдуманные факты; ответы с цифрами помечены. В конце — точность, стоимость вопроса
 (средняя и максимальная, из `usage`) и размер префикса (`messages.count_tokens`).
@@ -91,8 +93,10 @@ async def main() -> int:
         if case["tool"] is None:
             ok = reply.tool is None
         else:
-            expected = case["params"]
+            expected = case.get("params", {})
             ok = reply.tool == case["tool"] and all(reply.params.get(k) == v for k, v in expected.items())
+            text = (reply.text or "").lower()
+            ok = ok and all(any(w.lower() in text for w in alts.split("|")) for alts in case.get("expect", []))
         passed += ok
         got = f"{reply.tool} {json.dumps(reply.params, ensure_ascii=False)}" if reply.tool else "текст"
         print(f"{'OK  ' if ok else 'FAIL'} {case['q']!r} -> {got}")

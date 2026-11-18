@@ -515,12 +515,13 @@ async def test_chat_inside_window_skips_router(stats, make_message, fake_bot, ap
 @pytest.mark.asyncio
 async def test_limit_stops_continuation_inside_window(stats, make_message, fake_bot, api):
     """Продолжение диалога 83 — тоже вопрос: недельный лимит бесплатного его останавливает,
-    хотя окно открыто (а записанная строка `ai_stats_log` его списывает — tests/test_db_nhl.py)."""
-    s = stats([], history=[_past()], asked=(0, 3))
+    хотя окно открыто (а записанная строка `ai_stats_log` его списывает — tests/test_db_nhl.py).
+    Вопрос идёт маршрутизатору — вдруг он о самом боте (Задача 114); статистика — отказ."""
+    s = stats([], history=[_past()], asked=(0, 3), router=[_response(_use("stats_question"))])
     replies = await _ask(s, make_message, fake_bot, api, "а в прошлом сезоне?")
 
     assert replies == [_as_reply(s.bot.ai_router.WEEK_LIMIT_TEXT)]
-    assert s.model.calls == [] and s.model.router_calls == []
+    assert s.model.calls == [] and len(s.model.router_calls) == 1
 
 
 # ---------------------------------------------------------------------------
