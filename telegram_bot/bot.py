@@ -13,13 +13,14 @@ import html
 import logging
 import re
 import zoneinfo
+from contextlib import asynccontextmanager
 from datetime import datetime, time as dtime, timezone
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import psycopg2
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import (
@@ -41,28 +42,20 @@ import schedule_repo
 import subscription_repo
 from database import get_connection
 from leaderboard_specs import ADVANCED_METRICS, PLAYER_STAT_TITLES
-from push_digest_job import throttled
-from throttle import enforce_callback_rate_limit
-from bot_messages import (
-    COUNTRY_LABELS,
-    MSK,
-    ROSTER_GROUPS,
-    country_profile,
-    country_rankings,
-    day_digest,
-    rich_footer,
-    rich_list,
-    rich_message,
-    last_night_day,
+from throttle import enforce_callback_rate_limit, throttled
+from bot_messages import day_digest, last_night_day
+from country_messages import country_profile, country_rankings
+from leaderboard_messages import team_table
+from team_messages import (
     player_labels,
+    ROSTER_GROUPS,
     season_teams_by_division,
-    team_list_text,
-    team_roster_group,
     team_full_stats,
+    team_list_text,
     team_profile,
-    team_table,
-    truncate_telegram_text,
+    team_roster_group,
 )
+from rich_markup import COUNTRY_LABELS, MSK, rich_footer, rich_list, rich_message, truncate_telegram_text
 from nhl_scoreboard import (
     ScoreboardFetchError,
     fetch_score,
@@ -72,11 +65,15 @@ from nhl_scoreboard import (
     tonight_reply_intro,
 )
 from help_text import (
-    BOT_COMMANDS,
+    COMMANDS,
     HELP_MESSAGE,
+    NIGHT_LOAD_NOTE,
     START_MESSAGE,
     STATS_COMMAND_INTRO,
     TEAM_STATS_COMMAND_INTRO,
+    PAYSUPPORT_TEXT,
+    PREMIUM_CANCEL_HINT,
+    CommandSpec,
     start_message_with_gift,
 )
 from keyboards import build_menu, callback_message
@@ -177,20 +174,11 @@ async def show_help(bot: Bot, chat_id: int) -> None:
     """`/help`: список команд бота."""
     await _send(bot, chat_id, HELP_MESSAGE)
 
-_PREMIUM_PERKS = (
-    f"Что даёт премиум: ИИ-вопросы — до {ai_router.PREMIUM_DAILY_LIMIT} в сутки вместо недельного лимита, "
-    "свои рассылки без ограничений — заводятся одной фразой боту."
-)
 _TRIAL_GIFT = (
     f"🎁 Премиум на {premium.TRIAL_DAYS} дня в подарок — до {{until}}: ИИ до "
     f"{ai_router.PREMIUM_DAILY_LIMIT} вопросов в сутки и свои рассылки без ограничений. Подробнее — /premium"
 )
-_PREMIUM_CANCEL_HINT = (
-    "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
-    "Настройки → Stars → Подписки. Доступ остаётся до конца оплаченного срока."
-)
 _PREMIUM_GROUP_TEXT = "Оплатить премиум можно только в личном чате с ботом: откройте его и отправьте /premium."
-_PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
 # Конец пробника (Задача 125): что остаётся бесплатно и что даёт премиум; числа — из констант.
 _TRIAL_ENDED_TEXT = (
     "⏳ <b>Пробный премиум закончился.</b>\n"
@@ -212,7 +200,7 @@ async def premium_pay_markup(bot: Bot) -> InlineKeyboardMarkup:
     """
     link = await bot.create_invoice_link(
         title="Премиум на 30 дней",
-        description=_PREMIUM_PERKS,
+        description=ai_router.PREMIUM_PERKS,
         payload="premium",
         currency="XTR",
         prices=[LabeledPrice(label="Премиум, 30 дней", amount=premium.PRICE_STARS)],
@@ -233,19 +221,23 @@ async def cmd_premium(message: Message, bot: Bot) -> None:
     if message.chat.type != "private":
         await message.answer(_PREMIUM_GROUP_TEXT)
         return
-    until = premium.premium_until(message.chat.id)
-    subscribed = premium.has_paid_subscription(message.chat.id)
+    await show_premium(bot, message.chat.id)
+
+
+async def show_premium(bot: Bot, chat_id: int) -> None:
+    """Экран `/premium` в личке `chat_id`; его же открывает ИИ на «хочу премиум» (Задача 114)."""
+    until = premium.premium_until(chat_id)
     status = f"Премиум до {until.astimezone(MSK):%d.%m}" if until else "Премиума нет"
-    lines = [status, "", _PREMIUM_PERKS, f"Подписка {premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."]
-    if subscribed:
-        await message.answer_rich(rich_message("\n".join(lines + ["", _PREMIUM_CANCEL_HINT])))
+    lines = [status, "", ai_router.PREMIUM_PERKS, f"Подписка {premium.PRICE_STARS} ⭐ за 30 дней, продлевается сама."]
+    if premium.has_paid_subscription(chat_id):
+        await _send(bot, chat_id, "\n".join(lines + ["", PREMIUM_CANCEL_HINT]))
         return
-    await message.answer_rich(rich_message("\n".join(lines)), reply_markup=await premium_pay_markup(bot))
+    await _send(bot, chat_id, "\n".join(lines), await premium_pay_markup(bot))
 
 
 async def cmd_paysupport(message: Message, bot: Bot) -> None:
     """`/paysupport`: куда писать по вопросам оплаты и возвратам (обязательна для Stars)."""
-    await message.answer(_PAYSUPPORT_TEXT)
+    await message.answer(PAYSUPPORT_TEXT)
 
 
 async def on_pre_checkout(query: PreCheckoutQuery) -> None:
@@ -780,30 +772,42 @@ def _command_handler(show: _CommandScreen) -> Callable[[Message, Bot], Awaitable
     return handler
 
 
-cmd_help = _command_handler(show_help)
-cmd_tonight = _command_handler(show_tonight)
-cmd_standings = _command_handler(show_standings)
-cmd_today = _command_handler(show_today)
-cmd_team = _command_handler(show_team)
-cmd_stats = _command_handler(show_stats)
-cmd_team_stats = _command_handler(show_team_stats)
-cmd_countries = _command_handler(show_countries)
-cmd_subscriptions = _command_handler(show_subscriptions)
-
-
-# Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
-# кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
-AI_COMMANDS: Dict[str, _CommandScreen] = {
+# Функции показа команд справочника `help_text.COMMANDS` (Задача 132): из них — хендлеры команд,
+# экраны ИИ и расписаний. Команды, которым нужно само сообщение (тип чата), — в `_MESSAGE_COMMANDS`.
+_COMMAND_SCREENS: Dict[str, _CommandScreen] = {
     "today": show_today,
     "tonight": show_tonight,
     "standings": show_standings,
-    "team": show_team,
     "stats": show_stats,
     "team_stats": show_team_stats,
+    "team": show_team,
     "countries": show_countries,
     "subscriptions": show_subscriptions,
     "help": show_help,
 }
+_MESSAGE_COMMANDS = {"premium": cmd_premium, "paysupport": cmd_paysupport}
+
+
+def _command_handlers(commands: Sequence[CommandSpec]) -> Dict[str, Callable[[Message, Bot], Awaitable[None]]]:
+    """Хендлеры команд справочника по имени, в его порядке (порядок регистрации в роутере).
+
+    Зачем: команда справочника без функции показа падает `KeyError` при импорте `bot.py`, а не
+    молчит в меню. Аргументы: `commands` — справочник (`help_text.COMMANDS`).
+    """
+    return {
+        c.name: _MESSAGE_COMMANDS[c.name] if c.name in _MESSAGE_COMMANDS
+        else _command_handler(_COMMAND_SCREENS[c.name])
+        for c in commands
+    }
+
+
+COMMAND_HANDLERS = _command_handlers(COMMANDS)
+
+# Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
+# кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
+# `/premium` в справочнике — команда с сообщением (тип чата); свободный текст приходит только из лички.
+_AI_COMMAND_SCREENS: Dict[str, _CommandScreen] = {**_COMMAND_SCREENS, "premium": show_premium}
+AI_COMMANDS: Dict[str, _CommandScreen] = {c.name: _AI_COMMAND_SCREENS[c.name] for c in COMMANDS if c.ai}
 
 
 async def _ai_digest_for_date(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
@@ -897,7 +901,6 @@ _UNKNOWN_SCREEN_TEXT = (
 _SCHEDULE_LIMIT_TEXT = (
     "Без премиума — одно расписание, оно уже есть: /subscriptions. Больше расписаний — в премиуме: /premium"
 )
-_CARD_NOTE = "Ночь догружается до 11:00 МСК: раньше экран может прийти без последних матчей."
 _ZONE_NOTE = "Другой пояс — напишите просьбу заново с городом, например: «… в 10 по Нью-Йорку»."
 
 
@@ -987,7 +990,7 @@ def _schedule_card(d: Draft) -> _Screen:
         *(["Когда: " + when] if d.freq in ("week", "month") else []),
         "Время: " + (f"{_slot_time(d.slot):%H:%M}" if d.slot is not None else pick),
         "Пояс: " + html.escape(_zone_label(d.tz)),
-        rich_footer(_CARD_NOTE),
+        rich_footer(NIGHT_LOAD_NOTE),
     ]
     rows = [[
         _card_button(label, d.freq == f, d._replace(freq=f, day=d.day if d.freq == f else None))
@@ -1148,11 +1151,13 @@ async def run_schedule_ticker(bot: Bot) -> None:
         await asyncio.sleep(60 - datetime.now(timezone.utc).second)
 
 
-# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя).
+# Отказ по лимиту → вид лимита в журнале `bot_actions`: премиум (сутки), бесплатный (неделя),
+# общий суточный бюджет на ИИ (Задача 141).
 # Строки `total` в журнале — история потолка «8 за всё время», снятого Задачей 124.
 _AI_LIMIT_KINDS = {
     ai_router.LIMIT_TEXT: "day",
     ai_router.WEEK_LIMIT_TEXT: "week",
+    ai_router.BUDGET_TEXT: "budget",
 }
 
 
@@ -1165,12 +1170,56 @@ _SCHEDULE_REQUEST = re.compile(
 )
 
 
+_AI_WAIT_TEXT = "🏒 Разбираю эпизод — готовлю ответ…"
+_AI_LONG_WAIT_TEXT = "🏒 Нужен видеопросмотр: ещё разбираюсь с вопросом…"
+_AI_PROGRESS_DELAY = 5.0
+
+
+@asynccontextmanager
+async def _ai_progress(message: Message, bot: Bot) -> AsyncIterator[None]:
+    """Показывает ожидание ИИ и убирает статус после ответа, ошибки или отмены."""
+    try:
+        status = await message.answer_rich(rich_message(_AI_WAIT_TEXT))
+    except TelegramAPIError as exc:
+        logger.warning("AI progress send failed chat_id=%s: %s", message.chat.id, exc)
+        yield
+        return
+
+    async def update() -> None:
+        await asyncio.sleep(_AI_PROGRESS_DELAY)
+        try:
+            await bot.edit_message_text(
+                chat_id=status.chat.id, message_id=status.message_id,
+                rich_message=rich_message(_AI_LONG_WAIT_TEXT),
+            )
+        except TelegramAPIError as exc:
+            logger.warning("AI progress edit failed chat_id=%s: %s", message.chat.id, exc)
+
+    pending = asyncio.create_task(update())
+    try:
+        yield
+    finally:
+        pending.cancel()
+        try:
+            await asyncio.wait([pending])
+        finally:
+            try:
+                await bot.delete_message(chat_id=status.chat.id, message_id=status.message_id)
+            except TelegramAPIError as exc:
+                logger.warning("AI progress delete failed chat_id=%s: %s", message.chat.id, exc)
+
+
 async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
-    Лимит исчерпан (`ai_router.limit_refusal`: премиум или бесплатный, Задача 96) — отказ без
-    вызова модели, вид лимита — в журнал `bot_actions`; модель выбрала экран — бот показывает его (`AI_SCREENS`); иначе — её текст:
-    отказ, уточнение или сообщение о сбое API.
+    Общий бюджет исчерпан (`ai_router.limit_refusal`, Задача 141) — отказ без вызова модели.
+    Исчерпан лимит чата (премиум или бесплатный, Задача 96) — модель всё равно спрашивается, но
+    проходит только ответ вне лимита (`ai_router.is_free`: справка, цифры чата, экран оплаты,
+    Задача 114), иначе — отказ; когда вызовов вне счёта за сутки `ai_router.FREE_DAILY_CALLS` —
+    отказ без модели. Вид лимита (`day`, `week`, `budget`) отказа — в журнал
+    `bot_actions`. Модель выбрала экран — бот показывает его (`AI_SCREENS`); `my_status` — цифры
+    чата (`ai_router.chat_status`); иначе — её текст: ответ по справке, отказ, уточнение или
+    сообщение о сбое API.
 
     Модель может передать вопрос ответам по статистике (`ai_stats.answer`, Задача 83); а если
     чат получил такой ответ в последние 30 минут, сообщение идёт туда сразу, без маршрутизатора,
@@ -1180,34 +1229,47 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     chat_id = message.chat.id
     text = message.text or ""
     refusal = ai_router.limit_refusal(chat_id)
-    if refusal is not None:
-        assert message.from_user is not None
-        await asyncio.to_thread(
-            log_action, chat_id, message.from_user.id, "ai_limit", _AI_LIMIT_KINDS[refusal]
-        )
-        await message.answer_rich(rich_message(refusal))
+    if refusal is not None and (refusal == ai_router.BUDGET_TEXT or not ai_router.free_calls_left(chat_id)):
+        await _refuse_by_limit(message, refusal)
         return
-    history = [] if _SCHEDULE_REQUEST.search(text) else ai_stats.recent_pairs(chat_id)
-    if history:
-        await _answer_stats(message, text, history)
-        return
-    reply = await ai_router.ask(chat_id, text)
-    if reply.tool == "stats_question":
-        await _answer_stats(message, text, history)
-        return
-    if reply.tool is None:
-        # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
-        await message.answer_rich(rich_message(html.escape(reply.text or ai_router.UNSUPPORTED_TEXT)))
-        return
-    if reply.tool == "schedule_screen":
-        draft = schedule_draft(chat_id, reply.params)
-        if draft is None:
-            await message.answer_rich(rich_message(_UNKNOWN_SCREEN_TEXT))
+    async with _ai_progress(message, bot):
+        history = [] if refusal or _SCHEDULE_REQUEST.search(text) else ai_stats.recent_pairs(chat_id)
+        if history:
+            await _answer_stats(message, text, history)
             return
-        card, markup = _schedule_card(draft)
-        await message.answer_rich(rich_message(card), reply_markup=markup)
-        return
-    await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
+        reply = await ai_router.ask(chat_id, text, limited=refusal is not None)
+        if refusal is not None and not ai_router.is_free(reply):
+            await _refuse_by_limit(message, refusal)
+            return
+        if reply.tool == "my_status":
+            await message.answer_rich(rich_message(html.escape(ai_router.chat_status(chat_id))))
+            return
+        if reply.tool == "stats_question":
+            await _answer_stats(message, text, history)
+            return
+        if reply.text is not None:
+            # Текст модели — не разметка: `<` в нём не должен ломать rich-HTML.
+            await message.answer_rich(rich_message(html.escape(reply.text)))
+            return
+        if reply.tool == "schedule_screen":
+            draft = schedule_draft(chat_id, reply.params)
+            if draft is None:
+                await message.answer_rich(rich_message(_UNKNOWN_SCREEN_TEXT))
+                return
+            card, markup = _schedule_card(draft)
+            await message.answer_rich(rich_message(card), reply_markup=markup)
+            return
+        assert reply.tool is not None
+        await AI_SCREENS[reply.tool](bot, chat_id, reply.params)
+
+
+async def _refuse_by_limit(message: Message, refusal: str) -> None:
+    """Отказ по лимиту ИИ; вид лимита — строкой `ai_limit` в журнал `bot_actions` (Задача 99)."""
+    assert message.from_user is not None
+    await asyncio.to_thread(
+        log_action, message.chat.id, message.from_user.id, "ai_limit", _AI_LIMIT_KINDS[refusal]
+    )
+    await message.answer_rich(rich_message(refusal))
 
 
 async def _answer_stats(message: Message, question: str, history: List[Dict[str, Any]]) -> None:
@@ -1292,24 +1354,9 @@ def build_standalone_router() -> Router:
     """Команды верхнего уровня и inline-кнопки — первым в `Dispatcher`, раньше свободного текста."""
     router = Router(name="standalone")
     router.message.register(cmd_start, CommandStart(ignore_case=True))
-    for name, handler in (
-        ("help", cmd_help),
-        ("today", cmd_today),
-        ("tonight", cmd_tonight),
-        ("standings", cmd_standings),
-        ("team", cmd_team),
-    ):
+    for name, handler in COMMAND_HANDLERS.items():
         router.message.register(handler, _command(name))
     router.message.register(cmd_team_profile, F.text.regexp(TEAM_COMMAND_PATTERN).as_("match"))
-    for name, handler in (
-        ("stats", cmd_stats),
-        ("team_stats", cmd_team_stats),
-        ("countries", cmd_countries),
-        ("subscriptions", cmd_subscriptions),
-        ("premium", cmd_premium),
-        ("paysupport", cmd_paysupport),
-    ):
-        router.message.register(handler, _command(name))
     router.pre_checkout_query.register(on_pre_checkout)
     router.message.register(on_successful_payment, F.successful_payment)
     for pattern, callback in (
@@ -1339,10 +1386,10 @@ async def _publish_command_menu(bot: Bot) -> None:
 
     Зачем: без него кнопка «Меню» клиента пуста или показывает устаревший
     список — пользователь не видит, какие команды есть. Источник —
-    `help_text.BOT_COMMANDS`, тот же, что у `/help`.
+    справочник `help_text.COMMANDS`, тот же, что у `/help`.
     """
     await bot.set_my_commands(
-        [BotCommand(command=cmd, description=desc) for cmd, desc in BOT_COMMANDS]
+        [BotCommand(command=c.name, description=c.description) for c in COMMANDS]
     )
 
 

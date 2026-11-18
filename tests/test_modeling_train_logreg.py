@@ -1,7 +1,7 @@
 """Tests for modeling/train_logreg.py and modeling/artifacts.py (UPDATE plan stage 7).
 
 Coverage:
-    1.  Pipeline composition (steps, order, hyperparameters, class_weight default).
+    1.  Pipeline composition (steps, order, hyperparameters).
     2.  Forbidden team-ID column guard.
     3.  No statistics leakage: imputer/scaler fit only on train block.
     4.  C-grid selection picks the best C by inner-val log loss.
@@ -42,7 +42,6 @@ from modeling.train_logreg import (
     train_logreg_for_task,
 )
 from modeling.artifacts import (
-    build_logreg_metadata,
     load_model_artifact,
     save_model_artifact,
 )
@@ -79,6 +78,7 @@ def _dummy_log_loss(y_true: np.ndarray, p: np.ndarray) -> float:
 # Test 1: Pipeline composition
 # ---------------------------------------------------------------------------
 
+
 class TestBuildLogregPipeline(unittest.TestCase):
     def setUp(self) -> None:
         self.pipe = build_logreg_pipeline(C=1.0, random_seed=42)
@@ -107,15 +107,6 @@ class TestBuildLogregPipeline(unittest.TestCase):
         self.assertEqual(lr.solver, "lbfgs")
         self.assertEqual(lr.max_iter, 5000)
         self.assertEqual(lr.C, 1.0)
-
-    def test_class_weight_default_is_none(self) -> None:
-        _, lr = self.pipe.steps[2]
-        self.assertIsNone(lr.class_weight)
-
-    def test_class_weight_passed_through(self) -> None:
-        pipe = build_logreg_pipeline(C=0.5, class_weight="balanced", random_seed=0)
-        _, lr = pipe.steps[2]
-        self.assertEqual(lr.class_weight, "balanced")
 
     def test_random_state_set(self) -> None:
         pipe = build_logreg_pipeline(C=1.0, random_seed=99)
@@ -359,7 +350,6 @@ class TestDeterminism(unittest.TestCase):
             X_train=X_train, y_train=y_train,
             X_val=X_val, y_val=y_val,
             C_grid=[0.01, 0.1, 1.0],
-            class_weight=None,
             random_seed=42,
             log_loss_fn=_dummy_log_loss,
         )
@@ -437,17 +427,7 @@ class TestArtifactRoundTrip(unittest.TestCase):
         X_test = pd.DataFrame(rng.standard_normal((30, 4)), columns=[f"feat_{i}" for i in range(4)])
         proba_before = result.pipeline.predict_proba(X_test)
 
-        meta = build_logreg_metadata(
-            task="home_win",
-            chosen_C=result.chosen_C,
-            class_weight=None,
-            random_seed=7,
-            features_hash="abc123",
-            feature_set_version="v1",
-            feature_manifest=[{"name": f"feat_{i}", "dtype": "float64", "position": i} for i in range(4)],
-            n_rows_train=result.n_rows_train,
-            n_rows_inner_val=result.n_rows_inner_val,
-        )
+        meta = {"features_hash": "abc123", "model_family": "logreg"}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
@@ -458,46 +438,15 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
     def test_metadata_json_is_valid(self) -> None:
         result = self._train_result()
-        meta = build_logreg_metadata(
-            task="home_win",
-            chosen_C=result.chosen_C,
-            class_weight=None,
-            random_seed=7,
-            features_hash="abc123",
-            feature_set_version="v1",
-            feature_manifest=[{"name": f"feat_{i}", "dtype": "float64", "position": i} for i in range(4)],
-            n_rows_train=200,
-            n_rows_inner_val=60,
-            train_days=("2021-01-01", "2021-06-30"),
-            inner_val_days=("2021-07-01", "2021-09-30"),
-        )
+        meta = {"features_hash": "abc123", "model_family": "logreg"}
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
-            meta_path = Path(tmpdir) / "metadata.json"
-            raw = meta_path.read_text(encoding="utf-8")
+            raw = (Path(tmpdir) / "metadata.json").read_text(encoding="utf-8")
             loaded = json.loads(raw)  # Must not raise
 
-        # Required fields
-        required = [
-            "features_hash", "feature_set_version", "feature_manifest",
-            "model_family", "task", "chosen_C", "class_weight", "random_seed",
-            "n_rows_train", "n_rows_inner_val",
-            "library_versions", "git_commit",
-        ]
-        for key in required:
+        # Fields save_model_artifact adds on top of the caller's metadata
+        for key in ("library_versions", "git_commit"):
             self.assertIn(key, loaded, f"Missing metadata key: {key!r}")
-
-    def test_model_family_is_logreg(self) -> None:
-        result = self._train_result()
-        meta = build_logreg_metadata(
-            task="over_5_5", chosen_C=1.0, class_weight=None, random_seed=0,
-            features_hash="x", feature_set_version="v1", feature_manifest=[],
-            n_rows_train=100, n_rows_inner_val=30,
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
-            _, loaded_meta = load_model_artifact(tmpdir)
-        self.assertEqual(loaded_meta["model_family"], "logreg")
 
 
 # ---------------------------------------------------------------------------
@@ -506,10 +455,10 @@ class TestArtifactRoundTrip(unittest.TestCase):
 
 class TestGitCommitWithoutDotGit(unittest.TestCase):
     def test_git_commit_null_in_non_git_dir(self) -> None:
-        from modeling.artifacts import _get_git_commit
+        from modeling.artifacts import get_git_commit
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            commit = _get_git_commit(repo_root=Path(tmpdir))
+            commit = get_git_commit(repo_root=Path(tmpdir))
         # Must be None (not an exception)
         self.assertIsNone(commit)
 
@@ -526,8 +475,8 @@ class TestGitCommitWithoutDotGit(unittest.TestCase):
         meta = {"model_family": "logreg", "task": "home_win"}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Patch _get_git_commit to simulate no .git
-            with patch("modeling.artifacts._get_git_commit", return_value=None):
+            # Patch get_git_commit to simulate no .git
+            with patch("modeling.artifacts.get_git_commit", return_value=None):
                 save_model_artifact(tmpdir, model=result.pipeline, metadata=meta)
             _, loaded_meta = load_model_artifact(tmpdir)
         self.assertIsNone(loaded_meta.get("git_commit"))

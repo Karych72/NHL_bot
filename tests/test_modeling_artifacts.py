@@ -29,20 +29,6 @@ class TestResolveLatestModelDir(unittest.TestCase):
 
             self.assertEqual(resolved, final_dir.resolve())
 
-    def test_resolves_latest_txt_fallback(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_str:
-            tmp = Path(tmp_str)
-            base = tmp / "models" / "over_5_5" / "lgbm"
-            final_dir = base / "over_5_5_lgbm_cafebabe_20260101T000000Z" / "final"
-            final_dir.mkdir(parents=True)
-            (base / "latest.txt").write_text(
-                "over_5_5_lgbm_cafebabe_20260101T000000Z/final\n", encoding="utf-8"
-            )
-
-            resolved = resolve_latest_model_dir(tmp, "over_5_5", "lgbm")
-
-            self.assertEqual(resolved, final_dir.resolve())
-
     def test_raises_when_no_latest_pointer_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

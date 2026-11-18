@@ -17,12 +17,19 @@
 который модель реально получила (с допуском на округление), печатается отдельно как «проверить
 вручную» (выдумка или арифметика модели) и в порог не входит.
 
-Запуск: `make ai-stats-eval`. Код выхода 1 — верных меньше 90% или есть неверная цифра в ответе,
+Запуск: `make ai-stats-eval`. Аргументы — `make ai-stats-eval ARGS="--answer-model claude-haiku-5-5
+--reviewer-model claude-sonnet-5-5 --effort medium --ids q1,q2"`: модели отвечающего и ревьюера
+(ключи `PRICES` из `ai_router_eval`, по умолчанию модель бота), `ai_stats.EFFORT` и пробный прогон
+на подмножестве вопросов (родитель выбранного `after` обязан быть выбран). Дополнительно к
+точности печатаются задержка p50/p95, вызовы модели и попытки SQL на вопрос, число исходов
+`error`, итог за прогон и стоимость «каждый вопрос холодный».
+Код выхода 1 — верных меньше 90% или есть неверная цифра в ответе,
 прошедшем ревью.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import re
@@ -35,8 +42,10 @@ import psycopg2
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "telegram_bot"))
 
+import ai_router  # noqa: E402
 import ai_stats  # noqa: E402
 import config  # noqa: E402
+from ai_router_eval import EFFORTS, PRICES, cold_cost, percentile, use_model  # noqa: E402
 from database import get_connection  # noqa: E402
 
 EVAL_SET = Path(__file__).with_suffix(".jsonl")
@@ -73,6 +82,19 @@ def _capturing_player_overview(*args: Any):
 
 ai_stats.run_readonly = _capturing_run_readonly  # type: ignore[assignment]
 ai_stats.player_overview = _capturing_player_overview  # type: ignore[assignment]
+
+
+_call = ai_stats._call
+models = {"answer": ai_router.MODEL, "review": ai_router.MODEL}
+
+
+async def _call_by_role(run: Any, role: str, *args: Any) -> Any:
+    """Вызов модели `ai_stats._call` на модели своей роли ("answer"/"review"), цена — по ней же."""
+    use_model(models[role])
+    return await _call(run, role, *args)
+
+
+ai_stats._call = _call_by_role  # type: ignore[assignment]
 
 
 def _plain(text: str) -> str:
@@ -143,18 +165,44 @@ def last_row(chat_id: int) -> dict:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT outcome, draft, verdict, verdict_reason, cost_usd, latency_ms, steps "
+                "SELECT outcome, draft, verdict, verdict_reason, cost_usd, latency_ms, steps, calls "
                 "FROM ai_stats_log WHERE chat_id = %s ORDER BY id DESC LIMIT 1", (chat_id,),
             )
             columns = [d[0] for d in cur.description]
             return dict(zip(columns, cur.fetchone()))
 
 
+def select_cases(cases: list, ids: str) -> list:
+    """Вопросы с id из списка *ids* через запятую (пусто — все); без выбранного родителя `after` — ошибка."""
+    if not ids:
+        return cases
+    wanted = set(ids.split(","))
+    chosen = [c for c in cases if c["id"] in wanted]
+    missing = wanted - {c["id"] for c in chosen}
+    if missing:
+        raise SystemExit(f"--ids: нет вопросов {sorted(missing)}")
+    for case in chosen:
+        if "after" in case and case["after"] not in wanted:
+            raise SystemExit(f"--ids: вопрос {case['id']} продолжает {case['after']}, добавьте его в --ids")
+    return chosen
+
+
 async def main() -> int:
-    cases = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines()]
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--answer-model", choices=list(PRICES), default=ai_router.MODEL)
+    parser.add_argument("--reviewer-model", choices=list(PRICES), default=ai_router.MODEL)
+    parser.add_argument("--effort", choices=EFFORTS, default=ai_stats.EFFORT)
+    parser.add_argument("--ids", default="")
+    args = parser.parse_args()
+    models.update(answer=args.answer_model, review=args.reviewer_model)
+    ai_stats.EFFORT = args.effort
+    cases = select_cases(
+        [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines()], args.ids)
+    print(f"Модель отвечающего: {args.answer_model}, ревьюера: {args.reviewer_model}, effort: {args.effort}")
     passed = wrong_passed = caught = manual_total = 0
     clarify_model = clarify_reviewer = probes = probes_caught = 0
-    costs, latencies = [], []
+    costs, latencies, cold_costs, call_counts, sql_counts = [], [], [], [], []
+    errors = 0
     clear_log()
     chats: dict = {}
     for case in cases:
@@ -166,6 +214,14 @@ async def main() -> int:
         kinds = case["kind"] if isinstance(case["kind"], list) else [case["kind"]]
         costs.append(float(row["cost_usd"]))
         latencies.append(row["latency_ms"])
+        call_counts.append(len(row["calls"]))
+        sql_counts.append(sum(step["tool"] == "run_sql" for step in row["steps"]))
+        # Холодный кэш только у первого вызова каждой роли: последующие читают записанное им.
+        cold_costs.append(sum(
+            cold_cost(models[c["role"]], c["input_tokens"], c["output_tokens"], c["cache_read_tokens"],
+                      c["cache_write_tokens"], cold=all(p["role"] != c["role"] for p in row["calls"][:i]))
+            for i, c in enumerate(row["calls"])))
+        errors += row["outcome"] == "error"
         ok = row["outcome"] in kinds
         note = ""
         if row["outcome"] == "clarify":
@@ -192,7 +248,7 @@ async def main() -> int:
                 note = "(ревью поймало неверный черновик)"
         passed += ok
         print(f"{'OK  ' if ok else 'FAIL'} [{case['id']}] {case['q']!r} -> {row['outcome']} "
-              f"вердикт={row['verdict']} ({row['verdict_reason']}) ${float(row['cost_usd']):.4f} {row['latency_ms']} мс {note}")
+              f"вердикт={row['verdict']} ({row['verdict_reason']}) ${float(row['cost_usd']):.4f} {row['latency_ms']} мс {len(row['calls'])} выз. {note}")
         print(f"       «{text}»")
         for step in row["steps"]:
             if step["tool"] == "review":
@@ -209,6 +265,13 @@ async def main() -> int:
     print(f"Стоимость вопроса: средняя ${sum(costs) / len(costs):.4f}, максимальная ${max(costs):.4f}; "
           f"задержка: средняя {sum(latencies) / len(latencies) / 1000:.1f} с, "
           f"максимальная {max(latencies) / 1000:.1f} с")
+    print(f"Задержка: p50 {percentile(latencies, 0.5) / 1000:.1f} с, p95 {percentile(latencies, 0.95) / 1000:.1f} с")
+    print(f"Вызовов модели на вопрос: среднее {sum(call_counts) / len(call_counts):.1f}, максимум {max(call_counts)}; "
+          f"попыток SQL на вопрос: среднее {sum(sql_counts) / len(sql_counts):.1f}, максимум {max(sql_counts)}")
+    print(f"Исходов error: {errors}")
+    print(f"Стоимость вопроса «каждый вопрос холодный»: средняя ${sum(cold_costs) / len(cold_costs):.4f}, "
+          f"максимальная ${max(cold_costs):.4f}")
+    print(f"Итого за прогон: ${sum(costs):.4f}")
     exit_code = 0 if accuracy >= MIN_ACCURACY and wrong_passed == 0 else 1
     clear_log()
     return exit_code

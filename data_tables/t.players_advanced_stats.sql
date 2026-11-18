@@ -27,5 +27,5 @@ CREATE TABLE players_advanced_stats(
 -- Обслуживает лидерборды WHERE pl.season_id = %s (table_name="players_advanced_stats" —
 -- см. telegram_bot/leaderboard_specs.py:19-22,44-47 и
 -- telegram_bot/stats_handlers.py:296-305):
---   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
+--   telegram_bot/leaderboard_messages.py (player_stats_with_count)
 CREATE INDEX idx_players_advanced_stats_season ON players_advanced_stats (season_id, game_type);

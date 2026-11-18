@@ -30,6 +30,9 @@ WSH_STATS = (
 )
 
 
+DIVISIONS = [("Eastern", "Atlantic", "BOS"), ("Eastern", "Metropolitan", "WSH")]
+
+
 class FakeMessages:
     """``client.messages``: отдаёт заданный ответ (или бросает заданное исключение)."""
 
@@ -45,7 +48,7 @@ class FakeMessages:
 
 
 def _response(*content: Any, stop_reason: str = "") -> SimpleNamespace:
-    """Ответ модели; перед содержимым — пустой блок мышления, как у Sonnet 5.5 на effort low."""
+    """Ответ модели; перед содержимым — пустой блок мышления, как у Claude 5.5 на effort low."""
     tool = any(b.type == "tool_use" for b in content)
     return SimpleNamespace(
         content=[SimpleNamespace(type="thinking", thinking=""), *content],
@@ -69,15 +72,25 @@ def _text(text: str) -> SimpleNamespace:
 @pytest.fixture
 def ai(bot_module, fake_db_router, monkeypatch):
     """Фабрика окружения: чат задал `asked` = (за сутки, за неделю) вопросов, `premium` —
-    у него премиум; модель вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
+    у него премиум; `spent` — расход на ИИ за сутки, $ (общий бюджет, Задача 141); `previous` —
+    (вопрос, ответ, инструмент) последнего текстового ответа чату в окне уточнения, `free_day` —
+    вызовов вне счёта за сутки (Задача 114); модель
+    вернёт `result`. Возвращает (bot, курсор БД, FakeMessages)."""
 
-    def _make(result: Any, asked: tuple = (0, 0), premium: bool = False):
+    def _make(result: Any, asked: tuple = (0, 0), premium: bool = False, spent: float = 0.0,
+              previous: tuple = (), free_day: int = 0):
         bot = bot_module("bot")
         ai_router = bot_module("ai_router")
         cursor = fake_db_router([
-            ("FILTER (WHERE asked_at", [asked]),
+            ("FILTER (WHERE counted", [(*asked, free_day)]),
+            ("sum(cost_usd)", [(spent,)]),
+            ("FROM premium_payments", [(False,)]),
             ("FROM premium_access", [(datetime(2099, 1, 1, tzinfo=timezone.utc),)] if premium else []),
             ("INSERT INTO ai_questions", []),
+            ("ORDER BY asked_at DESC LIMIT 1", [previous] if previous else []),
+            ("AS clubs FROM teams", DIVISIONS),
+            ("FROM bot_subscriptions", [("morning_digest", None, None, None), ("team_scores", 15, None, None)]),
+            ("FROM bot_schedules", []),
             ("AS ab FROM teams", TEAMS),
             ("SELECT team_id FROM teams WHERE season_id", [(15,)]),
             ("ts.power_play_goals_against FROM teams_stats", [WSH_STATS]),
@@ -105,7 +118,9 @@ def _logged(cursor) -> dict:
 
 
 async def _ask(bot, make_message, fake_bot, text: str = "вопрос") -> None:
+    start = len(fake_bot.session.requests)
     await bot.on_free_text(make_message(text), fake_bot)
+    fake_bot.session.remove_ai_progress(start, bot._AI_WAIT_TEXT, list(bot._AI_LIMIT_KINDS))
 
 
 def _replies(api) -> list:
@@ -128,7 +143,7 @@ def _as_reply(text: str) -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "command", ["today", "standings", "stats", "team_stats", "team", "countries", "help"]
+    "command", ["today", "standings", "stats", "team_stats", "team", "countries", "help", "premium"]
 )
 async def test_open_command_replies_like_the_command(
     ai, make_message, fake_bot, api, monkeypatch, command
@@ -137,7 +152,7 @@ async def test_open_command_replies_like_the_command(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-24")
     await _ask(bot, make_message, fake_bot, "покажи")
     via_ai = list(api.requests)
-    await getattr(bot, f"cmd_{command}")(make_message(f"/{command}"), fake_bot)
+    await bot.COMMAND_HANDLERS[command](make_message(f"/{command}"), fake_bot)
     direct = api.requests[len(via_ai):]
 
     assert via_ai == direct
@@ -213,8 +228,10 @@ def test_every_tool_has_a_screen_and_every_command_a_handler(bot_module):
     ai_router = bot_module("ai_router")
     tools = ai_router.build_tools(["BOS"])
     # `stats_question` — не экран: его вопрос уходит в `ai_stats` (Задача 83); `schedule_screen` —
-    # карточка расписания (Задача 108).
-    assert [t["name"] for t in tools] == [*bot.AI_SCREENS, "stats_question", "schedule_screen"]
+    # карточка расписания (Задача 108); `bot_answer` и `my_status` — текст (Задача 114).
+    assert [t["name"] for t in tools] == [
+        *bot.AI_SCREENS, "stats_question", "schedule_screen", "bot_answer", "my_status",
+    ]
     assert set(ai_router.SCREEN_COMMANDS) == set(bot.AI_COMMANDS)
     for tool in tools:
         assert tool["strict"] is True
@@ -332,9 +349,9 @@ async def test_text_answer_goes_to_user_and_to_log(ai, make_message, fake_bot, a
     assert (row["outcome"], row["answer"], row["question"]) == (
         "text", "Рейнджерс или Айлендерс? <уточните>", "как сыграл Нью-Йорк",
     )
-    assert row["cost_usd"] == pytest.approx((100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
+    assert row["cost_usd"] == pytest.approx((100 * 0.10 + 50 * 0.50 + 3000 * 0.01) / 1e6)
     (call,) = messages.calls
-    assert call["model"] == "claude-sonnet-5-5"
+    assert call["model"] == "claude-haiku-5-5"
     assert call["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert "как сыграл Нью-Йорк" in call["messages"][0]["content"]
 
@@ -378,21 +395,43 @@ async def test_refusal_is_answered_as_unsupported(ai, bot_module, make_message, 
 async def test_limit_is_daily_for_premium_and_weekly_for_free(
     ai, bot_module, make_message, fake_bot, api, premium, asked, refusal, limit
 ):
-    """Отказ модель не вызывает и в `ai_questions` не пишется — только строкой `ai_limit`
-    с видом лимита в журнал действий (Задача 99)."""
+    """При исчерпанном лимите модель спрашивается (вдруг вопрос о боте, Задача 114), но её
+    ответ вне лимита не проходит: отказ и строка `ai_limit` с видом лимита в журнал действий
+    (Задача 99)."""
     bot, cursor, messages = ai(_response(_text("Пока не умею")), asked=asked, premium=premium)
     await _ask(bot, make_message, fake_bot)
 
-    assert bool(messages.calls) is (refusal is None)
+    assert len(messages.calls) == 1
     if refusal is not None:
         assert _replies(api) == [_as_reply(getattr(bot_module("ai_router"), refusal))]
         assert ("/premium" in getattr(bot_module("ai_router"), refusal)) is not premium
         message = make_message("")
-        assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
-            ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", limit))
+        assert [q.split(" (")[0] for q, p in cursor.executed if q.startswith("INSERT")] == [
+            "INSERT INTO ai_questions", "INSERT INTO bot_actions",
         ]
+        assert _logged(cursor)["outcome"] == "limited"
+        assert cursor.executed[-1][1] == (message.chat.id, message.from_user.id, "ai_limit", limit)
     # Премиум — по чату вопроса.
     assert [p for q, p in cursor.executed if "FROM premium_access" in q] == [(make_message("").chat.id,)]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_budget_refuses_without_model_and_logs_budget(
+    ai, bot_module, make_message, fake_bot, api
+):
+    """Общий суточный бюджет (Задача 141): отказ без вызова модели, в журнале — `budget`."""
+    ai_router = bot_module("ai_router")
+    bot, cursor, messages = ai(
+        _response(_text("Пока не умею")), spent=ai_router.DAILY_BUDGET_USD
+    )
+    await _ask(bot, make_message, fake_bot)
+
+    assert not messages.calls
+    assert _replies(api) == [_as_reply(ai_router.BUDGET_TEXT)]
+    message = make_message("")
+    assert [(q.split(" (")[0], p) for q, p in cursor.executed if q.startswith("INSERT")] == [
+        ("INSERT INTO bot_actions", (message.chat.id, message.from_user.id, "ai_limit", "budget"))
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -416,3 +455,297 @@ async def test_api_failure_tells_user_to_use_commands_and_is_logged(
     row = _logged(cursor)
     assert (row["outcome"], row["request_id"]) == ("error", "req_500")
     assert row["error"].startswith("InternalServerError")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, "timeout", "client", "truncated"])
+async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeypatch, failure):
+    ai_router = bot_module("ai_router")
+    cursor = fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", [(95,)]),
+        ("INSERT INTO ai_questions", []),
+        ("UPDATE bot_upcoming_ai", []),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    result = {
+        False: _response(_text("Текст превью.")),
+        "timeout": TimeoutError(), "client": anthropic.APIConnectionError(
+            request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
+        "truncated": _response(_text("Оборванный текст"), stop_reason="max_tokens"),
+    }[failure]
+    messages = FakeMessages(result)
+    monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
+    result = await ai_router.upcoming_preview_text(95, "BOS: 12 побед. TOR: 10 побед.")
+    assert result == ("" if failure else "Текст превью.")
+    assert messages.calls[0]["messages"] == [
+        {"role": "user", "content": "BOS: 12 побед. TOR: 10 побед."},
+    ]
+    assert "исключительно факты" in messages.calls[0]["system"]
+    assert "Прогноз модели не используй" in messages.calls[0]["system"]
+    logged = _logged(cursor)
+    if failure == "truncated":
+        assert logged["cost_usd"] > 0
+        assert logged["input_tokens"] == 100
+    if not failure:
+        statements = [q for q, _ in cursor.executed]
+        assert next(i for i, q in enumerate(statements) if q.startswith("UPDATE")) < next(
+            i for i, q in enumerate(statements) if q.startswith("INSERT INTO ai_questions")
+        )
+    fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", []),
+        ("SELECT body FROM bot_upcoming_ai", [(result or None,)]),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    assert await ai_router.upcoming_preview_text(95, "changed") == result
+    assert len(messages.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow", [False, True])
+async def test_ai_progress_surrounds_model_and_answer(
+    ai, make_message, fake_bot, api, monkeypatch, slow
+):
+    """Статус уже в чате во время API; долгий запрос правит его один раз до ответа."""
+    import asyncio
+    from aiogram.methods import DeleteMessage, EditMessageText, SendRichMessage
+
+    bot, _, messages = ai(_response(_text("Готово")))
+    original = messages.create
+    monkeypatch.setattr(bot, "_AI_PROGRESS_DELAY", 0.01 if slow else 60)
+
+    async def create(**kwargs):
+        assert [body(r) for r in api.sent_rich] == [rich_html(bot._AI_WAIT_TEXT)]
+        if slow:
+            await asyncio.sleep(0.03)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(messages, "create", create)
+    await bot.on_free_text(make_message("вопрос"), fake_bot)
+    assert [body(r) for r in api.sent_rich] == [rich_html(bot._AI_WAIT_TEXT), _as_reply("Готово")]
+    edits = api.sent(EditMessageText)
+    assert len(edits) == int(slow)
+    if slow:
+        assert body(edits[0]) == rich_html(bot._AI_LONG_WAIT_TEXT)
+        assert edits[0].message_id == 1
+    assert isinstance(api.requests[-2], SendRichMessage)
+    assert isinstance(api.requests[-1], DeleteMessage)
+    assert api.requests[-1].message_id == 1
+    count = len(api.requests)
+    await asyncio.sleep(0.03)
+    assert len(api.requests) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_ai_progress_cleans_up_on_error_or_cancellation(
+    bot_module, make_message, fake_bot, api, cancel
+):
+    import asyncio
+    from aiogram.methods import DeleteMessage
+
+    bot = bot_module("bot")
+    error = asyncio.CancelledError if cancel else RuntimeError
+    with pytest.raises(error):
+        async with bot._ai_progress(make_message("вопрос"), fake_bot):
+            raise error()
+    assert len(api.sent(DeleteMessage)) == 1
+    count = len(api.requests)
+    await asyncio.sleep(0.01)
+    assert len(api.requests) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["send", "edit", "delete"])
+async def test_ai_progress_telegram_failure_preserves_answer(
+    ai, make_message, fake_bot, api, monkeypatch, caplog, method_name
+):
+    import asyncio
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import DeleteMessage, EditMessageText, SendRichMessage
+
+    bot, _, messages = ai(_response(_text("Готово")))
+    method = {"send": SendRichMessage, "edit": EditMessageText, "delete": DeleteMessage}[method_name]
+    api.fail_next(method, TelegramBadRequest(method=method.model_construct(), message="unavailable"))
+    monkeypatch.setattr(bot, "_AI_PROGRESS_DELAY", 0)
+    original = messages.create
+
+    async def create(**kwargs):
+        await asyncio.sleep(0.01)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(messages, "create", create)
+    await bot.on_free_text(make_message("вопрос"), fake_bot)
+    assert body(api.sent_rich[-1]) == _as_reply("Готово")
+    failures = [r for r in caplog.records if f"AI progress {method_name} failed" in r.message]
+    assert len(failures) == 1
+    assert failures[0].exc_info is None
+    assert not api._errors, "ожидаемая ошибка Telegram должна сработать"
+    if method_name == "send":
+        assert not api.sent(EditMessageText)
+        assert not api.sent(DeleteMessage)
+
+
+@pytest.mark.asyncio
+async def test_ai_progress_preserves_cancellation_during_timer_cleanup(
+    bot_module, make_message, fake_bot, api, monkeypatch
+):
+    """Отмена текущего обработчика при ожидании таймера доходит до вызывающего кода."""
+    import asyncio
+    from aiogram.methods import DeleteMessage
+
+    bot = bot_module("bot")
+    original_wait = asyncio.wait
+
+    async def cancel_during_wait(tasks):
+        asyncio.current_task().cancel()
+        return await original_wait(tasks)
+
+    monkeypatch.setattr(bot.asyncio, "wait", cancel_during_wait)
+
+    async def handler():
+        async with bot._ai_progress(make_message("вопрос"), fake_bot):
+            pass
+
+    task = asyncio.create_task(handler())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert len(api.sent(DeleteMessage)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", ["other_delete", "double_delete", "double_status"])
+async def test_progress_filter_does_not_hide_unexpected_messages(fake_bot, api, extra):
+    """Общий фильтр сохраняет посторонние удаления и отвергает повторный статус/удаление."""
+    from aiogram.methods import DeleteMessage
+    from rich_markup import rich_message
+
+    status = await fake_bot.send_rich_message(chat_id=100, rich_message=rich_message("ожидание"))
+    await fake_bot.delete_message(chat_id=100, message_id=status.message_id)
+    if extra == "double_status":
+        await fake_bot.send_rich_message(chat_id=100, rich_message=rich_message("ожидание"))
+    else:
+        await fake_bot.delete_message(
+            chat_id=100, message_id=status.message_id if extra == "double_delete" else 999
+        )
+    if extra == "other_delete":
+        api.remove_ai_progress(0, "ожидание")
+        assert len(api.requests) == 1
+        assert isinstance(api.requests[0], DeleteMessage)
+        assert api.requests[0].message_id == 999
+    else:
+        with pytest.raises(AssertionError, match="ровно один раз"):
+            api.remove_ai_progress(0, "ожидание")
+
+
+# ---------------------------------------------------------------------------
+# Вопросы о самом боте, правилах и структуре НХЛ (Задача 114)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bot_answer_goes_to_user_and_is_logged_as_free_text(ai, make_message, fake_bot, api):
+    bot, cursor, _ = ai(_response(_tool_use("bot_answer", answer="Премиум — 100 ⭐ за 30 дней: /premium")))
+    await _ask(bot, make_message, fake_bot, "сколько стоит премиум")
+
+    assert _replies(api) == [_as_reply("Премиум — 100 ⭐ за 30 дней: /premium")]
+    row = _logged(cursor)
+    assert (row["outcome"], row["tool"], row["answer"]) == (
+        "text", "bot_answer", "Премиум — 100 ⭐ за 30 дней: /premium",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("premium", [True, False])
+async def test_my_status_numbers_come_from_the_bot(ai, make_message, fake_bot, api, premium):
+    """Цифры чата — по тем же счётчикам, что лимит; модель их не пишет."""
+    bot, _, _ = ai(_response(_tool_use("my_status")), asked=(2, 2), premium=premium)
+    await _ask(bot, make_message, fake_bot, "сколько вопросов у меня осталось")
+
+    (reply,) = _replies(api)
+    if premium:
+        assert "Премиум до 01.01.2099." in reply and "осталось 18 из 20" in reply
+    else:
+        assert "Премиума нет" in reply and "осталось 1 из 3" in reply
+    assert "Подписок: 2, расписаний: 0" in reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "free"),
+    [
+        (_response(_tool_use("bot_answer", answer="Овертайм — 5 минут")), True),
+        (_response(_tool_use("my_status")), True),
+        (_response(_tool_use("open_command", command="premium")), True),
+        (_response(_tool_use("open_command", command="help")), False),
+        (_response(_tool_use("open_command", command="standings")), False),
+        (_response(_tool_use("stats_question")), False),
+    ],
+)
+async def test_exhausted_limit_still_answers_about_the_bot(
+    ai, bot_module, make_message, fake_bot, api, result, free
+):
+    """Решение человека 1: ответ о боте проходит при исчерпанном лимите, остальное — отказ."""
+    ai_router = bot_module("ai_router")
+    bot, cursor, _ = ai(result, asked=(0, ai_router.FREE_WEEKLY_LIMIT))
+    await _ask(bot, make_message, fake_bot)
+
+    refused = any(q.startswith("INSERT INTO bot_actions") for q, _ in cursor.executed)
+    assert refused is not free
+    assert (body(api.sent_rich[-1]) == _as_reply(ai_router.WEEK_LIMIT_TEXT)) is not free
+    assert (_logged(cursor)["outcome"] == "limited") is not free
+
+
+@pytest.mark.asyncio
+async def test_over_limit_calls_are_capped_per_day(ai, bot_module, make_message, fake_bot, api):
+    """Предохранитель: вызовов вне счёта — не больше FREE_DAILY_CALLS в сутки. Сверх лимита чата —
+    отказ без модели."""
+    ai_router = bot_module("ai_router")
+    bot, _, messages = ai(_response(_tool_use("bot_answer", answer="Овертайм — 5 минут")),
+                          asked=(0, ai_router.FREE_WEEKLY_LIMIT), free_day=ai_router.FREE_DAILY_CALLS)
+    await _ask(bot, make_message, fake_bot)
+
+    assert not messages.calls
+    assert body(api.sent_rich[-1]) == _as_reply(ai_router.WEEK_LIMIT_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_clarification_is_context_for_the_next_question(ai, make_message, fake_bot, api):
+    """Уточнение о клубе — текстом; уточнение `bot_answer` — тем же вызовом инструмента."""
+    bot, _, messages = ai(
+        _response(_tool_use("team_profile", team="WSH", all_players=False)),
+        previous=("как сыграл Нью-Йорк", "Рейнджерс или Айлендерс?", None),
+    )
+    await _ask(bot, make_message, fake_bot, "Рейнджерс")
+    bot, _, tool_messages = ai(
+        _response(_tool_use("bot_answer", answer="Дайджест — /subscriptions")),
+        previous=("как отключить?", "Что отключить: дайджест или расписание?", "bot_answer"),
+    )
+    await _ask(bot, make_message, fake_bot, "дайджест")
+
+    text_turns, tool_turns = messages.calls[0]["messages"], tool_messages.calls[0]["messages"]
+    assert [m["role"] for m in text_turns] == [m["role"] for m in tool_turns] == ["user", "assistant", "user"]
+    assert "как сыграл Нью-Йорк" in text_turns[0]["content"]
+    assert text_turns[1]["content"] == "Рейнджерс или Айлендерс?"
+    assert "Рейнджерс" in text_turns[2]["content"]
+    (use,) = tool_turns[1]["content"]
+    assert (use["type"], use["name"], use["input"]) == (
+        "tool_use", "bot_answer", {"answer": "Что отключить: дайджест или расписание?"},
+    )
+    result, question = tool_turns[2]["content"]
+    assert (result["type"], result["tool_use_id"]) == ("tool_result", use["id"])
+    assert "дайджест" in question["text"]
+
+
+@pytest.mark.asyncio
+async def test_reference_with_rules_and_divisions_is_in_the_cached_prefix(ai, make_message, fake_bot):
+    bot, _, messages = ai(_response(_text("Пока не умею")))
+    await _ask(bot, make_message, fake_bot)
+
+    (call,) = messages.calls
+    router_rules, reference = call["system"]
+    assert "cache_control" not in router_rules and reference["cache_control"] == {"type": "ephemeral"}
+    assert "Правила НХЛ сезона 2026/27" in reference["text"]
+    assert "Eastern · Atlantic: BOS" in reference["text"]
+    assert "100 ⭐" in reference["text"] and "3 в неделю" in reference["text"]
+    assert len(call["messages"]) == 1

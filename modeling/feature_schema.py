@@ -18,8 +18,6 @@ SERVICE_COLUMNS = (
     "feature_set_version",
     "dataset_built_at",
     "source_snapshot_id",
-    "low_history_confidence",
-    "quality_warnings",
 )
 # Non-feature columns carried through by features.py's as-of snapshot join
 # (``_snapshot_side``), which renames every remaining joined column to
@@ -138,7 +136,5 @@ def ordered_columns_for_output(
         out.extend([col for col in LABEL_COLUMNS if col in df.columns])
         out.extend([col for col in ("feature_set_version", "dataset_built_at", "source_snapshot_id") if col in df.columns])
     else:
-        out.extend(
-            [col for col in ("feature_set_version", "dataset_built_at", "low_history_confidence", "quality_warnings") if col in df.columns]
-        )
+        out.extend([col for col in ("feature_set_version", "dataset_built_at") if col in df.columns])
     return out

@@ -41,61 +41,37 @@ def _wide_feature_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     return data, built
 
 
-def _assert_train_labels_match_facts(data: pd.DataFrame) -> None:
-    """Train labels must match joined target-game facts before goals are dropped."""
-    winner = pd.to_numeric(data["winner_id"], errors="coerce")
-    home_tid = pd.to_numeric(data["home_team_id"], errors="coerce")
-    y_win = pd.to_numeric(data["y_home_win"], errors="coerce")
-    expected_win = (winner == home_tid).astype("float64")
-    if not (y_win == expected_win).fillna(False).all():
-        raise ValueError("y_home_win inconsistent with winner_id vs home_team_id")
-
-    hg = pd.to_numeric(data["home_goals_target"], errors="coerce").fillna(0)
-    ag = pd.to_numeric(data["away_goals_target"], errors="coerce").fillna(0)
-    y_over = pd.to_numeric(data["y_over_5_5"], errors="coerce")
-    expected_over = ((hg + ag) > 5.5).astype("float64")
-    if not (y_over == expected_over).all():
-        raise ValueError("y_over_5_5 inconsistent with home_goals_target + away_goals_target")
-
-
 def apply_cold_start_policy(
     data: pd.DataFrame,
     mode: str,
     min_prior_games: int,
-    cold_start_policy_predict: str,
 ) -> ColdStartResult:
     out = data.copy()
-    home_prior = out["home_prior_games_count"] if "home_prior_games_count" in out.columns else pd.Series(0, index=out.index)
-    away_prior = out["away_prior_games_count"] if "away_prior_games_count" in out.columns else pd.Series(0, index=out.index)
     low_hist_mask = (
-        home_prior.fillna(0).astype("int64") < min_prior_games
+        out["home_prior_games_count"].astype("int64") < min_prior_games
     ) | (
-        away_prior.fillna(0).astype("int64") < min_prior_games
+        out["away_prior_games_count"].astype("int64") < min_prior_games
     )
-
-    if mode == "train":
-        dropped = int(low_hist_mask.sum())
-        return ColdStartResult(
-            data=out[~low_hist_mask].copy(),
-            dropped_rows=dropped,
-            reason="cold_start_policy_train_drop",
-        )
-
-    out["low_history_confidence"] = low_hist_mask.astype("int64")
-    out["quality_warnings"] = out["low_history_confidence"].map(
-        lambda v: "LOW_HISTORY" if int(v) == 1 else ""
+    return ColdStartResult(
+        data=out[~low_hist_mask].copy(),
+        dropped_rows=int(low_hist_mask.sum()),
+        reason=f"cold_start_policy_{mode}_drop",
     )
-    if cold_start_policy_predict == "drop":
-        dropped = int(low_hist_mask.sum())
-        out = out[~low_hist_mask].copy()
-        return ColdStartResult(data=out, dropped_rows=dropped, reason="cold_start_policy_predict_drop")
-    return ColdStartResult(data=out, dropped_rows=0, reason="cold_start_policy_predict_allow_with_flag")
 
 
 def attach_train_labels(data: pd.DataFrame) -> pd.DataFrame:
+    """Add ``y_home_win`` and ``y_over_5_5`` to train rows.
+
+    Raises ``ValueError`` when a finished game has no goals in ``game_team_stats``:
+    a silent zero would mislabel it as under 5.5.
+    """
     out = data.copy()
     out["y_home_win"] = (out["winner_id"] == out["home_team_id"]).astype("int64")
-    total_goals = out["home_goals_target"].fillna(0) + out["away_goals_target"].fillna(0)
+    goals = out[["home_goals_target", "away_goals_target"]]
+    if goals.isna().any().any():
+        bad = out.loc[goals.isna().any(axis=1), "game_id"].tolist()[:10]
+        raise ValueError(f"train games without goals in game_team_stats (first game_ids: {bad})")
+    total_goals = goals.sum(axis=1)
     out["y_over_5_5"] = (total_goals > 5.5).astype("int64")
     return out
 
@@ -104,7 +80,6 @@ def assemble_dataset(
     mode: str,
     snapshots: pd.DataFrame,
     min_prior_games: int,
-    cold_start_policy_predict: str,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     report: Dict[str, Any] = {"drops": []}
     data, built_feature_columns = _wide_feature_columns(snapshots)
@@ -112,7 +87,6 @@ def assemble_dataset(
         data=data,
         mode=mode,
         min_prior_games=min_prior_games,
-        cold_start_policy_predict=cold_start_policy_predict,
     )
     data = cold.data
     if cold.dropped_rows > 0:
@@ -120,7 +94,6 @@ def assemble_dataset(
 
     if mode == "train":
         data = attach_train_labels(data)
-        _assert_train_labels_match_facts(data)
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")
     else:
         data = data.drop(columns=["winner_id", "home_goals_target", "away_goals_target"], errors="ignore")

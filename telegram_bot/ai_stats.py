@@ -27,7 +27,7 @@ from psycopg2.extras import Json
 
 import ai_router
 import config
-from bot_messages import MSK
+from rich_markup import MSK
 from database import fetch_all, get_connection
 
 logger = logging.getLogger(__name__)
@@ -41,23 +41,24 @@ AI_TABLES = (
     "game_three_stars", "shot_attempts", "scheduled_games", "playoff_series",
 )
 
-# Решение человека 2026-10-28: потолки на один вопрос и окно продолжения диалога.
+# Решение человека 2026-10-28: потолки на один вопрос и окно продолжения диалога; потолок цены —
+# 2026-11-18 (Задача 151): на Haiku худший вопрос Задачи 143 с холодным кэшем стоил $0.0041.
 SQL_ATTEMPTS = 4
 CALL_CEILING = 7
-COST_CEILING = 0.10
+COST_CEILING = 0.01
 WINDOW_MINUTES = 30
 HISTORY_PAIRS = 3
 ROW_LIMIT = 50
 # Объём выдачи модели: строки длиннее ROW_BYTES отбрасывает сам SQL (память бота), ячейки длиннее
 # CELL_CHARS и весь JSON длиннее RESULT_CHARS обрезает Python (стоимость вызова: 20 000 символов —
-# порядка 10 000 токенов, то есть до $0.02 на входе).
+# порядка 10 000 токенов, то есть до $0.001 на входе).
 ROW_BYTES = 4000
 CELL_CHARS = 300
 RESULT_CHARS = 20_000
 STATEMENT_TIMEOUT_SEC = 5
 EFFORT = "medium"
 # Клиент маршрутизатора (15 с, мало выхода) для диалога на effort medium тесен: мышление плюс вызов
-# инструмента — до нескольких тысяч токенов выхода, на 8192 ($0.08 на выходе) вызов укладывается
+# инструмента — до нескольких тысяч токенов выхода, на 8192 ($0.004 на выходе) вызов укладывается
 # в потолок стоимости; 60 с — запас при ~100 токенов/с и один повтор клиента.
 MAX_TOKENS = 8192
 CALL_TIMEOUT = 60.0
@@ -420,8 +421,8 @@ async def _call(run: _Run, role: str, system: Any, tools: List[Dict[str, Any]],
     """
     if len(run.calls) >= CALL_CEILING or run.cost + run.max_call_cost >= COST_CEILING:
         raise _Ceiling
-    # Принудительный tool_choice (any/tool) Sonnet 5.5 отвергает: инструмент требует промпт,
-    # а его отсутствие — _ProtocolError.
+    # Принудительный tool_choice (any/tool) модели Claude 5.5 отвергают, Haiku проверена только с auto
+    # (Задача 143): инструмент требует промпт, а его отсутствие — _ProtocolError.
     params: Dict[str, Any] = {
         "model": ai_router.MODEL, "max_tokens": MAX_TOKENS, "output_config": {"effort": EFFORT},
         "system": system, "tools": tools, "messages": messages,

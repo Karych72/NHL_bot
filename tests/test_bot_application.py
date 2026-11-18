@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, List, Tuple
@@ -96,15 +97,15 @@ def test_standalone_commands_and_their_order(bot_module, dispatcher) -> None:
     handlers = router.message.handlers
 
     assert [h.callback for h in handlers] == [
-        bot.cmd_start, bot.cmd_help, bot.cmd_today, bot.cmd_tonight, bot.cmd_standings,
-        bot.cmd_team, bot.cmd_team_profile, bot.cmd_stats, bot.cmd_team_stats, bot.cmd_countries,
-        bot.cmd_subscriptions, bot.cmd_premium, bot.cmd_paysupport, bot.on_successful_payment,
+        bot.cmd_start, *bot.COMMAND_HANDLERS.values(), bot.cmd_team_profile, bot.on_successful_payment,
     ]
     assert isinstance(handlers[0].filters[0].callback, CommandStart)
     assert _commands(router) == [
-        "start", "help", "today", "tonight", "standings", "team", "stats", "team_stats", "countries",
-        "subscriptions", "premium", "paysupport",
+        "start", "today", "tonight", "standings", "stats", "team_stats", "team", "countries",
+        "subscriptions", "premium", "paysupport", "help",
     ]
+    assert bot.COMMAND_HANDLERS["premium"] is bot.cmd_premium
+    assert bot.COMMAND_HANDLERS["paysupport"] is bot.cmd_paysupport
 
 
 def test_standalone_buttons_and_their_order(bot_module, dispatcher) -> None:
@@ -154,14 +155,62 @@ def test_team_command_pattern_ignores_service_commands_and_malformed_input(bot_m
 
 
 def test_every_bot_command_is_a_registered_command(bot_module, dispatcher) -> None:
-    """Меню команд Telegram и /help строятся из `BOT_COMMANDS`: команда без
+    """Меню команд Telegram и /help строятся из справочника `COMMANDS`: команда без
     хендлера показывалась бы пользователю и молчала."""
     help_text = bot_module("help_text")
     registered = {cmd for router in dispatcher.sub_routers for cmd in _commands(router)}
-    menu = [cmd for cmd, _desc in help_text.BOT_COMMANDS]
+    menu = [c.name for c in help_text.COMMANDS]
     assert len(menu) == len(set(menu))
     # /start — точка входа, в меню команд не выводится; всё остальное — ровно меню.
     assert set(menu) == registered - {"start"}
+
+
+@pytest.mark.asyncio
+async def test_command_added_to_registry_reaches_help_router_and_menu(
+    bot_module, monkeypatch, fake_bot, api
+) -> None:
+    """Задача 132: новая команда — строка справочника и функция показа; `/help`, `enum`
+    маршрутизатора, расписания, хендлер и меню Telegram подхватывают её без других правок."""
+    help_text, ai_router, bot = (bot_module(m) for m in ("help_text", "ai_router", "bot"))
+    probe = help_text.CommandSpec("probe", "Пробная команда", ai=True, schedule=True)
+    commands = (*help_text.COMMANDS, probe)
+
+    async def show_probe(_bot: Any, _chat_id: int) -> None:
+        """Пробный экран."""
+
+    assert "/probe — Пробная команда" in help_text.command_items(commands)
+    # Команда без функции показа — ошибка при сборке хендлеров (её зовёт импорт `bot.py`).
+    with pytest.raises(KeyError, match="probe"):
+        bot._command_handlers(commands)
+
+    # Наборы команд ИИ `ai_router` считает при импорте: перечитываем его на пробном справочнике
+    # и возвращаем настоящий, чтобы проба не утекла в соседние тесты.
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(help_text, "COMMANDS", commands)
+            importlib.reload(ai_router)
+            assert ai_router.SCREEN_COMMANDS[-1] == ai_router.SCHEDULE_COMMANDS[-1] == "probe"
+            tools = {t["name"]: t for t in ai_router.build_tools(["BOS"])}
+            assert tools["open_command"]["input_schema"]["properties"]["command"]["enum"][-1] == "probe"
+            assert "probe — Пробная команда" in tools["open_command"]["description"]
+            [scheduled] = [
+                o for o in tools["schedule_screen"]["input_schema"]["properties"]["screen"]["anyOf"]
+                if o.get("properties", {}).get("tool", {}).get("const") == "open_command"
+            ]
+            assert scheduled["properties"]["command"]["enum"][-1] == "probe"
+    finally:
+        importlib.reload(ai_router)
+
+    monkeypatch.setitem(bot._COMMAND_SCREENS, "probe", show_probe)
+    monkeypatch.setattr(bot, "COMMANDS", commands)
+    monkeypatch.setattr(bot, "COMMAND_HANDLERS", bot._command_handlers(commands))
+    standalone = _router(bot.build_dispatcher(), "standalone")
+    assert "probe" in _commands(standalone)
+    assert bot.COMMAND_HANDLERS["probe"] in [h.callback for h in standalone.message.handlers]
+    assert bot.COMMAND_HANDLERS["probe"].__doc__ == show_probe.__doc__
+    await bot._publish_command_menu(fake_bot)
+    [request] = api.sent(SetMyCommands)
+    assert (request.commands[-1].command, request.commands[-1].description) == ("probe", "Пробная команда")
 
 
 @pytest.mark.asyncio
@@ -173,7 +222,14 @@ async def test_startup_publishes_bot_commands_to_telegram_menu(bot_module, dispa
     await bot._publish_command_menu(fake_bot)
 
     [request] = api.sent(SetMyCommands)
-    assert [(c.command, c.description) for c in request.commands] == list(help_text.BOT_COMMANDS)
+    assert [(c.command, c.description) for c in request.commands] == [
+        (c.name, c.description) for c in help_text.COMMANDS
+    ]
+    # Состав и порядок меню — снимок до справочника (Задача 132): меняется только осознанно.
+    assert [c.command for c in request.commands] == [
+        "today", "tonight", "standings", "stats", "team_stats", "team", "countries",
+        "subscriptions", "premium", "paysupport", "help",
+    ]
 
 
 def test_every_registered_handler_is_a_coroutine_function(dispatcher) -> None:
@@ -286,7 +342,7 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     bot = bot_module("bot")
     asked: List[str] = []
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         asked.append(text)
         return bot.ai_router.Reply(text="ответ модели", tool=None, params={})
 
@@ -298,7 +354,9 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     await _feed(dispatcher, fake_bot, make_update("таблица Востока", chat_id=-5, chat_type="group"))
 
     assert asked == ["как сыграл Колорадо"]
-    assert [body(m) for m in api.outgoing] == [rich_html("ответ модели")]
+    assert [body(m) for m in api.outgoing] == [
+        rich_html(bot._AI_WAIT_TEXT), rich_html("ответ модели")
+    ]
 
 
 @pytest.mark.asyncio
@@ -379,7 +437,7 @@ async def test_free_text_is_not_logged(bot_module, dispatcher, fake_bot, actions
     """Вопрос к ИИ уже в `ai_questions` / `ai_stats_log` — журнал его не дублирует."""
     bot = bot_module("bot")
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         return bot.ai_router.Reply(text="ответ", tool=None, params={})
 
     monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)

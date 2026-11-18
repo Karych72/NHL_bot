@@ -32,23 +32,23 @@ ROLLING_WINDOWS = [5, 10]
 FEATURE_SET_VERSION = "v1"
 
 
-def _features_hash(cold_start_policy_predict: str) -> str:
+def _features_hash(feature_set_version: str) -> str:
     return features_hash(
         feature_manifest=MANIFEST,
         rolling_windows=ROLLING_WINDOWS,
-        cold_start_policy=f"train:drop|predict:{cold_start_policy_predict}",
-        feature_set_version=FEATURE_SET_VERSION,
+        cold_start_policy="train:drop|predict:drop",
+        feature_set_version=feature_set_version,
     )
 
 
-def _dataset_metadata(*, mode: str, cold_start_policy_predict: str, rows: int) -> dict:
+def _dataset_metadata(*, mode: str, feature_set_version: str, rows: int) -> dict:
     return {
         "mode": mode,
-        "feature_set_version": FEATURE_SET_VERSION,
-        "features_hash": _features_hash(cold_start_policy_predict),
+        "feature_set_version": feature_set_version,
+        "features_hash": _features_hash(feature_set_version),
         "feature_manifest": MANIFEST,
         "rolling_windows": ROLLING_WINDOWS,
-        "cold_start_policy_predict": cold_start_policy_predict,
+        "cold_start_policy_predict": "drop",
         "min_prior_games": 5,
         "dataset_rows": rows,
         "code_version": "test",
@@ -57,7 +57,7 @@ def _dataset_metadata(*, mode: str, cold_start_policy_predict: str, rows: int) -
     }
 
 
-def _write_predict_dataset(tmp: Path, *, cold_start_policy_predict: str = "drop") -> tuple[Path, Path]:
+def _write_predict_dataset(tmp: Path, *, feature_set_version: str = FEATURE_SET_VERSION) -> tuple[Path, Path]:
     rows = pd.DataFrame(
         {
             "game_id": [101, 102, 103],
@@ -67,10 +67,8 @@ def _write_predict_dataset(tmp: Path, *, cold_start_policy_predict: str = "drop"
             "away_team_id": [11, 21, 31],
             "f_a": [0.1, 0.5, 0.9],
             "f_b": [0.9, 0.5, 0.1],
-            "feature_set_version": [FEATURE_SET_VERSION] * 3,
+            "feature_set_version": [feature_set_version] * 3,
             "dataset_built_at": ["2026-04-16T00:00:00Z"] * 3,
-            "low_history_confidence": [0, 0, 0],
-            "quality_warnings": ["", "", ""],
         }
     )
     csv_path = tmp / "dataset_predict.csv"
@@ -78,7 +76,7 @@ def _write_predict_dataset(tmp: Path, *, cold_start_policy_predict: str = "drop"
     rows.to_csv(csv_path, index=False)
     meta_path.write_text(
         json.dumps(
-            _dataset_metadata(mode="predict", cold_start_policy_predict=cold_start_policy_predict, rows=len(rows)),
+            _dataset_metadata(mode="predict", feature_set_version=feature_set_version, rows=len(rows)),
             indent=2,
         ),
         encoding="utf-8",
@@ -92,7 +90,6 @@ def _write_latest_model(
     task: str = "home_win",
     model_family: str = "logreg",
     run_id: str = "home_win_logreg_deadbeef_20260101T000000Z",
-    cold_start_policy_predict: str = "drop",
     model_features: tuple[str, ...] | None = ("f_a",),
 ) -> Path:
     """Fit a tiny real pipeline + calibrator and write them as train_runner would."""
@@ -118,7 +115,7 @@ def _write_latest_model(
             "task": task,
             "model_family": model_family,
             "status": "ok",
-            "features_hash": _features_hash(cold_start_policy_predict),
+            "features_hash": _features_hash(FEATURE_SET_VERSION),
             "feature_set_version": FEATURE_SET_VERSION,
             "feature_manifest": MANIFEST,
             **({} if model_features is None else {"model_features": list(model_features)}),
@@ -220,11 +217,11 @@ class TestRunPredictFeaturesHashMismatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             artifacts_root = tmp / "artifacts"
-            # Model trained with cold_start_policy_predict="drop" (its own self-consistent hash)...
-            _write_latest_model(artifacts_root, cold_start_policy_predict="drop")
+            # Model trained with feature_set_version "v1" (its own self-consistent hash)...
+            _write_latest_model(artifacts_root)
             # ...but the predict dataset was built with a different (still self-consistent)
-            # policy value, so its features_hash differs from the model's.
-            csv_path, meta_path = _write_predict_dataset(tmp, cold_start_policy_predict="allow_with_flag")
+            # feature_set_version, so its features_hash differs from the model's.
+            csv_path, meta_path = _write_predict_dataset(tmp, feature_set_version="v2")
 
             with self.assertRaises(ValueError) as ctx:
                 run_predict(

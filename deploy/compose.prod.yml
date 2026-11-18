@@ -1,6 +1,6 @@
 # Прод-оверрайд к docker-compose.yml (Задачи 65, 81): токен бота и ключ Claude API на VM — не
 # в .env, а файлами /run/nhl_bot/telegram_bot_token и /run/nhl_bot/anthropic/anthropic_api_key (tmpfs), их
-# пишет deploy/fetch-secrets.sh при загрузке VM. Ключ нужен только bot (свободный текст).
+# пишет deploy/fetch-secrets.sh при загрузке VM. Ключ нужен bot и sync (ИИ-текст превью).
 # Подключается только на VM строкой COMPOSE_FILE=docker-compose.yml:deploy/compose.prod.yml
 # в .env — её видят и release.yml, и ручной `docker compose`.
 #
@@ -9,17 +9,16 @@
 # `docker compose run`). Через env_file токен попал бы в Config.Env — Docker хранит его
 # открытым текстом в config.v2.json на диске VM и показывает в `docker inspect`. Нет файла —
 # контейнер не стартует (bind source path does not exist), в том числе при перезагрузке VM.
-x-token-entrypoint: &token-entrypoint
-  ["sh", "-c", "TELEGRAM_BOT_TOKEN=$$(cat /run/secrets/telegram_bot_token) && export TELEGRAM_BOT_TOKEN && exec \"$$@\"", "sh"]
+x-ai-entrypoint: &ai-entrypoint
+  ["sh", "-c", "TELEGRAM_BOT_TOKEN=$$(cat /run/secrets/telegram_bot_token) && ANTHROPIC_API_KEY=$$(cat /run/secrets/anthropic_api_key) && export TELEGRAM_BOT_TOKEN ANTHROPIC_API_KEY && exec \"$$@\"", "sh"]
 
 services:
   bot:
     secrets: [telegram_bot_token, anthropic_api_key]
-    entrypoint:
-      ["sh", "-c", "TELEGRAM_BOT_TOKEN=$$(cat /run/secrets/telegram_bot_token) && ANTHROPIC_API_KEY=$$(cat /run/secrets/anthropic_api_key) && export TELEGRAM_BOT_TOKEN ANTHROPIC_API_KEY && exec \"$$@\"", "sh"]
+    entrypoint: *ai-entrypoint
   sync:
-    secrets: [telegram_bot_token]
-    entrypoint: *token-entrypoint
+    secrets: [telegram_bot_token, anthropic_api_key]
+    entrypoint: *ai-entrypoint
 
 secrets:
   telegram_bot_token:

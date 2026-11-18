@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +12,8 @@ from typing import Any, Dict, List, Optional, Sequence, cast
 import pandas as pd
 import psycopg2
 
+from modeling.artifacts import get_git_commit
+from modeling.config import load_metadata_json
 from modeling.elo import compute_pregame_elo
 
 from .assemble import assemble_dataset
@@ -23,7 +24,7 @@ from .features import (
     compute_pregame_shot_share,
     compute_team_rolling_features,
 )
-from .schema import (
+from modeling.feature_schema import (
     assert_feature_parity,
     build_feature_manifest,
     feature_columns_from_df,
@@ -44,7 +45,6 @@ class DatasetBuildConfig:
     feature_set_version: str = "v2"
     rolling_windows: Sequence[int] = (5, 10, 20)
     min_prior_games: int = 5
-    cold_start_policy_predict: str = "drop"
     min_rows_threshold: int = 0
     season_ids: Sequence[int] = field(default_factory=list)
     target_day_from: Optional[str] = None
@@ -53,17 +53,6 @@ class DatasetBuildConfig:
     validate_only: bool = False
     source_snapshot_id: Optional[str] = None
     allow_empty_predict: bool = True
-
-
-def _git_commit_hash() -> str:
-    try:
-        return (
-            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
-            .decode("utf-8")
-            .strip()
-        )
-    except Exception:
-        return "unknown"
 
 
 def _season_where_clause(config: DatasetBuildConfig) -> str:
@@ -259,7 +248,7 @@ def load_shot_attempts(conn, config: DatasetBuildConfig) -> pd.DataFrame:
 
 
 def _load_train_metadata(path: Path) -> Dict[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = load_metadata_json(path)
     manifest = data.get("feature_manifest")
     if not isinstance(manifest, list) or not manifest:
         raise ValueError("Invalid train metadata: feature_manifest missing")
@@ -298,10 +287,10 @@ def _metadata_dict(
         "features_hash": feature_hash,
         "feature_manifest": feature_manifest,
         "rolling_windows": list(config.rolling_windows),
-        "cold_start_policy_predict": config.cold_start_policy_predict,
+        "cold_start_policy_predict": "drop",
         "min_prior_games": config.min_prior_games,
         "dataset_rows": dataset_rows,
-        "code_version": _git_commit_hash(),
+        "code_version": get_git_commit() or "unknown",  # Docker image has no .git
         "data_snapshot_id": data_snapshot_id,
         "dataset_built_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
@@ -461,7 +450,6 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
         mode=config.mode,
         snapshots=snapshots,
         min_prior_games=config.min_prior_games,
-        cold_start_policy_predict=config.cold_start_policy_predict,
     )
 
     assembled["dataset_built_at"] = built_at
@@ -499,7 +487,7 @@ def build_dataset(config: DatasetBuildConfig) -> Dict[str, Path]:
     feature_hash = features_hash(
         feature_manifest=feature_manifest,
         rolling_windows=config.rolling_windows,
-        cold_start_policy=f"train:drop|predict:{config.cold_start_policy_predict}",
+        cold_start_policy="train:drop|predict:drop",
         feature_set_version=config.feature_set_version,
     )
     if config.mode == "predict" and train_metadata is not None:

@@ -152,8 +152,6 @@ class TestBaselineGate(unittest.TestCase):
                     TaskModelEval(
                         task="home_win",
                         model="logreg",
-                        run_id=VALID_RUN_ID,
-                        reports_dir=Path("."),
                         model_log_loss=0.75,
                         benchmark_log_loss=0.70,
                         benchmark="elo",
@@ -177,7 +175,6 @@ class TestBaselineGate(unittest.TestCase):
             )
             base = tmp / "models" / "home_win" / "logreg"
             self.assertFalse((base / "latest").exists())
-            self.assertFalse((base / "latest.txt").exists())
 
 
 class TestCliTrainSmoke(unittest.TestCase):
@@ -332,8 +329,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             self.assertEqual(len(results), 1)
             run_id = results[0].run_id
             model_root = artifacts / "models" / "over_5_5" / "logreg" / run_id
-            for season in _test_config_yaml()["split"]["test_seasons"]:
-                self.assertTrue((model_root / f"season_{season}" / "model_raw.joblib").exists())
+            self.assertFalse(list(model_root.glob("season_*")))
             self.assertFalse(list(model_root.glob("fold_*")))
             final_dir = model_root / "final"
             self.assertTrue((final_dir / "model.joblib").exists())
@@ -355,8 +351,7 @@ class TestCliTrainMiniEndToEnd(unittest.TestCase):
             self.assertEqual(meta["n_rows_train"] + meta["n_rows_calibration"], 2000)
             self.assertIn("scikit-learn", meta["library_versions"])
             latest = artifacts / "models" / "over_5_5" / "logreg" / "latest"
-            latest_txt = artifacts / "models" / "over_5_5" / "logreg" / "latest.txt"
-            self.assertTrue(latest.exists() or latest_txt.exists())
+            self.assertTrue(latest.is_symlink())
             self.assertTrue((artifacts / "reports" / run_id / "metrics.json").exists())
             self.assertTrue((artifacts / "reports" / run_id / "run.log").exists())
 
@@ -559,7 +554,6 @@ class TestSliceMasks(unittest.TestCase):
 
     def test_slices_cover_season_start_olympic_window_and_prior_games_buckets(self) -> None:
         import numpy as np
-        import pandas as pd
 
         from modeling.splits import SeasonWindow
         from modeling.train_runner import _SeasonEval, _slice_blocks, _slice_masks
@@ -599,7 +593,6 @@ class TestSliceMasks(unittest.TestCase):
 
     def test_missing_prior_games_columns_fail_loudly(self):
         import numpy as np
-        import pandas as pd
 
         from modeling.splits import SeasonWindow
         from modeling.train_runner import _SeasonEval, _slice_masks
@@ -714,15 +707,6 @@ class TestHomeWinLogregOnly(unittest.TestCase):
             for result in results:
                 if result.task == "over_5_5":
                     self.assertEqual(len(meta(result, "final")["model_features"]), 8)
-            table = pd.read_csv(csv_path)
-            second_season_first_day = table[table["season_id"] != table["season_id"].min()]["day"].min()[:10]
-            for season in cfg["split"]["test_seasons"]:
-                season_meta = meta(home, f"season_{season}")
-                self.assertGreaterEqual(season_meta["train_days"]["min"], second_season_first_day)
-                self.assertEqual(season_meta["train_days"]["max"], season_meta["calibration_days"]["max"])
-            metrics = json.loads((home.reports_dir / "metrics.json").read_text(encoding="utf-8"))
-            for block in metrics["seasons"]:
-                self.assertEqual(block["n_train"], meta(home, f"season_{block['season_id']}")["n_rows_train"])
             model = joblib.load(home.model_run_dir / "final" / "model.joblib")
             self.assertEqual(model.n_features_in_, len(final["model_features"]))
 

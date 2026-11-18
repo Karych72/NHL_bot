@@ -45,7 +45,14 @@
       "Bash(diff:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
+      "Bash(git push *master*)",
+      "Bash(git push *develop*)",
+      "Bash(git push *--force*)",
+      "Bash(git push *-f *)",
+      "Bash(git -C * push *master*)",
+      "Bash(git -C * push *develop*)",
+      "Bash(git -C * push *--force*)",
+      "Bash(git -C * push *-f *)",
       "Bash(git reset --hard:*)",
       "Bash(git clean:*)",
       "Bash(make db-drop:*)",

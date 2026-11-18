@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from modeling.dataset_builder.assemble import (
-    _assert_train_labels_match_facts,
+    attach_train_labels,
     apply_cold_start_policy,
     assemble_dataset,
 )
@@ -17,7 +17,7 @@ from modeling.dataset_builder.features import (
     build_match_feature_snapshots,
     compute_team_rolling_features,
 )
-from modeling.dataset_builder.schema import (
+from modeling.feature_schema import (
     assert_feature_parity,
     build_feature_manifest,
     feature_columns_from_df,
@@ -151,8 +151,6 @@ class TestModelingDatasetBuild(unittest.TestCase):
         snapshots = build_match_feature_snapshots(targets, rolling)
         snapshots["feature_set_version"] = "v1"
         snapshots["dataset_built_at"] = "2026-01-02T00:00:00Z"
-        snapshots["low_history_confidence"] = 0
-        snapshots["quality_warnings"] = ""
         with self.assertRaisesRegex(ValueError, "home_power_play_percentage_for"):
             validate_or_raise("predict", snapshots, feature_columns=feature_columns_from_df(snapshots))
 
@@ -257,7 +255,6 @@ class TestModelingDatasetBuild(unittest.TestCase):
             "train",
             snapshots,
             min_prior_games=0,
-            cold_start_policy_predict="allow_with_flag",
         )
         self.assertIn("diff_foo", data.columns)
         self.assertNotIn("diff_goals_target", data.columns)
@@ -282,21 +279,18 @@ class TestModelingDatasetBuild(unittest.TestCase):
             validate_or_raise("train", df, feature_columns=[])
         self.assertIn("forbidden", str(ctx.exception).lower())
 
-    def test_train_label_assert_detects_mismatch(self):
+    def test_rolling_requires_window_5(self):
+        team_facts, _ = build_team_game_facts(_history_df())
+        with self.assertRaises(ValueError):
+            compute_team_rolling_features(team_facts, [3, 10])
+
+    def test_train_labels_reject_missing_goals(self):
         df = pd.DataFrame(
-            [
-                {
-                    "winner_id": 10,
-                    "home_team_id": 10,
-                    "y_home_win": 0,
-                    "y_over_5_5": 0,
-                    "home_goals_target": 2.0,
-                    "away_goals_target": 2.0,
-                }
-            ]
+            [{"game_id": 1, "winner_id": 10, "home_team_id": 10,
+              "home_goals_target": None, "away_goals_target": 2.0}]
         )
         with self.assertRaises(ValueError):
-            _assert_train_labels_match_facts(df)
+            attach_train_labels(df)
 
     def test_no_merge_suffix_columns_in_snapshots(self):
         team_facts, _ = build_team_game_facts(_history_df())
@@ -328,8 +322,6 @@ class TestModelingDatasetBuild(unittest.TestCase):
         snapshots = build_match_feature_snapshots(targets, rolling)
         snapshots["feature_set_version"] = "v1"
         snapshots["dataset_built_at"] = "2026-01-04T00:00:00Z"
-        snapshots["low_history_confidence"] = 0
-        snapshots["quality_warnings"] = ""
         validate_or_raise("predict", snapshots, feature_columns=feature_columns_from_df(snapshots))
         self.assertNotEqual(int(snapshots.loc[0, "home_hist_game_id"]), 100)
         self.assertNotEqual(int(snapshots.loc[0, "away_hist_game_id"]), 100)
@@ -352,7 +344,7 @@ class TestModelingDatasetBuild(unittest.TestCase):
         )
         predict = pd.DataFrame(
             [
-                {"game_id": 2, "day": "2026-01-02", "season_id": 20252026, "home_team_id": 10, "away_team_id": 30, "home_goals_for_roll_mean_5": 1.9, "away_goals_for_roll_mean_5": 2.1, "diff_goals_for_roll_mean_5": -0.2, "feature_set_version": "v1", "dataset_built_at": "x", "low_history_confidence": 0, "quality_warnings": ""},
+                {"game_id": 2, "day": "2026-01-02", "season_id": 20252026, "home_team_id": 10, "away_team_id": 30, "home_goals_for_roll_mean_5": 1.9, "away_goals_for_roll_mean_5": 2.1, "diff_goals_for_roll_mean_5": -0.2, "feature_set_version": "v1", "dataset_built_at": "x"},
             ]
         )
         manifest = build_feature_manifest(train, feature_columns_from_df(train))
@@ -365,17 +357,12 @@ class TestModelingDatasetBuild(unittest.TestCase):
                 {"game_id": 2, "home_prior_games_count": 7, "away_prior_games_count": 7},
             ]
         )
-        train = apply_cold_start_policy(data, mode="train", min_prior_games=5, cold_start_policy_predict="allow_with_flag")
+        train = apply_cold_start_policy(data, mode="train", min_prior_games=5)
         self.assertEqual(train.dropped_rows, 1)
         self.assertEqual(train.data["game_id"].tolist(), [2])
 
-        predict = apply_cold_start_policy(data, mode="predict", min_prior_games=5, cold_start_policy_predict="allow_with_flag")
-        low_conf = dict(zip(predict.data["game_id"], predict.data["low_history_confidence"]))
-        self.assertEqual(low_conf[1], 1)
-        self.assertEqual(low_conf[2], 0)
-
         # Задача 73: the bot's rule — no forecast while a team has fewer than 5 games this season.
-        dropped = apply_cold_start_policy(data, mode="predict", min_prior_games=5, cold_start_policy_predict="drop")
+        dropped = apply_cold_start_policy(data, mode="predict", min_prior_games=5)
         self.assertEqual(dropped.dropped_rows, 1)
         self.assertEqual(dropped.data["game_id"].tolist(), [2])
 
@@ -400,10 +387,10 @@ class TestModelingDatasetBuild(unittest.TestCase):
             ]
         )
         manifest = build_feature_manifest(train, feature_columns_from_df(train))
-        hash_allow = features_hash(
+        hash_other = features_hash(
             feature_manifest=manifest,
             rolling_windows=[5, 10, 20],
-            cold_start_policy="train:drop|predict:allow_with_flag",
+            cold_start_policy="train:drop|predict:keep",
             feature_set_version="v1",
         )
         hash_drop = features_hash(
@@ -412,7 +399,7 @@ class TestModelingDatasetBuild(unittest.TestCase):
             cold_start_policy="train:drop|predict:drop",
             feature_set_version="v1",
         )
-        self.assertNotEqual(hash_allow, hash_drop)
+        self.assertNotEqual(hash_other, hash_drop)
 
     def test_validate_fails_on_nan_keys(self):
         predict = pd.DataFrame(
@@ -428,8 +415,6 @@ class TestModelingDatasetBuild(unittest.TestCase):
                     "diff_goals_for_roll_mean_5": -0.2,
                     "feature_set_version": "v1",
                     "dataset_built_at": "x",
-                    "low_history_confidence": 0,
-                    "quality_warnings": "",
                 },
             ]
         )
@@ -724,7 +709,6 @@ class TestPregameElo(unittest.TestCase):
             "train",
             snapshots,
             min_prior_games=0,
-            cold_start_policy_predict="allow_with_flag",
         )
         self.assertIn("diff_elo", data.columns)
         self.assertEqual(float(data.loc[0, "diff_elo"]), 40.0)
@@ -997,7 +981,7 @@ class TestShotShareEwm(unittest.TestCase):
             "home_prior_games_count": 8, "away_prior_games_count": 8,
             "home_shot_share_ewm": 0.55, "away_shot_share_ewm": 0.48,
         }])
-        data, _ = assemble_dataset("train", snapshots, min_prior_games=0, cold_start_policy_predict="allow_with_flag")
+        data, _ = assemble_dataset("train", snapshots, min_prior_games=0)
         self.assertAlmostEqual(data.loc[0, "diff_shot_share_ewm"], 0.07)
         self.assertNotIn("sum_shot_share_ewm", data.columns)
 

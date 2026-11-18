@@ -25,19 +25,12 @@ structures to avoid duplicate identity columns.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from modeling.config import ConfigError, SplitConfig
-
-METADATA_PARITY_KEYS: tuple[str, ...] = (
-    "feature_set_version",
-    "features_hash",
-    "rolling_windows",
-    "feature_manifest",
-)
+from modeling.config import SplitConfig
 
 
 class SplitError(ValueError):
@@ -107,45 +100,9 @@ class SeasonSplits:
         }
 
 
-def validate_metadata_parity(
-    yaml_reference: Mapping[str, Any] | None,
-    metadata: Mapping[str, Any] | None,
-) -> None:
-    """Fail-fast when YAML reference copies disagree with ``metadata_train.json``."""
-    if yaml_reference is None or metadata is None:
-        return
-    diffs: list[dict[str, Any]] = []
-    for key in METADATA_PARITY_KEYS:
-        yaml_value = yaml_reference.get(key)
-        if yaml_value is None:
-            continue
-        meta_value = metadata.get(key)
-        if meta_value is None:
-            continue
-        if yaml_value != meta_value:
-            diffs.append(
-                {
-                    "field": key,
-                    "value_yaml": yaml_value,
-                    "value_metadata": meta_value,
-                }
-            )
-    if diffs:
-        lines = ["Config metadata conflict (YAML vs metadata_train.json):"]
-        for item in diffs:
-            lines.append(
-                f"  {item['field']}: value_yaml={item['value_yaml']!r} "
-                f"value_metadata={item['value_metadata']!r}"
-            )
-        raise ConfigError("\n".join(lines))
-
-
 def build_season_splits(
     keys: pd.DataFrame,
     config: SplitConfig,
-    *,
-    yaml_reference: Mapping[str, Any] | None = None,
-    metadata: Mapping[str, Any] | None = None,
 ) -> SeasonSplits:
     """Build one window per checked season (``config.test_seasons``).
 
@@ -155,10 +112,6 @@ def build_season_splits(
         DataFrame with required columns ``day`` (datetime64), ``game_id`` and ``season_id``.
     config:
         Split section from ``modeling.config`` (``SplitConfig``).
-    yaml_reference:
-        Optional YAML reference mapping for metadata parity checks.
-    metadata:
-        Optional ``metadata_train.json`` payload for parity checks.
 
     Returns
     -------
@@ -181,8 +134,6 @@ def build_season_splits(
         A checked season is absent from the data, or fewer than
         ``inner_val_games + calibration_games + 1`` rows precede it.
     """
-    validate_metadata_parity(yaml_reference, metadata)
-
     sorted_keys = _prepare_keys(keys)
     seasons = sorted_keys["season_id"].to_numpy()
     windows: list[SeasonWindow] = []
@@ -258,24 +209,21 @@ def _positional_range(indices: np.ndarray) -> list[int | None]:
 
 
 def _validate_splits(sorted_keys: pd.DataFrame, splits: SeasonSplits) -> None:
+    """Check the one property that depends on the data: history precedes each checked season.
+
+    ``train < inner_val < calibration`` and non-overlapping ``test`` blocks hold by
+    construction (consecutive slices of ascending positions; ``test_seasons`` is strictly
+    increasing), so only ``calibration < test`` is verified — it fails when ``season_id``
+    is not monotone along the ``(day, game_id)`` timeline.
+    """
     days = sorted_keys["day"]
     for window in splits.windows:
-        label = f"season {window.season_id}"
-        _assert_strictly_before(
-            days, window.train_idx, window.inner_val_idx, f"{label}: train must end before inner_val"
-        )
         _assert_strictly_before(
             days,
-            window.inner_val_idx,
             window.calibration_idx,
-            f"{label}: inner_val must end before calibration",
+            window.test_idx,
+            f"season {window.season_id}: calibration must end before test",
         )
-        _assert_strictly_before(
-            days, window.calibration_idx, window.test_idx, f"{label}: calibration must end before test"
-        )
-    _assert_no_cross_window_overlap(
-        sorted_keys["game_id"], [window.test_idx for window in splits.windows], "test"
-    )
 
 
 def _assert_strictly_before(
@@ -327,27 +275,10 @@ def _assert_strictly_before(
         )
 
 
-def _assert_no_cross_window_overlap(
-    game_ids: pd.Series,
-    blocks: Sequence[np.ndarray],
-    block_name: str,
-) -> None:
-    for i in range(len(blocks)):
-        ids_i = set(game_ids.iloc[blocks[i]].tolist())
-        for j in range(i + 1, len(blocks)):
-            overlap = ids_i.intersection(game_ids.iloc[blocks[j]].tolist())
-            if overlap:
-                raise SplitError(
-                    f"{block_name} blocks for windows {i + 1} and {j + 1} "
-                    f"overlap on {len(overlap)} game_id(s)"
-                )
-
-
 __all__ = [
     "DayRange",
     "SeasonSplits",
     "SeasonWindow",
     "SplitError",
     "build_season_splits",
-    "validate_metadata_parity",
 ]

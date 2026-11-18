@@ -27,5 +27,5 @@ CREATE TABLE players_shot_types(
 -- Обслуживает лидерборды WHERE pl.season_id = %s (table_name="players_shot_types" —
 -- см. telegram_bot/leaderboard_specs.py:23-29,53-59 и
 -- telegram_bot/stats_handlers.py:332-350):
---   telegram_bot/bot_messages.py:598-608 (player_stats_with_count)
+--   telegram_bot/leaderboard_messages.py (player_stats_with_count)
 CREATE INDEX idx_players_shot_types_season ON players_shot_types (season_id, game_type);

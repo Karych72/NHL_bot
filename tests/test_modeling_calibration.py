@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,8 +16,6 @@ from modeling.calibrate import (
     CalibrationError,
     apply_calibrator,
     fit_calibrator,
-    load_calibration_artifact,
-    save_calibration_artifact,
 )
 from modeling.metrics import brier, ece, log_loss
 
@@ -297,47 +293,6 @@ class TestErrorContract(unittest.TestCase):
     def test_min_samples_non_positive(self) -> None:
         with self.assertRaises(CalibrationError):
             fit_calibrator(self.p, self.y, method="isotonic", min_samples=0, seed=0)
-
-
-class TestArtifactRoundTrip(unittest.TestCase):
-    def test_save_load_round_trip(self) -> None:
-        p_cal, y_cal = _make_calibration_data(n=600)
-        fit = fit_calibrator(
-            p_cal, y_cal, method="isotonic", min_samples=500, seed=5
-        )
-        dummy_model = {"family": "logreg", "C": 1.0}
-        metadata = {
-            "features_hash": "abc123",
-            "seed": 5,
-            "train_days": {"min": "2020-01-01", "max": "2023-06-01"},
-            "calibration_days": {"min": "2023-06-02", "max": "2023-09-01"},
-            "n_rows_train": 10000,
-            "n_rows_calibration": 600,
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp)
-            save_calibration_artifact(
-                out, model_raw=dummy_model, calibrator_fit=fit, metadata=metadata
-            )
-            self.assertTrue((out / "model_raw.joblib").exists())
-            self.assertTrue((out / "calibrator.joblib").exists())
-            meta_text = (out / "metadata.json").read_text(encoding="utf-8")
-            json.dumps(json.loads(meta_text))
-
-            loaded_model, loaded_fit, loaded_meta = load_calibration_artifact(out)
-
-        self.assertEqual(loaded_model, dummy_model)
-        self.assertEqual(loaded_fit.to_dict(), fit.to_dict())
-        self.assertEqual(loaded_meta["features_hash"], "abc123")
-        self.assertIn("library_versions", loaded_meta)
-        self.assertIn("scikit-learn", loaded_meta["library_versions"])
-
-        probe = np.linspace(0.05, 0.95, 30)
-        np.testing.assert_allclose(
-            apply_calibrator(fit, probe),
-            apply_calibrator(loaded_fit, probe),
-        )
 
 
 class TestRawToCalibratorChain(unittest.TestCase):

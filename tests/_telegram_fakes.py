@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Type
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Tuple, Type
 
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
@@ -16,6 +16,7 @@ from aiogram.methods import (
     AnswerCallbackQuery,
     CopyMessage,
     CreateInvoiceLink,
+    DeleteMessage,
     EditMessageReplyMarkup,
     EditMessageText,
     GetMe,
@@ -55,6 +56,7 @@ class FakeSession(BaseSession):
         super().__init__()
         self.requests: List[TelegramMethod[Any]] = []
         self._errors: List[Tuple[Type[TelegramMethod[Any]], Exception]] = []
+        self.sent_rich_ids: Dict[int, int] = {}
         self._message_ids = 0
         self._uploads = 0
 
@@ -132,7 +134,9 @@ class FakeSession(BaseSession):
         if isinstance(method, SendMessage):
             return self._message(method.chat_id, text=method.text)
         if isinstance(method, SendRichMessage):
-            return self._rich_message(method.chat_id, method.rich_message)
+            result = self._rich_message(method.chat_id, method.rich_message)
+            self.sent_rich_ids[id(method)] = result.message_id
+            return result
         if isinstance(method, CreateInvoiceLink):
             return "https://t.me/$fake-invoice"
         if isinstance(method, CopyMessage):
@@ -147,6 +151,22 @@ class FakeSession(BaseSession):
                 return self._rich_message(method.chat_id, method.rich_message, method.message_id)
             return self._message(method.chat_id, method.message_id, text=method.text)
         return True
+
+    def remove_ai_progress(self, start: int, text: str, refusals: Sequence[str] = ()) -> None:
+        """Исключает один отправленный статус и его удаление из сравнений экранов."""
+        requests = self.requests[start:]
+        statuses = [r for r in requests if isinstance(r, SendRichMessage) and body(r) == rich_html(text)]
+        if (len(requests) == 1 and isinstance(requests[0], SendRichMessage)
+                and body(requests[0]) in {rich_html(t) for t in refusals}):
+            return  # Отказ по лимиту: запроса к ИИ и статуса нет.
+        assert len(statuses) == 1, "статус должен отправляться ровно один раз"
+        status = statuses[0]
+        deletions = [
+            r for r in requests if isinstance(r, DeleteMessage)
+            and r.message_id == self.sent_rich_ids[id(status)] and r.chat_id == status.chat_id
+        ]
+        assert len(deletions) == 1, "статус должен удаляться ровно один раз"
+        self.requests[start:] = [r for r in requests if r is not status and r is not deletions[0]]
 
     async def stream_content(self, *args: Any, **kwargs: Any) -> AsyncGenerator[bytes, None]:
         raise AssertionError("тест не скачивает файлы из Telegram")
@@ -164,11 +184,11 @@ def body(request: Any) -> str:
 
 
 def rich_html(text: str) -> str:
-    """HTML, в который ``bot_messages.rich_message`` превращает построчный *text* — ожидаемое
+    """HTML, в который ``rich_markup.rich_message`` превращает построчный *text* — ожидаемое
     тело экрана в тестах (блок строк — абзац, таблицы — блоками)."""
-    import bot_messages
+    import rich_markup
 
-    return bot_messages.rich_message(text).html
+    return rich_markup.rich_message(text).html
 
 
 def _message_data(

@@ -39,7 +39,7 @@ import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
-from typing import Awaitable, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, TypeVar, Union
+from typing import Awaitable, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -62,24 +62,21 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import config  # noqa: E402
-from bot_messages import (  # noqa: E402
-    MSK,
+from bot_messages import day_digest, night_goals  # noqa: E402
+from country_messages import (  # noqa: E402
     country_heading,
-    country_name,
     country_night_blocks,
     country_night_entries,
     country_profile,
-    day_digest,
-    matchup_season_preview,
-    night_goals,
-    player_labels,
     players_block,
     players_night_entries,
-    plural_word,
-    rich_footer,
-    rich_message,
-    team_table,
 )
+from ai_router import upcoming_preview_text  # noqa: E402
+from premium import is_premium  # noqa: E402
+from game_messages import matchup_season_preview  # noqa: E402
+from leaderboard_messages import team_table  # noqa: E402
+from team_messages import player_labels  # noqa: E402
+from rich_markup import country_name, MSK, plural_word, rich_footer, rich_message  # noqa: E402
 from help_text import SUBSCRIPTIONS_FOOTER  # noqa: E402
 from nhl_scoreboard import (  # noqa: E402
     fetch_score,
@@ -91,6 +88,7 @@ from stats_handlers import (  # noqa: E402
     dispatch_day_digest_messages,
     send_game_card,
 )
+from throttle import throttled  # noqa: E402
 from subscription_repo import (  # noqa: E402
     channel_posted,
     channel_weekly_posted,
@@ -158,8 +156,6 @@ _CHANNEL_WEEKLY: Dict[int, Tuple[str, Callable[[str], str]]] = {
 
 # Telegram публикует в один канал ~20 сообщений в минуту: плотная ночь идёт с паузой.
 _CHANNEL_POST_INTERVAL_SEC = 3.0
-
-_T = TypeVar("_T")
 
 # Элемент альбома, как его типизирует ``Bot.send_media_group``; в альбоме рассылки — только видео.
 _AlbumMedia = Union[InputMediaAudio, InputMediaDocument, InputMediaLivePhoto, InputMediaPhoto, InputMediaVideo]
@@ -302,28 +298,6 @@ def subscribed_games(night: date) -> _SubscribedGames:
         int(game_id): own.get(int(game_id), _GameSubscriptions([], [])) for game_id in games["game_id"]
     }
     return {owner: every_game, **result} if every_game else result
-
-
-async def throttled(call: Callable[[], Awaitable[_T]], chat_id: Union[int, str]) -> _T:
-    """Выполняет одну отправку и выдерживает паузу до следующей.
-
-    Зачем: ``TelegramRetryAfter`` означает, что отправка не доставлена, — повторяем
-    её один раз после указанной API задержки. Второй ``TelegramRetryAfter``, как и
-    любая другая ошибка Telegram, улетает вызывающему.
-
-    Аргументы: ``call`` — отправка без аргументов (её можно вызвать повторно);
-    ``chat_id`` — получатель, для лога.
-    """
-    try:
-        result = await call()
-    except TelegramRetryAfter as exc:
-        wait = float(exc.retry_after)
-        logger.warning("429 RetryAfter %ss for chat_id=%s", wait, chat_id)
-        await asyncio.sleep(wait)
-        result = await call()
-    # Telegram лимитирует бота ~30 сообщениями в секунду.
-    await asyncio.sleep(max(config.PUSH_SEND_INTERVAL_SEC, 0.02))
-    return result
 
 
 async def run_morning_digest_broadcast(
@@ -555,7 +529,8 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
     sync между ними идут с ``--no-upcoming``) каждому приходит одно превью из ``/tonight``
     (сравнение команд): ближайший по началу ещё не начавшийся матч дня, которого он не
     получал (решение человека 2026-10-25). Превью собирается раз на матч, а не на
-    подписчика. Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
+    подписчика. ИИ-текст добавляется только при действующем премиуме.
+    Отметка — по паре (подписка, матч) в ``bot_game_sent``, ставится после попытки, как у страны: сбой логируется, следующий прогон шлёт
     следующий матч. Прогон без матчей ничего не шлёт и подписчиков не читает.
 
     Аргументы: ``bot`` — бот рассылки; ``now`` — текущий момент (aware).
@@ -565,6 +540,7 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         return
     sent = sent_games([game[0] for game in games])
     previews: Dict[int, Tuple[str, str]] = {}
+    ai_texts: Dict[int, str] = {}
     for subscription_id, chat_id in list_active_upcoming_rows():
         nxt = next((g for g in games if (subscription_id, g[0]) not in sent), None)
         if nxt is None:
@@ -573,6 +549,12 @@ async def run_upcoming_broadcast(bot: Bot, now: datetime) -> None:
         if game_id not in previews:
             previews[game_id] = matchup_season_preview(game_id, away, home, collapsed=True)
         body, footer = previews[game_id]
+        if is_premium(chat_id):
+            if game_id not in ai_texts:
+                facts = html.unescape(_HTML_TAG.sub(" ", body + "\n" + footer))
+                ai_texts[game_id] = await upcoming_preview_text(game_id, facts)
+            if ai_texts[game_id]:
+                body += "\n\n" + html.escape(ai_texts[game_id])
         # Первая строка — время начала: её видно в уведомлении.
         text = (
             f"⏰ Начало в {start.astimezone(MSK):%H:%M} МСК\n{body}\n"
@@ -841,7 +823,7 @@ async def main(upcoming_only: bool, previews: bool = True) -> None:
     ``async with`` закрывает HTTP-сессию бота после рассылки. Таймаут запроса — 300 с:
     карточка с клипами голов (до 45 МБ загрузки) не уйдёт за 60 с по умолчанию.
     """
-    config.validate_env()
+    config.validate_env("ANTHROPIC_API_KEY")
     if not config.ENABLE_PUSH_DIGEST:
         logger.info("ENABLE_PUSH_DIGEST выключен — рассылка пропущена.")
         return

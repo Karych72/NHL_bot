@@ -1,18 +1,31 @@
 """Короткие тексты для /start и /help (фаза 1 UX). Построчный HTML для rich-сообщения
-(`bot_messages.rich_message`).
+(`rich_markup.rich_message`).
 
 Команды в текстах пишутся голым `/команда`, без `<code>`: Telegram делает их
 кликабельными ссылками, а `<code>` превращает в некликабельный моноширинный текст.
 Справочное (легенда, расшифровка метрик) — свёрнутым блоком, ссылки на соседние
 экраны — подвалом (`docs/telegram_bot.md` §«Стиль сообщений»).
+Здесь же справочник команд `COMMANDS` (Задача 132): из него строятся `/help`, меню Telegram,
+команды ИИ-маршрутизатора и расписаний, регистрация хендлеров в `bot.py`.
 """
 
-from bot_messages import rich_details, rich_footer, rich_list
+from typing import List, NamedTuple, Sequence
+
+from rich_markup import rich_details, rich_footer, rich_list
 
 # Последняя строка каждого сообщения рассылки (`push_digest_job.py`): способ отписаться.
 SUBSCRIPTIONS_FOOTER = "Настроить подписки: /subscriptions"
 
-_SEASON_SCOPE = (
+# Оплата премиума: `/premium`, `/paysupport` (`bot.py`) и справка ИИ (`ai_router.reference_text`).
+PREMIUM_CANCEL_HINT = (
+    "Если ещё не отменили автопродление, это можно сделать в настройках Telegram: "
+    "Настройки → Stars → Подписки. Доступ остаётся до конца оплаченного срока."
+)
+PAYSUPPORT_TEXT = "Вопросы по оплате и возвраты — напишите @karych_72."
+# Подвал карточки расписания (`bot.py`) и справка ИИ: когда готовы данные ночи.
+NIGHT_LOAD_NOTE = "Ночь догружается до 11:00 МСК: раньше экран может прийти без последних матчей."
+
+SEASON_SCOPE = (
     "Таблица, лидеры и экраны команд считают регулярный чемпионат; матчи дня, карточки "
     "матчей и ответы на вопросы включают плей-офф."
 )
@@ -50,20 +63,36 @@ def start_message_with_gift(gift: str) -> str:
     """
     return f"{_START_TITLE}{gift}\n\n{_START_BODY}"
 
-# (команда, описание) — один источник для /help и для меню команд Telegram
-# (`bot.py`, `set_my_commands`): кнопка «Меню» в клиенте показывает их с описанием.
-BOT_COMMANDS = (
-    ("today", "Матчи прошедшей ночи (по Москве)"),
-    ("tonight", "Расписание NHL на сегодня"),
-    ("standings", "Турнирная таблица"),
-    ("stats", "Лидеры игроков: полевые, вратари, расширенная"),
-    ("team_stats", "Статистика команд: голы, броски, спецбригады"),
-    ("team", "Команды: статистика по клубу"),
-    ("countries", "Статистика по странам"),
-    ("subscriptions", "Подписки: дайджест, команды, страны, игроки"),
-    ("premium", "Премиум: больше вопросов ИИ, оплата Stars"),
-    ("paysupport", "Вопросы по оплате и возвраты"),
-    ("help", "Справка"),
+class CommandSpec(NamedTuple):
+    """Команда бота в справочнике `COMMANDS`.
+
+    `name` — без `/`; `description` — строка меню Telegram и `/help`; `ai` — экран открывает
+    ИИ-маршрутизатор (`enum` инструмента `open_command`); `schedule` — экран ставится на
+    расписание (`schedule_screen`). Функция показа привязывается в `bot.py`.
+    """
+
+    name: str
+    description: str
+    ai: bool = False
+    schedule: bool = False
+
+
+# Справочник команд — один источник для /help, меню команд Telegram (`bot.py`, `set_my_commands`;
+# порядок — порядок меню), команд ИИ (`ai_router.SCREEN_COMMANDS`, `SCHEDULE_COMMANDS`) и
+# регистрации хендлеров (`bot.COMMAND_HANDLERS`). Меню подписок и справка — не отчёты, на
+# расписание не ставятся; /premium ИИ открывает (Задача 114), /paysupport — нет.
+COMMANDS = (
+    CommandSpec("today", "Матчи прошедшей ночи (по Москве)", ai=True, schedule=True),
+    CommandSpec("tonight", "Расписание NHL на сегодня", ai=True, schedule=True),
+    CommandSpec("standings", "Турнирная таблица", ai=True, schedule=True),
+    CommandSpec("stats", "Лидеры игроков: полевые, вратари, расширенная", ai=True, schedule=True),
+    CommandSpec("team_stats", "Статистика команд: голы, броски, спецбригады", ai=True, schedule=True),
+    CommandSpec("team", "Команды: статистика по клубу", ai=True, schedule=True),
+    CommandSpec("countries", "Статистика по странам", ai=True, schedule=True),
+    CommandSpec("subscriptions", "Подписки: дайджест, команды, страны, игроки", ai=True),
+    CommandSpec("premium", "Премиум: больше вопросов ИИ, оплата Stars", ai=True),
+    CommandSpec("paysupport", "Вопросы по оплате и возвраты"),
+    CommandSpec("help", "Справка", ai=True),
 )
 
 # Уточнения к строкам /help — в меню команд Telegram не помещаются.
@@ -79,12 +108,17 @@ _COMMAND_DETAILS = {
     "команда вида /RUS — лучшие игроки страны, /RUS_FULL — все",
 }
 
-_COMMAND_ITEMS = [
-    f"/{cmd} — {desc}" + (f" ({_COMMAND_DETAILS[cmd]})" if cmd in _COMMAND_DETAILS else "")
-    for cmd, desc in BOT_COMMANDS
-]
 
-_LEGEND_NOTE = (
+def command_items(commands: Sequence[CommandSpec]) -> List[str]:
+    """Строки `/команда — описание (уточнение)` списка команд в `/help` и справке ИИ."""
+    return [
+        f"/{c.name} — {c.description}"
+        + (f" ({_COMMAND_DETAILS[c.name]})" if c.name in _COMMAND_DETAILS else "")
+        for c in commands
+    ]
+
+
+LEGEND_NOTE = (
     "Голы в карточке матча: ББ — в большинстве, МБ — в меньшинстве, ПВ — в пустые ворота, "
     "ПШ — победная шайба. Фамилии игроков из России и Беларуси — жирным капсом.\n"
     "Форма до матча — последние 5 игр команды в сезоне: W–L–OTL (победы, поражения, "
@@ -132,10 +166,10 @@ TEAM_STATS_COMMAND_INTRO = (
 
 HELP_MESSAGE = (
     "<b>Справка</b>\n"
-    f"{_SEASON_SCOPE}\n"
+    f"{SEASON_SCOPE}\n"
     f"{_FREE_TEXT_HINT}\n\n"
     "<b>Команды</b>\n"
-    + rich_list(_COMMAND_ITEMS)
+    + rich_list(command_items(COMMANDS))
     + "\n"
-    + rich_details("Обозначения", _LEGEND_NOTE)
+    + rich_details("Обозначения", LEGEND_NOTE)
 )

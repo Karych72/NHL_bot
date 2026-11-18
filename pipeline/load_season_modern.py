@@ -1,3 +1,11 @@
+"""ETL-загрузчик NHL API -> PostgreSQL: класс ``ModernNhlLoader`` и CLI.
+
+Один прогон ``run()`` пишет сезонные таблицы (UPSERT) и игры окна (DELETE по ``game_id``
++ INSERT) одной транзакцией. Командные счётчики игры считаются из play-by-play (блок-шоты
+инвертируются: автор блока — защищающаяся команда), броски в створ — из boxscore.
+Порядок шагов, API и CLI — ``docs/data_loading.md``.
+"""
+
 import argparse
 import gzip
 import json

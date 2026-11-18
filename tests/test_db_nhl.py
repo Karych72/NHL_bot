@@ -110,6 +110,16 @@ def _unique_partial_index_predicate_row(cur, table: str, index_name: str):
     return cur.fetchone()
 
 
+class TestMigrationFiles(unittest.TestCase):
+    """Проверки файлов миграций без подключения к PostgreSQL."""
+
+    def test_versions_are_unique(self):
+        migrations = Path(REPO_ROOT, "data_tables/migrations")
+        versions = [f.name.split("_", 1)[0] for f in migrations.glob("*.up.sql")]
+        self.assertEqual(len(versions), len(set(versions)),
+                         "db-migrate skips duplicate migration versions")
+
+
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
@@ -126,6 +136,44 @@ class TestNhlSchema(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls, "conn") and cls.conn:
             cls.conn.close()
+
+    def test_upcoming_ai_cache_claim_and_reuse(self):
+        """Прогоняет рабочую функцию кэша на БД в откатываемой схеме без вызова API."""
+        import asyncio
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import ai_router
+
+        @contextmanager
+        def connection():
+            # Код продукта коммитит резервацию; здесь всё остаётся в тестовой транзакции.
+            yield SimpleNamespace(cursor=self.conn.cursor, commit=lambda: None)
+
+        response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Текст превью.")], stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10,
+                                  cache_read_input_tokens=0, cache_creation_input_tokens=0),
+            _request_id="test",
+        )
+        create = AsyncMock(return_value=response)
+        migration = Path(REPO_ROOT, "data_tables/migrations/0029_upcoming_ai.up.sql")
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("CREATE SCHEMA task95_cache_test")
+                cur.execute("SET LOCAL search_path TO task95_cache_test, public")
+                cur.execute(migration.read_text())
+            with patch.object(ai_router, "get_connection", connection), patch.object(
+                ai_router, "client", return_value=SimpleNamespace(messages=SimpleNamespace(create=create))
+            ), patch.object(ai_router, "_log_question"):
+                self.assertEqual(asyncio.run(ai_router.upcoming_preview_text(95, "facts")), "Текст превью.")
+                self.assertEqual(asyncio.run(ai_router.upcoming_preview_text(95, "changed")), "Текст превью.")
+                create.assert_awaited_once()
+            with self.conn.cursor() as cur:
+                cur.execute(Path(str(migration).replace('.up.sql', '.down.sql')).read_text())
+        finally:
+            self.conn.rollback()
 
     def test_primary_keys(self):
         with self.conn.cursor() as cur:
@@ -690,7 +738,7 @@ class TestSubscriptionsMenu(unittest.IsolatedAsyncioTestCase):
             },
             context={"bot": fake_bot},
         )
-        await self.bot.cmd_subscriptions(message, fake_bot)
+        await self.bot.COMMAND_HANDLERS["subscriptions"](message, fake_bot)
         self.assertEqual(fake_bot.session.sent_messages, [], "меню — rich-сообщение (Задача 91)")
         [reply] = fake_bot.session.sent_rich
         text, markup = body(reply), reply.reply_markup
@@ -929,8 +977,12 @@ class TestCountryNightSql(unittest.TestCase):
 
     def setUp(self):
         import bot_messages
+        import country_messages
+        import game_messages
 
-        self.messages = bot_messages
+        self.bot_messages = bot_messages
+        self.country_messages = country_messages
+        self.game_messages = game_messages
         # Шаблон карточки (`messages/game_message.txt`) читается от каталога бота.
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(TELEGRAM_BOT)
@@ -1037,12 +1089,12 @@ class TestCountryNightSql(unittest.TestCase):
         ])
         block_game2 = "<b>ZZZ</b>\n\nГость (Away Club)\n0+0 · +0 · 1 бр. · 2 хита · 12:00"
         self.assertEqual(
-            self.messages.country_night_blocks("ZZZ", self.NIGHT),
+            self.country_messages.country_night_blocks("ZZZ", self.NIGHT),
             [(self.GAME, block_game), (self.GAME2, block_game2)],
         )
-        self.assertEqual(self.messages.country_game_block("ZZZ", self.GAME2), block_game2)
-        self.assertEqual(self.messages.country_night_blocks("XXX", self.NIGHT), [])
-        self.assertIsNone(self.messages.country_game_block("XXX", self.GAME))
+        self.assertEqual(self.country_messages.country_game_block("ZZZ", self.GAME2), block_game2)
+        self.assertEqual(self.country_messages.country_night_blocks("XXX", self.NIGHT), [])
+        self.assertIsNone(self.country_messages.country_game_block("XXX", self.GAME))
 
     def test_namesakes_of_the_season_get_first_name_initial(self):
         """Однофамильцы сезона различаются инициалом на всех экранах матча: авторы и
@@ -1089,7 +1141,7 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertIn("G. Стенка", goalies)
         self.assertEqual(star, "S. Скорер<")
         self.assertEqual(alone, "Тень")
-        block = self.messages.country_game_block("ZZZ", self.GAME)
+        block = self.country_messages.country_game_block("ZZZ", self.GAME)
         self.assertIn("S. Скорер&lt; (Home Club, ц)", block)
         self.assertIn("G. Стенка (Home Club)", block)
 
@@ -1124,16 +1176,16 @@ class TestCountryNightSql(unittest.TestCase):
         """Первая строка карточки — шапка (Задача 119): гости слева, `get_game_stats` отдаёт
         аббревиатуру команды; команды без маскота — шайба."""
         self.assertEqual(
-            self.messages.game_message(self.GAME).split("\n")[0],
+            self.game_messages.game_message(self.GAME).split("\n")[0],
             "<b><i>🏒 AWAY CLUB 🏒 2 : 3 🏒 HOME CLUB 🏒</i></b>",
         )
 
     def test_game_goal_events_in_game_order(self):
-        self.assertEqual(self.messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
+        self.assertEqual(self.game_messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
         self.assertEqual(
-            self.messages.night_goals(self.NIGHT),
+            self.bot_messages.night_goals(self.NIGHT),
             [(self.GAME, 5, "ZZZ", -1), (self.GAME, 10, "ZZZ", -1), (self.GAME, 20, "YYY", -3),
              (self.GAME, 30, "ZZZ", -6)],
         )
@@ -1161,7 +1213,7 @@ class TestCountryNightSql(unittest.TestCase):
                 if chat in chats
             }
 
-        blocks = dict(self.messages.country_night_blocks("ZZZ", self.NIGHT))
+        blocks = dict(self.country_messages.country_night_blocks("ZZZ", self.NIGHT))
         self.assertEqual(subscribed[both], {
             self.GAME: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME])]),
             self.GAME2: push_digest_job._GameSubscriptions(["Home Club"], [("ZZZ", blocks[self.GAME2])]),
@@ -1363,9 +1415,13 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
 
     def setUp(self):
         import ai_stats
-        import bot_messages
+        import game_messages
+        import leaderboard_messages
+        import team_messages
 
-        self.messages = bot_messages
+        self.game_messages = game_messages
+        self.leaderboard_messages = leaderboard_messages
+        self.team_messages = team_messages
         self.ai_stats = ai_stats
         self._cleanup()
         self.addCleanup(self._cleanup)
@@ -1426,13 +1482,13 @@ class TestRegularSeasonOnlySql(unittest.TestCase):
 
     def test_form_streak_h2h_and_standings_day_skip_playoff(self):
         # С плей-офф было бы 2-1-0, «L1», (2, 1) и 2099-04-20.
-        self.assertEqual(self.messages._last_n_form_record(self.HOME), "2-0-0")
-        self.assertEqual(self.messages._current_streak(self.HOME), "W2")
-        self.assertEqual(self.messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
-        self.assertEqual(self.messages._standings_as_of_day(), "2099-01-03")
+        self.assertEqual(self.team_messages._last_n_form_record(self.HOME), "2-0-0")
+        self.assertEqual(self.team_messages._current_streak(self.HOME), "W2")
+        self.assertEqual(self.game_messages._h2h_season_wins(self.HOME, self.AWAY), (2, 0))
+        self.assertEqual(self.leaderboard_messages._standings_as_of_day(), "2099-01-03")
 
     def test_team_full_games_skip_playoff(self):
-        context = self.messages._team_games_context(self.HOME)
+        context = self.team_messages._team_games_context(self.HOME)
         self.assertIn("Дома: 1-0-0 · в гостях: 1-0-0", context["season_extra"])
         self.assertEqual(
             context["recent_games"].splitlines(),
@@ -1549,9 +1605,15 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
 
     def setUp(self):
         import ai_stats
-        import bot_messages
+        import country_messages
+        import game_messages
+        import leaderboard_messages
+        import team_messages
 
-        self.messages = bot_messages
+        self.country_messages = country_messages
+        self.game_messages = game_messages
+        self.leaderboard_messages = leaderboard_messages
+        self.team_messages = team_messages
         self.ai_stats = ai_stats
         # Шаблоны экранов (`messages/*.txt`) читаются относительно telegram_bot/.
         self.addCleanup(os.chdir, os.getcwd())
@@ -1635,17 +1697,17 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
                               ("players_advanced_stats", "sat_pct"),
                               ("players_shot_types", "goals_wrist")):
             with self.subTest(table=table):
-                text, _n, total = self.messages.player_stats_with_count("Лидеры", table, column)
+                text, _n, total = self.leaderboard_messages.player_stats_with_count(table, column)
                 self.assertEqual(total, 1)
                 self.assertNoPlayoff(text)
 
     def test_team_screens_read_regular_totals(self):
-        text, _n, total = self.messages.team_stats_with_count(["points"])
+        text, _n, total = self.leaderboard_messages.team_stats_with_count(["points"])
         self.assertEqual(total, 2)
         self.assertNoPlayoff(text)
-        self.assertNoPlayoff(self.messages.team_table())
-        self.assertNoPlayoff("\n".join(self.messages.matchup_season_preview(2099020001, "AWY", "HOM")))
-        for screen in (self.messages.team_profile, self.messages.team_full_stats):
+        self.assertNoPlayoff(self.leaderboard_messages.team_table())
+        self.assertNoPlayoff("\n".join(self.game_messages.matchup_season_preview(2099020001, "AWY", "HOM")))
+        for screen in (self.team_messages.team_profile, self.team_messages.team_full_stats):
             with self.subTest(screen=screen.__name__):
                 text = screen("HOM")
                 self.assertIn("Skater", text)
@@ -1653,12 +1715,12 @@ class TestRegularSeasonAggregatesSql(unittest.TestCase):
                 self.assertNoPlayoff(text)
 
     def test_country_screens_read_regular_totals(self):
-        with patch.object(self.messages, "COUNTRY_MIN_PLAYERS", 1):
-            self.assertEqual(self.messages._country_ranking(), [("ZZZ", 1, 17, 11)])
+        with patch.object(self.country_messages, "COUNTRY_MIN_PLAYERS", 1):
+            self.assertEqual(self.country_messages._country_ranking(), [("ZZZ", 1, 17, 11)])
         for group in ("F", "G"):
             with self.subTest(group=group):
-                table, _n, total, _first = self.messages._player_group_table(
-                    self.messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
+                table, _n, total, _first = self.leaderboard_messages._player_group_table(
+                    self.leaderboard_messages._BY_COUNTRY, "ZZZ", group, 10, 0, ranked=True
                 )
                 self.assertEqual(total, 1)
                 self.assertNoPlayoff(table)
@@ -1730,7 +1792,9 @@ class TestAiLimitSql(unittest.TestCase):
     FREE_CHAT = -999000081
     PREMIUM_CHAT = -999000082
     EXPIRED_CHAT = -999000083
-    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT]
+    TRIAL_CHAT = -999000084
+    PAID_CHAT = -999000085
+    CHATS = [FREE_CHAT, PREMIUM_CHAT, EXPIRED_CHAT, TRIAL_CHAT, PAID_CHAT]
     # Минута до начала текущих суток / недели по МСК — уже не в счёт.
     BEFORE_DAY = ("(date_trunc('day', now() AT TIME ZONE 'Europe/Moscow') - interval '1 minute') "
                   "AT TIME ZONE 'Europe/Moscow'")
@@ -1749,10 +1813,20 @@ class TestAiLimitSql(unittest.TestCase):
                 "(%s, now() + interval '1 day'), (%s, now() - interval '1 second')",
                 (self.PREMIUM_CHAT, self.EXPIRED_CHAT),
             )
+            cur.execute(
+                "INSERT INTO premium_access (chat_id, expires_at, is_trial) VALUES "
+                "(%s, now() + interval '1 day', true), (%s, now() + interval '1 day', false)",
+                (self.TRIAL_CHAT, self.PAID_CHAT),
+            )
+            cur.execute(
+                "INSERT INTO premium_payments (chat_id, telegram_payment_charge_id, amount_stars, "
+                "is_recurring, paid_until) VALUES (%s, 'charge-141', 100, false, now() + interval '1 day')",
+                (self.PAID_CHAT,),
+            )
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            for table in ("ai_questions", "ai_stats_log", "premium_access"):
+            for table in ("ai_questions", "ai_stats_log", "premium_access", "premium_payments"):
                 cur.execute(f"DELETE FROM {table} WHERE chat_id = ANY(%s)", (self.CHATS,))
 
     def _asked(self, chat_id, n, at="now()", table="ai_questions", outcome="text"):
@@ -1765,6 +1839,38 @@ class TestAiLimitSql(unittest.TestCase):
                     f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, {at})",
                     (chat_id, outcome),
                 )
+
+    def _spent(self, chat_id, usd, at="now()", table="ai_questions"):
+        """Строка журнала ``table`` с расходом ``usd`` $ моментом ``at`` (SQL-выражение)."""
+        extra = "continuation, " if table == "ai_stats_log" else ""
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {table} (chat_id, question, {extra}outcome, latency_ms, cost_usd, asked_at) "
+                f"VALUES (%s, 'вопрос', {'true, ' if extra else ''}%s, 1, %s, {at})",
+                (chat_id, "answer" if extra else "text", usd),
+            )
+
+    def test_budget_refuses_unpaid_chats_when_day_spend_reaches_limit(self):
+        """Задача 141: сумма обоих журналов за сутки МСК; бесплатный и пробный чаты получают
+        BUDGET_TEXT до проверки своих лимитов, платящий — нет."""
+        ai = self.ai
+        # Добор от уже накопленного за сегодня: локальная БД может хранить чужой расход.
+        half = (ai.DAILY_BUDGET_USD - ai._spent_today()) / 2
+        self._spent(self.PREMIUM_CHAT, half - 0.01)
+        self._spent(self.PREMIUM_CHAT, half, table="ai_stats_log")
+        for chat in (self.FREE_CHAT, self.TRIAL_CHAT):
+            self.assertIsNone(ai.limit_refusal(chat), "расход ниже бюджета")
+        self._spent(self.PREMIUM_CHAT, 0.01)
+        for chat in (self.FREE_CHAT, self.TRIAL_CHAT, self.EXPIRED_CHAT):
+            self.assertEqual(ai.limit_refusal(chat), ai.BUDGET_TEXT)
+        self.assertIsNone(ai.limit_refusal(self.PAID_CHAT), "платящий чат бюджет не проверяет")
+
+    def test_budget_ignores_previous_day_and_null_cost(self):
+        ai = self.ai
+        self._spent(self.PREMIUM_CHAT, ai.DAILY_BUDGET_USD * 2, at=self.BEFORE_DAY)
+        self._spent(self.PREMIUM_CHAT, ai.DAILY_BUDGET_USD * 2, at=self.BEFORE_DAY, table="ai_stats_log")
+        self._asked(self.PREMIUM_CHAT, 1)  # cost_usd IS NULL
+        self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
 
     def test_is_premium_only_until_expiry(self):
         self.assertTrue(self.premium.is_premium(self.PREMIUM_CHAT))
@@ -1796,18 +1902,62 @@ class TestAiLimitSql(unittest.TestCase):
         self._asked(self.FREE_CHAT, 4, at="now() - interval '30 days'")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT))
 
+    def test_clarification_context_is_the_latest_fresh_text_answer(self):
+        """Задача 114: контекст уточнения — последний вызов чата, если он текстовый и моложе окна."""
+        ai = self.ai
+        self.assertIsNone(ai._clarified(self.FREE_CHAT))
+        ai._log_question(self.FREE_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        self.assertEqual(ai._clarified(self.FREE_CHAT),
+                         {"question": "как отключить?", "answer": "Что отключить?", "tool": None})
+        ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
+                         tool_input={"category": "goals"})
+        self.assertIsNone(ai._clarified(self.FREE_CHAT), "после экрана уточнения нет")
+        ai._log_question(self.PREMIUM_CHAT, "как отключить?", "text", 900, answer="Что отключить?")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute("UPDATE ai_questions SET asked_at = now() - make_interval(mins => %s) "
+                        "WHERE chat_id = %s", (ai.CLARIFY_WINDOW_MINUTES + 1, self.PREMIUM_CHAT))
+        self.assertIsNone(ai._clarified(self.PREMIUM_CHAT), "вне окна")
+
+    def test_free_answers_over_the_daily_cap_count(self):
+        """Задача 114: первые FREE_DAILY_CALLS ответов о боте за сутки МСК вне счёта, следующие —
+        обычные вопросы; вчерашние бесплатные потолок не занимают."""
+        ai = self.ai
+        for _ in range(3):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        with closing(_connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE ai_questions SET asked_at = {self.BEFORE_DAY} WHERE chat_id = %s",
+                        (self.PREMIUM_CHAT,))
+        for _ in range(ai.FREE_DAILY_CALLS + 2):
+            ai._log_question(self.PREMIUM_CHAT, "цена", "text", 900, tool="bot_answer",
+                             tool_input={}, answer="100 ⭐")
+        asked = ai._asked(self.PREMIUM_CHAT)
+        self.assertEqual((asked["day"], asked["free_day"]), (2, ai.FREE_DAILY_CALLS))
+        self.assertFalse(ai.free_calls_left(self.PREMIUM_CHAT))
+
     def test_each_question_counts_once_and_failures_do_not(self):
         """Вопрос — строка ``ai_questions`` (журнал маршрутизатора: экран, расход) или
         ``ai_stats_log`` (в том числе продолжение диалога 83); выбор ``stats_question``
-        маршрутизатором и сбои (``error``) в счёт не идут."""
+        маршрутизатором, ответы о самом боте (Задача 114) и сбои (``error``) в счёт не идут."""
         ai = self.ai
         ai._log_question(self.FREE_CHAT, "лидеры", "screen", 900, tool="leaders",
                          tool_input={"category": "goals"}, cost_usd=0.004)
         ai._log_question(self.FREE_CHAT, "погода", "error", 30000, error="APITimeoutError")
         ai._log_question(self.FREE_CHAT, "голы", "screen", 900, tool="stats_question", tool_input={})
+        # Ответы о самом боте и вызовы сверх лимита (Задача 114) лимит не списывают.
+        ai._log_question(self.FREE_CHAT, "цена", "text", 900, tool="bot_answer", tool_input={},
+                         answer="100 ⭐")
+        ai._log_question(self.FREE_CHAT, "остаток", "screen", 900, tool="my_status", tool_input={})
+        ai._log_question(self.FREE_CHAT, "хочу премиум", "screen", 900, tool="open_command",
+                         tool_input={"command": "premium"})
+        ai._log_question(self.FREE_CHAT, "таблица", "limited", 900, tool="open_command",
+                         tool_input={"command": "standings"})
+        ai._log_question(self.FREE_CHAT, "а в прошлом?", "limited", 900, tool="stats_question",
+                         tool_input={})
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="error")
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="answer")
         self.assertIsNone(ai.limit_refusal(self.FREE_CHAT), "в счёте два вопроса из трёх")
+        self.assertEqual(ai._asked(self.FREE_CHAT)["free_day"], 5)
         self._asked(self.FREE_CHAT, 1, table="ai_stats_log", outcome="clarify")
         self.assertEqual(ai.limit_refusal(self.FREE_CHAT), ai.WEEK_LIMIT_TEXT)
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
@@ -2348,6 +2498,22 @@ class TestBotSchedulesSql(unittest.IsolatedAsyncioTestCase):
             cur.execute((migrations / "0021_schedule_created.up.sql").read_text())
             cur.execute(insert, (self.CHAT,))
             conn.rollback()
+
+
+@unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
+@unittest.skipUnless(
+    os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
+    "schema checks off (enable: make test-db, or export RUN_DB_SCHEMA_TESTS=1)",
+)
+class TestBotPoolTimeout(unittest.TestCase):
+    """Пул бота (Задача 128): соединение из него несёт серверный `statement_timeout`."""
+
+    def test_pooled_connection_has_statement_timeout(self):
+        import database
+
+        with database.get_connection() as conn, conn.cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            self.assertEqual(cur.fetchone()[0], "5s")
 
 
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")

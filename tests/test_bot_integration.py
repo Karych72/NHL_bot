@@ -1,7 +1,7 @@
 """Сквозные сценарии «запрос → ответ» для основных веток бота (Задача 7).
 
 Остальные tests/test_bot_*.py рвут стек посередине: тесты хендлеров подменяют
-функции ``bot_messages``, тесты сообщений — ``fetch_all``. Здесь подменяется
+функции экранных модулей, тесты сообщений — ``fetch_all``. Здесь подменяется
 только граница БД (фикстура ``fake_db_router``: соединение psycopg2 и TTL-обёртка
 над ним) и граница Telegram (``fake_bot`` на ``FakeSession``, который записывает
 запросы Bot API), а всё между хендлером и этими границами работает по-настоящему:
@@ -93,7 +93,7 @@ async def test_standings_command_renders_divisions_with_ranked_rows_sorted_by_po
     fake_db_router(_TABLE_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     assert api.sent_messages == [], "таблица уходит rich-сообщением, не parse_mode=HTML"
     (reply,) = api.sent_rich
@@ -154,7 +154,7 @@ async def _press_stat(bot_module, make_callback, fake_bot, data):
 
 async def _open_points(bot_module, make_message, make_callback, fake_bot, api):
     """/stats и первая кнопка меню — «Очки»."""
-    await bot_module("bot").cmd_stats(make_message("/stats"), fake_bot)
+    await bot_module("bot").COMMAND_HANDLERS["stats"](make_message("/stats"), fake_bot)
     points_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
     assert points_button.text == "Очки"
     await _press_stat(bot_module, make_callback, fake_bot, points_button.callback_data)
@@ -453,7 +453,7 @@ async def test_today_summarises_both_matches_with_numbered_team_buttons(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: _TODAY)
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     (summary,) = api.sent_rich
     assert api.sent_messages == [], "подсказка — подвал сводки, не отдельное сообщение"
@@ -487,7 +487,7 @@ async def test_digest_expand_button_opens_the_full_card_of_that_match(
     fake_db_router(_DIGEST_ROUTES)
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: _TODAY)
 
-    await bot.cmd_today(make_message("/today"), fake_bot)
+    await bot.COMMAND_HANDLERS["today"](make_message("/today"), fake_bot)
     second_match = _flat_buttons(api.sent_rich[0].reply_markup)[1]
     match = re.match(stats_handlers.DIGEST_EXPAND_CALLBACK_PATTERN, second_match.callback_data)
     assert match
@@ -545,7 +545,7 @@ async def test_standings_command_on_empty_season_reports_season_not_started(
     fake_db_router(_EMPTY_SEASON_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert "Сезон ещё не начался" in body(reply)
@@ -574,7 +574,7 @@ async def test_today_on_empty_season_reports_no_finished_matches(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-02")
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     # Пустая ночь — пометка и откат на последний игровой день в базе; в пустом
     # сезоне нет и его.
@@ -611,7 +611,7 @@ async def _press(stats_handlers, make_callback, fake_bot, data: str) -> None:
 
 async def _open_first_advanced_metric(bot, stats_handlers, make_message, make_callback, fake_bot, api):
     """`/stats` → «Расширенная статистика» → первая кнопка подменю (SAT %)."""
-    await bot.cmd_stats(make_message("/stats"), fake_bot)
+    await bot.COMMAND_HANDLERS["stats"](make_message("/stats"), fake_bot)
     advanced = _flat_buttons(api.sent_rich[0].reply_markup)[-1]
     assert advanced.callback_data == "sa:menu"
     await _press(stats_handlers, make_callback, fake_bot, advanced.callback_data)
@@ -662,7 +662,7 @@ async def test_standings_command_on_partial_season_shows_only_teams_with_games(
     fake_db_router(_PARTIAL_TABLE_ROUTES)
     message = make_message("/standings")
 
-    await bot.cmd_standings(message, fake_bot)
+    await bot.COMMAND_HANDLERS["standings"](message, fake_bot)
 
     (reply,) = api.sent_rich
     text = body(reply)
@@ -710,7 +710,7 @@ async def test_stats_points_on_partial_season_shows_short_page_without_next_butt
 
 
 # Ранняя сборная (games < 20) отфильтровывается INNER JOIN players_season_stats
-# в самом запросе (bot_messages._pss_join_sql) — на 1–3 играх сезона выборка
+# в самом запросе (leaderboard_messages._pss_join_sql) — на 1–3 играх сезона выборка
 # players_advanced_stats пуста для *всех* игроков, не только по недостатку строк.
 _PARTIAL_ADVANCED_ROUTES = [("players_advanced_stats", [])]
 
@@ -773,7 +773,7 @@ async def test_today_on_partial_season_renders_the_single_game_card(
     monkeypatch.setattr(bot, "last_night_day", lambda nights_back=0: "2026-10-03")
     message = make_message("/today")
 
-    await bot.cmd_today(message, fake_bot)
+    await bot.COMMAND_HANDLERS["today"](message, fake_bot)
 
     (sent,) = api.sent_rich
     assert api.sent_messages == []
@@ -800,7 +800,7 @@ async def test_team_stats_goals_button_ranks_teams_by_goal_difference_per_game(
 ):
     cursor = fake_db_router([("COUNT(*) OVER () AS total", _leaderboard_page_route(_TEAM_GOALS))])
 
-    await bot_module("bot").cmd_team_stats(make_message("/team_stats"), fake_bot)
+    await bot_module("bot").COMMAND_HANDLERS["team_stats"](make_message("/team_stats"), fake_bot)
     goals_button = _flat_buttons(api.sent_rich[0].reply_markup)[0]
     assert goals_button.text == "Голы"
     await _press_stat(bot_module, make_callback, fake_bot, goals_button.callback_data)
@@ -954,7 +954,7 @@ async def test_team_command_lists_teams_by_division_as_clickable_commands(
     )])
     message = make_message("/team")
 
-    await bot.cmd_team(message, fake_bot)
+    await bot.COMMAND_HANDLERS["team"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert rich_html("<b>Atlantic</b>\n/BOS — Boston Bruins") in body(reply)
@@ -1084,8 +1084,9 @@ async def test_team_full_command_skips_games_and_schedule_when_there_are_none(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("plus_minus, display", [(12, "+12"), (-8, "−8"), (0, "0"), (None, "—")])
 async def test_team_full_command_lists_every_skater_and_goalie(
-    bot_module, fake_db_router, make_message, api
+    bot_module, fake_db_router, make_message, api, plus_minus, display
 ):
     """`/WSH_FULL` из конца профиля: тот же regex-хендлер; нападающие,
     защитники и вратари отдельными таблицами с колонками экрана страны, полный
@@ -1094,12 +1095,12 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     bot = bot_module("bot")
     cursor = fake_db_router([
         *_FULL_TEAM_ROUTES,
-        # lastname, team, goals, points, games, toi, hits, shots, blocked, total
+        # lastname, team, goals, points, games, toi, hits, shots, blocked, plus_minus, total
         ("r.position IN ('C', 'L', 'R')", [
-            ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 2),
-            ("Backstrom", "WSH", 10, 30, 17, "17:40", 8, 40, 9, 2),
+            ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, plus_minus, 2),
+            ("Backstrom", "WSH", 10, 30, 17, "17:40", 8, 40, 9, 0, 2),
         ]),
-        ("r.position = 'D'", [("Carlson", "WSH", 5, 25, 16, "24:31", 20, 50, 33, 1)]),
+        ("r.position = 'D'", [("Carlson", "WSH", 5, 25, 16, "24:31", 20, 50, 33, -4, 1)]),
         # lastname, team, wins, save_pct, gaa, games, shutouts, total
         ("FROM goalies_season_stats g", [("Samsonov", "WSH", 9, 91.5, 2.6, 15, 1, 1)]),
     ])
@@ -1116,17 +1117,17 @@ async def test_team_full_command_lists_every_skater_and_goalie(
         "<p><b>Нападающие</b></p>"
         '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
-        '<th align="right">Хит</th><th align="right">Бр</th></tr>'
-        + _tr("lrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120")
-        + _tr("lrrrrrr", "Backstrom", "10", "30", "17", "17:40", "8", "40")
+        '<th align="right">Хит</th><th align="right">Бр</th><th align="right">+/−</th></tr>'
+        + _tr("lrrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120", display)
+        + _tr("lrrrrrrr", "Backstrom", "10", "30", "17", "17:40", "8", "40", "0")
         + "</table>"
     ) in text
     assert (
         "<p><b>Защитники</b></p>"
         '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
-        '<th align="right">Хит</th><th align="right">Бл</th></tr>'
-        + _tr("lrrrrrr", "Carlson", "5", "25", "16", "24:31", "20", "33")
+        '<th align="right">Хит</th><th align="right">Бл</th><th align="right">+/−</th></tr>'
+        + _tr("lrrrrrrr", "Carlson", "5", "25", "16", "24:31", "20", "33", "−4")
         + "</table>"
     ) in text
     assert (
@@ -1141,9 +1142,11 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     legend = text.split("<details><summary>Обозначения</summary>", 1)[1].split("</details>", 1)[0]
     assert legend.startswith("<p>Нападающие: Г — голы, О — очки")
     assert "<br>Защитники: " in legend and "<br>Вратари: В — победы" in legend
+    assert legend.count("+/− — плюс/минус") == 2
     assert text.endswith(" · профиль клуба: /WSH · все команды: /team</footer>")
     group_queries = [q for q in cursor.executed if "r.current_team_id = %s" in q[0]]
     assert len(group_queries) == 3
+    assert all("p.plus_minus" in sql for sql, _ in group_queries if "players_season_stats" in sql)
     # Игроки клуба — по team_id параметром, полный список — без LIMIT.
     assert all(params[1:3] == (5, None) for _sql, params in group_queries)
     goalie_sql = next(q for q, _ in group_queries if "goalies_season_stats" in q)
@@ -1159,7 +1162,7 @@ async def test_team_full_command_skips_empty_groups(
     bot = bot_module("bot")
     fake_db_router([
         *_FULL_TEAM_ROUTES,
-        ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 1)]),
+        ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 12, 1)]),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),
     ])
@@ -1222,7 +1225,7 @@ async def test_countries_command_lists_countries_with_buttons(
     fake_db_router(_COUNTRY_ROUTES)
     message = make_message("/countries")
 
-    await bot.cmd_countries(message, fake_bot)
+    await bot.COMMAND_HANDLERS["countries"](message, fake_bot)
 
     (reply,) = api.sent_rich
     text = body(reply)
@@ -1246,7 +1249,7 @@ async def test_countries_command_reports_empty_season_without_buttons(
     fake_db_router([("HAVING COUNT", [])])
     message = make_message("/countries")
 
-    await bot.cmd_countries(message, fake_bot)
+    await bot.COMMAND_HANDLERS["countries"](message, fake_bot)
 
     (reply,) = api.sent_rich
     assert "В базе нет данных по странам для этого сезона." in body(reply)

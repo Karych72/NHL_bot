@@ -5,9 +5,9 @@ Handlers get real aiogram objects (conftest: ``make_callback``/``make_message``
 bound to ``fake_bot``) and the arguments aiogram's
 dependency injection would pass — the regex ``match`` of the registration filter
 included; what they ask Telegram to do is read back from the recording session
-(``api``). Where a handler calls into bot_messages for DB-backed rendering, that
+(``api``). Where a handler calls into a screen module for DB-backed rendering, that
 collaborator function is patched on stats_handlers' own namespace (the same
-boundary style already used for bot_messages.fetch_all elsewhere in this
+boundary style already used for the screen modules' fetch_all elsewhere in this
 suite) so what's actually under test — callback_data parsing, offset arithmetic,
 TelegramBadRequest handling — is isolated from database access.
 """
@@ -1036,7 +1036,7 @@ async def test_dispatch_day_digest_long_summary_marks_shown_of_total_matches(
     sent_text = body(api.sent_rich[0])
     # Лимит rich-сообщения — на текст, а не на разметку: теги не считаются, сущность — один символ.
     plain = html.unescape(re.sub(r"<[^>]+>", "", sent_text))
-    assert len(plain) <= bot_module("bot_messages").RICH_MESSAGE_MAX_LENGTH
+    assert len(plain) <= bot_module("rich_markup").RICH_MESSAGE_MAX_LENGTH
     assert sent_text.count("<p>") <= 500, "лимит Telegram — 500 блоков"
     match = re.search(r"Показаны (\d+) из (\d+) матчей", sent_text)
     assert match is not None

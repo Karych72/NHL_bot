@@ -8,8 +8,8 @@ connection behind ``database.py``, and the HTTP session behind aiogram's ``Bot``
 would). Handlers receive real aiogram ``Message``/``CallbackQuery`` objects bound
 to that bot. The DB boundary comes in two flavours: ``fake_db_connection`` answers
 every query with one fixed row set, while ``fake_db_router`` routes per query for
-whole-scenario runs and additionally swaps ``bot_messages.cached_fetch_all`` for a
-fresh, cache-empty wrapper.
+whole-scenario runs and additionally swaps ``cached_fetch_all`` of every screen
+module (``SCREEN_MODULES``) for a fresh, cache-empty wrapper.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def bot_module(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Any]:
 
 # config.validate_env() checks the raw environment (os.environ), not the
 # already-defaulted config.PG_*, so any test that drives bot.main() /
-# push_digest_job.main() end-to-end must set all six required variables
+# push_digest_job.main() end-to-end must set all required variables
 # itself — it cannot rely on whatever `make` happened to supply.
 _REQUIRED_BOT_ENV = {
     "TELEGRAM_BOT_TOKEN": "123456789:TEST-TOKEN-NOT-A-REAL-SECRET",
@@ -79,7 +79,7 @@ _REQUIRED_BOT_ENV = {
     "PG_USER": "nhl_bot_test",
     "PG_DATABASE": "nhl_bot_test",
     "SEASON_ID": "20262027",
-    # Только бот (`validate_env("ANTHROPIC_API_KEY")`, Задача 81); рассылке не нужен.
+    # Бот и рассылка вызывают validate_env("ANTHROPIC_API_KEY").
     "ANTHROPIC_API_KEY": "sk-ant-TEST-NOT-A-REAL-KEY",
 }
 
@@ -212,6 +212,10 @@ class RoutedCursor(FakeCursor):
         raise AssertionError(f"Запрос не описан ни одним маршрутом фикстуры: {text}")
 
 
+# Модули экранов, импортирующие ``cached_fetch_all`` из ``database`` (Задача 133).
+SCREEN_MODULES = ("game_messages", "team_messages", "leaderboard_messages", "country_messages")
+
+
 @pytest.fixture
 def fake_db_router(
     bot_module: Callable[[str], Any], monkeypatch: pytest.MonkeyPatch
@@ -219,7 +223,7 @@ def fake_db_router(
     """Подменить БД на маршрутизирующий фейк для всего стека бота.
 
     Подменяется только граница БД, зато обе её половины: ``database.get_connection``
-    и ``bot_messages.cached_fetch_all``. Вторая — свежей обёрткой
+    и ``cached_fetch_all`` экранных модулей (``SCREEN_MODULES``). Вторая — свежей обёрткой
     ``ttl_cache(fetch_all)``, потому что боевая собирается один раз на импорте
     модуля и её TTL-кэш иначе протекал бы между тестами (тот же приём, что
     ``cleared_cache`` в tests/test_bot_database.py). Выше этой границы всё
@@ -231,7 +235,6 @@ def fake_db_router(
 
     def _patch(routes: Sequence[Tuple[str, Any]]) -> RoutedCursor:
         database = bot_module("database")
-        bot_messages = bot_module("bot_messages")
         cursor = RoutedCursor(routes)
         connection = FakeConnection(cursor)
 
@@ -240,9 +243,9 @@ def fake_db_router(
             yield connection
 
         monkeypatch.setattr(database, "get_connection", _fake_get_connection)
-        monkeypatch.setattr(
-            bot_messages, "cached_fetch_all", database.ttl_cache(database.fetch_all)
-        )
+        cached = database.ttl_cache(database.fetch_all)
+        for name in SCREEN_MODULES:
+            monkeypatch.setattr(bot_module(name), "cached_fetch_all", cached)
         return cursor
 
     return _patch

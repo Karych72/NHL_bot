@@ -1,8 +1,10 @@
 """Database module: connection pooling, safe query execution, identifier validation.
 
-Provides a single SimpleConnectionPool shared across the bot, context-managed
-connections, and whitelist-based validation for dynamic table/column names so
-that SQL composition via psycopg2.sql is safe even when identifiers come from
+Provides a single ThreadedConnectionPool shared across the bot (the event loop and
+``asyncio.to_thread`` workers borrow from it concurrently), with a server-side
+``statement_timeout`` on every pooled connection, context-managed connections,
+and whitelist-based validation for dynamic table/column names so that SQL
+composition via psycopg2.sql is safe even when identifiers come from
 non-literal sources. Also provides ``cached_fetch_all`` — a TTL-memoized
 ``fetch_all`` for read-only reference/table/leaderboard queries that only
 change once per data load (see ``ttl_cache``).
@@ -23,12 +25,15 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_pool: Optional[psycopg2.pool.SimpleConnectionPool] = None
+_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+
+# Серверный таймаут запроса на соединениях пула бота: экраны отвечают за десятки мс,
+# а один зависший запрос в event loop останавливает бота для всех чатов (Задача 128).
+# Только пул бота — у загрузчика и миграций запросы длинные по делу.
+STATEMENT_TIMEOUT_MS = 5000
 
 # ---------------------------------------------------------------------------
 # Whitelists — only identifiers listed here may be used in dynamic queries.
-# Skater advanced / shot-type column names should match ADVANCED_STATS_COLUMNS /
-# SHOT_TYPES_COLUMNS in bot_messages.py (used for JOIN / secondary sort).
 # ---------------------------------------------------------------------------
 
 ALLOWED_TABLES = frozenset({
@@ -109,18 +114,20 @@ ALLOWED_COLUMNS = frozenset({
 # Connection pool
 # ---------------------------------------------------------------------------
 
-def get_pool() -> psycopg2.pool.SimpleConnectionPool:
-    """Возвращает общий пул соединений с БД (1–5 штук), создавая его лениво
-    при первом вызове. Параметры соединения берутся из `config`."""
+def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """Возвращает общий потокобезопасный пул соединений с БД (1–5 штук), создавая
+    его лениво при первом вызове. Параметры соединения берутся из `config`; каждое
+    соединение получает `statement_timeout` = `STATEMENT_TIMEOUT_MS`."""
     global _pool
     if _pool is None:
-        _pool = psycopg2.pool.SimpleConnectionPool(
+        _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=5,
             host=config.PG_HOST,
             port=config.PG_PORT,
             user=config.PG_USER,
             database=config.PG_DATABASE,
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
         logger.info("Created DB connection pool (%s:%s/%s)",
                      config.PG_HOST, config.PG_PORT, config.PG_DATABASE)

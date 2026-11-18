@@ -102,8 +102,8 @@ PIM по командам считается суммой событий-пен�
 | `captain`, `alternate_captain`, `rookie` | **`False`** | **`NULL`** — поля не приходят с используемых эндпоинтов, статус «неизвестно» отличается от «точно нет» |
 | `current_team_id` | landing писал `currentTeamId` («команда сейчас», Задача 28) | **`NULL`** — сезонную команду из лендинга не получить |
 
-Пользовательский эффект `current_team_id = NULL`: `telegram_bot/bot_messages.py:622`
-джойнит `teams` по этой колонке (`LEFT JOIN teams t ON t.team_id = r.current_team_id
+Пользовательский эффект `current_team_id = NULL`: `telegram_bot/leaderboard_messages.py`
+(`player_stats_with_count`) джойнит `teams` по этой колонке (`LEFT JOIN teams t ON t.team_id = r.current_team_id
 ...`), поэтому у игроков, добираемых лендинг-фоллбэком (`load_season_modern.py:454-462`
 — тех, кого нет ни в roster-эндпоинте, ни в обоих summary-отчётах), название команды в
 списках/карточках будет пустым. До Задачи 28 там выводилась не пустая, а чужая команда —
@@ -205,7 +205,7 @@ PIM по командам считается суммой событий-пен�
 
 - Реализация: `pipeline/load_season_modern.py`, секция «Coercion helpers» в
   начале файла + методы `build_*` / `build_game_rows`.
-- Использование в боте: `telegram_bot/bot_messages.py.game_message` (рендер
+- Использование в боте: `telegram_bot/game_messages.py` (`game_message`) (рендер
   голов и вратарей корректно обрабатывает `None`), `telegram_bot/queries/*.sql`
   (используют `LEFT JOIN`, поэтому NULL-id в `all_goals` дают NULL-фамилии в
   тексте «Unknown»).

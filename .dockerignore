@@ -13,3 +13,8 @@ __pycache__
 .idea
 downloads/*.mp4
 *.mp4
+tests/
+plan/
+docs/
+research_notes/
+reports/

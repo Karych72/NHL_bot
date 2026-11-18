@@ -10,12 +10,11 @@ import pandas as pd
 import yaml
 from pydantic import ValidationError
 
-from modeling.config import ConfigError, SplitConfig
+from modeling.config import SplitConfig
 from modeling.splits import (
     SplitError,
     _assert_strictly_before,
     build_season_splits,
-    validate_metadata_parity,
 )
 from tests._modeling_fixtures import synthetic_calendar_keys, synthetic_season_id
 
@@ -179,22 +178,6 @@ class TestEmbargoComment(unittest.TestCase):
         source = Path("modeling/splits.py").read_text(encoding="utf-8")
         self.assertIn("embargo", source.lower())
         self.assertIn("strictly\nbefore the target day", source)
-
-
-class TestMetadataParity(unittest.TestCase):
-    def test_yaml_metadata_mismatch_raises_config_error(self) -> None:
-        with self.assertRaises(ConfigError) as ctx:
-            validate_metadata_parity({"features_hash": "aaa"}, {"features_hash": "bbb"})
-        self.assertIn("features_hash", str(ctx.exception))
-
-    def test_mismatch_surfaces_from_build_season_splits(self) -> None:
-        with self.assertRaises(ConfigError):
-            build_season_splits(
-                _four_seasons(),
-                _config(),
-                yaml_reference={"features_hash": "aaa"},
-                metadata={"features_hash": "bbb"},
-            )
 
 
 class TestShippedConfigsGeometry(unittest.TestCase):
