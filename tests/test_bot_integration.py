@@ -1084,8 +1084,9 @@ async def test_team_full_command_skips_games_and_schedule_when_there_are_none(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("plus_minus, display", [(12, "+12"), (-8, "−8"), (0, "0"), (None, "—")])
 async def test_team_full_command_lists_every_skater_and_goalie(
-    bot_module, fake_db_router, make_message, api
+    bot_module, fake_db_router, make_message, api, plus_minus, display
 ):
     """`/WSH_FULL` из конца профиля: тот же regex-хендлер; нападающие,
     защитники и вратари отдельными таблицами с колонками экрана страны, полный
@@ -1094,12 +1095,12 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     bot = bot_module("bot")
     cursor = fake_db_router([
         *_FULL_TEAM_ROUTES,
-        # lastname, team, goals, points, games, toi, hits, shots, blocked, total
+        # lastname, team, goals, points, games, toi, hits, shots, blocked, plus_minus, total
         ("r.position IN ('C', 'L', 'R')", [
-            ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 2),
-            ("Backstrom", "WSH", 10, 30, 17, "17:40", 8, 40, 9, 2),
+            ("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, plus_minus, 2),
+            ("Backstrom", "WSH", 10, 30, 17, "17:40", 8, 40, 9, 0, 2),
         ]),
-        ("r.position = 'D'", [("Carlson", "WSH", 5, 25, 16, "24:31", 20, 50, 33, 1)]),
+        ("r.position = 'D'", [("Carlson", "WSH", 5, 25, 16, "24:31", 20, 50, 33, -4, 1)]),
         # lastname, team, wins, save_pct, gaa, games, shutouts, total
         ("FROM goalies_season_stats g", [("Samsonov", "WSH", 9, 91.5, 2.6, 15, 1, 1)]),
     ])
@@ -1116,17 +1117,17 @@ async def test_team_full_command_lists_every_skater_and_goalie(
         "<p><b>Нападающие</b></p>"
         '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
-        '<th align="right">Хит</th><th align="right">Бр</th></tr>'
-        + _tr("lrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120")
-        + _tr("lrrrrrr", "Backstrom", "10", "30", "17", "17:40", "8", "40")
+        '<th align="right">Хит</th><th align="right">Бр</th><th align="right">+/−</th></tr>'
+        + _tr("lrrrrrrr", "Ovechkin", "38", "42", "17", "19:05", "30", "120", display)
+        + _tr("lrrrrrrr", "Backstrom", "10", "30", "17", "17:40", "8", "40", "0")
         + "</table>"
     ) in text
     assert (
         "<p><b>Защитники</b></p>"
         '<table compact><tr><th>Игрок</th><th align="right">Г</th>'
         '<th align="right">О</th><th align="right">И</th><th align="right">ВП</th>'
-        '<th align="right">Хит</th><th align="right">Бл</th></tr>'
-        + _tr("lrrrrrr", "Carlson", "5", "25", "16", "24:31", "20", "33")
+        '<th align="right">Хит</th><th align="right">Бл</th><th align="right">+/−</th></tr>'
+        + _tr("lrrrrrrr", "Carlson", "5", "25", "16", "24:31", "20", "33", "−4")
         + "</table>"
     ) in text
     assert (
@@ -1141,9 +1142,11 @@ async def test_team_full_command_lists_every_skater_and_goalie(
     legend = text.split("<details><summary>Обозначения</summary>", 1)[1].split("</details>", 1)[0]
     assert legend.startswith("<p>Нападающие: Г — голы, О — очки")
     assert "<br>Защитники: " in legend and "<br>Вратари: В — победы" in legend
+    assert legend.count("+/− — плюс/минус") == 2
     assert text.endswith(" · профиль клуба: /WSH · все команды: /team</footer>")
     group_queries = [q for q in cursor.executed if "r.current_team_id = %s" in q[0]]
     assert len(group_queries) == 3
+    assert all("p.plus_minus" in sql for sql, _ in group_queries if "players_season_stats" in sql)
     # Игроки клуба — по team_id параметром, полный список — без LIMIT.
     assert all(params[1:3] == (5, None) for _sql, params in group_queries)
     goalie_sql = next(q for q, _ in group_queries if "goalies_season_stats" in q)
@@ -1159,7 +1162,7 @@ async def test_team_full_command_skips_empty_groups(
     bot = bot_module("bot")
     fake_db_router([
         *_FULL_TEAM_ROUTES,
-        ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 1)]),
+        ("r.position IN ('C', 'L', 'R')", [("Ovechkin", "WSH", 38, 42, 17, "19:05", 30, 120, 5, 12, 1)]),
         ("r.position = 'D'", []),
         ("FROM goalies_season_stats g", []),
     ])

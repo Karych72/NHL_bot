@@ -722,7 +722,8 @@ def team_full_stats(abbrev: str) -> str:
     показателей и спецбригадами в штуках (`_team_season_context(ranked=True)`); затем
     дом/выезд, голы по периодам, последние и ближайшие матчи (`_team_games_context()`) и все
     игроки клуба тремя таблицами — нападающие, защитники, вратари — с колонками экрана
-    страны (`_player_group_table`). Ссылка на него стоит в конце `team_profile()`.
+    страны (`_player_group_table`) и +/− у полевых. Ссылка на него стоит в конце
+    `team_profile()`.
 
     Аргументы:
         abbrev: аббревиатура команды из команды `/ABBR_FULL`; неизвестная или ещё не
@@ -741,7 +742,8 @@ def team_full_stats(abbrev: str) -> str:
         )
         if n:
             player_groups.append((label, table))
-            legends.append(f"{label}: {_GROUP_LEGEND[group]}.")
+            extra = ", +/− — плюс/минус" if group != "G" else ""
+            legends.append(f"{label}: {_GROUP_LEGEND[group]}{extra}.")
     return output_text(
         "messages/team_profile.txt",
         {

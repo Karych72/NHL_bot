@@ -429,7 +429,7 @@ _BY_COUNTRY = "r.nationality = %s"
 _BY_TEAM = "r.current_team_id = %s"
 _GROUP_SKATERS_SQL = (
     "SELECT r.lastname, t.abbreviation, p.goals, p.points, p.games, p.time_on_ice_per_game, "
-    "p.hits, p.shots, p.blocked, COUNT(*) OVER () "
+    "p.hits, p.shots, p.blocked, {plus_minus}COUNT(*) OVER () "
     + _COUNTRY_FROM
     + "LEFT JOIN teams t ON t.team_id = r.current_team_id AND t.season_id = r.season_id "
     "WHERE p.season_id = %s AND {owner} AND {group} "
@@ -473,7 +473,8 @@ def _player_group_table(
     вратари (с хотя бы одной игрой): победы, %ОБ, КН, игры, сухие.
 
     Аргументы:
-        owner: `_BY_COUNTRY` или `_BY_TEAM` — чьи игроки.
+        owner: `_BY_COUNTRY` или `_BY_TEAM` — чьи игроки; у клуба полевым
+            добавляется сезонный показатель +/−.
         owner_value: код страны или `team_id`; в SQL — только параметром.
         group: ключ `PLAYER_GROUPS` (F / D / G).
         limit, offset: страница выборки; `limit=None` — все строки.
@@ -496,7 +497,12 @@ def _player_group_table(
     else:
         cols = ["lastname", "team", "goals", "points", "games", "toi", "hits", "shots",
                 "blocked", "total"]
-        sql_text = _GROUP_SKATERS_SQL.format(owner=owner, group=PLAYER_GROUPS[group][1])
+        if owner == _BY_TEAM:
+            cols.insert(-1, "plus_minus")
+        sql_text = _GROUP_SKATERS_SQL.format(
+            owner=owner, group=PLAYER_GROUPS[group][1],
+            plus_minus="p.plus_minus, " if owner == _BY_TEAM else "",
+        )
         stats = cached_fetch_all(sql_text, params, columns=cols)
         extra_key, extra_label = ("shots", "Бр") if group == "F" else ("blocked", "Бл")
         name_header, header = "Игрок", ["Г", "О", "И", "ВП", "Хит", extra_label]
@@ -504,6 +510,14 @@ def _player_group_table(
             [fmt(stats[k][i]) for k in ("goals", "points", "games", "toi", "hits", extra_key)]
             for i in range(stats["count_rows"])
         ]
+        if owner == _BY_TEAM:
+            header.append("+/−")
+            for i, row in enumerate(cells):
+                value = stats["plus_minus"][i]
+                row.append(
+                    fmt(value) if value is None or value == 0
+                    else f"{value:+d}".replace("-", "−")
+                )
     n = stats["count_rows"]
     if not n:
         return "", 0, 0, None
