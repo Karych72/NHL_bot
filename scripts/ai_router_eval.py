@@ -6,7 +6,8 @@
 инструментом и параметрами (проверяются только перечисленные в наборе) или с текстовым
 ответом (`"tool": null`); `stats_question` — передача ответам по статистике (Задача 83).
 Ответ по справке (`bot_answer`, Задача 114) сверяется по `expect`: каждое слово (варианты через
-`|`) должно встретиться в тексте без учёта регистра.
+`|`) должно встретиться в тексте без учёта регистра. `prev` — прошлый ход (вопрос `q`, ответ `a`,
+инструмент `tool`): ответ на уточнение (`ai_router._clarified`).
 Текстовые ответы печатаются целиком — их
 проверяют глазами на выдуманные факты; ответы с цифрами помечены. В конце — точность, стоимость вопроса
 (средняя и максимальная, из `usage`) и размер префикса (`messages.count_tokens`).
@@ -81,7 +82,9 @@ async def main() -> int:
     first_usage = None
     for case in cases:
         started = time.monotonic()
-        response = await ai_router.call_model(case["q"])
+        prev = case.get("prev")
+        previous = prev and {"question": prev["q"], "answer": prev["a"], "tool": prev["tool"]}
+        response = await ai_router.call_model(case["q"], previous)
         latencies.append(time.monotonic() - started)
         usage = response.usage
         first_usage = first_usage or usage

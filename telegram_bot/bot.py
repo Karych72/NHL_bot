@@ -67,6 +67,7 @@ from nhl_scoreboard import (
 from help_text import (
     COMMANDS,
     HELP_MESSAGE,
+    NIGHT_LOAD_NOTE,
     START_MESSAGE,
     STATS_COMMAND_INTRO,
     TEAM_STATS_COMMAND_INTRO,
@@ -805,9 +806,8 @@ COMMAND_HANDLERS = _command_handlers(COMMANDS)
 # Свободный текст (Задача 81): экран, выбранный моделью (`ai_router`), бот рисует тем же
 # кодом, что команду или кнопку, но новым сообщением в ответ на вопрос.
 # `/premium` в справочнике — команда с сообщением (тип чата); свободный текст приходит только из лички.
-AI_COMMANDS: Dict[str, _CommandScreen] = {
-    c.name: {**_COMMAND_SCREENS, "premium": show_premium}[c.name] for c in COMMANDS if c.ai
-}
+_AI_COMMAND_SCREENS: Dict[str, _CommandScreen] = {**_COMMAND_SCREENS, "premium": show_premium}
+AI_COMMANDS: Dict[str, _CommandScreen] = {c.name: _AI_COMMAND_SCREENS[c.name] for c in COMMANDS if c.ai}
 
 
 async def _ai_digest_for_date(bot: Bot, chat_id: int, params: Dict[str, Any]) -> None:
@@ -901,7 +901,6 @@ _UNKNOWN_SCREEN_TEXT = (
 _SCHEDULE_LIMIT_TEXT = (
     "Без премиума — одно расписание, оно уже есть: /subscriptions. Больше расписаний — в премиуме: /premium"
 )
-_CARD_NOTE = "Ночь догружается до 11:00 МСК: раньше экран может прийти без последних матчей."
 _ZONE_NOTE = "Другой пояс — напишите просьбу заново с городом, например: «… в 10 по Нью-Йорку»."
 
 
@@ -991,7 +990,7 @@ def _schedule_card(d: Draft) -> _Screen:
         *(["Когда: " + when] if d.freq in ("week", "month") else []),
         "Время: " + (f"{_slot_time(d.slot):%H:%M}" if d.slot is not None else pick),
         "Пояс: " + html.escape(_zone_label(d.tz)),
-        rich_footer(_CARD_NOTE),
+        rich_footer(NIGHT_LOAD_NOTE),
     ]
     rows = [[
         _card_button(label, d.freq == f, d._replace(freq=f, day=d.day if d.freq == f else None))
@@ -1214,9 +1213,9 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     """Текст в личке вне команд: вопрос модели (`ai_router.ask`).
 
     Общий бюджет исчерпан (`ai_router.limit_refusal`, Задача 141) — отказ без вызова модели.
-    Исчерпан лимит чата (премиум или бесплатный, Задача 96) — модель всё равно спрашивается, но
-    проходит только ответ вне лимита (`ai_router.is_free`: справка, цифры чата, экраны справки и
-    оплаты, Задача 114), иначе — отказ. Вид лимита (`day`, `week`, `budget`) отказа — в журнал
+    Исчерпан лимит чата (премиум или бесплатный, Задача 96) — модель всё равно спрашивается (не
+    больше `ai_router.OVER_LIMIT_DAILY_CALLS` раз в сутки), но проходит только ответ вне лимита
+    (`ai_router.is_free`: справка, цифры чата, экран оплаты, Задача 114), иначе — отказ. Вид лимита (`day`, `week`, `budget`) отказа — в журнал
     `bot_actions`. Модель выбрала экран — бот показывает его (`AI_SCREENS`); `my_status` — цифры
     чата (`ai_router.chat_status`); иначе — её текст: ответ по справке, отказ, уточнение или
     сообщение о сбое API.
@@ -1229,7 +1228,9 @@ async def on_free_text(message: Message, bot: Bot) -> None:
     chat_id = message.chat.id
     text = message.text or ""
     refusal = ai_router.limit_refusal(chat_id)
-    if refusal == ai_router.BUDGET_TEXT:
+    if refusal is not None and (
+        refusal == ai_router.BUDGET_TEXT or not ai_router.over_limit_calls_left(chat_id)
+    ):
         await _refuse_by_limit(message, refusal)
         return
     async with _ai_progress(message, bot):
@@ -1237,7 +1238,7 @@ async def on_free_text(message: Message, bot: Bot) -> None:
         if history:
             await _answer_stats(message, text, history)
             return
-        reply = await ai_router.ask(chat_id, text)
+        reply = await ai_router.ask(chat_id, text, limited=refusal is not None)
         if refusal is not None and not ai_router.is_free(reply):
             await _refuse_by_limit(message, refusal)
             return

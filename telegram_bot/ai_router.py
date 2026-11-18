@@ -29,6 +29,7 @@ from help_text import (
     ADVANCED_STATS_EXPLAINED,
     COMMANDS,
     LEGEND_NOTE,
+    NIGHT_LOAD_NOTE,
     PAYSUPPORT_TEXT,
     PREMIUM_CANCEL_HINT,
     SEASON_SCOPE,
@@ -76,9 +77,12 @@ LEADER_CATEGORIES = ("points", "goals", "assists")
 SCHEDULE_TOOLS = ("open_command", "team_profile", "leaders", "country_players", "advanced_metric")
 SCHEDULE_COMMANDS = tuple(c.name for c in COMMANDS if c.schedule)
 # Ответы о самом боте, правилах и структуре НХЛ (Задача 114, решение человека 1) лимит не
-# списывают и проходят при исчерпанном лимите: справка, цифры чата и экраны справки и оплаты.
+# списывают и проходят при исчерпанном лимите: справка, цифры чата и экран оплаты.
 FREE_TOOLS = ("bot_answer", "my_status")
-FREE_COMMANDS = ("help", "premium", "subscriptions")
+FREE_COMMANDS = ("premium",)
+# Предохранитель лазейки: сверх лимита модель спрашивается на каждое сообщение, поэтому таких
+# вызовов за сутки МСК — не больше `OVER_LIMIT_DAILY_CALLS` (строки 'limited' и бесплатные ответы).
+OVER_LIMIT_DAILY_CALLS = 10
 # Окно, в котором текстовый ответ маршрутизатора (уточнение) — контекст следующего вопроса.
 CLARIFY_WINDOW_MINUTES = 10
 _RULES = (Path(__file__).parent / "prompts" / "nhl_rules.md").read_text(encoding="utf-8")
@@ -107,7 +111,7 @@ SYSTEM_PROMPT = """\
 - Хотят купить или продлить премиум — open_command premium; что даёт премиум и сколько \
 стоит — bot_answer.
 - Не сообщай фактов от себя: ни счетов, ни цифр, ни составов, ни новостей, ни прогнозов, \
-даже если знаешь ответ. Твоя работа — только выбор экрана.
+даже если знаешь ответ. Твоя работа — выбор экрана или ответ по справке (bot_answer).
 - Матчи прошедшей ночи, «как сыграли вчера/ночью», результат команды в последнем матче — \
 open_command today. Расписание и матчи сегодняшнего вечера — open_command tonight. \
 Результаты конкретной даты — digest_for_date.
@@ -149,10 +153,7 @@ def reference_text() -> str:
         "Команды:\n" + "\n".join(command_items(COMMANDS)),
         SEASON_SCOPE,
         "Свободный текст: бот отвечает на вопрос в личке — открывает экран, отвечает по "
-        "статистике NHL с сезона 2009/10 или по этой справке.",
-        "Подписки — /subscriptions: утренний дайджест, превью матчей дня, итоги игр выбранных "
-        "команд, игроки выбранных стран за ночь, матчи выбранных игроков. Включаются и "
-        "выключаются кнопками там же.",
+        "статистике NHL или по этой справке.",
         "Расписания — экран бота по расписанию: каждый день, раз в неделю или раз в месяц, "
         "время с шагом 30 минут, по МСК или в своём поясе. Создать — написать боту, например "
         "«присылай лидеров по голам по пятницам в 10». Удалить — /subscriptions → ⏰ Расписания, "
@@ -164,9 +165,7 @@ def reference_text() -> str:
         f"Лимит вопросов ИИ: с премиумом — {PREMIUM_DAILY_LIMIT} в сутки по МСК, без премиума — "
         f"{FREE_WEEKLY_LIMIT} в неделю (с понедельника по МСК). Вопросы о самом боте и правилах "
         "НХЛ в лимит не идут. Команды и кнопки работают без лимита.",
-        "Данные — NHL API. Результаты ночи бот загружает ночью по МСК, с 21:00 до 11:00: "
-        "раньше 11:00 экран может прийти без последних матчей. Превью матчей дня приходят "
-        "с 15:30 МСК.",
+        f"Данные — NHL API. {NIGHT_LOAD_NOTE}",
         "Расширенная статистика (/stats → «Расширенная статистика»):\n" + advanced,
         "Обозначения:\n" + LEGEND_NOTE,
         "</справка о боте>",
@@ -359,25 +358,29 @@ def _spent_today() -> float:
 
 
 def _asked(chat_id: int) -> Dict[str, int]:
-    """Вопросы чата в счёт лимита: `day` — за сутки МСК, `week` — за неделю МСК (с понедельника).
+    """Вопросы чата в счёт лимита: `day` — за сутки МСК, `week` — за неделю МСК (с понедельника);
+    `free_day` — вызовы маршрутизатора вне счёта за сутки МСК (ответы о боте и 'limited').
 
     Вопрос — строка `ai_questions` (вызов маршрутизатора 81) или `ai_stats_log` (ответ по
     статистике 83, в том числе продолжение диалога мимо маршрутизатора). Выбор `stats_question`
     в `ai_questions` не считается — вопрос списывает строка `ai_stats_log`, иначе он стоил бы две
     единицы; ответы о боте (`FREE_TOOLS`, `open_command` из `FREE_COMMANDS`, Задача 114) — тоже.
-    Сбой (`outcome = 'error'`) не списывает: пользователь не виноват, что модель не ответила.
+    Сбой (`outcome = 'error'`) не списывает: пользователь не виноват, что модель не ответила;
+    вызов сверх лимита (`'limited'`) — тоже: пользователь уже получил отказ.
     """
     rows = fetch_all(
-        f"SELECT count(*) FILTER (WHERE asked_at >= {_msk_start('day')}), "
-        f"count(*) FILTER (WHERE asked_at >= {_msk_start('week')}) FROM ("
-        "SELECT asked_at FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' "
-        "AND NOT coalesce(tool = ANY(%s) OR (tool = 'open_command' "
-        "AND tool_input->>'command' = ANY(%s)), false) "
-        "UNION ALL SELECT asked_at FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error') q",
-        (chat_id, ["stats_question", *FREE_TOOLS], list(FREE_COMMANDS), chat_id),
-        columns=["day", "week"],
+        f"SELECT count(*) FILTER (WHERE counted AND asked_at >= {_msk_start('day')}), "
+        f"count(*) FILTER (WHERE counted AND asked_at >= {_msk_start('week')}), "
+        f"count(*) FILTER (WHERE NOT counted AND asked_at >= {_msk_start('day')}) FROM ("
+        "SELECT asked_at, outcome <> 'limited' AND NOT coalesce(tool = ANY(%s) "
+        "OR (tool = 'open_command' AND tool_input->>'command' = ANY(%s)), false) AS counted "
+        "FROM ai_questions WHERE chat_id = %s AND outcome <> 'error' AND tool IS DISTINCT FROM "
+        "'stats_question' "
+        "UNION ALL SELECT asked_at, true FROM ai_stats_log WHERE chat_id = %s AND outcome <> 'error') q",
+        (list(FREE_TOOLS), list(FREE_COMMANDS), chat_id, chat_id),
+        columns=["day", "week", "free_day"],
     )
-    return {"day": int(rows["day"][0]), "week": int(rows["week"][0])}
+    return {key: int(rows[key][0]) for key in ("day", "week", "free_day")}
 
 
 def limit_refusal(chat_id: int) -> Optional[str]:
@@ -394,6 +397,12 @@ def limit_refusal(chat_id: int) -> Optional[str]:
     if premium.is_premium(chat_id):
         return LIMIT_TEXT if asked["day"] >= PREMIUM_DAILY_LIMIT else None
     return WEEK_LIMIT_TEXT if asked["week"] >= FREE_WEEKLY_LIMIT else None
+
+
+def over_limit_calls_left(chat_id: int) -> bool:
+    """Можно ли спросить модель сверх лимита чата: вызовов вне счёта за сутки МСК меньше
+    `OVER_LIMIT_DAILY_CALLS`. Зачем: иначе флуд сверх лимита тратил бы общий бюджет (Задача 141)."""
+    return _asked(chat_id)["free_day"] < OVER_LIMIT_DAILY_CALLS
 
 
 def is_free(reply: Reply) -> bool:
@@ -435,7 +444,7 @@ def chat_status(chat_id: int) -> str:
     return "\n".join(lines)
 
 
-def _clarified(chat_id: int) -> Optional[Dict[str, str]]:
+def _clarified(chat_id: int) -> Optional[Dict[str, Any]]:
     """Прошлый вопрос и текстовый ответ маршрутизатора этому чату, если это последний вызов
     чата и он моложе `CLARIFY_WINDOW_MINUTES`; иначе None.
 
@@ -443,16 +452,16 @@ def _clarified(chat_id: int) -> Optional[Dict[str, str]]:
     контекст (Задача 114); хранится он в том же журнале `ai_questions`, без новой таблицы.
     """
     rows = fetch_all(
-        "SELECT question, answer FROM (SELECT question, answer, outcome, asked_at FROM ai_questions "
-        "WHERE chat_id = %s ORDER BY asked_at DESC LIMIT 1) last "
+        "SELECT question, answer, tool FROM (SELECT question, answer, tool, outcome, asked_at "
+        "FROM ai_questions WHERE chat_id = %s ORDER BY asked_at DESC LIMIT 1) last "
         "WHERE outcome = 'text' AND answer IS NOT NULL "
         "AND asked_at > now() - make_interval(mins => %s)",
         (chat_id, CLARIFY_WINDOW_MINUTES),
-        columns=["question", "answer"],
+        columns=["question", "answer", "tool"],
     )
     if not rows["question"]:
         return None
-    return {"question": rows["question"][0], "answer": rows["answer"][0]}
+    return {"question": rows["question"][0], "answer": rows["answer"][0], "tool": rows["tool"][0]}
 
 
 def _log_question(chat_id: int, question: str, outcome: str, latency_ms: int, **fields: Any) -> None:
@@ -477,16 +486,34 @@ def _user_turn(question: str) -> str:
     return f"Сегодня {today} (МСК).\n<вопрос>\n{question}\n</вопрос>"
 
 
-def request_params(question: str, previous: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def _history(previous: Optional[Dict[str, Any]], question: str) -> List[Dict[str, Any]]:
+    """Ходы диалога: прошлый вопрос и ответ модели (`_clarified`) и новый вопрос. Ответ
+    `bot_answer` — тем же вызовом инструмента, иначе модель ответила бы на уточнение текстом."""
+    turn = _user_turn(question)
+    if previous is None:
+        return [{"role": "user", "content": turn}]
+    first = {"role": "user", "content": _user_turn(previous["question"])}
+    if previous["tool"] != "bot_answer":
+        return [first, {"role": "assistant", "content": previous["answer"]}, {"role": "user", "content": turn}]
+    return [
+        first,
+        {"role": "assistant", "content": [{
+            "type": "tool_use", "id": "toolu_previous", "name": "bot_answer",
+            "input": {"answer": previous["answer"]},
+        }]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_previous", "content": "Отправлено пользователю."},
+            {"type": "text", "text": turn},
+        ]},
+    ]
+
+
+def request_params(question: str, previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Параметры запроса к модели без `max_tokens` и настроек вывода — общие для
     `messages.create` и `messages.count_tokens` (замер префикса в контрольном прогоне).
 
     Префикс — инструменты, правила и справка (`reference_text`); `previous` (`_clarified`) —
-    прошлый вопрос и уточнение модели ходами диалога перед вопросом."""
-    history = [] if previous is None else [
-        {"role": "user", "content": _user_turn(previous["question"])},
-        {"role": "assistant", "content": previous["answer"]},
-    ]
+    прошлый вопрос и уточнение модели ходами диалога перед вопросом (`_history`)."""
     return {
         "model": MODEL,
         "system": [
@@ -495,11 +522,11 @@ def request_params(question: str, previous: Optional[Dict[str, str]] = None) -> 
         ],
         "tools": build_tools(season_team_abbrevs()),
         "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
-        "messages": [*history, {"role": "user", "content": _user_turn(question)}],
+        "messages": _history(previous, question),
     }
 
 
-async def call_model(question: str, previous: Optional[Dict[str, str]] = None) -> Any:
+async def call_model(question: str, previous: Optional[Dict[str, Any]] = None) -> Any:
     """Вызов модели на вопрос; ответ `Message` SDK. Им же пользуется контрольный прогон."""
     params: Dict[str, Any] = {
         "max_tokens": 2048, "output_config": {"effort": EFFORT}, **request_params(question, previous),
@@ -531,7 +558,7 @@ def cost_usd(usage: Any) -> float:
     ) / 1_000_000
 
 
-async def ask(chat_id: int, question: str) -> Reply:
+async def ask(chat_id: int, question: str, limited: bool = False) -> Reply:
     """Один вызов модели на вопрос пользователя; результат и расход — в `ai_questions`.
 
     Зачем: модель только выбирает экран или пишет короткий ответ по справке, отказ или
@@ -542,6 +569,8 @@ async def ask(chat_id: int, question: str) -> Reply:
     Аргументы:
         chat_id: чат, задавший вопрос.
         question: текст сообщения как есть.
+        limited: лимит чата исчерпан — ответ не о боте (`is_free`) пользователь не получит, в
+            журнал он пишется исходом 'limited'.
     """
     started = time.monotonic()
     try:
@@ -558,7 +587,9 @@ async def ask(chat_id: int, question: str) -> Reply:
     reply = decide(response)
     usage = response.usage
     _log_question(
-        chat_id, question, "text" if reply.text is not None else "screen", latency_ms,
+        chat_id, question,
+        "limited" if limited and not is_free(reply) else "text" if reply.text is not None else "screen",
+        latency_ms,
         tool=reply.tool, tool_input=reply.params if reply.tool else None,
         answer=reply.text, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_input_tokens or 0,

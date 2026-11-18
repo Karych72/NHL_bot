@@ -342,7 +342,7 @@ async def test_free_text_goes_to_ai_only_in_private_chat(
     bot = bot_module("bot")
     asked: List[str] = []
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         asked.append(text)
         return bot.ai_router.Reply(text="ответ модели", tool=None, params={})
 
@@ -437,7 +437,7 @@ async def test_free_text_is_not_logged(bot_module, dispatcher, fake_bot, actions
     """Вопрос к ИИ уже в `ai_questions` / `ai_stats_log` — журнал его не дублирует."""
     bot = bot_module("bot")
 
-    async def ask(chat_id: int, text: str) -> Any:
+    async def ask(chat_id: int, text: str, limited: bool = False) -> Any:
         return bot.ai_router.Reply(text="ответ", tool=None, params={})
 
     monkeypatch.setattr(bot.ai_router, "limit_refusal", lambda chat_id: None)

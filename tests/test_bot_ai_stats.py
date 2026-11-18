@@ -130,7 +130,7 @@ def stats(bot_module, fake_db_router, monkeypatch):
         monkeypatch.setattr(config, "SEASON_ID", 20262027)
         cursor = fake_db_router([
             # Раньше журнала окна: запрос лимита тоже читает ai_stats_log.
-            ("FILTER (WHERE asked_at", [asked]),
+            ("FILTER (WHERE counted", [(*asked, 0)]),
             ("sum(cost_usd)", [(0.0,)]),
             ("FROM premium_payments", [(False,)]),
             ("FROM premium_access", []),
