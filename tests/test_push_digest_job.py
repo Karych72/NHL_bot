@@ -16,7 +16,7 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiogram import Bot
@@ -232,15 +232,14 @@ class _ForbiddenBot:
 
 
 @pytest.mark.asyncio
-async def test_main_raises_and_never_creates_bot_without_token(
-    push_job, monkeypatch, set_required_bot_env
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"])
+async def test_main_requires_credentials_before_creating_bot(
+    push_job, monkeypatch, set_required_bot_env, missing
 ):
-    """``main()`` падает на ``validate_env()`` до создания ``Bot``, если токена нет —
-    раньше это было мягкое ``sys.exit(1)`` внутри самого скрипта."""
-    set_required_bot_env(TELEGRAM_BOT_TOKEN="")
+    """Ошибки конфигурации останавливают процесс до создания Bot и резервации кэша."""
+    set_required_bot_env(**{missing: ""})
     monkeypatch.setattr(push_job, "Bot", _ForbiddenBot)
-
-    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
+    with pytest.raises(RuntimeError, match=missing):
         await push_job.main(False)
 
 
@@ -1036,6 +1035,8 @@ def upcoming_env(push_job, monkeypatch):
         env.read_subs += 1
         return env.chats
 
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: False)
+    monkeypatch.setattr(push_job, "upcoming_preview_text", AsyncMock(return_value=""))
     monkeypatch.setattr(push_job, "fetch_score", fetch)
     monkeypatch.setattr(push_job, "matchup_season_preview", preview)
     monkeypatch.setattr(push_job, "list_active_upcoming_rows", rows)
@@ -1521,3 +1522,42 @@ async def test_channel_weekly_failure_is_retried_the_same_day(push_job, weekly_e
     [post] = api.sent_rich
     assert "Турнирная таблица NHL" in post.rich_message.html
     assert weekly_env.posted == {(SATURDAY, "standings")}
+
+
+@pytest.mark.asyncio
+async def test_upcoming_ai_shared_and_escaped(push_job, upcoming_env, fake_bot, api, monkeypatch):
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: True)
+    generate = AsyncMock(return_value="Смотрите на <атаку> & оборону.")
+    monkeypatch.setattr(push_job, "upcoming_preview_text", generate)
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    generate.assert_awaited_once()
+    assert generate.call_args.args[1] == "PREVIEW BOS @ TOR\nСезон 2026/27"
+    assert len(api.sent_rich) == 2
+    assert all("&lt;атаку&gt; &amp;" in m.rich_message.html for m in api.sent_rich)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("premium_first", [False, True])
+async def test_upcoming_ai_only_for_premium_chats(
+    push_job, upcoming_env, fake_bot, api, monkeypatch, premium_first
+):
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    if premium_first:
+        upcoming_env.chats.reverse()
+    monkeypatch.setattr(push_job, "is_premium", lambda chat_id: chat_id == 222)
+    generate = AsyncMock(return_value="ИИ-текст для премиум-чата.")
+    monkeypatch.setattr(push_job, "upcoming_preview_text", generate)
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    generate.assert_awaited_once()
+    assert len(api.sent_rich) == 2
+    for message in api.sent_rich:
+        assert ("ИИ-текст" in message.rich_message.html) == (message.chat_id == 222)
+    assert len(upcoming_env.previews) == 1
+
+
+@pytest.mark.asyncio
+async def test_upcoming_free_chats_do_not_generate_ai(push_job, upcoming_env, fake_bot):
+    upcoming_env.chats = [(10, 111), (20, 222)]
+    await upcoming_env.run(fake_bot, datetime(2026, 10, 24, 12, 30, tzinfo=UTC))
+    push_job.upcoming_preview_text.assert_not_awaited()

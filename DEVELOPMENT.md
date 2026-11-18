@@ -119,7 +119,7 @@
 |---|---|---|
 | `nhl-bot-telegram-token` | токен продового бота @IcePulseNHLBot (ветка `master`) | `fetch-secrets.sh` → `bot`, `sync` прод-стека |
 | `nhl-bot-telegram-token-dev` | токен dev-бота @auto_karych_test_bot (ветка `develop`, бывший продовый) | `fetch-secrets.sh` → `bot`, `sync` dev-стека (`/run/nhl_bot_dev`, Задача 80) |
-| `nhl-bot-anthropic-key` | ключ Anthropic API, один на dev и прод | `fetch-secrets.sh` → `bot` обоих стеков (`anthropic_api_key`, Задача 81) |
+| `nhl-bot-anthropic-key` | ключ Anthropic API, один на dev и прод | `fetch-secrets.sh` → `bot` и `sync` обоих стеков (`anthropic_api_key`, Задачи 81, 95) |
 
 Локально — свой `.env` (`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`). Локальный `make bot` с продовым или dev-токеном не запускать, пока тот же бот работает на VM: второй polling-клиент на один токен получает `Conflict`. Для локальной отладки — отдельный личный бот.
 
@@ -153,7 +153,7 @@ cd /opt/nhl_bot \
   && sudo -u deploy docker compose up -d --force-recreate bot sync
 ```
 
-**Ключ Claude API (Задача 81).** Тот же механизм: юнит пишет ключ в `/run/nhl_bot/anthropic/anthropic_api_key` и `/run/nhl_bot_dev/anthropic/anthropic_api_key` (`fetch-secrets.sh nhl-bot-anthropic-key <каталог>/anthropic anthropic_api_key`), `compose.prod.yml` и `compose.dev.yml` монтируют его только в `bot`, entrypoint `bot` кладёт в окружение токен и ключ. Без файла `bot` не стартует, без переменной — падает `config.validate_env`. Подкаталог `anthropic/` — защита от отката: `fetch-secrets.sh` старше Задачи 81 третий аргумент игнорирует и пишет `telegram_bot_token` в переданный каталог, то есть в безвредный `anthropic/telegram_bot_token`, а не поверх токена бота. Поэтому новый юнит можно ставить в любой момент, и откат «Re-run» на старый тег ничего не ломает. Выкатка:
+**Ключ Claude API (Задача 81).** Тот же механизм: юнит пишет ключ в `/run/nhl_bot/anthropic/anthropic_api_key` и `/run/nhl_bot_dev/anthropic/anthropic_api_key` (`fetch-secrets.sh nhl-bot-anthropic-key <каталог>/anthropic anthropic_api_key`), `compose.prod.yml` монтирует его в `bot` и `sync`, а `compose.dev.yml` наследует эти настройки и задаёт пути dev-секретов. Общий entrypoint кладёт в окружение токен и ключ. Без файла эти сервисы не стартуют, без переменной — падает `config.validate_env`. Подкаталог `anthropic/` — защита от отката: `fetch-secrets.sh` старше Задачи 81 третий аргумент игнорирует и пишет `telegram_bot_token` в переданный каталог, то есть в безвредный `anthropic/telegram_bot_token`, а не поверх токена бота. Поэтому новый юнит можно ставить в любой момент, и откат «Re-run» на старый тег ничего не ломает. Выкатка:
 1. До мержа PR в `develop` (иначе dev-деплой красный: `bot` без файла) — секрет `nhl-bot-anthropic-key` с версией и ролью доступа (как у токена выше), затем на VM ключ для dev-стека напрямую, без скрипта: в `/opt/nhl_bot_dev` до мержа старый `fetch-secrets.sh`.
    ```
    sudo install -d -m 0700 /run/nhl_bot_dev/anthropic \
@@ -163,7 +163,7 @@ cd /opt/nhl_bot \
 2. После мержа в `develop` (dev-чекаут уже с новым скриптом) — новый юнит: `sudo install -m 644 /opt/nhl_bot_dev/deploy/systemd/nhl-bot-secrets.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart nhl-bot-secrets`. До релиза прод-строка ключа пишет `anthropic/telegram_bot_token` скриптом прода — безвредно, прод-коду ключ не нужен.
 3. До мержа релизного PR в `master` — ключ для прода скриптом dev-чекаута: `sudo /opt/nhl_bot_dev/deploy/fetch-secrets.sh nhl-bot-anthropic-key /run/nhl_bot/anthropic anthropic_api_key`. После релиза его же пишет юнит при каждой загрузке VM.
 
-Ротация ключа — новая версия `nhl-bot-anthropic-key`, `sudo systemctl restart nhl-bot-secrets` и `docker compose up -d --force-recreate bot` в обоих чекаутах. Месячный лимит расходов — в Anthropic Console.
+Ротация ключа — новая версия `nhl-bot-anthropic-key`, `sudo systemctl restart nhl-bot-secrets` и `docker compose up -d --force-recreate bot sync` в обоих чекаутах. Месячный лимит расходов — в Anthropic Console.
 
 **Ротация токена:** BotFather → новый токен; на ноутбуке `gcloud secrets versions add nhl-bot-telegram-token --data-file=- --project nhl-bot-prod` (ввод не попадает в историю шелла, Ctrl-D); на VM `sudo systemctl restart nhl-bot-secrets && cd /opt/nhl_bot && sudo -u deploy docker compose up -d --force-recreate bot sync`. Dev-бот — то же с `nhl-bot-telegram-token-dev` и `cd /opt/nhl_bot_dev`.
 

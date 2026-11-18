@@ -110,6 +110,16 @@ def _unique_partial_index_predicate_row(cur, table: str, index_name: str):
     return cur.fetchone()
 
 
+class TestMigrationFiles(unittest.TestCase):
+    """Проверки файлов миграций без подключения к PostgreSQL."""
+
+    def test_versions_are_unique(self):
+        migrations = Path(REPO_ROOT, "data_tables/migrations")
+        versions = [f.name.split("_", 1)[0] for f in migrations.glob("*.up.sql")]
+        self.assertEqual(len(versions), len(set(versions)),
+                         "db-migrate skips duplicate migration versions")
+
+
 @unittest.skipIf(psycopg2 is None, "psycopg2 not installed")
 @unittest.skipUnless(
     os.environ.get("RUN_DB_SCHEMA_TESTS", "").strip().lower() in ("1", "true", "yes"),
@@ -126,6 +136,44 @@ class TestNhlSchema(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls, "conn") and cls.conn:
             cls.conn.close()
+
+    def test_upcoming_ai_cache_claim_and_reuse(self):
+        """Прогоняет рабочую функцию кэша на БД в откатываемой схеме без вызова API."""
+        import asyncio
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import ai_router
+
+        @contextmanager
+        def connection():
+            # Код продукта коммитит резервацию; здесь всё остаётся в тестовой транзакции.
+            yield SimpleNamespace(cursor=self.conn.cursor, commit=lambda: None)
+
+        response = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Текст превью.")], stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10,
+                                  cache_read_input_tokens=0, cache_creation_input_tokens=0),
+            _request_id="test",
+        )
+        create = AsyncMock(return_value=response)
+        migration = Path(REPO_ROOT, "data_tables/migrations/0029_upcoming_ai.up.sql")
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("CREATE SCHEMA task95_cache_test")
+                cur.execute("SET LOCAL search_path TO task95_cache_test, public")
+                cur.execute(migration.read_text())
+            with patch.object(ai_router, "get_connection", connection), patch.object(
+                ai_router, "client", return_value=SimpleNamespace(messages=SimpleNamespace(create=create))
+            ), patch.object(ai_router, "_log_question"):
+                self.assertEqual(asyncio.run(ai_router.upcoming_preview_text(95, "facts")), "Текст превью.")
+                self.assertEqual(asyncio.run(ai_router.upcoming_preview_text(95, "changed")), "Текст превью.")
+                create.assert_awaited_once()
+            with self.conn.cursor() as cur:
+                cur.execute(Path(str(migration).replace('.up.sql', '.down.sql')).read_text())
+        finally:
+            self.conn.rollback()
 
     def test_primary_keys(self):
         with self.conn.cursor() as cur:

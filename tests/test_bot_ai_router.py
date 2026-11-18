@@ -45,7 +45,7 @@ class FakeMessages:
 
 
 def _response(*content: Any, stop_reason: str = "") -> SimpleNamespace:
-    """Ответ модели; перед содержимым — пустой блок мышления, как у Sonnet 5.5 на effort low."""
+    """Ответ модели; перед содержимым — пустой блок мышления, как у Claude 5.5 на effort low."""
     tool = any(b.type == "tool_use" for b in content)
     return SimpleNamespace(
         content=[SimpleNamespace(type="thinking", thinking=""), *content],
@@ -335,9 +335,9 @@ async def test_text_answer_goes_to_user_and_to_log(ai, make_message, fake_bot, a
     assert (row["outcome"], row["answer"], row["question"]) == (
         "text", "Рейнджерс или Айлендерс? <уточните>", "как сыграл Нью-Йорк",
     )
-    assert row["cost_usd"] == pytest.approx((100 * 2 + 50 * 10 + 3000 * 0.2) / 1e6)
+    assert row["cost_usd"] == pytest.approx((100 * 0.10 + 50 * 0.50 + 3000 * 0.01) / 1e6)
     (call,) = messages.calls
-    assert call["model"] == "claude-sonnet-5-5"
+    assert call["model"] == "claude-haiku-5-5"
     assert call["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert "как сыграл Нью-Йорк" in call["messages"][0]["content"]
 
@@ -438,3 +438,47 @@ async def test_api_failure_tells_user_to_use_commands_and_is_logged(
     row = _logged(cursor)
     assert (row["outcome"], row["request_id"]) == ("error", "req_500")
     assert row["error"].startswith("InternalServerError")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, "timeout", "client", "truncated"])
+async def test_upcoming_ai_cache_and_failure(bot_module, fake_db_router, monkeypatch, failure):
+    ai_router = bot_module("ai_router")
+    cursor = fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", [(95,)]),
+        ("INSERT INTO ai_questions", []),
+        ("UPDATE bot_upcoming_ai", []),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    result = {
+        False: _response(_text("Текст превью.")),
+        "timeout": TimeoutError(), "client": anthropic.APIConnectionError(
+            request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
+        "truncated": _response(_text("Оборванный текст"), stop_reason="max_tokens"),
+    }[failure]
+    messages = FakeMessages(result)
+    monkeypatch.setattr(ai_router, "client", lambda: SimpleNamespace(messages=messages))
+    result = await ai_router.upcoming_preview_text(95, "BOS: 12 побед. TOR: 10 побед.")
+    assert result == ("" if failure else "Текст превью.")
+    assert messages.calls[0]["messages"] == [
+        {"role": "user", "content": "BOS: 12 побед. TOR: 10 побед."},
+    ]
+    assert "исключительно факты" in messages.calls[0]["system"]
+    assert "Прогноз модели не используй" in messages.calls[0]["system"]
+    logged = _logged(cursor)
+    if failure == "truncated":
+        assert logged["cost_usd"] > 0
+        assert logged["input_tokens"] == 100
+    if not failure:
+        statements = [q for q, _ in cursor.executed]
+        assert next(i for i, q in enumerate(statements) if q.startswith("UPDATE")) < next(
+            i for i, q in enumerate(statements) if q.startswith("INSERT INTO ai_questions")
+        )
+    fake_db_router([
+        ("INSERT INTO bot_upcoming_ai", []),
+        ("SELECT body FROM bot_upcoming_ai", [(result or None,)]),
+    ])
+    monkeypatch.setattr(ai_router, "get_connection", bot_module("database").get_connection)
+    assert await ai_router.upcoming_preview_text(95, "changed") == result
+    assert len(messages.calls) == 1
