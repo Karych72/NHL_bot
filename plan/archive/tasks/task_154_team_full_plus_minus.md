@@ -1,7 +1,7 @@
 # Задача 154. Показатель +/− в таблицах TEAM_FULL
 
 **Блок:** продукт · **Надобность:** 🟡
-**Источник:** просьба человека 2026-11-18; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-11-18; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 **Область:** `telegram_bot/leaderboard_messages.py`, `telegram_bot/team_messages.py`,
 `tests/test_bot_integration.py`, `docs/telegram_bot.md`.
 

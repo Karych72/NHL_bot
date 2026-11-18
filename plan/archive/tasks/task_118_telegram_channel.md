@@ -6,7 +6,7 @@
 «опубликовано»), `telegram_bot/config.py` и `.env.example` (id канала), `DEVELOPMENT.md`
 (dev-стенд и прод), `docs/architecture.md`, `docs/telegram_bot.md`.
 **Зависит от:** 119 (видео голов внутри сообщения: callback-кнопки в канале неприменимы).
-**Источник:** просьба человека 2026-11-12; реестр — [`../open_tasks.md`](../open_tasks.md).
+**Источник:** просьба человека 2026-11-12; реестр — [`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
