@@ -151,7 +151,7 @@ make env-example
 | `game_player_stats` | `UNIQUE (game_id, player_id)` | полевой × игра |
 | `game_goalie_stats` | `UNIQUE (game_id, player_id)` | вратарь × игра |
 | `game_three_stars` | `UNIQUE (game_id, star)` | звезда матча × игра (3 строки на игру, кроме 8 игр из 6560 в прогоне по 5 сезонам, где NHL API отдаёт меньше трёх звёзд) |
-| `all_goals` | без PK, есть `event_id` | каждый забитый гол; `goalie_id` — вратарь в воротах (`goalieInNetId`), `NULL` у голов в пустые ворота и матчей до 2009/10 |
+| `all_goals` | без PK, есть `event_id` | каждый забитый гол; `goalie_id` — вратарь в воротах (`goalieInNetId`), `NULL` у голов в пустые ворота и у 36 голов 2009/10–2020/21, где API не отдал вратаря |
 
 Тип игры — `games.game_type` (2 регулярка, 3 плей-офф); итоги плей-офф лежат в тех же
 сезонных таблицах строками с `game_type = 3`. Серии плей-офф — представление

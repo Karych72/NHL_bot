@@ -6,10 +6,16 @@
 #   sh scripts/backfill_goal_goalie.sh dev     # nhl_dev
 #   sh scripts/backfill_goal_goalie.sh prod    # postgres
 #
-# Шаги: миграция применена → TSV (game_id, event_id, goalie_id) собирается из кэша на ноутбуке
-# и по SSH уходит в psql на VM (временная таблица, один UPDATE в транзакции) → сверки: NULL
-# только у голов в пустые ворота, goalie_id совпадает с shot_attempts.goalie_in_net_id, доля
-# NULL по сезонам. Сеть и NHL API не нужны. Повторный запуск безопасен. Откат — миграция 0032 вниз.
+# Кэш на ноутбуке должен быть свежим: игры, загруженные на VM после его последнего обновления,
+# останутся без вратаря (скрипт сверяет последнюю игру кэша с базой и падает, если кэш старее).
+# Освежить кэш — загрузкой нужных дней на ноутбуке, как в Задаче 121.
+#
+# Шаги: миграция применена → кэш не старее базы → TSV (game_id, event_id, goalie_id) из кэша на
+# ноутбуке по SSH уходит в psql на VM (временная таблица, один UPDATE в транзакции) → сверки:
+# у сезонов с 2021/22 NULL только у голов в пустые ворота (у 2009/10–2020/21 36 голов без вратаря
+# и без признака пустых ворот — данные API, печатаются справочно), goalie_id совпадает с
+# shot_attempts.goalie_in_net_id, доля NULL по сезонам. NHL API не нужен, SSH к VM нужен.
+# Повторный запуск безопасен: UPDATE трогает только изменившиеся строки. Откат — миграция 0032 вниз.
 set -eu
 
 ENVNAME=${1:-}
@@ -39,6 +45,11 @@ echo "== Миграция 0032 на $DB"
 HAS=$(ssh_vm --command "$PSQL -At -c \"SELECT count(*) FROM information_schema.columns WHERE table_name = 'all_goals' AND column_name = 'goalie_id'\"" </dev/null)
 [ "$HAS" = 1 ] || { echo "На $DB нет all_goals.goalie_id — код ещё не выкатился" >&2; exit 1; }
 
+echo "== Свежесть кэша"
+DBMAX=$(ssh_vm --command "$PSQL -At -c \"SELECT max(game_id) FROM games\"" </dev/null)
+CACHEMAX=$(cut -f1 "$TSV" | sort -n | tail -1)
+[ "$CACHEMAX" -ge "$DBMAX" ] || { echo "Кэш старее базы: последняя игра в кэше $CACHEMAX, в базе $DBMAX — освежите all_data/raw" >&2; exit 1; }
+
 echo "== Заливка в $DB"
 {
   printf 'BEGIN;\nCREATE TEMP TABLE goal_goalie (game_id bigint, event_id int, goalie_id bigint);\n'
@@ -46,13 +57,15 @@ echo "== Заливка в $DB"
   cat "$TSV"
   printf '\\.\n'
   printf 'UPDATE all_goals g SET goalie_id = t.goalie_id FROM goal_goalie t\n'
-  printf '  WHERE g.game_id = t.game_id AND g.event_id = t.event_id;\nCOMMIT;\n'
+  printf '  WHERE g.game_id = t.game_id AND g.event_id = t.event_id\n'
+  printf '  AND g.goalie_id IS DISTINCT FROM t.goalie_id;\nCOMMIT;\n'
 } | ssh_vm --command "$PSQL"
 
 echo "== Сверки"
 RES=$(ssh_vm --command "$PSQL -At -F ' '" <<'SQL'
 SELECT
-  count(*) FILTER (WHERE g.goalie_id IS NULL AND NOT g.empty_net),
+  count(*) FILTER (WHERE g.goalie_id IS NULL AND NOT g.empty_net AND m.season_id >= 20212022),
+  count(*) FILTER (WHERE g.goalie_id IS NULL AND NOT g.empty_net AND m.season_id < 20212022),
   count(*) FILTER (WHERE s.goalie_in_net_id IS NOT NULL AND g.goalie_id IS DISTINCT FROM s.goalie_in_net_id),
   count(*) FILTER (WHERE s.goalie_in_net_id IS NOT NULL)
 FROM all_goals g JOIN games m USING (game_id)
@@ -60,13 +73,13 @@ LEFT JOIN shot_attempts s ON s.game_id = g.game_id AND s.event_id = g.event_id A
 WHERE m.season_id >= 20092010;
 SQL
 )
-echo "NULL без empty_net / расхождений с shot_attempts / сверено с shot_attempts: $RES"
-echo "== Доля NULL по сезонам, % (ждём 3–6)"
+echo "NULL без empty_net с 2021/22 (ждём 0) / то же до 2021/22 (справочно, 36) / расхождений с shot_attempts (ждём 0) / сверено с shot_attempts: $RES"
+echo "== Доля NULL по сезонам, % (ждём 3–7: пустые ворота плюс голы без вратаря в данных API)"
 ssh_vm --command "$PSQL -At -F ' '" <<'SQL'
 SELECT m.season_id, round(100.0 * count(*) FILTER (WHERE g.goalie_id IS NULL) / count(*), 1)
 FROM all_goals g JOIN games m USING (game_id) WHERE m.season_id >= 20092010
 GROUP BY 1 ORDER BY 1;
 SQL
-BAD=$(echo "$RES" | awk '{ print ($1 > 0 || $2 > 0) ? 1 : 0 }')
+BAD=$(echo "$RES" | awk 'NR == 1 && NF == 4 { print ($1 > 0 || $3 > 0) ? 1 : 0; exit } END { if (NR != 1) print 1 }')
 [ "$BAD" = 0 ] || { echo "СБОЙ: сверки не сошлись" >&2; exit 1; }
 echo "ГОТОВО: сверки сошлись."
