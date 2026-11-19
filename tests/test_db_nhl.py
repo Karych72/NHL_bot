@@ -1561,12 +1561,18 @@ class TestPlayoffSeriesView(unittest.TestCase):
                 (a, self.OLD_SEASON, b, self.OLD_SEASON),
             )
             # Завершённый сезон старого формата: раунд 1 — 1:1 по победам, B выигрывает по голам
-            # (3:4); раунд 2 — A ведёт 2:0. (игра, хозяева, гости, голы хозяев, голы гостей.)
+            # (3:4); раунд 2 — A ведёт 2:0; раунд 3 — как финал 1919 года: 2:2 по победам и ничья,
+            # голы 4:8 — победителя нет (голы решают только в серии из двух игр).
+            # (игра, хозяева, гости, голы хозяев, голы гостей.)
             for game_id, home, away, home_goals, away_goals in (
                 (2098030111, a, b, 2, 1), (2098030112, b, a, 3, 1),
                 (2098030211, a, b, 1, 0), (2098030212, b, a, 0, 2),
+                (2098030311, a, b, 1, 0), (2098030312, a, b, 0, 3), (2098030313, a, b, 1, 0),
+                (2098030314, a, b, 0, 3), (2098030315, a, b, 2, 2),
             ):
-                winner = home if home_goals > away_goals else away
+                winner = None if home_goals == away_goals else (
+                    home if home_goals > away_goals else away
+                )
                 cur.execute(
                     "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
                     "is_overtime, is_shootouts, season_id, game_type) "
@@ -1606,16 +1612,19 @@ class TestPlayoffSeriesView(unittest.TestCase):
                 cur.execute("DELETE FROM games WHERE season_id = %s", (season,))
                 cur.execute("DELETE FROM teams WHERE season_id = %s", (season,))
 
-    def test_closed_season_winner_by_wins_then_goals(self):
+    def test_closed_season_winner_by_wins_and_goals_of_two_game_series(self):
         """Задача 157: в завершённом сезоне серия не обязана кончаться 4 победами — победитель
-        по победам, при равенстве по голам; Кубок — победитель серии самого большого раунда."""
+        по победам; голы решают только серию из двух игр, при равных победах в длинной серии
+        победителя нет (финал 1919 года)."""
         with closing(_connect()) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT round, wins_a, wins_b, goals_a, goals_b, winner_id FROM playoff_series "
                 "WHERE season_id = %s ORDER BY round", (self.OLD_SEASON,),
             )
             rows = cur.fetchall()
-        self.assertEqual(rows, [(1, 1, 1, 3, 4, self.B), (2, 2, 0, 3, 0, self.A)])
+        self.assertEqual(
+            rows, [(1, 1, 1, 3, 4, self.B), (2, 2, 0, 3, 0, self.A), (3, 2, 2, 4, 8, None)],
+        )
 
     def test_series_score_winner_and_open_final(self):
         with closing(_connect()) as conn, conn.cursor() as cur:

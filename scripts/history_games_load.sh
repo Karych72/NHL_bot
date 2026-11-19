@@ -61,7 +61,8 @@ echo "размер $DB сейчас: $(sudo -u deploy docker compose exec -T db 
 REMOTE
 
 echo "== Архив кэша → VM"
-tar -cf "$TAR" -C "$RAW" $DIRS
+# macOS-tar без xattr-заголовков: иначе GNU tar на VM пишет по два предупреждения на файл.
+COPYFILE_DISABLE=1 tar --no-xattrs -cf "$TAR" -C "$RAW" $DIRS 2>/dev/null || COPYFILE_DISABLE=1 tar -cf "$TAR" -C "$RAW" $DIRS
 ls -lh "$TAR"
 gcloud compute scp "$TAR" "$VM:/tmp/nhl_history_games_raw.tar" --zone "$ZONE" --project "$PROJECT"
 rm -f "$TAR"
@@ -174,8 +175,8 @@ CUPS=$(psql_db -c "SELECT s.season_id, coalesce(t.name, 'NULL') FROM playoff_ser
   WHERE s.round = (SELECT max(round) FROM playoff_series m WHERE m.season_id = s.season_id)
     AND s.season_id < 20092010 ORDER BY 1")
 echo "$CUPS"
-NOCUP=$(echo "$CUPS" | grep -c ' NULL$' || true)
-[ "$NOCUP" -le 1 ] || { echo "!! сезонов без обладателя Кубка: $NOCUP (допустим один — 1918/19)"; FAIL=1; }
+NOCUP=$(echo "$CUPS" | grep ' NULL$' | cut -d' ' -f1 | tr '\n' ' ')
+[ "$NOCUP" = "19181919 " ] || { echo "!! сезоны без обладателя Кубка: $NOCUP (ждали только 19181919)"; FAIL=1; }
 
 echo "== Объёмы и место после"
 psql_db -c "SELECT (SELECT count(*) FROM games), (SELECT count(*) FROM game_player_stats),
