@@ -52,6 +52,7 @@ STANDINGS_ROUTES = {
 }
 ROSTER = "/v1/roster/"
 LANDING = "/landing"
+WSH_FRANCHISE = 24  # franchiseId of Washington in nhl_team_reference.json
 TKACHUK = 8480801  # OTT; only in the playoff fixtures (``nhl_playoff_*.json``)
 
 
@@ -212,7 +213,7 @@ class TeamRowsTest(LoaderApiTestCase):
         # §3: written because the team appeared in this season's summary.
         self.assertIs(field(wsh, "teams", "active"), True)
         # franchiseId of stats/rest/en/team: a relocated club keeps it while team_id changes.
-        self.assertIsNotNone(field(wsh, "teams", "franchise_id"))
+        self.assertEqual(field(wsh, "teams", "franchise_id"), WSH_FRANCHISE)
         # §2.8: neither endpoint carries these two.
         self.assertIsNone(field(wsh, "teams", "arena"))
         self.assertIsNone(field(wsh, "teams", "first_year_of_play"))
@@ -891,10 +892,6 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
         self.assertEqual(field(roster[OVECHKIN], "rosters", "nationality"), "RUS")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MostlyEmptyTest(unittest.TestCase):
     def test_majority_of_zero_or_none_is_empty(self):
         self.assertFalse(loader.mostly_empty([0, None, 3, 4]))
@@ -903,12 +900,15 @@ class MostlyEmptyTest(unittest.TestCase):
         self.assertFalse(loader.mostly_empty([]))
 
 
-class UncountedMetricsTest(SkaterSeasonStatsTest):
+class UncountedMetricsTest(LoaderApiTestCase):
+    REPORTS = SkaterSeasonStatsTest.REPORTS
+    _rows = SkaterSeasonStatsTest._rows
+
     def _old_season_rows(self):
-        """The 1980s report: realtime sends 0 for every player, timeonice sends null."""
+        """The 1980s report: realtime sends 0 for every player, timeonice sends zeros."""
         zero_realtime = [dict(r, hits=0, blockedShots=0) for r in load_fixture("nhl_skater_realtime.json")]
         null_toi = [
-            dict(r, **{k: None for k in r if "imeOnIce" in k or k == "shifts"})
+            dict(r, **{k: 0 for k in r if "imeOnIce" in k or k == "shifts"})
             for r in load_fixture("nhl_skater_timeonice.json")
         ]
         return self._rows(
@@ -935,7 +935,7 @@ class UncountedMetricsTest(SkaterSeasonStatsTest):
 class GoalsCheckTest(LoaderApiTestCase):
     GAMES = [
         {"gameType": 2, "homeScore": 4, "visitingScore": 3, "period": 3},
-        {"gameType": 2, "homeScore": 3, "visitingScore": 2, "period": 5},  # shootout: +1 for nobody
+        {"gameType": 2, "homeScore": 3, "visitingScore": 2, "period": 5},  # shootout 3:2 = 4 goals
         {"gameType": 3, "homeScore": 2, "visitingScore": 1, "period": 4},
     ]
 
@@ -948,12 +948,18 @@ class GoalsCheckTest(LoaderApiTestCase):
             instance.check_goals_against_scores(player_goals)
         return logs.records
 
-    def test_shootout_games_are_left_out_from_2005(self):
-        records = self._check(20102011, {2: 7, 3: 3})
+    def test_shootout_takes_one_goal_off_a_game_from_2005(self):
+        # 4:3 -> 7, shootout 3:2 -> 4 (the winner's shootout goal is nobody's), playoffs 2:1 -> 3.
+        records = self._check(20102011, {2: 11, 3: 3})
         self.assertEqual([r.levelname for r in records], ["INFO", "INFO"])
 
     def test_difference_is_logged_as_error(self):
-        records = self._check(19171918, {2: 7, 3: 3})
-        # Before 2005/06 a period-5 game is a normal one: scores 7 + 5, players 7.
+        records = self._check(19171918, {2: 11, 3: 3})
+        # Before 2005/06 a period-5 game is a normal one: scores 7 + 5 = 12, players 11.
         self.assertEqual(records[0].levelname, "ERROR")
-        self.assertIn("diff=-5", records[0].getMessage())
+        self.assertIn("diff=-1", records[0].getMessage())
+
+
+if __name__ == "__main__":
+    unittest.main()
+

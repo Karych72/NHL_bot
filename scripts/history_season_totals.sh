@@ -81,11 +81,17 @@ psql_db -c "ANALYZE"
 FAIL=0
 
 echo "== Сверка голов (игроки + вратари против счетов): сезон тип игроки счета разница"
+# Известные расхождения (сезон:тип:игроки−счета), сверено с API 2026-11-19: в плей-офф 1917/18–1925/26
+# в счета входят финалы Кубка Стэнли с клубами PCHA/WCHL, чьих игроков в отчётах нет (в 1919/20
+# отчётов игроков нет совсем); 1987/88 и 2019/20 — прерванный и квалификационный матчи.
+# Остальное — провал.
+KNOWN="19171918:2:-2 19171918:3:-39 19181919:3:-29 19191920:3:-26 19201921:3:-24 19211922:3:-25
+19221923:3:-21 19231924:3:-18 19241925:3:-24 19251926:3:-13 19871988:3:6 20192020:3:-2"
 GAPS=$(grep 'Goals check' "$LOADER_LOG" | grep -v 'diff=0$' || true)
 if [ -n "$GAPS" ]; then
   echo "$GAPS"
-  # Известное расхождение: 1917/18, регулярка, 2 гола. Остальное — провал.
-  UNEXPECTED=$(echo "$GAPS" | grep -v 'season=19171918 game_type=2 .* diff=-\{0,1\}2$' || true)
+  FOUND=$(echo "$GAPS" | sed 's/.*season=\([0-9]*\) game_type=\([0-9]\).* diff=\(.*\)$/\1:\2:\3/')
+  UNEXPECTED=$(for g in $FOUND; do case " $(echo $KNOWN) " in *" $g "*) ;; *) echo "$g" ;; esac; done)
   [ -z "$UNEXPECTED" ] || { echo "!! неожиданные расхождения:"; echo "$UNEXPECTED"; FAIL=1; }
 else
   echo "расхождений нет"
@@ -129,8 +135,10 @@ OLDZERO=$(psql_db -c "SELECT count(*) FROM players_season_stats
   WHERE season_id < 19971998 AND (hits = 0 OR blocked = 0 OR time_on_ice = '00:00')
      OR season_id < 20052006 AND (hits IS NOT NULL OR blocked IS NOT NULL)")
 [ "$OLDZERO" = 0 ] || { echo "!! нулей вместо NULL: $OLDZERO"; FAIL=1; }
-psql_db -c "SELECT 'hits', min(season_id) FROM players_season_stats WHERE hits > 0
-  UNION ALL SELECT 'time_on_ice', min(season_id) FROM players_season_stats WHERE time_on_ice IS NOT NULL"
+FIRST=$(psql_db -c "SELECT (SELECT min(season_id) FROM players_season_stats WHERE hits > 0),
+  (SELECT min(season_id) FROM players_season_stats WHERE time_on_ice IS NOT NULL)")
+echo "первый сезон с хитами и со временем на льду: $FIRST (ждали 20052006 19971998)"
+[ "$FIRST" = "20052006 19971998" ] || { echo "!! первые сезоны не сошлись"; FAIL=1; }
 
 echo "== currentage прошлых сезонов (ждали 0 строк с возрастом)"
 AGES=$(psql_db -c "SELECT count(*) FROM rosters WHERE season_id < 20262027

@@ -8,7 +8,7 @@ CREATE TABLE teams_stats(
     wins                           int,
     losses                         int,
     ot                             int,
-    -- Ничьи: до 2003/04 (otLosses там NULL), с 2005/06 NULL (миграция 0031, Задача 158).
+    -- Ничьи: до 2003/04, с 2005/06 NULL (миграция 0031, Задача 158).
     ties                           int,
     points                         int,
     procent_points                 double precision,

@@ -1768,26 +1768,21 @@ class ModernNhlLoader:
         """Log, per game type, season player goals against the sum of game scores.
 
         The scores come from ``stats/rest/en/game`` (``fetch_final_games``), nothing is
-        written. A regular-season shootout adds a goal to the score that no player
-        has, so from 2005/06 the games decided by one (``period`` 5) are left out. A
-        difference is logged as an error line for the caller to read: the known one
-        is 1917/18, two goals (Задача 158).
+        written. A regular-season shootout adds one goal to the score that no player
+        has, so from 2005/06 one goal per game decided by it (``period`` 5) is taken off.
+        A difference is logged as an error line for the caller to read; the known ones
+        are listed in ``scripts/history_season_totals.sh`` (Задача 158).
 
         Args:
             player_goals: ``SeasonReferenceRows.player_goals``.
         """
         games = self.fetch_final_games()
         for game_type in GAME_TYPES:
-            scored = sum(
-                to_int(g.get("homeScore")) + to_int(g.get("visitingScore"))
-                for g in games
-                if g.get("gameType") == game_type
-                and not (
-                    game_type == REGULAR_SEASON
-                    and self.season_id >= 20052006
-                    and g.get("period") == 5
-                )
-            )
+            typed = [g for g in games if g.get("gameType") == game_type]
+            scored = sum(to_int(g.get("homeScore")) + to_int(g.get("visitingScore")) for g in typed)
+            if game_type == REGULAR_SEASON and self.season_id >= 20052006:
+                # The shootout winner's extra goal is in the score and in no player's total.
+                scored -= sum(1 for g in typed if g.get("period") == 5)
             diff = player_goals[game_type] - scored
             log = logger.error if diff else logger.info
             log(

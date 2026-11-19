@@ -347,7 +347,7 @@ NHL-отчёты могут вернуть одного игрока дважд�
 определяет сам отчёт. У вратарей `ties` — из отчёта (до 2003/04), дальше 0.
 
 Полный контракт, список оставшихся намеренных не-`NULL` default
-(агрегаты PBP, ключи, derived booleans, `goalies_season_stats.ties = 0`,
+(агрегаты PBP, ключи, derived booleans, `goalies_season_stats.ties` = 0 с 2005/06,
 `teams.active = True`) — в
 [`pipeline_nulls_and_explicit_null_tz.md`](pipeline_nulls_and_explicit_null_tz.md).
 
@@ -516,11 +516,11 @@ SELECT season_id, COUNT(*) FROM games GROUP BY season_id ORDER BY season_id;
 лоадер строит те же сезонные таблицы, но не трогает `games*`, `shot_attempts` и `scheduled_games`,
 а вместо матчей сверяет голы — сумма голов игроков и вратарей против суммы счетов матчей из
 `stats/rest/en/game` (с 2005/06 без матчей, решённых буллитами; в лог строка `Goals check … diff=N`,
-при `N ≠ 0` — уровень ERROR). Известное расхождение: 1917/18, 2 гола.
+при `N ≠ 0` — уровень ERROR; с 2005/06 из счетов вычитается по одному голу за матч, решённый буллитами). Известные расхождения (игроки − счета) — в `scripts/history_season_totals.sh`: регулярка 1917/18 (−2) и плей-офф 1917/18–1925/26 (счета включают финалы с клубами PCHA/WCHL, чьих игроков в отчётах нет), 1987/88 (+6), 2019/20 (−2).
 
 - **`teams.franchise_id`** — из `stats/rest/en/team`: клуб после переезда меняет `team_id`, но не
   `franchise_id` («Квебек» и «Колорадо» — один, нынешняя и историческая «Оттава» — разные).
-  **`teams_stats.ties`** — ничьи, до 2003/04 (там `ot` пуст), с 2005/06 NULL; очки сходятся как
+  **`teams_stats.ties`** — ничьи, до 2003/04, с 2005/06 NULL; очки сходятся как
   `2 × wins + ties + coalesce(ot, 0) = points`. Индекс `rosters (season_id, lastname)` — состав
   клуба и поиск игрока по сезону (миграция 0031).
 - **Игрок в составе.** Имя и позицию дают сводные отчёты сезона (`skater/summary`,
