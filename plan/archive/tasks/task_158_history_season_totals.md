@@ -10,8 +10,8 @@
 старых сезонов).
 **Источник:** разговор с человеком 2026-11-17 — 2026-11-18 «как загрузить историю, чтобы ИИ
 отвечал как можно полнее»; исследование —
-[`../../docs/history_depth_research.md`](../../docs/history_depth_research.md); реестр —
-[`../open_tasks.md`](../open_tasks.md). Разрезана 2026-11-18: часть про ИИ ушла в 156.
+[`../../docs/history_depth_research.md`](../../../docs/history_depth_research.md); реестр —
+[`../open_tasks.md`](../closed_tasks.md). Разрезана 2026-11-18: часть про ИИ ушла в 156.
 
 ## Кратко
 

@@ -129,7 +129,7 @@ PIM по командам считается суммой событий-пен�
 | `all_goals.empty_net`, `winner_goal`, `is_ppg`, `is_shg` | bool, выводятся из `situationCode` / `goalModifier` | если строка ситуации пустая, считаем «не PPG / не SHG / не EN» по факту разбора. Колонки nullable в DDL, но семантика «не определили → не было». |
 | `game_team_stats.pim`, `hits`, `blocked`, `takeaways`, `giveaways`, `*_period_goals` | агрегаты из PBP (могут быть 0) | сумма событий PBP — реальный 0 неотличим от «событий не было». |
 | `game_player_stats.power_play_assists`, `face_off_wins`, `face_off_taken`, `short_handed_goals`, `short_handed_assists` | агрегаты из PBP | то же: 0 = «не было». |
-| `goalies_season_stats.ties` | **0** | NHL не фиксирует ties в регулярном времени с локаута 2005 года; API не отдаёт это поле. 0 — известный бизнес-факт. |
+| `goalies_season_stats.ties` | из отчёта, иначе **0** | API отдаёт ничьи вратарей до 2003/04; с локаута 2005 года ничьих нет и поле null — 0 тогда известный бизнес-факт. |
 | `teams.active` | **`True`** | мы пишем команду, потому что она нашлась в summary за этот сезон, → активна по контракту лоадера. |
 
 Все остальные значения, не попавшие в этот список, должны быть либо реальными

@@ -16,7 +16,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
-from typing import Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import psycopg2
 import requests
@@ -197,6 +197,19 @@ def payload_complete(endpoint: str, payload: dict) -> bool:
     return all(side.get("forwards") or side.get("defense") for side in sides)
 
 
+def mostly_empty(values: List[Any]) -> bool:
+    """True when more than half of *values* are ``None`` or zero.
+
+    A season report that sends ``0`` for a metric the league did not count yet (hits,
+    blocks, time on ice before the 2000s) is told apart from a real zero by its
+    majority: a counted metric has a non-zero value for most players (Задача 158).
+
+    Args:
+        values: one metric's value for every player of the season report.
+    """
+    return bool(values) and 2 * sum(1 for v in values if not v) > len(values)
+
+
 def safe_pct(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
     """Return rounded percentage or ``None`` when inputs are missing/zero.
 
@@ -234,6 +247,8 @@ class SeasonReferenceRows(NamedTuple):
     goalie_rows: List[tuple]
     advanced_rows: List[tuple]
     shot_type_rows: List[tuple]
+    # Season goals of skaters plus goalies per game type, for ``check_goals_against_scores``.
+    player_goals: Dict[int, int]
 
 
 class ModernNhlLoader:
@@ -247,6 +262,8 @@ class ModernNhlLoader:
         self.current_season_label = config.CURRENT_SEASON
         self.start_date = config.DATE_FROM
         self.end_date = config.DATE_TO
+        # Season reports only: no games, no schedule; goals are checked against game scores.
+        self.reports_only = False
 
         self.session = requests.Session()
         self.session.headers.update(
@@ -420,6 +437,7 @@ class ModernNhlLoader:
                     city,
                     True,
                     short_name,
+                    optional_int(meta.get("franchiseId")),
                 )
             )
         return teams_rows
@@ -442,6 +460,7 @@ class ModernNhlLoader:
                     optional_int(row.get("wins")),
                     optional_int(row.get("losses")),
                     optional_int(row.get("otLosses")),
+                    optional_int(row.get("ties")),
                     optional_int(row.get("points")),
                     optional_pct_from_ratio(row.get("pointPct")),
                     optional_float(row.get("goalsForPerGame")),
@@ -457,6 +476,16 @@ class ModernNhlLoader:
                 )
             )
         return teams_stats_rows
+
+    def roster_age(self, birth_date) -> Optional[int]:
+        """Age for ``rosters.currentage``: today's for the current season, NULL for a past one.
+
+        Args:
+            birth_date: ``YYYY-MM-DD`` string from the roster or landing payload.
+        """
+        if self.season_id != config.SEASON_ID:
+            return None
+        return optional_age_from_birthdate(birth_date)
 
     def build_rosters(self, team_rows: List[tuple]) -> List[tuple]:
         rows_by_player: Dict[int, tuple] = {}
@@ -484,7 +513,7 @@ class ModernNhlLoader:
                         full_name,
                         position,
                         optional_int(p.get("sweaterNumber")),
-                        optional_age_from_birthdate(p.get("birthDate")),
+                        self.roster_age(p.get("birthDate")),
                         optional_str(last_name) or full_name,
                         None,  # nationality — fill_nationality (bios reports)
                         None,  # captain
@@ -543,7 +572,7 @@ class ModernNhlLoader:
             full_name,
             pos,
             optional_int(payload.get("sweaterNumber")),
-            optional_age_from_birthdate(payload.get("birthDate")),
+            self.roster_age(payload.get("birthDate")),
             last_only,
             None,  # nationality — fill_nationality (bios reports)
             None,  # captain — not exposed by landing
@@ -796,19 +825,33 @@ class ModernNhlLoader:
         if rt_rows:
             logger.debug("realtime sample keys: %s", list(rt_rows[0].keys()))
 
-        out = []
+        # A report that sends 0 for a metric nobody counted that season gets NULL for everyone
+        # (Задача 158): "nobody counted" = zero or empty for most players of the report.
+        hits_by_player: Dict[int, Any] = {}
+        blocked_by_player: Dict[int, Any] = {}
         for r in rows:
             player_id = to_int(r.get("playerId"))
-            toi = toi_by_player.get(player_id, {})
-            fop = fop_by_player.get(player_id, {})
-            so = so_by_player.get(player_id, {})
             rt = rt_by_player.get(player_id, {})
             # rt.get("hits") may be a real 0 (no hits this season). Only fall back
             # to the summary value when the realtime row is missing the key.
-            hits_value = rt["hits"] if "hits" in rt else r.get("hits")
-            blocked_value = (
+            hits_by_player[player_id] = rt["hits"] if "hits" in rt else r.get("hits")
+            blocked_by_player[player_id] = (
                 rt["blockedShots"] if "blockedShots" in rt else r.get("blockedShots")
             )
+        no_hits = mostly_empty(list(hits_by_player.values()))
+        no_blocked = mostly_empty(list(blocked_by_player.values()))
+        no_toi = mostly_empty(
+            [toi_by_player.get(to_int(r.get("playerId")), {}).get("timeOnIce") for r in rows]
+        )
+
+        out = []
+        for r in rows:
+            player_id = to_int(r.get("playerId"))
+            toi = {} if no_toi else toi_by_player.get(player_id, {})
+            fop = fop_by_player.get(player_id, {})
+            so = so_by_player.get(player_id, {})
+            hits_value = None if no_hits else hits_by_player[player_id]
+            blocked_value = None if no_blocked else blocked_by_player[player_id]
             out.append(
                 (
                     optional_seconds_to_mmss(toi.get("timeOnIce")),
@@ -893,10 +936,9 @@ class ModernNhlLoader:
                     optional_seconds_to_mmss(toi_seconds),
                     optional_int(r.get("otLosses")),
                     optional_int(r.get("shutouts")),
-                    # The NHL has not had regular-season ties since 2005; the API
-                    # does not expose a "ties" stat anymore. We persist 0 as a
-                    # known-true business value (not "data missing").
-                    0,
+                    # The API sends ties up to 2003/04 and null after: the NHL has had
+                    # none since 2005, so 0 is a known-true value (not "data missing").
+                    to_int(r.get("ties")),
                     optional_int(r.get("wins")),
                     optional_int(r.get("losses")),
                     optional_int(r.get("saves")),
@@ -1687,9 +1729,13 @@ class ModernNhlLoader:
         goalie_summary_rows: List[dict] = []
         advanced_rows: List[tuple] = []
         shot_type_rows: List[tuple] = []
+        player_goals: Dict[int, int] = {}
         for game_type in GAME_TYPES:
             skaters, skater_summary = self.build_player_season_stats(game_type)
             goalies, goalie_summary = self.build_goalie_season_stats(game_type)
+            player_goals[game_type] = sum(to_int(r.get("goals")) for r in skater_summary) + sum(
+                to_int(r.get("goals")) for r in goalie_summary
+            )
             skater_rows += skaters
             skater_summary_rows += skater_summary
             goalie_rows += goalies
@@ -1715,7 +1761,34 @@ class ModernNhlLoader:
             goalie_rows=goalie_rows,
             advanced_rows=advanced_rows,
             shot_type_rows=shot_type_rows,
+            player_goals=player_goals,
         )
+
+    def check_goals_against_scores(self, player_goals: Dict[int, int]) -> None:
+        """Log, per game type, season player goals against the sum of game scores.
+
+        The scores come from ``stats/rest/en/game`` (``fetch_final_games``), nothing is
+        written. A regular-season shootout adds one goal to the score that no player
+        has, so from 2005/06 one goal per game decided by it (``period`` 5) is taken off.
+        A difference is logged as an error line for the caller to read; the known ones
+        are listed in ``scripts/history_season_totals.sh`` (Задача 158).
+
+        Args:
+            player_goals: ``SeasonReferenceRows.player_goals``.
+        """
+        games = self.fetch_final_games()
+        for game_type in GAME_TYPES:
+            typed = [g for g in games if g.get("gameType") == game_type]
+            scored = sum(to_int(g.get("homeScore")) + to_int(g.get("visitingScore")) for g in typed)
+            if game_type == REGULAR_SEASON and self.season_id >= 20052006:
+                # The shootout winner's extra goal is in the score and in no player's total.
+                scored -= sum(1 for g in typed if g.get("period") == 5)
+            diff = player_goals[game_type] - scored
+            log = logger.error if diff else logger.info
+            log(
+                "Goals check season=%s game_type=%d players=%d scores=%d diff=%d",
+                self.season_id, game_type, player_goals[game_type], scored, diff,
+            )
 
     def run(self):
         logger.info("Loading team reference...")
@@ -1730,26 +1803,32 @@ class ModernNhlLoader:
         advanced_rows = season_reference_rows.advanced_rows
         shot_type_rows = season_reference_rows.shot_type_rows
 
-        logger.info(
-            "Date window %s .. %s (season_id=%s, games.season=%s)",
-            self.start_date,
-            self.end_date,
-            self.season_id,
-            self.current_season_label,
-        )
-        logger.info("Fetching finished games...")
-        games_meta = self.games_to_load()
-        logger.info("Finished games to load: %d", len(games_meta))
-        scheduled_meta = self.fetch_scheduled_games()
-        (
-            games_rows,
-            all_goals_rows,
-            game_team_rows,
-            game_player_rows,
-            game_goalie_rows,
-            game_three_stars_rows,
-            shot_attempt_rows,
-        ) = self.build_game_rows(games_meta)
+        if self.reports_only:
+            self.check_goals_against_scores(season_reference_rows.player_goals)
+            scheduled_meta: List[dict] = []
+            games_rows = all_goals_rows = game_team_rows = game_player_rows = []
+            game_goalie_rows = game_three_stars_rows = shot_attempt_rows = []
+        else:
+            logger.info(
+                "Date window %s .. %s (season_id=%s, games.season=%s)",
+                self.start_date,
+                self.end_date,
+                self.season_id,
+                self.current_season_label,
+            )
+            logger.info("Fetching finished games...")
+            games_meta = self.games_to_load()
+            logger.info("Finished games to load: %d", len(games_meta))
+            scheduled_meta = self.fetch_scheduled_games()
+            (
+                games_rows,
+                all_goals_rows,
+                game_team_rows,
+                game_player_rows,
+                game_goalie_rows,
+                game_three_stars_rows,
+                shot_attempt_rows,
+            ) = self.build_game_rows(games_meta)
 
         logger.info("Writing to PostgreSQL...")
         conn = self.connect()
@@ -1792,6 +1871,7 @@ class ModernNhlLoader:
                     "city",
                     "active",
                     "short_name",
+                    "franchise_id",
                 ],
                 ["team_id", "season_id"],
                 teams_rows,
@@ -1807,6 +1887,7 @@ class ModernNhlLoader:
                     "wins",
                     "losses",
                     "ot",
+                    "ties",
                     "points",
                     "procent_points",
                     "goals_per_game",
@@ -2128,7 +2209,9 @@ class ModernNhlLoader:
                 game_three_stars_rows,
                 page_size=5000,
             )
-            scheduled_count = self.replace_scheduled_games(conn, scheduled_meta)
+            scheduled_count = (
+                0 if self.reports_only else self.replace_scheduled_games(conn, scheduled_meta)
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -2188,8 +2271,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         metavar="ID",
         help="NHL stats seasonId, e.g. 20262027 (overrides SEASON_ID).",
     )
+    parser.add_argument(
+        "--reports-only",
+        dest="reports_only",
+        action="store_true",
+        help="Season reports only (teams, rosters, player and goalie totals): no games, no "
+        "schedule; goals are checked against the game scores of the season.",
+    )
     args = parser.parse_args(argv)
     loader = ModernNhlLoader()
+    loader.reports_only = args.reports_only
     if args.season_id is not None:
         loader.season_id = args.season_id
     if loader.season_id is None:

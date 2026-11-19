@@ -49,10 +49,10 @@ WILSON, HUTSON = 8476880, 8484873  # game_three_stars: 2nd/3rd stars (both WSH)
 TABLE_COLUMNS: Dict[str, tuple] = {
     "teams": (
         "team_id", "season_id", "name", "division_name", "arena", "conference_name",
-        "abbreviation", "first_year_of_play", "city", "active", "short_name",
+        "abbreviation", "first_year_of_play", "city", "active", "short_name", "franchise_id",
     ),
     "teams_stats": (
-        "team_id", "season_id", "game_type", "games_played", "wins", "losses", "ot", "points",
+        "team_id", "season_id", "game_type", "games_played", "wins", "losses", "ot", "ties", "points",
         "procent_points", "goals_per_game", "goals_against_per_game",
         "power_play_percentage", "power_play_goals", "power_play_goals_against",
         "power_play_opportunities", "penalty_kill_percentage", "shots_per_game",

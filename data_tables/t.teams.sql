@@ -10,5 +10,7 @@ CREATE TABLE teams(
     city                varchar(30),
     active              boolean,
     short_name          varchar(30),
+    -- Клуб переезжает — team_id меняется, franchise_id нет (миграция 0031, Задача 158).
+    franchise_id        bigint,
     PRIMARY KEY (team_id, season_id)
 );
