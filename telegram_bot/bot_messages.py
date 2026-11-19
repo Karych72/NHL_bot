@@ -23,16 +23,17 @@ def night_goals(night: date) -> List[Tuple[int, int, Optional[str], Optional[int
     `is_shootouts`; в плей-офф 5+ — овертаймы) пропускаются.
     Зачем: рассылка итогов (`push_digest_job.run_game_broadcast`) и итоги канала
     (`run_channel_results`) ждут клипов всех голов матча, а в альбом подписчику страны или
-    игрока (Задача 122) рассылка берёт голы этих игроков."""
+    игрока (Задача 122) рассылка берёт голы этих игроков. Условие `season_id` нужно индексу
+    `(season_id, day)`: без него запрос идёт полным проходом по `games` с историей (Задача 157)."""
     goals = fetch_all(
         "SELECT a.game_id, a.event_id, r.nationality, a.goal_player_id "
         "FROM all_goals a "
         "JOIN games g ON g.game_id = a.game_id "
         "LEFT JOIN rosters r ON r.player_id = a.goal_player_id AND r.season_id = g.season_id "
-        "WHERE g.day = %s AND a.event_id IS NOT NULL "
+        "WHERE g.season_id = %s AND g.day = %s AND a.event_id IS NOT NULL "
         "AND NOT (g.is_shootouts AND a.period >= 5) "
         "ORDER BY a.game_id, a.period, a.time",
-        (night,),
+        (config.SEASON_ID, night),
         columns=["game_id", "event_id", "nationality", "scorer"],
     )
     return [

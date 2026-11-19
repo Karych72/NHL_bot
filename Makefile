@@ -33,11 +33,11 @@ DDL_TABLES := \
 	data_tables/t.players_shot_types.sql \
 	data_tables/t.goalies_season_stats.sql \
 	data_tables/t.games.sql \
-	data_tables/t.playoff_series.sql \
 	data_tables/t.scheduled_games.sql \
 	data_tables/t.game_predictions.sql \
 	data_tables/t.game_three_stars.sql \
 	data_tables/t.game_team_stats.sql \
+	data_tables/t.playoff_series.sql \
 	data_tables/t.game_player_stats.sql \
 	data_tables/t.game_goalie_stats.sql \
 	data_tables/t.all_goals.sql \

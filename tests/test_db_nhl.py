@@ -1184,11 +1184,18 @@ class TestCountryNightSql(unittest.TestCase):
         self.assertEqual(self.game_messages.game_goal_events(self.GAME), [5, 10, 20, 30, 99])
 
     def test_night_goals_skip_shootout_in_game_order_with_scorer_country(self):
-        self.assertEqual(
-            self.bot_messages.night_goals(self.NIGHT),
-            [(self.GAME, 5, "ZZZ", -1), (self.GAME, 10, "ZZZ", -1), (self.GAME, 20, "YYY", -3),
-             (self.GAME, 30, "ZZZ", -6)],
-        )
+        with patch.object(config, "SEASON_ID", self.SEASON):
+            self.assertEqual(
+                self.bot_messages.night_goals(self.NIGHT),
+                [(self.GAME, 5, "ZZZ", -1), (self.GAME, 10, "ZZZ", -1), (self.GAME, 20, "YYY", -3),
+                 (self.GAME, 30, "ZZZ", -6)],
+            )
+
+    def test_night_goals_ignore_other_season_with_same_day(self):
+        """Задача 157: запрос ограничен сезоном (индекс `(season_id, day)`), игры истории с тем же
+        днём не попадают в голы ночи."""
+        with patch.object(config, "SEASON_ID", self.SEASON + 1):
+            self.assertEqual(self.bot_messages.night_goals(self.NIGHT), [])
 
     def test_subscribed_games_match_teams_and_countries_of_each_chat(self):
         """Задача 85: матч ночи — чату, у которого на него подписка на команду (хозяева
@@ -1535,6 +1542,7 @@ class TestPlayoffSeriesView(unittest.TestCase):
     удаляются до и после."""
 
     SEASON = 20992100
+    OLD_SEASON = 20982099
     A, B, C = 900106, 900107, 900108
 
     def setUp(self):
@@ -1547,6 +1555,29 @@ class TestPlayoffSeriesView(unittest.TestCase):
                 "(%s, %s, 'TMA', 'Team A'), (%s, %s, 'TMB', 'Team B'), (%s, %s, 'TMC', 'Team C')",
                 (a, self.SEASON, b, self.SEASON, c, self.SEASON),
             )
+            cur.execute(
+                "INSERT INTO teams (team_id, season_id, abbreviation, name) VALUES "
+                "(%s, %s, 'TMA', 'Team A'), (%s, %s, 'TMB', 'Team B')",
+                (a, self.OLD_SEASON, b, self.OLD_SEASON),
+            )
+            # Завершённый сезон старого формата: раунд 1 — 1:1 по победам, B выигрывает по голам
+            # (3:4); раунд 2 — A ведёт 2:0. (игра, хозяева, гости, голы хозяев, голы гостей.)
+            for game_id, home, away, home_goals, away_goals in (
+                (2098030111, a, b, 2, 1), (2098030112, b, a, 3, 1),
+                (2098030211, a, b, 1, 0), (2098030212, b, a, 0, 2),
+            ):
+                winner = home if home_goals > away_goals else away
+                cur.execute(
+                    "INSERT INTO games (game_id, day, home_team_id, away_team_id, winner_id, "
+                    "is_overtime, is_shootouts, season_id, game_type) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, FALSE, %s, 3)",
+                    (game_id, date(2099, 3, 1), home, away, winner, self.OLD_SEASON),
+                )
+                cur.execute(
+                    "INSERT INTO game_team_stats (goals, field, game_id, team_id) "
+                    "VALUES (%s, 'home', %s, %s), (%s, 'away', %s, %s)",
+                    (home_goals, game_id, home, away_goals, game_id, away),
+                )
             # (игра, день, хозяева, гости, победитель, тип); game_id — сезон, тип, раунд, серия, игра.
             for game in (
                 (2099020001, date(2099, 3, 1), a, b, b, 2),
@@ -1567,8 +1598,24 @@ class TestPlayoffSeriesView(unittest.TestCase):
 
     def _cleanup(self):
         with closing(_connect()) as conn, conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM games WHERE season_id = %s", (self.SEASON,))
-            cur.execute("DELETE FROM teams WHERE season_id = %s", (self.SEASON,))
+            for season in (self.SEASON, self.OLD_SEASON):
+                cur.execute(
+                    "DELETE FROM game_team_stats WHERE game_id IN "
+                    "(SELECT game_id FROM games WHERE season_id = %s)", (season,),
+                )
+                cur.execute("DELETE FROM games WHERE season_id = %s", (season,))
+                cur.execute("DELETE FROM teams WHERE season_id = %s", (season,))
+
+    def test_closed_season_winner_by_wins_then_goals(self):
+        """Задача 157: в завершённом сезоне серия не обязана кончаться 4 победами — победитель
+        по победам, при равенстве по голам; Кубок — победитель серии самого большого раунда."""
+        with closing(_connect()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT round, wins_a, wins_b, goals_a, goals_b, winner_id FROM playoff_series "
+                "WHERE season_id = %s ORDER BY round", (self.OLD_SEASON,),
+            )
+            rows = cur.fetchall()
+        self.assertEqual(rows, [(1, 1, 1, 3, 4, self.B), (2, 2, 0, 3, 0, self.A)])
 
     def test_series_score_winner_and_open_final(self):
         with closing(_connect()) as conn, conn.cursor() as cur:
