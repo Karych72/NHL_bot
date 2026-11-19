@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 from datetime import date
 from urllib.parse import parse_qs, urlparse
 
@@ -210,6 +211,8 @@ class TeamRowsTest(LoaderApiTestCase):
         self.assertEqual(field(wsh, "teams", "short_name"), "Capitals")
         # §3: written because the team appeared in this season's summary.
         self.assertIs(field(wsh, "teams", "active"), True)
+        # franchiseId of stats/rest/en/team: a relocated club keeps it while team_id changes.
+        self.assertIsNotNone(field(wsh, "teams", "franchise_id"))
         # §2.8: neither endpoint carries these two.
         self.assertIsNone(field(wsh, "teams", "arena"))
         self.assertIsNone(field(wsh, "teams", "first_year_of_play"))
@@ -223,6 +226,8 @@ class TeamRowsTest(LoaderApiTestCase):
         self.assertEqual(field(wsh, "teams_stats", "wins"), 43)
         self.assertEqual(field(wsh, "teams_stats", "losses"), 30)
         self.assertEqual(field(wsh, "teams_stats", "ot"), 9)
+        # Ties exist up to 2003/04; the 2024/25 summary sends none.
+        self.assertIsNone(field(wsh, "teams_stats", "ties"))
         self.assertEqual(field(wsh, "teams_stats", "points"), 95)
         self.assertEqual(field(wsh, "teams_stats", "goals_per_game"), 3.18292)
         self.assertEqual(field(wsh, "teams_stats", "goals_against_per_game"), 2.90243)
@@ -305,10 +310,16 @@ class RosterRowsTest(LoaderApiTestCase):
         # Born 1985-09-17: exact age today, so an off-by-one around the birthday
         # in optional_age_from_birthdate fails here.
         today = date.today()
+        with mock.patch.object(loader.config, "SEASON_ID", SEASON_ID):
+            current_ovi = by_player(
+                self._wsh_roster(self._loader()), "rosters"
+            )[OVECHKIN]
         self.assertEqual(
-            field(ovi, "rosters", "currentage"),
+            field(current_ovi, "rosters", "currentage"),
             today.year - 1985 - ((today.month, today.day) < (9, 17)),
         )
+        # A past season gets NULL, not today's age (Задача 158).
+        self.assertIsNone(field(ovi, "rosters", "currentage"))
         # §2.7: /v1/roster never exposes these, so "unknown" ≠ False.
         self.assertIsNone(field(ovi, "rosters", "captain"))
         self.assertIsNone(field(ovi, "rosters", "alternate_captain"))
@@ -882,3 +893,67 @@ class SeasonReferenceRowsTest(LoaderApiTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MostlyEmptyTest(unittest.TestCase):
+    def test_majority_of_zero_or_none_is_empty(self):
+        self.assertFalse(loader.mostly_empty([0, None, 3, 4]))
+        self.assertTrue(loader.mostly_empty([0, 0, None, 3]))
+        self.assertFalse(loader.mostly_empty([1, 2, 0]))
+        self.assertFalse(loader.mostly_empty([]))
+
+
+class UncountedMetricsTest(SkaterSeasonStatsTest):
+    def _old_season_rows(self):
+        """The 1980s report: realtime sends 0 for every player, timeonice sends null."""
+        zero_realtime = [dict(r, hits=0, blockedShots=0) for r in load_fixture("nhl_skater_realtime.json")]
+        null_toi = [
+            dict(r, **{k: None for k in r if "imeOnIce" in k or k == "shifts"})
+            for r in load_fixture("nhl_skater_timeonice.json")
+        ]
+        return self._rows(
+            {"skater/realtime": zero_realtime, "skater/timeonice": null_toi}
+        )[OVECHKIN]
+
+    def test_report_with_zero_hits_blocks_and_no_time_on_ice_gives_null(self):
+        ovi = self._old_season_rows()
+        table = "players_season_stats"
+        for column in ("hits", "blocked", "time_on_ice", "even_time_on_ice", "shifts",
+                       "time_on_ice_per_game", "power_play_time_on_ice"):
+            self.assertIsNone(field(ovi, table, column), column)
+        # Metrics the report did count are untouched.
+        self.assertEqual(field(ovi, table, "goals"), 32)
+
+    def test_counted_report_keeps_a_players_real_zero_hits(self):
+        realtime = load_fixture("nhl_skater_realtime.json")
+        rows = self._rows(
+            {"skater/realtime": [dict(r, hits=0) if r["playerId"] == OVECHKIN else r for r in realtime]}
+        )
+        self.assertEqual(field(rows[OVECHKIN], "players_season_stats", "hits"), 0)
+
+
+class GoalsCheckTest(LoaderApiTestCase):
+    GAMES = [
+        {"gameType": 2, "homeScore": 4, "visitingScore": 3, "period": 3},
+        {"gameType": 2, "homeScore": 3, "visitingScore": 2, "period": 5},  # shootout: +1 for nobody
+        {"gameType": 3, "homeScore": 2, "visitingScore": 1, "period": 4},
+    ]
+
+    def _check(self, season_id, player_goals):
+        instance = make_loader()
+        instance.season_id = season_id
+        instance.start_date, instance.end_date = "2000-09-01", "2100-01-01"
+        stub_api(instance, paginated_routes={"stats/rest/en/game": self.GAMES})
+        with self.assertLogs(loader.logger) as logs:
+            instance.check_goals_against_scores(player_goals)
+        return logs.records
+
+    def test_shootout_games_are_left_out_from_2005(self):
+        records = self._check(20102011, {2: 7, 3: 3})
+        self.assertEqual([r.levelname for r in records], ["INFO", "INFO"])
+
+    def test_difference_is_logged_as_error(self):
+        records = self._check(19171918, {2: 7, 3: 3})
+        # Before 2005/06 a period-5 game is a normal one: scores 7 + 5, players 7.
+        self.assertEqual(records[0].levelname, "ERROR")
+        self.assertIn("diff=-5", records[0].getMessage())
