@@ -26,6 +26,7 @@
 | 59 | [Топ-5 моментов дня: свой рейтинг из чужих подборок](task_59_top_moments_research.md) | Продукт | ⚪ |
 | 94 | [Типовые вопросы к ИИ бота: каталог и заготовки ответов](task_94_ai_question_catalog.md) | Продукт | 🟡 |
 | 126 | [Премиум без прогноза: чем наполнить](task_126_premium_content.md) | Продукт | 🟠 |
+| 160 | [Вратарь, пропустивший гол: `all_goals.goalie_id`](task_160_goal_goalie_id.md) | Продукт | 🟡 |
 
 Карточки трека B (модель) лежат в [`task_model/`](task_model/README.md); при закрытии уезжают в
 [`../archive/tasks/task_model/`](../archive/tasks/task_model/).
