@@ -30,7 +30,14 @@ BATCH_GAMES = 500
 
 
 def goalie_rows(pbp_file: Path) -> Iterator[Tuple[int, int, int]]:
-    """Yield ``(game_id, event_id, goalie_id)`` for goals of one game with a goalie in net."""
+    """Yield ``(game_id, event_id, goalie_id)`` for goals of one game with a goalie in net.
+
+    Why: ``all_goals`` rows are matched by ``(game_id, event_id)``; empty-net goals carry no
+    ``goalieInNetId`` and are skipped, so their ``goalie_id`` stays NULL.
+
+    Args:
+        pbp_file: cached ``{game_id}.pbp.json.gz``; the game id is the file-name prefix.
+    """
     game_id = int(pbp_file.name.split(".")[0])
     with gzip.open(pbp_file, "rt", encoding="utf-8") as fh:
         plays = json.load(fh).get("plays", [])
@@ -55,6 +62,8 @@ def main() -> None:
     with conn, conn.cursor() as cur:
         for start in range(0, len(files), BATCH_GAMES):
             rows = [r for f in files[start:start + BATCH_GAMES] for r in goalie_rows(f)]
+            if not rows:
+                continue
             execute_values(
                 cur,
                 "UPDATE all_goals g SET goalie_id = v.goalie_id "
@@ -62,7 +71,7 @@ def main() -> None:
                 "WHERE g.game_id = v.game_id AND g.event_id = v.event_id",
                 rows,
                 template="(%s::bigint, %s::int, %s::bigint)",
-                page_size=5000,
+                page_size=len(rows),  # одна страница: rowcount считает только последнюю
             )
             updated += cur.rowcount
             print(f"{min(start + BATCH_GAMES, len(files))}/{len(files)} игр", flush=True)
