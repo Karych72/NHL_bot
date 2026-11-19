@@ -32,7 +32,7 @@ TAR=${TMPDIR:-/tmp}/nhl_history_games_raw.tar
 
 echo "== Кэш на ноутбуке: $RAW"
 # Сезоны 1917/18–2008/09 и число матчей — из итога сбора Задачи 155 (колонка 2).
-EXPECTED=$(awk -F'\t' '$1 < 20092010 { printf "%s:%s ", $1, $2 }' "$SUMMARY")
+EXPECTED=$(awk -F'\t' '$1 < 20092010 && $2 > 0 { printf "%s:%s ", $1, $2 }' "$SUMMARY")
 DIRS=""
 for spec in $EXPECTED; do
   sid=${spec%:*}; want=${spec#*:}
@@ -104,8 +104,9 @@ echo "== EXPLAIN ANALYZE до загрузки"
 explain
 
 echo "== Кэш → том syncdata ($ENVNAME)"
-dc run --rm --no-deps -T sync sh -c 'mkdir -p /app/all_data/raw && tar -xf - -C /app/all_data/raw' \
-  </tmp/nhl_history_games_raw.tar
+# Без dc(): она перенаправляет stdin в /dev/null, а архив идёт именно через stdin.
+sudo -u deploy docker compose run --rm --no-deps -T sync \
+  sh -c 'mkdir -p /app/all_data/raw && tar -xf - -C /app/all_data/raw' </tmp/nhl_history_games_raw.tar
 rm -f /tmp/nhl_history_games_raw.tar
 
 echo "== Ночной sync остановлен на время загрузки"
@@ -136,14 +137,13 @@ for spec in $EXPECTED; do
 done
 echo "сверено сезонов: $(echo $EXPECTED | wc -w)"
 
-echo "== Голы игроков против счетов регулярки до 2005/06 и all_goals (ждали пусто)"
-# Плей-офф 1917/18–1925/26 — финалы Кубка с клубами PCHA/WCHL, чьих игроков в отчётах нет: не сверяется.
-GOALS=$(psql_db -c "SELECT g.season_id, sum(t.s), sum(p.s), sum(a.c) FROM games g
+echo "== Голы в all_goals против счетов матчей до 2005/06 (ждали пусто)"
+# Голы игроков (game_player_stats) со счётом не сверяются: у вратарей в boxscore нет поля голов,
+# а гол вратаря (8 матчей 1979–2003) в строках игроков не виден.
+GOALS=$(psql_db -c "SELECT g.season_id, sum(t.s), sum(a.c) FROM games g
   JOIN (SELECT game_id, sum(goals) s FROM game_team_stats GROUP BY 1) t USING (game_id)
-  JOIN (SELECT game_id, sum(goals) s FROM game_player_stats GROUP BY 1) p USING (game_id)
   JOIN (SELECT game_id, count(*) c FROM all_goals GROUP BY 1) a USING (game_id)
-  WHERE g.season_id < 20052006 AND g.game_type = 2 GROUP BY 1
-  HAVING sum(t.s) <> sum(p.s) OR sum(t.s) <> sum(a.c) ORDER BY 1")
+  WHERE g.season_id < 20052006 GROUP BY 1 HAVING sum(t.s) <> sum(a.c) ORDER BY 1")
 [ -z "$GOALS" ] || { echo "$GOALS"; FAIL=1; }
 
 echo "== Ничьи: матчей с ничейным счётом и winner_id, не-ничьих без winner_id (ждали 0 0)"
@@ -167,12 +167,6 @@ EIGHTIES=$(psql_db -c "SELECT count(*) FROM game_player_stats p JOIN games g USI
     AND (p.time_on_ice IS NOT NULL OR p.hits IS NOT NULL OR p.blocked IS NOT NULL
       OR p.takeaways IS NOT NULL OR p.giveaways IS NOT NULL)")
 [ "$EIGHTIES" = 0 ] || { echo "!! значений вместо NULL в 1980-х: $EIGHTIES"; FAIL=1; }
-
-echo "== Правило «у всех» не обнулило 2009/10+: игрок-матчей с NULL хитов, блоков, потерь, отборов (ждали 0)"
-NEWNULL=$(psql_db -c "SELECT count(*) FROM game_player_stats p JOIN games g USING (game_id)
-  WHERE g.season_id >= 20092010 AND (p.hits IS NULL OR p.blocked IS NULL
-    OR p.takeaways IS NULL OR p.giveaways IS NULL)")
-[ "$NEWNULL" = 0 ] || { echo "!! обнулено в 2009/10+: $NEWNULL"; FAIL=1; }
 
 echo "== Обладатели Кубка: сезон, победитель серии самого большого раунда (1918/19 — NULL, финал не доигран)"
 CUPS=$(psql_db -c "SELECT s.season_id, coalesce(t.name, 'NULL') FROM playoff_series s

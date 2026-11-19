@@ -7,9 +7,9 @@
 -- winner_id. В идущем сезоне (самый новый сезон в games) — команда с 4 победами, NULL, пока серия
 -- идёт. В завершённых сезонах серия закрыта целиком, форматы разные (до 7 побед, до 1-й
 -- половины 1980-х — 3 и 5 побед, 1917–1930-е — «по сумме голов»), поэтому победитель — тот, у кого
--- больше побед, а при равенстве побед — больше голов; NULL, если и голы равны (финал 1919 года
--- не доигран). Обладатель Кубка завершённого сезона — winner_id серии самого большого round
--- (финал — 4-й раунд только с 1980-х).
+-- больше побед; голы решают только в серии из двух игр («по сумме голов», 1917–1930-е), при
+-- равенстве и там — NULL. Финал 1919 года не доигран (2:2 и ничья): NULL. Обладатель Кубка
+-- завершённого сезона — winner_id серии самого большого round (финал — 4-й раунд только с 1980-х).
 --
 -- Файл идемпотентен и нужен в двух местах: его подключает миграция (\ir) и применяет
 -- `make db-tables` — db-drop уносит представление CASCADE-ом от games, а применённую миграцию
@@ -21,8 +21,8 @@ SELECT
     CASE
         WHEN season_id < (SELECT max(season_id) FROM games) THEN
             CASE
-                WHEN wins_a > wins_b OR (wins_a = wins_b AND goals_a > goals_b) THEN team_a_id
-                WHEN wins_b > wins_a OR (wins_a = wins_b AND goals_b > goals_a) THEN team_b_id
+                WHEN wins_a > wins_b OR (wins_a = wins_b AND games_played = 2 AND goals_a > goals_b) THEN team_a_id
+                WHEN wins_b > wins_a OR (wins_a = wins_b AND games_played = 2 AND goals_b > goals_a) THEN team_b_id
             END
         WHEN wins_a = 4 THEN team_a_id
         WHEN wins_b = 4 THEN team_b_id
