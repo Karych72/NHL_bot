@@ -177,6 +177,7 @@ def make_loader() -> Any:
     instance.team_meta_by_id = {}
     instance.team_standings_by_abbrev = {}
     instance.team_abbrev_by_id = {}
+    instance.game_clubs = {}
     return instance
 
 

@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # Play-by-play ``typeDescKey`` values stored in ``shot_attempts``.
 SHOT_ATTEMPT_TYPES = frozenset({"shot-on-goal", "missed-shot", "blocked-shot", "goal"})
 
+# First season whose play-by-play has shot coordinates and ``situationCode``: earlier games
+# (1917/18–2008/09) get no ``shot_attempts`` and no power-play / empty-net flags (Задача 157).
+FIRST_SHOT_ATTEMPT_SEASON = 20092010
+
 # Disk cache for per-game NHL API responses (play-by-play / boxscore / landing)
 # — see ``ModernNhlLoader.fetch_game_json``. A finished game's payload never
 # changes, so it is cached indefinitely once written; season-wide report
@@ -197,6 +201,22 @@ def payload_complete(endpoint: str, payload: dict) -> bool:
     return all(side.get("forwards") or side.get("defense") for side in sides)
 
 
+def counted_in_game(players: List[dict], key: str) -> bool:
+    """True when the league counted boxscore metric *key* in this game.
+
+    A metric nobody counted comes as ``0`` (or no field) for every player of the game;
+    a counted one has a non-zero value for somebody among ~36 skaters. All zero means
+    "not counted", and the loader writes ``NULL`` instead of 36 fake zeros. The majority
+    rule of the season reports does not fit a single game: takeaways are zero for most
+    skaters in any game (Задача 157, human's decision 2026-11-19).
+
+    Args:
+        players: skaters (or goalies) of both teams of one game, boxscore dicts.
+        key: boxscore field name.
+    """
+    return any(p.get(key) for p in players)
+
+
 def mostly_empty(values: List[Any]) -> bool:
     """True when more than half of *values* are ``None`` or zero.
 
@@ -277,6 +297,8 @@ class ModernNhlLoader:
         self.team_meta_by_id: Dict[int, dict] = {}
         self.team_standings_by_abbrev: Dict[str, dict] = {}
         self.team_abbrev_by_id: Dict[int, str] = {}
+        # Clubs seen in the landing of loaded games: team id -> (abbrev, full name).
+        self.game_clubs: Dict[int, Tuple[Optional[str], Optional[str]]] = {}
 
     def get_json(self, url: str) -> dict:
         last_error = None
@@ -441,6 +463,27 @@ class ModernNhlLoader:
                 )
             )
         return teams_rows
+
+    def build_outside_club_rows(self, known_ids: Set[int], game_club_ids: Set[int]) -> List[tuple]:
+        """``teams`` rows of clubs that played NHL games but are not in the NHL season reports.
+
+        Why: the Stanley Cup finals of 1918–1926 were played against PCHA/WCHL clubs
+        (Vancouver Millionaires, Seattle Metropolitans, Victoria Cougars, ...); their games
+        reference ``teams`` by foreign key. Name and abbreviation come from the game's
+        ``landing``; division, conference, franchise are unknown (NULL), ``active`` is false.
+
+        Args:
+            known_ids: ``team_id`` of the season's ``teams`` rows.
+            game_club_ids: home and away ``team_id`` of every game being loaded.
+        """
+        rows = []
+        for team_id in sorted(game_club_ids - known_ids):
+            abbrev, full_name = self.game_clubs[team_id]
+            rows.append(
+                (team_id, self.season_id, full_name, None, None, None, abbrev, None,
+                 full_name.rsplit(" ", 1)[0] if full_name else None, False, full_name, None)
+            )
+        return rows
 
     def build_teams_stats(self, summary_rows: List[dict], game_type: int) -> List[tuple]:
         """``teams_stats`` rows of *game_type* from that type's ``team/summary`` records.
@@ -1202,7 +1245,10 @@ class ModernNhlLoader:
             away_id = to_int(game.get("visitingTeamId"))
             home_score = to_int(game.get("homeScore"))
             away_score = to_int(game.get("visitingScore"))
-            winner = home_id if home_score > away_score else away_id
+            # Ties exist until 2005/06: no winner, not "the away team".
+            winner = None if home_score == away_score else (
+                home_id if home_score > away_score else away_id
+            )
 
             pbp = self.fetch_game_json(game_id, "play-by-play")
             box = self.fetch_game_json(game_id, "boxscore")
@@ -1252,6 +1298,9 @@ class ModernNhlLoader:
             takeaways = [p for p in plays if p.get("typeDescKey") == "takeaway"]
             blocked = [p for p in plays if p.get("typeDescKey") == "blocked-shot"]
             faceoffs = [p for p in plays if p.get("typeDescKey") == "faceoff"]
+            # Play-by-play of 2009/10+ carries hits, giveaways, takeaways, blocks and face-offs;
+            # earlier it does not, and the derived counts below would be fake zeros.
+            pbp_detailed = bool(hits or giveaways or takeaways or blocked or faceoffs)
 
             team_period_goals = {
                 home_id: {1: 0, 2: 0, 3: 0},
@@ -1269,15 +1318,16 @@ class ModernNhlLoader:
                 situation = g.get("situationCode") or ""
                 modifier = (d.get("goalModifier") or "").lower()
 
-                empty_net = "empty-net" in modifier
+                # Before 2009/10 a goal has no ``situationCode``: strength unknown, flags NULL.
+                empty_net = True if "empty-net" in modifier else (None if len(situation) != 4 else False)
                 if not empty_net and len(situation) == 4:
                     if team_id == home_id:
                         empty_net = situation[0] == '0'
                     else:
                         empty_net = situation[3] == '0'
 
-                is_ppg = False
-                is_shg = False
+                is_ppg = None if len(situation) != 4 else False
+                is_shg = None if len(situation) != 4 else False
                 if len(situation) == 4:
                     try:
                         away_goalie = int(situation[0])
@@ -1339,6 +1389,9 @@ class ModernNhlLoader:
             # omits (``shotType`` on blocked shots, rare missing coordinates)
             # becomes NULL.
             for p in plays:
+                # Before 2009/10 there are no coordinates; goals alone are not shot attempts.
+                if self.season_id < FIRST_SHOT_ATTEMPT_SEASON:
+                    break
                 if p.get("typeDescKey") not in SHOT_ATTEMPT_TYPES:
                     continue
                 period_desc_p = p.get("periodDescriptor") or {}
@@ -1430,10 +1483,14 @@ class ModernNhlLoader:
                 elif penalized == away_id:
                     pp_opps[home_id] += 1
 
-            pp_goals_team = {home_id: 0, away_id: 0}
+            # Before 2009/10 a goal has no strength (``is_ppg`` is NULL): power-play goals unknown.
+            strength_known = all(row[8] is not None for row in game_goals)
+            pp_goals_team: Dict[int, Optional[int]] = {home_id: 0, away_id: 0}
             for row in game_goals:
                 if row[8]:
-                    pp_goals_team[row[10]] = pp_goals_team.get(row[10], 0) + 1
+                    pp_goals_team[row[10]] = (pp_goals_team.get(row[10]) or 0) + 1
+            if not strength_known:
+                pp_goals_team = {home_id: None, away_id: None}
 
             game_team_rows.append(
                 (
@@ -1442,13 +1499,13 @@ class ModernNhlLoader:
                     pim_by_team.get(home_id, 0),
                     home_sog,
                     safe_pct(pp_goals_team[home_id], pp_opps[home_id]),
-                    float(pp_goals_team[home_id]),
+                    optional_float(pp_goals_team[home_id]),
                     float(pp_opps[home_id]),
                     safe_pct(faceoff_wins.get(home_id, 0), faceoff_taken.get(home_id, 0)),
-                    blocked_by_team.get(home_id, 0),
-                    takeaways_by_team.get(home_id, 0),
-                    giveaways_by_team.get(home_id, 0),
-                    hits_by_team.get(home_id, 0),
+                    blocked_by_team.get(home_id, 0) if pbp_detailed else None,
+                    takeaways_by_team.get(home_id, 0) if pbp_detailed else None,
+                    giveaways_by_team.get(home_id, 0) if pbp_detailed else None,
+                    hits_by_team.get(home_id, 0) if pbp_detailed else None,
                     game_id,
                     home_id,
                     team_period_goals.get(home_id, {}).get(1, 0),
@@ -1463,13 +1520,13 @@ class ModernNhlLoader:
                     pim_by_team.get(away_id, 0),
                     away_sog,
                     safe_pct(pp_goals_team[away_id], pp_opps[away_id]),
-                    float(pp_goals_team[away_id]),
+                    optional_float(pp_goals_team[away_id]),
                     float(pp_opps[away_id]),
                     safe_pct(faceoff_wins.get(away_id, 0), faceoff_taken.get(away_id, 0)),
-                    blocked_by_team.get(away_id, 0),
-                    takeaways_by_team.get(away_id, 0),
-                    giveaways_by_team.get(away_id, 0),
-                    hits_by_team.get(away_id, 0),
+                    blocked_by_team.get(away_id, 0) if pbp_detailed else None,
+                    takeaways_by_team.get(away_id, 0) if pbp_detailed else None,
+                    giveaways_by_team.get(away_id, 0) if pbp_detailed else None,
+                    hits_by_team.get(away_id, 0) if pbp_detailed else None,
                     game_id,
                     away_id,
                     team_period_goals.get(away_id, {}).get(1, 0),
@@ -1513,14 +1570,48 @@ class ModernNhlLoader:
                     if assist2_id is not None:
                         player_sh_assists[assist2_id] = player_sh_assists.get(assist2_id, 0) + 1
 
+            box_sides = {
+                side_key: (box.get("playerByGameStats") or {}).get(side_key, {})
+                for side_key in ("homeTeam", "awayTeam")
+            }
+            box_skaters = [
+                p
+                for side_stats in box_sides.values()
+                for p in side_stats.get("forwards", []) + side_stats.get("defense", [])
+            ]
+            # A metric nobody counted in this game is NULL for every player, not 0. The
+            # play-by-play also proves the counting: a game with its events is a counted one,
+            # even if every skater really had zero takeaways.
+            box_counted = {
+                key: counted_in_game(box_skaters, key)
+                for key in (
+                    "sog", "hits", "blockedShots", "takeaways", "giveaways", "plusMinus",
+                    "faceoffWinningPctg",
+                )
+            }
+            for key in ("hits", "blockedShots", "takeaways", "giveaways", "faceoffWinningPctg"):
+                box_counted[key] = box_counted[key] or pbp_detailed
+            box_counted["sog"] = box_counted["sog"] or any(
+                p.get("typeDescKey") == "shot-on-goal" for p in plays
+            )
+            # Plus-minus appeared in the same season as shots (1959/60); all zeros in a counted
+            # game is real (only power-play goals were scored).
+            box_counted["plusMinus"] = box_counted["plusMinus"] or box_counted["sog"]
+            # Strength splits of goalies: even-strength shots are in every counted game.
+            box_goalies = [gk for side_stats in box_sides.values() for gk in side_stats.get("goalies", [])]
+            goalie_splits_counted = any(
+                (optional_split_sv(gk.get("evenStrengthShotsAgainst"))[1] or 0) > 0
+                for gk in box_goalies
+            )
             for side_key, team_id in (("homeTeam", home_id), ("awayTeam", away_id)):
-                side_stats = (box.get("playerByGameStats") or {}).get(side_key, {})
+                side_stats = box_sides[side_key]
                 skaters = side_stats.get("forwards", []) + side_stats.get("defense", [])
                 for p in skaters:
                     pid = to_int(p.get("playerId"))
                     # PP assists / SH goals / SH assists / face-off counts are
                     # derived from PBP plays; a real 0 here means "the skater
-                    # had none in this game", not "data missing", so we keep 0.
+                    # had none in this game", not "data missing", so we keep 0 —
+                    # unless the game has no strength / face-off events at all: NULL.
                     game_player_rows.append(
                         (
                             team_id,
@@ -1529,20 +1620,24 @@ class ModernNhlLoader:
                             optional_mmss(p.get("toi")),
                             optional_int(p.get("assists")),
                             optional_int(p.get("goals")),
-                            optional_int(p.get("sog")),
-                            optional_int(p.get("hits")),
+                            optional_int(p.get("sog")) if box_counted["sog"] else None,
+                            optional_int(p.get("hits")) if box_counted["hits"] else None,
                             optional_int(p.get("powerPlayGoals")),
-                            player_pp_assists.get(pid, 0),
+                            player_pp_assists.get(pid, 0) if strength_known else None,
                             optional_int(p.get("pim")),
-                            player_fo_wins.get(pid, 0),
-                            player_fo_taken.get(pid, 0),
-                            optional_int(p.get("takeaways")),
-                            optional_int(p.get("giveaways")),
-                            player_sh_goals.get(pid, 0),
-                            player_sh_assists.get(pid, 0),
-                            optional_int(p.get("blockedShots")),
-                            optional_int(p.get("plusMinus")),
-                            optional_float(p.get("faceoffWinningPctg")),
+                            player_fo_wins.get(pid, 0) if pbp_detailed else None,
+                            player_fo_taken.get(pid, 0) if pbp_detailed else None,
+                            optional_int(p.get("takeaways")) if box_counted["takeaways"] else None,
+                            optional_int(p.get("giveaways")) if box_counted["giveaways"] else None,
+                            player_sh_goals.get(pid, 0) if strength_known else None,
+                            player_sh_assists.get(pid, 0) if strength_known else None,
+                            optional_int(p.get("blockedShots")) if box_counted["blockedShots"] else None,
+                            optional_int(p.get("plusMinus")) if box_counted["plusMinus"] else None,
+                            (
+                                optional_float(p.get("faceoffWinningPctg"))
+                                if box_counted["faceoffWinningPctg"]
+                                else None
+                            ),
                         )
                     )
 
@@ -1550,6 +1645,8 @@ class ModernNhlLoader:
                     pp_saves, pp_shots = optional_split_sv(gk.get("powerPlayShotsAgainst"))
                     sh_saves, sh_shots = optional_split_sv(gk.get("shorthandedShotsAgainst"))
                     ev_saves, ev_shots = optional_split_sv(gk.get("evenStrengthShotsAgainst"))
+                    if not goalie_splits_counted:
+                        pp_saves = pp_shots = sh_saves = sh_shots = ev_saves = ev_shots = None
                     shots_against = optional_int(gk.get("shotsAgainst"))
                     saves = optional_int(gk.get("saves"))
                     decision_raw = gk.get("decision")
@@ -1581,6 +1678,17 @@ class ModernNhlLoader:
 
             landing_home = landing.get("homeTeam") or {}
             landing_away = landing.get("awayTeam") or {}
+            for club in (landing_home, landing_away):
+                if club.get("id") is not None:
+                    self.game_clubs[int(club["id"])] = (
+                        optional_str(club.get("abbrev")),
+                        optional_str(
+                            " ".join(
+                                (club.get(part) or {}).get("default", "")
+                                for part in ("placeName", "commonName")
+                            )
+                        ),
+                    )
             home_abbrev = landing_home.get("abbrev")
             away_abbrev = landing_away.get("abbrev")
             home_team_id = landing_home.get("id")
@@ -1830,6 +1938,9 @@ class ModernNhlLoader:
                 game_three_stars_rows,
                 shot_attempt_rows,
             ) = self.build_game_rows(games_meta)
+            teams_rows += self.build_outside_club_rows(
+                {row[0] for row in teams_rows}, {row[2] for row in games_rows} | {row[3] for row in games_rows}
+            )
 
         logger.info("Writing to PostgreSQL...")
         conn = self.connect()

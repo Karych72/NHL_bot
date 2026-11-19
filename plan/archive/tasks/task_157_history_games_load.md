@@ -9,8 +9,8 @@
 `franchise_id` — на них ссылаются матчи), 156 (рамка ИИ в две оси).
 **Источник:** разговор с человеком 2026-11-18 («загружать каждый матч отдельно, просто
 с множеством NULL»); выделена 2026-11-18 из Задачи 155; исследование —
-[`../../docs/history_depth_research.md`](../../docs/history_depth_research.md); реестр —
-[`../open_tasks.md`](../open_tasks.md).
+[`../../../docs/history_depth_research.md`](../../../docs/history_depth_research.md); реестр —
+[`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 

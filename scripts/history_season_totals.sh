@@ -119,7 +119,7 @@ psql_db -c "SELECT t.season_id, t.name, t.franchise_id FROM teams t
   WHERE name LIKE 'Ottawa Senators%' AND season_id IN (19171918, 20252026)")" = 2 ] \
   || { echo "!! две Оттавы — не два franchise_id"; FAIL=1; }
 NOFRANCHISE=$(psql_db -c "SELECT count(*) FROM teams WHERE franchise_id IS NULL
-  AND season_id < 20262027")
+  AND season_id < 20262027 AND active")
 [ "$NOFRANCHISE" = 0 ] || { echo "!! клубов без franchise_id: $NOFRANCHISE"; FAIL=1; }
 
 echo "== Ничьи: клубов, где 2 × победы + ничьи + ot ≠ очки (до 2003/04), и с ties после 2005/06 (ждали 0 0)"
