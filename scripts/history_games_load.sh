@@ -104,7 +104,7 @@ explain() {
 echo "== EXPLAIN ANALYZE до загрузки"
 explain
 
-echo "== Кэш → том syncdata ($ENVNAME)"
+echo "== Кэш → том syncdata"
 # Без dc(): она перенаправляет stdin в /dev/null, а архив идёт именно через stdin.
 sudo -u deploy docker compose run --rm --no-deps -T sync \
   sh -c 'mkdir -p /app/all_data/raw && tar -xf - -C /app/all_data/raw' </tmp/nhl_history_games_raw.tar
