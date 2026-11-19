@@ -82,7 +82,7 @@ data_tables/                    схема БД: t.*.sql (таблицы дан�
 configs/                        YAML-конфигурации modeling (default, smoke)
 artifacts/                      выход modeling (датасеты, отчёты, модели)
 deploy/                         compose dev/prod, systemd-юнит секретов, fetch-secrets.sh, models/
-scripts/                        вспомогательные скрипты: оценки ИИ, фикстуры, dev-стенд, бэкфиллы (`backfill_goal_goalie.py`), отчёты
+scripts/                        вспомогательные скрипты: оценки ИИ, фикстуры, dev-стенд, бэкфиллы (`backfill_goal_goalie.sh`), отчёты
 tests/                          pytest-тесты и фикстуры NHL API (tests/fixtures/)
 docs/                           тематические документы; docs/superpowers/ — планы и спецификации
 plan/                           реестр задач (open_tasks.md), карточки (tasks/), архив (archive/)
