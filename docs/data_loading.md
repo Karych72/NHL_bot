@@ -515,7 +515,7 @@ SELECT season_id, COUNT(*) FROM games GROUP BY season_id ORDER BY season_id;
 клубы (`teams`, `teams_stats`), составы, игроки и вратари. Грузятся флагом `--reports-only`:
 лоадер строит те же сезонные таблицы, но не трогает `games*`, `shot_attempts` и `scheduled_games`,
 а вместо матчей сверяет голы — сумма голов игроков и вратарей против суммы счетов матчей из
-`stats/rest/en/game` (с 2005/06 без матчей, решённых буллитами; в лог строка `Goals check … diff=N`,
+`stats/rest/en/game` (в лог строка `Goals check … diff=N`,
 при `N ≠ 0` — уровень ERROR; с 2005/06 из счетов вычитается по одному голу за матч, решённый буллитами). Известные расхождения (игроки − счета) — в `scripts/history_season_totals.sh`: регулярка 1917/18 (−2) и плей-офф 1917/18–1925/26 (счета включают финалы с клубами PCHA/WCHL, чьих игроков в отчётах нет), 1987/88 (+6), 2019/20 (−2).
 
 - **`teams.franchise_id`** — из `stats/rest/en/team`: клуб после переезда меняет `team_id`, но не

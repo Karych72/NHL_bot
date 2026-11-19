@@ -10,7 +10,7 @@
 # правило «у большинства» не обнуляет сезоны 2009/10+ (запрос до загрузки) → EXPLAIN rosters до →
 # на время загрузки останавливается ночной sync → по сезону `load_season_modern.py --reports-only`
 # (регулярка и плей-офф; 2004/05 пропущен — не игрался) → ANALYZE → сверки: голы игроков и вратарей
-# против счетов матчей (известное расхождение — 1917/18, 2 гола), Гретцки, franchise_id, ничьи,
+# против счетов матчей (12 известных расхождений — список KNOWN ниже), Гретцки, franchise_id, ничьи,
 # NULL вместо нулей, EXPLAIN rosters после. Матчи в базу не пишутся. Повторный запуск безопасен:
 # лоадер идемпотентен. Откат — миграция 0031 вниз либо пересборка nhl_dev из дампа прода.
 set -eu
@@ -91,7 +91,7 @@ GAPS=$(grep 'Goals check' "$LOADER_LOG" | grep -v 'diff=0$' || true)
 if [ -n "$GAPS" ]; then
   echo "$GAPS"
   FOUND=$(echo "$GAPS" | sed 's/.*season=\([0-9]*\) game_type=\([0-9]\).* diff=\(.*\)$/\1:\2:\3/')
-  UNEXPECTED=$(for g in $FOUND; do case " $(echo $KNOWN) " in *" $g "*) ;; *) echo "$g" ;; esac; done)
+  UNEXPECTED=$(for g in $FOUND; do case " $(echo $KNOWN) " in (*" $g "*) ;; (*) echo "$g" ;; esac; done)
   [ -z "$UNEXPECTED" ] || { echo "!! неожиданные расхождения:"; echo "$UNEXPECTED"; FAIL=1; }
 else
   echo "расхождений нет"

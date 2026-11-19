@@ -905,14 +905,14 @@ class UncountedMetricsTest(LoaderApiTestCase):
     _rows = SkaterSeasonStatsTest._rows
 
     def _old_season_rows(self):
-        """The 1980s report: realtime sends 0 for every player, timeonice sends zeros."""
+        """The 1980s report: realtime sends 0 for every player, timeonice is empty (the live API sends null; zeros here check the rule itself through ``shifts``)."""
         zero_realtime = [dict(r, hits=0, blockedShots=0) for r in load_fixture("nhl_skater_realtime.json")]
-        null_toi = [
+        zero_toi = [
             dict(r, **{k: 0 for k in r if "imeOnIce" in k or k == "shifts"})
             for r in load_fixture("nhl_skater_timeonice.json")
         ]
         return self._rows(
-            {"skater/realtime": zero_realtime, "skater/timeonice": null_toi}
+            {"skater/realtime": zero_realtime, "skater/timeonice": zero_toi}
         )[OVECHKIN]
 
     def test_report_with_zero_hits_blocks_and_no_time_on_ice_gives_null(self):
