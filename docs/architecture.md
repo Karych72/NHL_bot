@@ -82,7 +82,7 @@ data_tables/                    схема БД: t.*.sql (таблицы дан�
 configs/                        YAML-конфигурации modeling (default, smoke)
 artifacts/                      выход modeling (датасеты, отчёты, модели)
 deploy/                         compose dev/prod, systemd-юнит секретов, fetch-secrets.sh, models/
-scripts/                        вспомогательные скрипты: оценки ИИ, фикстуры, dev-стенд, отчёты
+scripts/                        вспомогательные скрипты: оценки ИИ, фикстуры, dev-стенд, бэкфиллы (`backfill_goal_goalie.py`), отчёты
 tests/                          pytest-тесты и фикстуры NHL API (tests/fixtures/)
 docs/                           тематические документы; docs/superpowers/ — планы и спецификации
 plan/                           реестр задач (open_tasks.md), карточки (tasks/), архив (archive/)
@@ -114,7 +114,7 @@ Telegram-пользователь       game_predictions <- publish_predictions 
 - `teams`, `teams_stats` — команды и их сезонная статистика
 - `games`, `scheduled_games` — сыгранные игры и расписание будущих
 - `game_team_stats`, `game_player_stats`, `game_goalie_stats` — командные, полевые и вратарские показатели игры
-- `all_goals`, `game_three_stars`, `shot_attempts` — голы, три звезды, попытки бросков
+- `all_goals` (с вратарём гола `goalie_id`), `game_three_stars`, `shot_attempts` — голы, три звезды, попытки бросков
 - `rosters` — составы
 - `players_season_stats`, `goalies_season_stats`, `players_advanced_stats`, `players_shot_types` — сезонная статистика
 - `game_predictions` — прогнозы вероятностей по играм

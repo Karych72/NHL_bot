@@ -205,6 +205,16 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertIs(field(first, "all_goals", "is_shg"), False)
         self.assertIs(field(first, "all_goals", "winner_goal"), False)
 
+    def test_goal_row_carries_goalie_in_net_and_null_for_empty_net(self):
+        goals = self._build()[1]
+        by_event = {field(g, "all_goals", "event_id"): g for g in goals}
+        self.assertEqual(field(by_event[710], "all_goals", "goalie_id"), 8476999)
+        self.assertEqual(field(by_event[1109], "all_goals", "goalie_id"), 8480313)
+        # Goals 1125 and 1140 are scored into an empty net: nobody was in goal.
+        for event_id in (1125, 1140):
+            self.assertIsNone(field(by_event[event_id], "all_goals", "goalie_id"))
+            self.assertIs(field(by_event[event_id], "all_goals", "empty_net"), True)
+
     def test_goal_row_nulls_every_column_the_play_omits(self):
         pbp = load_fixture("nhl_game_play_by_play.json")
         first_goal = next(p for p in pbp["plays"] if p.get("typeDescKey") == "goal")
@@ -214,7 +224,7 @@ class GameRowsTest(LoaderApiTestCase):
         stripped["details"] = without(
             first_goal["details"],
             "scoringPlayerId", "scoringPlayerTotal", "assist1PlayerId",
-            "assist1PlayerTotal", "awayScore", "homeScore",
+            "assist1PlayerTotal", "awayScore", "homeScore", "goalieInNetId",
         )
         pbp["plays"] = [stripped if p is first_goal else p for p in pbp["plays"]]
         goal = self._build(pbp=pbp)[1][0]

@@ -104,7 +104,7 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "goal_player_id", "total_goals", "assist_player1_id", "assist_total_1",
         "assist_player2_id", "assist_total_2", "empty_net", "winner_goal", "is_ppg",
         "is_shg", "team_id", "game_id", "period", "time", "goals_away", "goals_home",
-        "event_id",
+        "event_id", "goalie_id",
     ),
     "game_team_stats": (
         "goals", "field", "pim", "shots", "power_play_percentage", "power_play_goals",

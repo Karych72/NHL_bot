@@ -16,6 +16,9 @@ CREATE TABLE all_goals(
     goals_away            int,
     goals_home            int,
     event_id              int,
+    -- Вратарь в воротах в момент гола (goalieInNetId play-by-play); NULL — гол в пустые ворота
+    -- и матчи до 2009/10 без play-by-play. FK на игрока нет, как у shot_attempts.goalie_in_net_id.
+    goalie_id             bigint,
     -- Голы конкретной игры. Проверено на живой БД: 0 сирот (2026-08-12).
     FOREIGN KEY (game_id) REFERENCES games (game_id)
 );

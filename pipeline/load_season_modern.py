@@ -1318,6 +1318,7 @@ class ModernNhlLoader:
                         optional_int(d.get("awayScore")),
                         optional_int(d.get("homeScore")),
                         optional_int(g.get("eventId")),
+                        optional_int(d.get("goalieInNetId")),
                     ]
                 )
 
@@ -2093,6 +2094,7 @@ class ModernNhlLoader:
                     "goals_away",
                     "goals_home",
                     "event_id",
+                    "goalie_id",
                 ],
                 all_goals_rows,
                 page_size=5000,
