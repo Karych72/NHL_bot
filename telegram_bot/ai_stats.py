@@ -39,6 +39,7 @@ AI_TABLES = (
     "players_advanced_stats", "players_shot_types", "goalies_season_stats",
     "game_team_stats", "game_player_stats", "game_goalie_stats", "all_goals",
     "game_three_stars", "shot_attempts", "scheduled_games", "playoff_series",
+    "player_career_stats", "goalie_career_stats", "franchise_stats",
 )
 
 # Решение человека 2026-10-28: потолки на один вопрос и окно продолжения диалога; потолок цены —

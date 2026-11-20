@@ -137,6 +137,83 @@ class TestNhlSchema(unittest.TestCase):
         if hasattr(cls, "conn") and cls.conn:
             cls.conn.close()
 
+    def test_career_and_franchise_views(self):
+        """Исторические NULL, взвешенный процент, переезд и разделение типов игр."""
+        with self.conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA task156_views_test")
+            cur.execute("SET LOCAL search_path = task156_views_test, public")
+            try:
+                for table in ("players_season_stats", "goalies_season_stats", "teams", "teams_stats"):
+                    cur.execute(f"CREATE TABLE {table} (LIKE public.{table})")
+                for view in ("player_career_stats", "goalie_career_stats", "franchise_stats"):
+                    cur.execute(Path(REPO_ROOT, "data_tables", f"t.{view}.sql").read_text())
+                cur.execute(
+                    "INSERT INTO players_season_stats "
+                    "(player_id, season_id, game_type, games, goals, assists, points, hits) VALUES "
+                    "(1, 19992000, 2, 10, 5, 7, 12, NULL), "
+                    "(1, 20052006, 2, 20, 6, 8, 14, 0), "
+                    "(1, 20052006, 3, 3, 1, 2, 3, 4), "
+                    "(2, 19801981, 2, 10, 1, 1, 2, NULL)"
+                )
+                cur.execute("SELECT games, goals, assists, points, hits, first_season_id, "
+                            "last_season_id, seasons FROM player_career_stats "
+                            "WHERE player_id = 1 AND game_type = 2")
+                self.assertEqual(cur.fetchone(), (30, 11, 15, 26, 0, 19992000, 20052006, 2))
+                cur.execute("SELECT hits FROM player_career_stats WHERE player_id = 2")
+                self.assertEqual(cur.fetchone(), (None,))
+                cur.execute("SELECT games, points FROM player_career_stats WHERE game_type = 3")
+                self.assertEqual(cur.fetchone(), (3, 3))
+                cur.execute(
+                    "INSERT INTO goalies_season_stats "
+                    "(player_id, season_id, game_type, wins, saves, shots_against) VALUES "
+                    "(1, 19541955, 2, 10, NULL, NULL), "
+                    "(1, 19551956, 2, 20, 90, 100), "
+                    "(1, 19561957, 2, 30, 800, 1000), "
+                    "(1, 19571958, 2, 1, NULL, 20), "
+                    "(1, 19581959, 2, 1, 10, NULL), "
+                    "(1, 19561957, 3, 5, 50, 50), "
+                    "(2, 19301931, 2, 4, NULL, NULL)"
+                )
+                cur.execute("UPDATE goalies_season_stats SET goals_against=10, time_on_ice='100:00' "
+                            "WHERE player_id=1 AND season_id=19551956 AND game_type=2")
+                cur.execute("UPDATE goalies_season_stats SET goals_against=200, time_on_ice='1000:00' "
+                            "WHERE player_id=1 AND season_id=19561957 AND game_type=2")
+                cur.execute("SELECT goal_against_average FROM goalie_career_stats "
+                            "WHERE player_id=1 AND game_type=2")
+                self.assertAlmostEqual(float(cur.fetchone()[0]), 60 * 210 / 1100)
+                cur.execute("SELECT wins, save_percentage FROM goalie_career_stats "
+                            "WHERE player_id = 1 AND game_type = 2")
+                wins, pct = cur.fetchone()
+                self.assertEqual(wins, 62)
+                self.assertAlmostEqual(float(pct), 100 * 890 / 1100)
+                cur.execute("SELECT save_percentage FROM goalie_career_stats WHERE player_id = 2")
+                self.assertEqual(cur.fetchone(), (None,))
+                cur.execute(
+                    "INSERT INTO teams (team_id, season_id, franchise_id) VALUES "
+                    "(1, 19941995, 9), (2, 19951996, 9), (3, 19951996, 10), "
+                    "(4, 19951996, NULL), (5, 19951996, NULL)"
+                )
+                cur.execute(
+                    "INSERT INTO teams_stats (team_id, season_id, game_type, games_played, wins, "
+                    "points, goals_per_game) VALUES "
+                    "(1, 19941995, 2, 48, 30, 65, 3.021), "
+                    "(2, 19951996, 2, 82, 40, 90, 3.012), "
+                    "(2, 19951996, 3, 10, 6, NULL, 3.0), "
+                    "(3, 19951996, 2, 82, 20, 50, 2.0), "
+                    "(4, 19951996, 2, 82, 20, 50, 2.0), "
+                    "(5, 19951996, 2, 82, 20, 50, 2.0)"
+                )
+                cur.execute("SELECT seasons, games, wins, points, goals, playoff_seasons "
+                            "FROM franchise_stats WHERE franchise_id = 9 AND game_type = 2")
+                self.assertEqual(cur.fetchone(), (2, 130, 70, 155, 392, 1))
+                cur.execute("SELECT games, points FROM franchise_stats "
+                            "WHERE franchise_id = 9 AND game_type = 3")
+                self.assertEqual(cur.fetchone(), (10, None))
+                cur.execute("SELECT count(*) FROM franchise_stats")
+                self.assertEqual(cur.fetchone(), (3,))
+            finally:
+                self.conn.rollback()
+
     def test_upcoming_ai_cache_claim_and_reuse(self):
         """Прогоняет рабочую функцию кэша на БД в откатываемой схеме без вызова API."""
         import asyncio
