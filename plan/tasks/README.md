@@ -20,6 +20,7 @@
 |---|---|---|---|
 | 133 | [Разрезать `bot_messages.py` по экранам](task_133_split_bot_messages.md) | Инженерия | 🟡 |
 | 82 | [Безопасность: исследование утечек секретов и уязвимостей стека](task_82_security_research.md) | Релиз | 🟠 |
+| 162 | [Закрыть репозиторий: private на Free-плане GitHub](task_162_private_repo.md) | Релиз | 🟠 |
 | 67–77 | Трек B — модель: отдельная папка [`task_model/`](task_model/README.md) | Трек B | 🔴–🟡 |
 | 57 | [`/tonight`: счёт и период идущих матчей](task_57_tonight_live_score.md) | Продукт | 🟡 |
 | 58 | [`/tonight`: live-карточка идущего матча](task_58_tonight_live_card.md) | Продукт | 🟡 |
