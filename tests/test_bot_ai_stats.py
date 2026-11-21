@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 import threading
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
@@ -278,6 +281,15 @@ async def test_model_clarify_goes_to_user_without_review(stats, make_message, fa
 async def test_user_text_is_escaped(stats, make_message, fake_bot, api):
     s = stats([_finish("off_topic", "a < b & c")])
     assert await _ask(s, make_message, fake_bot, api) == [_as_reply("a &lt; b &amp; c")]
+
+
+@pytest.mark.asyncio
+async def test_answer_list_survives_telegram_html(stats, make_message, fake_bot, api):
+    text = "Всего 117 голов:\n• 2022/23 — 42\n• 2023/24 — 31\n- 2024/25 — 44\nТемп < 1.0 & сезон неполный."
+    s = stats([_finish(text=text), _verdict()])
+    assert await _ask(s, make_message, fake_bot, api) == [
+        _as_reply(text.replace("<", "&lt;").replace("& сезон", "&amp; сезон"))
+    ]
 
 
 @pytest.mark.asyncio
@@ -630,6 +642,22 @@ def test_system_prompt_is_stable_cached_and_has_only_data_tables(bot_module):
         assert private not in text
     assert "ai_stats" not in ai_stats._system("stats_reviewer.md")[0]["text"].split("## Схема таблиц")[1]
     assert "2009/10" in text and "плей-офф" in text
+
+
+def test_eval_preserves_career_count_that_looks_like_a_year():
+    # Контрольный скрипт оборачивает функции ai_stats при импорте: отдельный процесс
+    # не даёт его перехватчикам влиять на остальные тесты бота.
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+sys.path.insert(0, 'scripts')
+from ai_stats_eval import judge
+text = 'Карьера 1979/80–1998/99: 1487 игр, 894 гола, 1963 передачи, 2857 очков на 20.11.2026.'
+assert judge(text, 'Карьера Гретцки?', ['1487', '894', '1963', '2857'], [text]) == ([], [])
+assert judge('1964 передачи', 'Карьера Гретцки?', ['1963'], [])[0]
+"""], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_every_tool_is_strict(bot_module):

@@ -77,7 +77,7 @@ modeling/                       датасеты и модели (БД чита�
   goal_model.py                 голевая модель: Пуассон, сетка счётов, вероятность тотала
   xg_model.py                   модель ожидаемых голов (xG) по броскам
   __init__.py                   пакет
-data_tables/                    схема БД: t.*.sql (таблицы данных NHL), ai_reader_grants.sql,
+data_tables/                    схема БД: t.*.sql (таблицы и представления NHL), ai_reader_grants.sql,
                                 migrations/ (NNNN_*.up.sql / .down.sql — таблицы бота и правки схемы)
 configs/                        YAML-конфигурации modeling (default, smoke)
 artifacts/                      выход modeling (датасеты, отчёты, модели)
@@ -119,6 +119,9 @@ Telegram-пользователь       game_predictions <- publish_predictions 
 - `players_season_stats`, `goalies_season_stats`, `players_advanced_stats`, `players_shot_types` — сезонная статистика
 - `game_predictions` — прогнозы вероятностей по играм
 - `playoff_series` — представление: серии плей-офф
+- `player_career_stats`, `goalie_career_stats` — представления итогов карьеры по игроку и типу игры
+- `franchise_stats` — представление командных итогов по franchise_id и типу игры, с переездами;
+  все три создаются db-tables и миграцией 0034, читаются ролью nhl_ai_reader
 
 Бот и сервисные (`migrations/`):
 - `bot_subscriptions`, `bot_game_sent`, `bot_chat_game_sent` — подписки на рассылку и учёт отправленного

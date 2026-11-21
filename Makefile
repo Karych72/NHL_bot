@@ -41,7 +41,10 @@ DDL_TABLES := \
 	data_tables/t.game_player_stats.sql \
 	data_tables/t.game_goalie_stats.sql \
 	data_tables/t.all_goals.sql \
-	data_tables/t.shot_attempts.sql
+	data_tables/t.shot_attempts.sql \
+	data_tables/t.player_career_stats.sql \
+	data_tables/t.goalie_career_stats.sql \
+	data_tables/t.franchise_stats.sql
 FN_FILES  := $(wildcard telegram_bot/queries/*.sql)
 # Migrations: data_tables/migrations/NNNN_slug.{up,down}.sql, applied in ascending
 # version order and tracked in schema_migrations (see DEVELOPMENT.md). Ordering is a
