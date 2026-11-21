@@ -8,8 +8,8 @@
 **Зависит от:** 158 — данные загружены на ту базу, куда выкатывается код (на прод — до
 релиза этой задачи). Объём промпта — согласовать с 144. Связана с 145.
 **Источник:** выделена 2026-11-18 из Задачи 158 (её пункты 4–6); исследование —
-[`../../docs/history_depth_research.md`](../../docs/history_depth_research.md); реестр —
-[`../open_tasks.md`](../open_tasks.md).
+[`../../../docs/history_depth_research.md`](../../../docs/history_depth_research.md); реестр —
+[`../closed_tasks.md`](../closed_tasks.md).
 
 ## Кратко
 
