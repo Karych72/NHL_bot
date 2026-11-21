@@ -49,10 +49,10 @@ WILSON, HUTSON = 8476880, 8484873  # game_three_stars: 2nd/3rd stars (both WSH)
 TABLE_COLUMNS: Dict[str, tuple] = {
     "teams": (
         "team_id", "season_id", "name", "division_name", "arena", "conference_name",
-        "abbreviation", "first_year_of_play", "city", "active", "short_name",
+        "abbreviation", "first_year_of_play", "city", "active", "short_name", "franchise_id",
     ),
     "teams_stats": (
-        "team_id", "season_id", "game_type", "games_played", "wins", "losses", "ot", "points",
+        "team_id", "season_id", "game_type", "games_played", "wins", "losses", "ot", "ties", "points",
         "procent_points", "goals_per_game", "goals_against_per_game",
         "power_play_percentage", "power_play_goals", "power_play_goals_against",
         "power_play_opportunities", "penalty_kill_percentage", "shots_per_game",
@@ -104,7 +104,7 @@ TABLE_COLUMNS: Dict[str, tuple] = {
         "goal_player_id", "total_goals", "assist_player1_id", "assist_total_1",
         "assist_player2_id", "assist_total_2", "empty_net", "winner_goal", "is_ppg",
         "is_shg", "team_id", "game_id", "period", "time", "goals_away", "goals_home",
-        "event_id",
+        "event_id", "goalie_id",
     ),
     "game_team_stats": (
         "goals", "field", "pim", "shots", "power_play_percentage", "power_play_goals",
@@ -177,6 +177,7 @@ def make_loader() -> Any:
     instance.team_meta_by_id = {}
     instance.team_standings_by_abbrev = {}
     instance.team_abbrev_by_id = {}
+    instance.game_clubs = {}
     return instance
 
 

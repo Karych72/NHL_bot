@@ -111,6 +111,84 @@ class GameRowsTest(LoaderApiTestCase):
         # is true for it.
         self.assertIs(field(row, "games", "is_shootouts"), False)
 
+    def test_tied_game_has_no_winner(self):
+        """Ties existed until 2005/06 (Задача 157): ``winner_id`` is NULL, not the away team."""
+        instance = make_loader()
+        stub_api(
+            instance,
+            json_routes={
+                PLAY_BY_PLAY: load_fixture("nhl_game_play_by_play.json"),
+                BOXSCORE: load_fixture("nhl_game_boxscore.json"),
+                LANDING: load_fixture("nhl_game_landing.json"),
+            },
+        )
+        meta = [dict(load_fixture("nhl_games_meta.json")[0], homeScore=2, visitingScore=2)]
+        games_rows = instance.build_game_rows(meta)[0]
+        self.assertIsNone(field(games_rows[0], "games", "winner_id"))
+
+    def test_history_game_writes_no_shot_attempts_and_null_for_uncounted_metrics(self):
+        """Задача 157: матч до 2009/10 — без бросков, без hits/blocks/takeaways/giveaways/
+        faceoffs/strength (их не считали: нули в боксскоре и нет событий в play-by-play) — NULL,
+        а плюс-минус и броски игроков, которые считали, остаются."""
+        box = load_fixture("nhl_game_boxscore.json")
+        for side in ("homeTeam", "awayTeam"):
+            for position in ("forwards", "defense"):
+                for skater in box["playerByGameStats"][side][position]:
+                    for key in ("hits", "takeaways", "giveaways", "blockedShots", "faceoffWinningPctg"):
+                        skater[key] = 0
+        pbp = load_fixture("nhl_game_play_by_play.json")
+        pbp["plays"] = [
+            {k: v for k, v in p.items() if k != "situationCode"}
+            for p in pbp["plays"]
+            if p.get("typeDescKey") not in ("hit", "giveaway", "takeaway", "blocked-shot", "faceoff")
+        ]
+        instance = make_loader()
+        instance.season_id = 20082009
+        stub_api(
+            instance,
+            json_routes={PLAY_BY_PLAY: pbp, BOXSCORE: box, LANDING: load_fixture("nhl_game_landing.json")},
+        )
+        rows = instance.build_game_rows(load_fixture("nhl_games_meta.json"))
+        self.assertEqual(rows[6], [], "до 2009/10 нет координат — shot_attempts пуст")
+        table = "game_player_stats"
+        ovi = by_player(rows[3], table)[OVECHKIN]
+        for column in (
+            "hits", "takeaways", "giveaways", "blocked", "face_off_pct", "face_off_wins",
+            "face_off_taken", "power_play_assists", "short_handed_goals", "short_handed_assists",
+        ):
+            self.assertIsNone(field(ovi, table, column), column)
+        self.assertEqual(field(ovi, table, "shots"), 3)
+        self.assertEqual(field(ovi, table, "plus_minus"), 1)
+        home = {field(r, "game_team_stats", "team_id"): r for r in rows[2]}[WSH]
+        for column in ("hits", "takeaways", "giveaways", "blocked", "power_play_goals"):
+            self.assertIsNone(field(home, "game_team_stats", column), column)
+        for goal in rows[1]:
+            self.assertIsNone(field(goal, "all_goals", "is_ppg"))
+            self.assertIsNone(field(goal, "all_goals", "is_shg"))
+
+    def test_counted_metric_stays_zero_when_play_by_play_has_the_events(self):
+        """Задача 157, правило «у всех»: нулевые отборы у всех скейтеров матча 2009/10+ — реальный
+        ноль, пока в play-by-play есть события этого матча."""
+        box = load_fixture("nhl_game_boxscore.json")
+        for side in ("homeTeam", "awayTeam"):
+            for position in ("forwards", "defense"):
+                for skater in box["playerByGameStats"][side][position]:
+                    skater["takeaways"] = 0
+        ovi = by_player(self._build(box=box)[3], "game_player_stats")[OVECHKIN]
+        self.assertEqual(field(ovi, "game_player_stats", "takeaways"), 0)
+
+    def test_outside_club_rows_come_from_the_games_landing(self):
+        """Задача 157: соперник финала Кубка 1918 года не в отчётах NHL — строка `teams`
+        из landing, чтобы внешний ключ `games` сошёлся."""
+        instance = make_loader()
+        instance.game_clubs = {7288: ("VMI", "Vancouver Millionaires"), 8: ("MTL", "Montréal Canadiens")}
+        rows = instance.build_outside_club_rows({8}, {8, 7288})
+        self.assertEqual(
+            rows,
+            [(7288, SEASON_ID, "Vancouver Millionaires", None, None, None, "VMI", None,
+              "Vancouver", False, "Vancouver Millionaires", None)],
+        )
+
     def test_game_not_yet_off_in_gamecenter_produces_no_rows(self):
         """Stats REST already lists the game as finished, but one gamecenter
         payload still says ``FINAL``/``LIVE``: no row in any of the seven tables,
@@ -205,6 +283,16 @@ class GameRowsTest(LoaderApiTestCase):
         self.assertIs(field(first, "all_goals", "is_shg"), False)
         self.assertIs(field(first, "all_goals", "winner_goal"), False)
 
+    def test_goal_row_carries_goalie_in_net_and_null_for_empty_net(self):
+        goals = self._build()[1]
+        by_event = {field(g, "all_goals", "event_id"): g for g in goals}
+        self.assertEqual(field(by_event[710], "all_goals", "goalie_id"), 8476999)
+        self.assertEqual(field(by_event[1109], "all_goals", "goalie_id"), 8480313)
+        # Goals 1125 and 1140 are scored into an empty net: nobody was in goal.
+        for event_id in (1125, 1140):
+            self.assertIsNone(field(by_event[event_id], "all_goals", "goalie_id"))
+            self.assertIs(field(by_event[event_id], "all_goals", "empty_net"), True)
+
     def test_goal_row_nulls_every_column_the_play_omits(self):
         pbp = load_fixture("nhl_game_play_by_play.json")
         first_goal = next(p for p in pbp["plays"] if p.get("typeDescKey") == "goal")
@@ -214,7 +302,7 @@ class GameRowsTest(LoaderApiTestCase):
         stripped["details"] = without(
             first_goal["details"],
             "scoringPlayerId", "scoringPlayerTotal", "assist1PlayerId",
-            "assist1PlayerTotal", "awayScore", "homeScore",
+            "assist1PlayerTotal", "awayScore", "homeScore", "goalieInNetId",
         )
         pbp["plays"] = [stripped if p is first_goal else p for p in pbp["plays"]]
         goal = self._build(pbp=pbp)[1][0]

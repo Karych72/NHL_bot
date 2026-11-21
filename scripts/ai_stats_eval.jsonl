@@ -13,7 +13,7 @@
 {"id": "a13", "q": "Сколько игр сыграл Овечкин в сезоне 2022/23?", "kind": "answer", "expect": ["73"]}
 {"id": "a14", "q": "Сколько очков набрал Кучеров в сезоне 2021/22?", "kind": "answer", "expect": ["69"]}
 {"id": "a15", "q": "Сколько голов Панарин забил в гостевых матчах в сезоне 2023/24?", "kind": "answer", "expect": ["27"]}
-{"id": "a16", "q": "Сколько всего голов у Овечкина?", "kind": "answer", "expect": ["2009/10"]}
+{"id": "a16", "q": "Сколько всего голов у Овечкина?", "kind": "answer", "expect_sql": "SELECT sum(goals) FROM players_season_stats WHERE player_id=8471214 AND game_type=2"}
 {"id": "a17", "q": "Сколько очков набрал Макдэвид в сезоне 2024/25 и сколько из них голов?", "kind": "answer", "expect": ["100", "26"]}
 {"id": "a18", "q": "Сколько очков у Колорадо в таблице по итогам сезона 2024/25?", "kind": "answer", "expect": ["102"]}
 {"id": "pl1", "q": "Кто выиграл Кубок Стэнли в 2024 году?", "kind": "answer", "expect": [["Флорид", "Florida"]]}
@@ -30,7 +30,7 @@
 {"id": "n2", "q": "Какой контракт у Овечкина и до какого года?", "kind": ["no_data", "off_topic"]}
 {"id": "n4", "q": "Сколько очков Малкин набрал в КХЛ?", "kind": ["no_data", "off_topic"]}
 {"id": "n5", "q": "Кто выиграет сегодня, на кого ставить?", "kind": ["no_data", "off_topic"]}
-{"id": "n6", "q": "Сколько голов за сезон рекорд Гретцки?", "kind": ["no_data", "off_topic"]}
+{"id": "n6", "q": "Сколько голов за сезон рекорд Гретцки?", "kind": "answer", "expect": ["92"]}
 {"id": "n7", "q": "Кто стоит сегодня в воротах у Тампы?", "kind": ["no_data", "off_topic"]}
 {"id": "f1", "q": "Какая сегодня погода в Москве?", "kind": ["off_topic", "no_data"]}
 {"id": "f2", "q": "Дай рецепт борща", "kind": ["off_topic", "no_data"]}
@@ -45,3 +45,15 @@
 {"id": "ch1b", "after": "ch1a", "q": "А в сезоне 2024/25?", "kind": "answer", "expect": ["44"]}
 {"id": "ch1c", "after": "ch1b", "q": "А у Макдэвида?", "kind": "answer", "expect": ["26"]}
 {"id": "ch1d", "after": "ch1c", "q": "Сколько очков набрал Кучеров в сезоне 2021/22?", "kind": "answer", "expect": ["69"]}
+{"id": "h156a", "q": "Каковы итоги всей карьеры Уэйна Гретцки в регулярных чемпионатах: игры, голы, передачи, очки?", "kind": "answer", "expect": ["1487", "894", "1963", "2857"]}
+{"id": "h156b", "q": "Сколько очков, голов и передач у Гретцки за карьеру в плей-офф?", "kind": "answer", "expect": ["382", "122", "260"]}
+{"id": "h156c", "q": "Кто был лучшим бомбардиром регулярного сезона 1955/56 и сколько очков набрал?", "kind": "answer", "expect": [["Беливо", "Beliveau"], "88"]}
+{"id": "h156d", "q": "Сколько побед и сухих матчей у Мартина Бродо за всю карьеру в регулярке?", "kind": "answer", "expect": ["691", "125"]}
+{"id": "h156e", "q": "Сколько голов Гретцки забил в регулярном сезоне 1981/82?", "kind": "answer", "expect": ["92"]}
+{"id": "h156f", "q": "Сколько силовых приёмов у Гретцки за сезон 1985/86?", "kind": "no_data"}
+{"id": "h156g", "q": "Сколько заблокированных бросков у Бобби Орра за карьеру?", "kind": "no_data"}
+{"id": "h156h", "q": "Посчитай общие победы Квебек Нордикс и Колорадо Эвеланш как одной франшизы за все регулярные сезоны.", "kind": "answer", "expect_sql": "SELECT sum(s.wins) FROM teams_stats s JOIN teams t USING(team_id,season_id) WHERE s.game_type=2 AND t.franchise_id=(SELECT franchise_id FROM teams WHERE abbreviation='COL' ORDER BY season_id DESC LIMIT 1)"}
+{"id": "h156i", "q": "Сколько очков набрал Горди Хоу в регулярном сезоне 1952/53?", "kind": "answer", "expect": ["95"]}
+{"id": "h156j", "q": "Кто выиграл Кубок Стэнли 1984 года?", "kind": "answer", "expect": [["Эдмонтон", "Edmonton"]]}
+{"id": "l161a", "q": "Сколько голов у Овечкина по сезонам в регулярке с 2021/22 по 2024/25? Назови общий итог и каждый сезон.", "kind": "answer", "expect": ["167", "50", "42", "31", "44"], "list_items": 4}
+{"id": "l161b", "q": "Кто так лихо начинал сезон и удержал ли темп? Возьми 30 лучших стартов по очкам за первые 10 матчей игрока в регулярке 2021/22–2024/25 (минимум 40 игр за сезон), сравни очки за игру на старте и по итогам сезона. Назови первые три старта и в скольких из 30 темп упал.", "kind": "answer", "list_items": 3, "expect_sql": "WITH numbered AS (SELECT p.player_id,g.season_id,p.goals+p.assists AS points,row_number() OVER (PARTITION BY p.player_id,g.season_id ORDER BY g.day,g.game_id) AS n FROM game_player_stats p JOIN games g USING(game_id) WHERE g.game_type=2 AND g.season_id BETWEEN 20212022 AND 20242025), starts AS (SELECT player_id,season_id,sum(points) AS start_points FROM numbered WHERE n<=10 GROUP BY player_id,season_id HAVING count(*)=10 AND count(points)=10), ranked AS (SELECT s.*,p.points AS season_points,p.games,row_number() OVER (ORDER BY start_points DESC,s.season_id,s.player_id) AS rank FROM starts s JOIN players_season_stats p USING(player_id,season_id) WHERE p.game_type=2 AND p.games>=40), top AS (SELECT * FROM ranked WHERE rank<=30) SELECT count(*),count(*) FILTER(WHERE season_points*10<start_points*games),max(start_points) FILTER(WHERE rank=1),max(start_points) FILTER(WHERE rank=2),max(start_points) FILTER(WHERE rank=3) FROM top"}

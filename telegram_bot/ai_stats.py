@@ -39,6 +39,7 @@ AI_TABLES = (
     "players_advanced_stats", "players_shot_types", "goalies_season_stats",
     "game_team_stats", "game_player_stats", "game_goalie_stats", "all_goals",
     "game_three_stars", "shot_attempts", "scheduled_games", "playoff_series",
+    "player_career_stats", "goalie_career_stats", "franchise_stats",
 )
 
 # Решение человека 2026-10-28: потолки на один вопрос и окно продолжения диалога; потолок цены —
@@ -208,14 +209,14 @@ def _schema() -> str:
 
 @functools.lru_cache(maxsize=2)
 def _system(prompt_file: str) -> List[Dict[str, Any]]:
-    """Системный блок с `cache_control`: промпт роли + аннотация + схема. Без даты — префикс
-    кэшируется; сегодняшняя дата идёт в сообщении пользователя."""
+    """Системный блок с `cache_control`: аннотация, схема, затем правила роли, чтобы после
+    большого DDL модель помнила протокол инструментов. Дата — в сообщении пользователя."""
     text = "\n\n".join([
+        (PROMPTS / "stats_schema_notes.md").read_text(),
+        "## Схема таблиц\n\n" + _schema(),
         (PROMPTS / prompt_file).read_text()
         .replace("{ROW_LIMIT}", str(ROW_LIMIT)).replace("{SQL_ATTEMPTS}", str(SQL_ATTEMPTS))
         .replace("{ROW_BYTES}", str(ROW_BYTES)).replace("{CELL_CHARS}", str(CELL_CHARS)),
-        (PROMPTS / "stats_schema_notes.md").read_text(),
-        "## Схема таблиц\n\n" + _schema(),
     ])
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
